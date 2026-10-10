@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "restic-web"
+version = "0.1.0"
+description = "restic-docker-backup Web 版后端（FastAPI + aiosqlite + restic 静态二进制编排）"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115,<0.120",
+    "uvicorn[standard]>=0.32,<0.35",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5,<3",
+    "aiosqlite>=0.20,<0.22",
+    "argon2-cffi>=23,<25",
+    "python-ulid>=2,<4",
+    "apscheduler>=3.10,<4",
+    "httpx>=0.27,<0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<0.26",
+    "httpx>=0.27,<0.29",
+    "ruff>=0.7,<0.10",
+]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.db.migrations" = ["*.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]

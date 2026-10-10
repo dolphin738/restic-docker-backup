@@ -1,0 +1,65 @@
+# restic-docker-backup Web 版 compose 模板（方案 §4 / §4.1）
+#
+# 挂载模式二选一（RESTIC_WEB_MODE）：
+#   host    —— 宿主机整盘挂载到 /host（默认），备份源在 UI 任意勾选，增删零重启
+#   sources —— 单一数据根目录挂载到 /sources（最小暴露面，§3.2）
+#
+# compose 中剩余项全部是"容器怎么跑"的部署事实（挂载/端口/用户/镜像），
+# 业务配置（仓库、凭据、策略、调度、通知、dump、时区）一律在 Web 界面完成（§4.1）。
+#
+# 注意（compose 插值规则）：卷挂载串里的 ${HOST_MOUNT_MODE} 由"构建/运行 compose 的环境"插值，
+# 不是容器 environment。因此切换 ro/rw 时需两处一致：
+#   1) 在 docker/ 目录建 .env 写入 HOST_MOUNT_MODE=ro（供卷挂载插值使用）；
+#   2) 保留下方 environment 中的同值条目（供应用 E03 me 的 host_mount 字段读取）。
+# sources 模式的 SOURCES_DIR 同理。
+
+name: restic-docker-backup-web
+
+services:
+  restic-web:
+    image: restic-web:0.1.0-restic0.19.1
+    container_name: restic-web
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        RESTIC_VERSION: "0.19.1"
+    # 默认 root 档：保证原位恢复完整还原属主/权限；安全敏感场景改 "1000:1000"
+    # 改非 root 档前须在宿主机执行：chown -R 1000:1000 ./data ./cache ./secrets
+    user: "0:0"
+    environment:
+      TZ: Asia/Shanghai
+      # host=全盘挂载 / sources=数据根目录
+      RESTIC_WEB_MODE: host
+      # /host 挂载模式：rw（默认，支持原位恢复）/ ro（安全档，仅备份浏览与"恢复到其他位置"）
+      HOST_MOUNT_MODE: rw
+      PORT: "8000"
+      # 非 root 档部署时由 entrypoint 用于自动 chown（root 档下默认 0:0，无需设置）
+      # PUID: "1000"
+      # PGID: "1000"
+      # 后端凭据默认在 Web 界面配置；如需 GitOps/secret 注入式部署可在此覆盖（优先于 UI 值）：
+      # AWS_ACCESS_KEY_ID: ""
+      # AWS_SECRET_ACCESS_KEY: ""
+      # AWS_DEFAULT_REGION: ""
+    volumes:
+      # ---- host 模式（RESTIC_WEB_MODE=host）----
+      - /:/host:${HOST_MOUNT_MODE:-rw}
+
+      # ---- sources 模式（RESTIC_WEB_MODE=sources）：注释上一行，启用下面两行 ----
+      # - ${SOURCES_DIR:-./sources}:/sources:ro
+
+      # 恢复目标（P1 恢复到时间戳子目录；rw 档下也可选 /host 下子目录）
+      - /restore:/restore
+
+      # 仅本地路径仓库需要；对象存储后端（s3/b2）可整行注释
+      # - /mnt/backup/restic-repo:/repo
+
+      # SQLite + 任务日志 + dump（属主要求见方案 §4：非 root 档须 chown 1000:1000）
+      - ./data:/data
+      # restic 缓存，务必持久化（否则每次全量重扫）
+      - ./cache:/cache/restic
+      # 仓库密码文件：永不入库、永不出 API（方案 §6）
+      - ./secrets/restic-pass:/run/secrets/restic-pass:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
