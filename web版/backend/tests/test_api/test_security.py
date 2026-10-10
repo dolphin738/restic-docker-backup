@@ -110,16 +110,11 @@ async def test_lockout_persists_across_process_restart(make_app):
     assert resp.json()["code"] == "ACCOUNT_LOCKED"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Bug：bootstrap 随机密码展示前重启进程，AdminAccountStore._reset_random_password "
-        "(app/auth/bootstrap.py:128-140) 会把 failed_attempts/lock_level/locked_until 一并清零，"
-        "违反 §8『失败计数持久化在 DB 防容器重启清零』——锁定被重启绕过"
-    ),
-)
 async def test_lockout_survives_restart_before_bootstrap_shown(make_app):
-    """未展示一次性密码时重启：锁定状态不得被清零（文档 §8 明确要求持久化）。"""
+    """未展示一次性密码时重启：锁定状态不得被清零（文档 §8 明确要求持久化）。
+
+    回归（Bug 修复验证）：_reset_random_password 只更新密码两字段，锁定三字段保留。
+    """
     ns = await make_app()
     for _ in range(5):
         resp = await ns.client.post("/api/auth/login", json={"password": "wrong"}, headers=ORIGIN)
@@ -127,7 +122,15 @@ async def test_lockout_survives_restart_before_bootstrap_shown(make_app):
 
     ns2 = await make_app()  # 未 reveal bootstrap → 重启触发 _reset_random_password
     resp = await ns2.client.post("/api/auth/login", json={"password": "wrong"}, headers=ORIGIN)
-    assert resp.status_code == 429  # 实际：401 PASSWORD_WRONG（锁已被清）
+    assert resp.status_code == 429
+    assert resp.json()["code"] == "ACCOUNT_LOCKED"
+
+    # 锁定三字段跨重启保留（只重置了密码哈希）
+    row = await ns2.app.state.db.fetch_one(
+        "SELECT failed_attempts, lock_level, locked_until FROM admin_account WHERE id = 1"
+    )
+    assert int(row["lock_level"]) == 1
+    assert row["locked_until"] is not None
 
 
 async def test_lock_release_allows_login(app_client):

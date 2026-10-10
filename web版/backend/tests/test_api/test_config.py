@@ -125,6 +125,53 @@ async def test_e30_repo_status_cached(make_app):
     assert resp2.json() == resp1.json()
 
 
+async def test_e07_readonly_key_repo_type_409(app_client):
+    """E07：只读派生键 repo.type 不可直接写 → 409 READONLY_KEY（set 与 set_many 双守卫）。"""
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.put(
+        "/api/config", json={"patch": {"repo.type": "s3"}}, headers=ORIGIN
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "READONLY_KEY"
+    assert body["data"]["key"] == "repo.type"
+
+
+async def test_e07_repo_type_derived_from_url(app_client):
+    """E07 写 repo.url → repo.type 按协议前缀同源推导落库（s3:/b2:/其余→local）。"""
+    await finish_bootstrap(app_client)
+    client = app_client.client
+
+    for url, expected in (
+        ("s3:s3.amazonaws.com/bk", "s3"),
+        ("b2:bucket", "b2"),
+        ("/mnt/repo", "local"),
+    ):
+        resp = await client.put("/api/config", json={"patch": {"repo.url": url}}, headers=ORIGIN)
+        assert resp.status_code == 200, resp.text
+        resp = await client.get("/api/config")
+        items = {item["key"]: item for item in resp.json()["items"]}
+        assert items["repo.type"]["value"] == expected, url
+        assert items["repo.type"]["source"] == "ui"
+
+    # 清空 repo.url → repo.type 跟随删除，不残留旧值
+    resp = await client.put("/api/config", json={"patch": {"repo.url": None}}, headers=ORIGIN)
+    assert resp.status_code == 200
+    resp = await client.get("/api/config")
+    keys = {item["key"] for item in resp.json()["items"]}
+    assert "repo.type" not in keys
+
+
+async def test_repo_type_derived_from_env_sync(make_app):
+    """env 同步路径写 repo.url → repo.type 同源推导（source=env）。"""
+    ns = await make_app({"RESTIC_REPOSITORY": "b2:env-bucket"})
+    await finish_bootstrap(ns)
+    resp = await ns.client.get("/api/config")
+    items = {item["key"]: item for item in resp.json()["items"]}
+    assert items["repo.type"]["value"] == "b2"
+    assert items["repo.type"]["source"] == "env"
+
+
 async def test_e32_exclusions_read_only(app_client):
     """E32：内置排除集只读暴露，必须鉴权；POST 方法不允许。"""
     ns = app_client
@@ -144,6 +191,12 @@ async def test_e32_exclusions_read_only(app_client):
     # core 是 items 的子集（模式无关语义核心 8 条）
     assert set(body["core"]) <= set(body["items"])
     assert len(body["core"]) == 8
+    # 契约新增：展示形态字段（剥前缀，前端免过 PathMapper）
+    assert "/proc" in body["display_items"]
+    assert "/var/lib/docker" in body["display_items"]
+    assert len(body["display_items"]) == len(body["items"])
+    assert set(body["display_core"]) <= set(body["display_items"])
+    assert len(body["display_core"]) == 8
 
     # 只读：写方法 405
     resp = await client.post("/api/exclusions", json={}, headers=ORIGIN)

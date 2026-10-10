@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from conftest import finish_bootstrap
 
 from app.utils.ulid import new_job_id
@@ -179,16 +178,9 @@ async def test_sse_requires_session(app_client):
     assert resp.status_code == 401
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Bug：日志文件不存在的任务（如 scheduled 冲突落下的 cancelled 跳过任务，"
-        "log_path=jobs/<type>-skipped.log 从未被创建）请求 SSE 时，SseChannel.stream "
-        "(app/services/sse.py:79) 直接 open('rb') 抛 FileNotFoundError → 流中途 500；"
-        "预期应与 E27 一致降级为空日志并只发终态帧"
-    ),
-)
 async def test_sse_missing_log_file_graceful(app_client):
+    """回归（Bug 修复验证）：日志文件不存在的任务（如 scheduled 冲突落下的 cancelled
+    跳过任务）请求 SSE → 降级为空日志，只发终态 done 帧，不 500。"""
     ns = app_client
     await finish_bootstrap(ns)
     job_id = new_job_id()
@@ -202,3 +194,4 @@ async def test_sse_missing_log_file_graceful(app_client):
     _, frames = await _collect_sse(ns.client, f"/api/jobs/{job_id}/stream")
     assert len(frames) == 1
     assert frames[0]["event"] == "done"
+    assert frames[0]["data"]["status"] == "cancelled"
