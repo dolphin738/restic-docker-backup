@@ -7,7 +7,10 @@
  *   因此本层以"最后一次收到 message 的时间"判定活性：超过 heartbeatTimeoutMs（默认 45s）
  *   无任何事件 → 判定疑似断链 → close + 回查任务状态 → 仍活跃则按游标续传（最坏情况只是
  *   每 45s 静默期多做一次无害重连）；
- * - 收到 `done`/`error` 终态后立即 close：否则浏览器会带着 Last-Event-ID 无限自动重连。
+ * - 收到 `done`/`error` 终态后立即 close：否则浏览器会带着 Last-Event-ID 无限自动重连，
+ *   而服务端重放无新行后又判定终态会再补发一次 done → 无限重连循环；
+ * - **开流前先 `GET /api/jobs/{id}` 取 `last_event_id` 作为起始游标**（E14 响应自带该字段）：
+ *   任务已终态则根本不开流，直接本地收尾；进行中则只收增量，避免挂载/刷新时整份日志回放。
  */
 
 import { onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
@@ -44,7 +47,8 @@ export interface JobStreamHandle {
   lastEventId: Ref<number>
   /** 只读的日志快照（每 200ms 整体替换，不进入深层响应式树）。 */
   logs: Ref<readonly string[]>
-  start: () => void
+  /** 回查起始游标后开流（已终态则不开流，直接本地收尾）。 */
+  start: () => Promise<void>
   stop: () => void
 }
 
@@ -201,7 +205,9 @@ export function useJobStream(
         finishTerminal(fromJobOut(job))
         return
       }
-      open(id)
+      // 从服务端已落盘的行号续传，只收增量
+      lastEventId.value = Math.max(lastEventId.value, job.last_event_id)
+      open(id, true)
     } catch (error) {
       if (hasCode(error, 'NOT_FOUND')) {
         finishTerminal({
@@ -236,7 +242,7 @@ export function useJobStream(
         retryTimer = null
         const id = toValue(jobId)
         if (id && !disposed && !terminated) {
-          open(id)
+          open(id, true)
         }
       },
       retryDelay,
@@ -244,11 +250,11 @@ export function useJobStream(
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
   }
 
-  function open(id: string): void {
+  function open(id: string, resuming = false): void {
     closeSource()
     const query = lastEventId.value > 0 ? `?last_event_id=${lastEventId.value}` : ''
     const url = `/api/jobs/${encodeURIComponent(id)}/stream${query}`
-    state.value = lastEventId.value > 0 ? 'reconnecting' : 'connecting'
+    state.value = resuming ? 'reconnecting' : 'connecting'
 
     const es = new EventSource(url, { withCredentials: true })
     source = es
@@ -312,13 +318,48 @@ export function useJobStream(
     })
   }
 
-  function start(): void {
+  /** 开流前先回查 E14：取 `last_event_id` 作起始游标，并提前识别已终态任务。 */
+  async function start(): Promise<void> {
     const id = toValue(jobId)
     if (!id || disposed) {
       return
     }
     reset()
-    open(id)
+    state.value = 'connecting'
+    try {
+      const job = await getJob(id)
+      if (disposed) {
+        return
+      }
+      if (TERMINAL_STATUSES.includes(job.status)) {
+        finishTerminal(fromJobOut(job))
+        return
+      }
+      lastEventId.value = job.last_event_id
+      open(id)
+    } catch (error) {
+      if (disposed) {
+        return
+      }
+      if (hasCode(error, 'NOT_FOUND')) {
+        finishTerminal({
+          status: 'interrupted',
+          exit_code: null,
+          snapshot_id: null,
+          skipped_count: 0,
+          bytes_done: null,
+          files_done: null,
+          summary: null,
+        })
+        return
+      }
+      if (hasCode(error, 'UNAUTHORIZED') || hasCode(error, 'BOOTSTRAP_REQUIRED')) {
+        state.value = 'closed'
+        return
+      }
+      // 回查失败不阻塞订阅：退化为从头开流
+      open(id)
+    }
   }
 
   watch(
@@ -329,7 +370,7 @@ export function useJobStream(
       }
       reset()
       if (id && options.autoStart !== false) {
-        open(id)
+        void start()
       }
     },
     { immediate: true },
