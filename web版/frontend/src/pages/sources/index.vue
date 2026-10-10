@@ -19,7 +19,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listPolicies, updatePolicy } from '@/api/policies'
 import { browseSources, dryRunSources, getExclusions } from '@/api/sources'
-import type { DryRunResponse, RunMode } from '@/api/types'
+import type { DryRunResponse } from '@/api/types'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
@@ -50,22 +50,15 @@ function treeLoader(path: string, cursor?: string): Promise<TreePage> {
 // ---------------------------------------------------------------- 内置排除集（E32，只读）
 const exclusionsQuery = useQuery({ queryKey: ['exclusions'], queryFn: () => getExclusions() })
 
-/** E32 返回容器前缀形态（/host/proc），前端按已知模式前缀**剥**前缀做纯展示。
- * 只在渲染层发生转换：不存、不拼、不回传容器路径。 */
-function toDisplayRule(rule: string): string {
-  const mode: RunMode = ui.me?.mode ?? 'host'
-  const prefix = mode === 'host' ? '/host' : '/sources'
-  return rule.startsWith(prefix) ? rule.slice(prefix.length) || '/' : rule
-}
-
-const coreRules = computed(() => (exclusionsQuery.data.value?.core ?? []).map(toDisplayRule))
+/** E32 直接回剥好前缀的展示形态（display_core ⊆ display_items），前端不再做前缀转换。 */
+const coreRules = computed(() => exclusionsQuery.data.value?.display_core ?? [])
 const extraRules = computed(() => {
   const data = exclusionsQuery.data.value
   if (!data) {
     return []
   }
-  const coreSet = new Set(data.core)
-  return data.items.filter((rule) => !coreSet.has(rule)).map(toDisplayRule)
+  const coreSet = new Set(data.display_core)
+  return data.display_items.filter((rule) => !coreSet.has(rule))
 })
 
 // ---------------------------------------------------------------- 备份源（默认策略）
@@ -165,7 +158,7 @@ function hydrateFromPolicy(): void {
     return
   }
   selectedSources.value = [...policy.sources]
-  const builtin = new Set(exclusionsQuery.data.value?.items ?? [])
+  const builtin = new Set(exclusionsQuery.data.value?.display_items ?? [])
   appendedExcludes.value = policy.excludes.filter((rule) => !builtin.has(rule))
 }
 

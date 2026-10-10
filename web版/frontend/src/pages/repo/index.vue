@@ -9,8 +9,6 @@ import {
   NGrid,
   NGi,
   NInput,
-  NRadioButton,
-  NRadioGroup,
   NSpace,
   NStatistic,
   NTag,
@@ -89,34 +87,20 @@ function itemOf(key: string): ConfigItem | undefined {
   return itemMap.value.get(key)
 }
 
-/** 仓库类型从 repo.url 协议推导（后端无独立 repo.type 键，类型是 URL 的派生展示）。 */
+/** 仓库类型是服务端只读派生键（E06 回 value，E07 直写会 409 READONLY_KEY），
+ * 由 repo.url 协议推导；此处仅作未保存 URL 时的本地预览。 */
 const repoType = computed<RepoType>(() => {
+  const stored = itemOf('repo.type')?.value
+  if (stored === 's3' || stored === 'b2' || stored === 'local') {
+    return stored
+  }
   const url = form.url.trim()
   if (url.startsWith('s3://')) return 's3'
   if (url.startsWith('b2:')) return 'b2'
   return 'local'
 })
 
-const typeOptions = computed(() => [
-  { label: t('repo.typeLocal'), value: 'local' },
-  { label: t('repo.typeS3'), value: 's3' },
-  { label: t('repo.typeB2'), value: 'b2' },
-])
-
 const credFields = computed<CredField[]>(() => CRED_FIELDS[repoType.value])
-
-function onTypeChange(value: string | number): void {
-  const type = String(value) as RepoType
-  const current = form.url.trim()
-  const stripped = current.replace(/^(s3:\/\/|b2:)/, '')
-  if (type === 's3') {
-    form.url = `s3://${stripped}`
-  } else if (type === 'b2') {
-    form.url = `b2:${stripped}`
-  } else {
-    form.url = stripped
-  }
-}
 
 // 配置加载后回填表单（敏感项无明文，只回填非敏感键）
 watch(
@@ -225,15 +209,17 @@ async function onUnlock(): Promise<void> {
           <n-space vertical :size="12">
             <n-form label-placement="top" size="small">
               <n-form-item :label="t('repo.type')">
-                <n-radio-group
-                  size="small"
-                  :value="repoType"
-                  @update:value="onTypeChange"
-                >
-                  <n-radio-button v-for="option in typeOptions" :key="option.value" :value="option.value">
-                    {{ option.label }}
-                  </n-radio-button>
-                </n-radio-group>
+                <n-space vertical :size="4" class="repo__cred">
+                  <n-space align="center" :size="6">
+                    <n-tag size="small" round :type="repoType === 'local' ? 'default' : 'info'">
+                      {{ repoType === 'local' ? t('repo.typeLocal') : repoType === 's3' ? t('repo.typeS3') : t('repo.typeB2') }}
+                    </n-tag>
+                    <n-tag v-if="itemOf('repo.type')?.source === 'env'" size="tiny" round type="warning">
+                      {{ t('repo.credSourceEnv') }}
+                    </n-tag>
+                  </n-space>
+                  <n-text depth="3">{{ t('repo.typeReadonlyNote') }}</n-text>
+                </n-space>
               </n-form-item>
               <n-form-item :label="t('repo.url')">
                 <n-input v-model:value="form.url" :placeholder="t('repo.urlPlaceholder')" />

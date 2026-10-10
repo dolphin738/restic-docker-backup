@@ -1,7 +1,8 @@
 /** E05 目录浏览 + E31 dry-run 预览 + E32 内置排除集。
  *
- * 路径语义：全部收发**展示形态**（原路径 `/etc`），与 E18 的 `?path=` 约定一致；
- * 容器前缀（/host|/sources）由服务端 PathMapper 处理，前端不存不拼。
+ * 路径语义（硬契约）：E05/E31 入参与响应均为**展示形态**原路径（如 /etc/nginx），
+ * 服务端 `to_snapshot()` 还原并兼容旧的前缀形态；容器前缀（/host|/sources）由服务端
+ * PathMapper 处理，前端不存不拼。
  */
 
 import { passCursor, request } from './http'
@@ -13,6 +14,7 @@ export function browseSources(
   limit = 200,
 ): Promise<SourceBrowseResponse> {
   return request<SourceBrowseResponse>('/api/sources', {
+    // path 缺省或传 "/" 都落在当前模式根
     query: { path, cursor: passCursor(cursor), limit },
   })
 }
