@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import ORIGIN, finish_bootstrap
+
+from app.errors import ValidationError
 
 
 async def _update_default_policy(client, **overrides) -> dict:
@@ -91,6 +94,87 @@ async def test_excludes_cross_mode_422_on_e31(app_client):
     assert resp.status_code == 422
     assert resp.json()["code"] == "VALIDATION_ERROR"
     assert resp.json()["data"]["exclude"] == "/sources/data"
+
+
+async def test_sources_display_path_roundtrip(app_client):
+    """sources 归一（方案②）：展示形态提交 → wire 容器形态 + display 派生；
+    glob 锚定源（/etc/*.conf）同走 to_snapshot 映射；容器形态入参保持兼容。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+
+    resp = await ns.client.put(
+        "/api/policies/1",
+        json={"name": "default", "sources": ["/etc/nginx", "/etc/*.conf"], "excludes": ["*.tmp"]},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # wire 容器形态（restic argv 口径）
+    assert body["sources"] == ["/host/etc/nginx", "/host/etc/*.conf"]
+    # display 派生（剥前缀，glob 锚定源同走映射）
+    assert body["display_sources"] == ["/etc/nginx", "/etc/*.conf"]
+
+    # 容器形态入参兼容：不二次叠加模式根
+    resp = await ns.client.put(
+        "/api/policies/1",
+        json={"name": "default", "sources": ["/host/etc/nginx"], "excludes": []},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["sources"] == ["/host/etc/nginx"]
+    assert resp.json()["display_sources"] == ["/etc/nginx"]
+
+
+async def test_sources_cross_mode_422(app_client):
+    """host 模式下 sources 提交 /sources/data 与 /sources → 均 422 VALIDATION_ERROR，
+    策略不落库（E10 入口；E09 入口被 P1 单策略门禁先拦——见测试内说明）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+
+    # 合法基线：先写入一份可回读的策略
+    resp = await ns.client.put(
+        "/api/policies/1",
+        json={"name": "default", "sources": ["/etc/nginx"], "excludes": []},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200
+
+    row = await ns.app.state.db.fetch_one("SELECT COUNT(*) AS total FROM policies")
+    before = int(row["total"])
+
+    for bad_sources in (["/sources/data"], ["/sources"]):
+        resp = await ns.client.put(
+            "/api/policies/1",
+            json={"name": "default", "sources": bad_sources, "excludes": []},
+            headers=ORIGIN,
+        )
+        assert resp.status_code == 422, bad_sources
+        body = resp.json()
+        assert body["code"] == "VALIDATION_ERROR"
+        assert body["data"]["source"] == bad_sources[0]
+
+    # 策略不落库：条数不变，内容仍是基线值
+    row = await ns.app.state.db.fetch_one("SELECT COUNT(*) AS total FROM policies")
+    assert int(row["total"]) == before
+    resp = await ns.client.get("/api/policies")
+    assert resp.json()["items"][0]["sources"] == ["/host/etc/nginx"]
+
+    # E09 入口：P1 已有默认策略时先命中 409 POLICY_WRITE_CLOSED（门禁先于 sources 归一），
+    # 两者共用同一 normalize → 用单测覆盖 E09 可达时的归一行为（跨模式 422）
+    from app.services.policy_service import PolicyService
+    from app.settings import Settings
+
+    service = PolicyService(repo=None, settings=Settings(restic_web_mode="host"))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        service.normalize({"sources": ["/sources/data"]})
+
+    resp = await ns.client.post(
+        "/api/policies",
+        json={"name": "second", "sources": ["/etc"], "excludes": []},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "POLICY_WRITE_CLOSED"
 
 
 async def test_excludes_cross_mode_422_on_e10(app_client):

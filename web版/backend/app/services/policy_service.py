@@ -6,18 +6,19 @@
 - **内置排除集不入库**（D8）：用户提交的 excludes 中与内置集重合的条目会被剔除，
   执行时由 :class:`ExclusionRules` 统一叠加。
 
-形态口径（主理人裁决定稿）：**policies.excludes 入库与下游（``--exclude``）均为容器
-前缀形态**；展示形态只存在于 API 边界与 E32 的 ``display_*`` 字段。用户提交的锚定
-路径类 exclude（含 glob 通配）在 :func:`exclusions.normalize_user_excludes` 归一。
+形态口径（主理人裁决定稿）：**policies.sources / policies.excludes 入库与下游
+（argv）均为容器前缀形态**；展示形态只存在于 API 边界与 ``display_*`` 字段。
+用户提交的 sources（展示路径为主，兼容容器路径）与锚定路径类 exclude（含 glob
+通配）分别在 :meth:`PolicyService._normalize_sources` 与
+:func:`exclusions.normalize_user_excludes` 归一，白名单均收紧为当前模式根。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.constants import SOURCE_ALLOWED_PREFIXES
 from app.db.repositories.policy_repo import Policy, PolicyRepo
-from app.errors import ValidationError
+from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
@@ -141,16 +142,44 @@ class PolicyService:
     # ---------------------------------------------------------------- 内部实现
 
     def _normalize_sources(self, sources: list[str]) -> list[str]:
-        """校验备份源路径：逐个过白名单，去重保序。"""
+        """校验备份源路径：接受展示形态（新契约）或容器形态（兼容），归一为容器形态。
+
+        归一口径与 excludes 对齐（主理人裁决，P1 最后一处契约对称化）：前端硬约束
+        "请求体只发展示形态"——``/etc/nginx`` 经 ``to_snapshot`` 还原为容器形态；
+        已带容器前缀（``/host`` / ``/sources``）的入参视为已是容器形态，直接按
+        模式根校验（不二次叠加，避免 ``/host/etc`` → ``/host/host/etc`` 与跨模式
+        路径被无害重解释）。
+
+        白名单**收紧为当前模式根**：host 模式下提交 ``/sources/...`` 当备份源实际
+        指向容器内数据根，语义错误，应尽早 422 显式失败（数据根不能当备份源）。
+
+        Raises:
+            ValidationError: 无备份源、路径非法或越出当前模式根（422）。
+        """
         if not sources:
             raise ValidationError("策略至少需要一个备份源")
         result: list[str] = []
         seen: set[str] = set()
-        for item in sources:
-            normalized = self._path_mapper.validate(str(item), allowed_prefixes=SOURCE_ALLOWED_PREFIXES)
-            if normalized not in seen:
-                seen.add(normalized)
-                result.append(normalized)
+        container_prefixes = (ExclusionRules.HOST_PREFIX, ExclusionRules.SOURCES_PREFIX)
+        mode_root = self._settings.mode_root
+        for raw in sources:
+            item = str(raw).strip()
+            try:
+                if item.startswith(container_prefixes):
+                    # 已是容器形态：不二次叠加模式根，直接按模式根校验（跨模式 → 422）
+                    container = self._path_mapper.validate(item, allowed_prefixes=(mode_root,))
+                else:
+                    # 展示形态 → 还原为容器形态后校验（normpath 折叠 ../ 防穿越）
+                    container = self._path_mapper.validate(
+                        self._path_mapper.to_snapshot(item), allowed_prefixes=(mode_root,)
+                    )
+            except PathOutOfPrefixError as exc:
+                raise ValidationError(
+                    f"备份源 {item!r} 不在当前模式根范围内", data={"source": item}
+                ) from exc
+            if container not in seen:
+                seen.add(container)
+                result.append(container)
         return result
 
     def _normalize_excludes(self, excludes: list[str]) -> list[str]:
