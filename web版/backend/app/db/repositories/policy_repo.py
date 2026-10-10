@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.db.database import Database
+from app.db.repositories.config_repo import ConfigRepo
 from app.utils.time import utc_iso
+
+# 备份任务 ``--host`` 的来源键（§4.3：可由环境变量 RESTIC_HOST 覆盖写入）
+HOST_TAG_KEY = "repo.host_tag"
 
 _COLUMNS = (
     "id", "name", "is_default", "enabled", "tag", "sources", "excludes",
@@ -84,13 +88,16 @@ class Policy:
 class PolicyRepo:
     """policies 表唯一访问点。"""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, config_repo: ConfigRepo | None = None) -> None:
         """构造仓储。
 
         Args:
             db: 数据库单例。
+            config_repo: 配置仓储；缺省按同一 db 构造（``get_dict`` 需要读
+                ``repo.host_tag``，它是**仓库级配置**而非策略列，故不落在 policies 表）。
         """
         self._db = db
+        self._config = config_repo or ConfigRepo(db)
 
     # ---------------------------------------------------------------- 读
 
@@ -116,13 +123,15 @@ class PolicyRepo:
             policy_id: 策略 id。
 
         Returns:
-            含 sources/excludes/tag/group_by/one_file_system/compression/keep_*/limit_*_kibps 的字典；
+            含 sources/excludes/tag/group_by/one_file_system/compression/keep_*/limit_*_kibps
+            以及 ``host_tag``（取自 config 表 ``repo.host_tag``，缺失为 None）的字典；
             策略不存在返回 None。
         """
         policy = await self.get(policy_id)
         if policy is None:
             return None
         return {
+            "host_tag": await self._config.get_value(HOST_TAG_KEY),
             "sources": list(policy.sources),
             "excludes": list(policy.excludes),
             "tag": policy.tag,

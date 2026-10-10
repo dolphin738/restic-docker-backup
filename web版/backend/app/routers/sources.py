@@ -1,6 +1,9 @@
-"""备份源路由：E05 目录浏览 + E31 首备 dry-run 预览（PRD 页 5 / US-B2 / R-006 确认门）。
+"""备份源路由：E05 目录浏览 + E31 首备 dry-run 预览 + E32 内置排除集只读暴露。
 
-所有路径先经 :class:`PathMapper` 白名单校验（方案 §6 注入防护），越界返回 400 ``PATH_OUT_OF_PREFIX``。
+- E05/E31（PRD 页 5 / US-B2 / R-006 确认门）：所有路径先经 :class:`PathMapper` 白名单校验
+  （方案 §6 注入防护），越界返回 400 ``PATH_OUT_OF_PREFIX``；
+- E32（PRD 备份源页"内置排除集（强制生效）"只读展示）：结果直接取 :class:`ExclusionRules`，
+  **前端不得自行复制一份规则**（D8 单一事实来源），故本端点与主理人裁决一致提前到 P1。
 """
 
 from __future__ import annotations
@@ -31,9 +34,11 @@ from app.schemas.api_schemas import (
     DryRunRequest,
     DryRunResponse,
     DryRunWarning,
+    ExclusionsResponse,
     SourceBrowseResponse,
     SourceItem,
 )
+from app.schemas.enums import RunMode
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper
@@ -84,6 +89,34 @@ async def browse_sources(
     has_more = start_index + limit < len(entries)
     next_cursor = _encode_cursor(window[-1][0]) if (has_more and window) else None
     return SourceBrowseResponse(path=mapper.to_display(container_path), items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/exclusions",
+    response_model=ExclusionsResponse,
+    summary="E32 内置排除集（只读）",
+    dependencies=_PROTECTED,
+)
+async def list_exclusions(
+    request: Request,
+    mode: RunMode | None = Query(default=None, description="host|sources；缺省取当前运行模式"),
+    session: SessionContext = Depends(require_session),
+) -> ExclusionsResponse:
+    """返回指定模式下的内置排除集（强制生效，UI 可追加不可删减）。
+
+    数据来源是 :class:`ExclusionRules` 本身，避免前端复制一份规则造成 D8 双写漂移。
+    """
+    del session
+    settings = request.app.state.settings
+    rules: ExclusionRules = request.app.state.exclusions or ExclusionRules(settings)
+    effective = RunMode(mode.value if mode is not None else settings.restic_web_mode)
+    items = rules.built_in(effective.value)
+    return ExclusionsResponse(
+        mode=effective,
+        items=items,
+        core=rules.core(effective.value),
+        total=len(items),
+    )
 
 
 @router.post(

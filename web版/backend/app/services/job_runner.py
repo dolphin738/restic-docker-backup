@@ -403,7 +403,10 @@ class JobRunner:
                 targets=tuple(str(item) for item in sources),
                 excludes=excludes,
                 tags=tags,
-                host=policy.get("host_tag"),
+                # --host 取自 config.repo.host_tag（仓库级配置，非策略列），由
+                # PolicyRepo.get_dict 透传；空值不加 flag。值仍走 WhitelistArgs.host
+                # → _assert_safe_value 白名单校验，**不裸拼进 argv**。
+                host=_clean_host(policy.get("host_tag")),
                 one_file_system=bool(policy.get("one_file_system", self._settings.restic_web_mode == "sources")),
                 compression=str(policy.get("compression") or "auto"),
                 limit_up_kibps=int(policy.get("limit_up_kibps") or 0),
@@ -474,6 +477,21 @@ class JobRunner:
 def _as_optional_int(value: Any) -> int | None:
     """把策略字段安全地转为可选整数。"""
     return int(value) if isinstance(value, (int, float)) else None
+
+
+def _clean_host(value: Any) -> str | None:
+    """把 ``config.repo.host_tag`` 归一为可安全传给 ``--host`` 的值。
+
+    Args:
+        value: 配置值（可能为 None / 空串 / 非字符串）。
+
+    Returns:
+        去空白后的主机名；空值返回 ``None``（表示不加 ``--host`` flag）。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _dedupe(values: list[str]) -> list[str]:

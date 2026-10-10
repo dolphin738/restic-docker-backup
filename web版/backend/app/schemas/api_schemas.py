@@ -219,6 +219,21 @@ class DryRunResponse(_Base):
     error: str | None = None
 
 
+# ---------------------------------------------------------------- E32 内置排除集（只读暴露）
+
+class ExclusionsResponse(_Base):
+    """E32 内置排除集的**只读**暴露（D8：单一事实来源，前端不得自行复制一份规则）。
+
+    ``items`` 为当前模式下完整生效的内置集（容器内路径前缀形式，UI 侧按原路径语义展示需自行
+    过 PathMapper）；``core`` 是其中与挂载模式无关的语义核心 8 条，供 UI 分组标注。
+    """
+
+    mode: RunMode
+    items: list[str] = Field(default_factory=list, description="当前模式完整内置排除集（容器内路径）")
+    core: list[str] = Field(default_factory=list, description="语义核心子集（与模式无关，供 UI 分组）")
+    total: int = 0
+
+
 # ---------------------------------------------------------------- E08–E11 策略
 
 class PolicyOut(_Base):
