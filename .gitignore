@@ -1,0 +1,89 @@
+# ============================================================
+# restic-docker-backup Web 版
+# ============================================================
+
+# ---------- Python / uv ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# venv / 虚拟环境（uv 用 .venv）
+.venv/
+venv/
+env/
+
+# 测试 / lint 缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# ---------- Node / 前端 ----------
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/coverage/
+*.local
+.vite/
+vitest.config.ts.timestamp-*
+.eslintcache
+
+# ---------- Docker / 运行期数据 ----------
+# 配置与密钥（保留 example）
+.env
+.env.*
+!.env.example
+
+# 证书私钥
+*.pem
+*.key
+*.crt
+certs/
+
+# SQLite 数据库及其 WAL 副产物
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db-journal
+
+# 运行期目录（数据落盘在 data/，勿入库）
+data/
+cache/
+backups/
+restic-cache/
+logs/
+*.log
+
+# ---------- 编辑器 / 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
+
+# ---------- WorkBuddy ----------
+# 仅跟踪项目记忆/工作日志，其余会话产物忽略
+.workbuddy/*
+!.workbuddy/memory/
+
+# ---------- 其它 ----------
+tmp/
+temp/
