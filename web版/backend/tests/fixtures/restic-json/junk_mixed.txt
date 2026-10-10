@@ -1,0 +1,7 @@
+vault is already unlocked
+{"message_type":"status"
+[]
+42
+"just a string"
+{}
+{"message_type":"unknown_kind"}

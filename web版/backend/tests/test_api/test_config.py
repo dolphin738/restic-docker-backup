@@ -1,0 +1,159 @@
+"""API 集成：E06/E07 配置读写（env 写保护、脱敏）、E29/E30 缺配置不 5xx、E32 排除集。"""
+
+from __future__ import annotations
+
+from conftest import ORIGIN, finish_bootstrap
+
+
+async def test_e06_read_config_masking(app_client):
+    ns = app_client
+    await finish_bootstrap(ns)
+    client = ns.client
+
+    # 写入敏感与非敏感项
+    resp = await client.put(
+        "/api/config",
+        json={
+            "patch": {
+                "repo.url": "s3:s3.amazonaws.com/bk",
+                "cred.aws_secret_access_key": "TOPSECRET",
+                "dump.password": "dbpass",
+            }
+        },
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get("/api/config")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["passfile_status"] == "configured"  # conftest 已挂密码文件
+
+    items = {item["key"]: item for item in body["items"]}
+    assert items["repo.url"]["value"] == "s3:s3.amazonaws.com/bk"
+    assert items["repo.url"]["sensitive"] is False
+
+    # 敏感项：只回 has_value + source，不回明文
+    for key in ("cred.aws_secret_access_key", "dump.password"):
+        assert items[key]["sensitive"] is True
+        assert items[key]["has_value"] is True
+        assert items[key]["value"] is None
+    assert "TOPSECRET" not in resp.text
+    assert "dbpass" not in resp.text
+
+
+async def test_e07_env_override_blocks_write(make_app):
+    """RESTIC_REPOSITORY env → repo.url 为 source='env'：PUT → 409 ENV_OVERRIDDEN。"""
+    ns = await make_app({"RESTIC_REPOSITORY": "s3:env-override-bucket"})
+    await finish_bootstrap(ns)
+    client = ns.client
+
+    resp = await client.get("/api/config")
+    items = {item["key"]: item for item in resp.json()["items"]}
+    assert items["repo.url"]["source"] == "env"
+    assert items["repo.url"]["value"] == "s3:env-override-bucket"
+
+    resp = await client.put("/api/config", json={"patch": {"repo.url": "x"}}, headers=ORIGIN)
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "ENV_OVERRIDDEN"
+
+
+async def test_e07_env_override_all_or_nothing(make_app):
+    """混合 patch（env 键 + ui 键）整体拒绝，不产生部分写入。"""
+    ns = await make_app({"RESTIC_REPOSITORY": "s3:env-override-bucket"})
+    await finish_bootstrap(ns)
+
+    resp = await ns.client.put(
+        "/api/config",
+        json={"patch": {"repo.url": "x", "repo.host_tag": "nas"}},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "ENV_OVERRIDDEN"
+
+    resp = await ns.client.get("/api/config")
+    keys = {item["key"] for item in resp.json()["items"]}
+    assert "repo.host_tag" not in keys  # 未被部分写入
+
+
+async def test_e07_illegal_key_422(app_client):
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.put(
+        "/api/config", json={"patch": {"Bad Key!": "x"}}, headers=ORIGIN
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+async def test_e07_empty_patch_422(app_client):
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.put("/api/config", json={"patch": {}}, headers=ORIGIN)
+    assert resp.status_code == 422
+
+
+async def test_e29_repo_test_without_config(app_client):
+    """E29：配置缺失不抛 5xx，回 ok:false + 可操作 reason（主理人裁决口径）。"""
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.post("/api/repo/test", headers=ORIGIN)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["reason"]
+    assert "repo.url" in body["reason"]
+
+
+async def test_e30_repo_status_without_config(app_client):
+    """E30：配置缺失不抛 5xx，回 connected:false + last_error（主理人裁决口径）。"""
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.get("/api/repo/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is False
+    assert body["locked"] is False
+    assert body["last_error"]
+    assert body["capacity"]["size"] is None
+
+
+async def test_e30_repo_status_cached(make_app):
+    """E30 结果走 30s TTL 缓存：第二次请求直接命中（不再探测）。"""
+    ns = await make_app()
+    await finish_bootstrap(ns)
+    resp1 = await ns.client.get("/api/repo/status")
+    assert resp1.status_code == 200
+    resp2 = await ns.client.get("/api/repo/status")
+    assert resp2.status_code == 200
+    assert resp2.json() == resp1.json()
+
+
+async def test_e32_exclusions_read_only(app_client):
+    """E32：内置排除集只读暴露，必须鉴权；POST 方法不允许。"""
+    ns = app_client
+    client = ns.client
+
+    resp = await client.get("/api/exclusions")
+    assert resp.status_code == 401
+
+    await finish_bootstrap(ns)
+    resp = await client.get("/api/exclusions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "host"
+    assert body["total"] == len(body["items"])
+    assert "/host/proc" in body["items"]
+    assert "/host/var/lib/docker" in body["items"]
+    # core 是 items 的子集（模式无关语义核心 8 条）
+    assert set(body["core"]) <= set(body["items"])
+    assert len(body["core"]) == 8
+
+    # 只读：写方法 405
+    resp = await client.post("/api/exclusions", json={}, headers=ORIGIN)
+    assert resp.status_code == 405
+
+
+async def test_e32_exclusions_mode_query(app_client):
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.get("/api/exclusions", params={"mode": "sources"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "sources"
+    assert "/sources/proc" in body["items"]
