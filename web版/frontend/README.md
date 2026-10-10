@@ -39,15 +39,26 @@ pnpm preview     # 预览构建产物
 
 ```
 src/
-  api/          统一请求出口与端点模块（http / auth / health / jobs / repo / types）
-  components/   JobProgress（SSE 进度条）、QuadrantCard（能力四象限）
+  api/          统一请求出口与端点模块（http / auth / health / jobs / repo / config /
+                sources / policies / snapshots / restore / types）
+  components/   JobProgress（SSE 进度）、QuadrantCard（能力四象限）、
+                ConfirmGate（三步确认门）、PathBreadcrumb（原路径面包屑）、
+                VirtualTree（懒加载+虚拟滚动树，固定行高常量 VIRTUAL_TREE_ROW_HEIGHT）
   composables/  useJobStream（SSE 订阅层）
   i18n/         vue-i18n 装配与中英词条
   layouts/      BasicLayout（侧边导航 + 顶栏）
-  pages/        login / bootstrap / dashboard / PlaceholderPage
-  router/       路由表 + 全局前置守卫
+  pages/        login / bootstrap / dashboard / repo / sources / policies /
+                jobs / snapshots / restore
+  router/       路由表（9 条）+ 全局前置守卫
   stores/       ui（me 缓存、主题、语言、全局 message）
 ```
+
+## 路径与游标约定
+
+- 目录/快照/排除集界面一律**原路径语义**（`/etc/nginx`）；E32 返回的容器前缀形态只在
+  渲染层剥前缀展示，不存、不拼、不回传。
+- E05/E18/快照文件树的游标只透传（`passCursor()`），前端不解析、不自造。
+- 仓库类型（local/s3/b2）由 `repo.url` 协议推导，后端无独立 `repo.type` 键。
 
 ## 约定
 
@@ -58,4 +69,7 @@ src/
 
 ## 当前未实现（下一阶段）
 
-`/repo`、`/sources`、`/policies`、`/jobs`、`/snapshots`、`/restore` 均为占位页。
+- 危险操作覆盖范围：ConfirmGate 目前只接了仓库解锁（/repo）与恢复执行（/restore），
+  forget --prune 的 dry-run 门禁等后端补齐契约后接入；
+- `/api/policies` 的多策略写、`limit_up/limit_down` 生效、原位恢复（P2）；
+- JobProgress 的 skipped 明细已接 E27（任务历史页日志抽屉），仅尾部窗口范围内。

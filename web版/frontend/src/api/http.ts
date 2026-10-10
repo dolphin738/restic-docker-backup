@@ -6,6 +6,11 @@ import type { ErrorBody } from './types'
 
 export const API_BASE = '/api'
 
+/** 游标只透传：前端不解析、不自造、不缓存结构，服务端给什么原样回传什么。 */
+export function passCursor(cursor: string | null | undefined): string | undefined {
+  return cursor ?? undefined
+}
+
 /** 业务错误：code 与后端错误码表一一对应。 */
 export class AppError extends Error {
   readonly code: string
