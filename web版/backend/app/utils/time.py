@@ -6,10 +6,8 @@ DB 中所有时间列均为 TEXT（ISO 8601 UTC，形如 ``2026-10-10T01:38:00Z`
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-UTC = timezone.utc
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 

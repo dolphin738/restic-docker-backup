@@ -20,6 +20,7 @@ from app.constants import (
     LOG_TAIL_MAX_BYTES,
 )
 from app.errors import NotFoundError, ValidationError
+from app.exclusions import normalize_user_excludes
 from app.schemas.api_schemas import (
     JobCreateRequest,
     JobCreateResponse,
@@ -54,15 +55,28 @@ async def create_job(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> JobCreateResponse:
-    """触发一个任务（manual）；同仓库已有 running/pending 时返回 409 JOB_CONFLICT。"""
+    """触发一个任务（manual）；同仓库已有 running/pending 时返回 409 JOB_CONFLICT。
+
+    ``params.excludes`` 为用户追加的排除规则（展示形态或纯 glob 模式），在**提交前**
+    经 :func:`normalize_user_excludes` 三分类归一为容器形态——放在路由层而非 JobRunner，
+    越界锚定路径才能以 422 ``VALIDATION_ERROR`` 同步回给前端，而不是把任务打进 failed。
+    """
     del session
     runner = request.app.state.job_runner
+    params = dict(payload.params)
+    if params.get("excludes"):
+        # 锚定路径白名单收紧为当前模式根（越界 → 422），见 exclusions.normalize_user_excludes
+        params["excludes"] = normalize_user_excludes(
+            list(params["excludes"]),
+            request.app.state.path_mapper,
+            source_prefixes=(request.app.state.settings.mode_root,),
+        )
     job = await runner.submit(
         str(payload.type),
         policy_id=payload.policy_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,
-        params=payload.params,
+        params=params,
     )
     return JobCreateResponse(id=job.id, status=JobStatus(job.status), type=payload.type)
 

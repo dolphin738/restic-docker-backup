@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -159,6 +159,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("启动清理过期会话 %d 条", purged)
     # env→config 一次性同步：使 E07 的 ENV_OVERRIDDEN 真正触发得到（§6 env 覆盖优先）
     await sync_env_overrides(config_repo, settings, audit)
+    # 存量回填：repo.url 已有但 repo.type 缺失的老库，按协议推导补写（前端不再自行推导）
+    if await config_repo.backfill_repo_type():
+        logger.info("已按 repo.url 协议回填 repo.type")
     # 启动恢复：遗留 running/pending 改标 interrupted（P1 不做补跑与 AUTO_UNLOCK）
     await job_runner.recover_on_startup()
 

@@ -139,7 +139,9 @@ class SessionService:
             被销毁的会话条数。
         """
         current = hash_token(token) if token else ""
-        cursor_row = await self._db.fetch_one("SELECT COUNT(*) AS total FROM sessions WHERE token_hash <> ?", (current,))
+        cursor_row = await self._db.fetch_one(
+            "SELECT COUNT(*) AS total FROM sessions WHERE token_hash <> ?", (current,)
+        )
         affected = int(cursor_row["total"]) if cursor_row else 0
         await self._db.write("DELETE FROM sessions WHERE token_hash <> ?", (current,))
         return affected

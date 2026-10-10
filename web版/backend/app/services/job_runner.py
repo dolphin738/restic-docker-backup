@@ -21,11 +21,11 @@ from typing import Any
 from app.constants import (
     ACTIVE_JOB_STATUSES,
     AUDIT_JOB_CANCEL,
-    JOB_TYPES,
     AUDIT_JOB_FINISHED,
     AUDIT_JOB_RECOVERED,
     AUDIT_JOB_SKIPPED_CONFLICT,
     AUDIT_JOB_SUBMIT,
+    JOB_TYPES,
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
@@ -213,7 +213,7 @@ class JobRunner:
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), self._grace_seconds)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 logger.warning("任务 %s 宽限 %ss 后仍未退出，发送 SIGKILL", job_id, self._grace_seconds)
                 proc.kill()
                 await proc.wait()
@@ -352,9 +352,16 @@ class JobRunner:
         for proc in self._processes.values():
             proc.terminate()
         await asyncio.gather(*(self._wait_or_kill(proc) for proc in list(self._processes.values())))
-        for task in self._tasks.values():
+        tasks = list(self._tasks.values())
+        for task in tasks:
             if not task.done():
                 task.cancel()
+        if tasks:
+            # 等待后台任务真正退出：lifespan 随后会 close_database，
+            # 若不等待，任务内的 finalize 落库会撞已关闭连接（QA 实测
+            # "Task exception was never retrieved: ValueError: Connection closed"）。
+            # return_exceptions=True：吞掉 CancelledError 与收尾期异常，保证有序失败。
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._processes.clear()
         self._tasks.clear()
 
@@ -362,7 +369,7 @@ class JobRunner:
         """等待子进程退出；宽限期超时后强制 SIGKILL。"""
         try:
             await asyncio.wait_for(proc.wait(), self._grace_seconds)
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
@@ -476,7 +483,7 @@ class JobRunner:
 
 def _as_optional_int(value: Any) -> int | None:
     """把策略字段安全地转为可选整数。"""
-    return int(value) if isinstance(value, (int, float)) else None
+    return int(value) if isinstance(value, int | float) else None
 
 
 def _clean_host(value: Any) -> str | None:

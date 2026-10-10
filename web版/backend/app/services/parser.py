@@ -207,7 +207,7 @@ class OutputParser:
         """解析 ``message_type=status`` 进度消息。"""
         percent = payload.get("percent_done")
         return ProgressEvent(
-            percent=float(percent) if isinstance(percent, (int, float)) else 0.0,
+            percent=float(percent) if isinstance(percent, int | float) else 0.0,
             bytes_done=_as_int(payload.get("bytes_done")),
             total_bytes=_as_int(payload.get("total_bytes")),
             files_done=_as_int(payload.get("files_done")),
@@ -282,12 +282,12 @@ class OutputParser:
 
 def _as_int(value: Any) -> int:
     """把可能为 None 的数值安全地转为 int。"""
-    return int(value) if isinstance(value, (int, float)) else 0
+    return int(value) if isinstance(value, int | float) else 0
 
 
 def _as_optional_int(value: Any) -> int | None:
     """把可能为 None 的数值转为 int 或 None。"""
-    return int(value) if isinstance(value, (int, float)) else None
+    return int(value) if isinstance(value, int | float) else None
 
 
 def _as_str(value: Any) -> str | None:

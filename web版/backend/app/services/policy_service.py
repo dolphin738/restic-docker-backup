@@ -5,15 +5,20 @@
 - 备份源/排除规则的路径白名单校验；
 - **内置排除集不入库**（D8）：用户提交的 excludes 中与内置集重合的条目会被剔除，
   执行时由 :class:`ExclusionRules` 统一叠加。
+
+形态口径（主理人裁决定稿）：**policies.excludes 入库与下游（``--exclude``）均为容器
+前缀形态**；展示形态只存在于 API 边界与 E32 的 ``display_*`` 字段。用户提交的锚定
+路径类 exclude（含 glob 通配）在 :func:`exclusions.normalize_user_excludes` 归一。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.constants import SOURCE_ALLOWED_PREFIXES
 from app.db.repositories.policy_repo import Policy, PolicyRepo
 from app.errors import ValidationError
-from app.exclusions import ExclusionRules
+from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
 
@@ -49,7 +54,13 @@ class PolicyService:
     # ---------------------------------------------------------------- 读侧换算
 
     def to_api(self, policy: Policy) -> dict[str, Any]:
-        """把策略行转换为 E08 的 API 形态（列名 → API 字段名）。"""
+        """把策略行转换为 E08 的 API 形态（列名 → API 字段名）。
+
+        形态原则（主理人裁决定稿）：容器形态只存在于存储与 restic argv，**出 API 给 UI
+        的一律带 display 派生**——``display_sources`` / ``display_excludes`` 由
+        :meth:`PathMapper.to_display` 从容器字段派生（对齐 E32 的 display_* 做法，
+        容器形态字段保留 wire 兼容）。
+        """
         return {
             "id": policy.id,
             "name": policy.name,
@@ -57,7 +68,9 @@ class PolicyService:
             "enabled": policy.enabled,
             "tag": policy.tag,
             "sources": list(policy.sources),
+            "display_sources": [_display_of(item, self._path_mapper) for item in policy.sources],
             "excludes": list(policy.excludes),
+            "display_excludes": [_display_of(item, self._path_mapper) for item in policy.excludes],
             "keep_last": policy.keep_last,
             "keep_hourly": policy.keep_hourly,
             "keep_daily": policy.keep_daily,
@@ -131,8 +144,6 @@ class PolicyService:
         """校验备份源路径：逐个过白名单，去重保序。"""
         if not sources:
             raise ValidationError("策略至少需要一个备份源")
-        from app.constants import SOURCE_ALLOWED_PREFIXES
-
         result: list[str] = []
         seen: set[str] = set()
         for item in sources:
@@ -143,17 +154,17 @@ class PolicyService:
         return result
 
     def _normalize_excludes(self, excludes: list[str]) -> list[str]:
-        """剔除与内置排除集重合的条目（内置集不入库，D8），其余去重保序。"""
+        """用户追加排除归一为容器形态（三分类规则见 :func:`normalize_user_excludes`），
+        再剔除与内置集重合的条目（内置集不入库，D8）。
+
+        锚定路径白名单**收紧为当前模式根**（主理人裁决）：host 模式下排除
+        ``/sources/...`` 实际指向容器内数据根，语义错误，应尽早 422 显式失败。
+        """
+        normalized = normalize_user_excludes(
+            list(excludes), self._path_mapper, source_prefixes=(self._settings.mode_root,)
+        )
         builtin = set(self._exclusions.built_in())
-        result: list[str] = []
-        seen: set[str] = set()
-        for item in excludes:
-            candidate = str(item).strip()
-            if not candidate or candidate in builtin or candidate in seen:
-                continue
-            seen.add(candidate)
-            result.append(candidate)
-        return result
+        return [item for item in normalized if item not in builtin]
 
     def _normalize_one_file_system(self, value: Any) -> int:
         """``None`` 表示"按模式取缺省"（sources 模式缺省 true）。"""
@@ -180,6 +191,17 @@ class PolicyService:
         if len(fields) not in (5, 6):
             raise ValidationError("cron 表达式须为 5 或 6 个字段", data={"cron": candidate})
         return candidate
+
+
+def _display_of(value: str, mapper: PathMapper) -> str:
+    """容器形态 → 展示形态（display 派生专用）。
+
+    纯 glob 模式（不以 ``/`` 开头，如 ``*.tmp``）**原样返回**——它们形态无关，
+    过 :meth:`PathMapper.to_display` 会被补上前导 ``/`` 造成回显与用户输入不一致。
+    """
+    if not value.startswith("/"):
+        return value
+    return mapper.to_display(value)
 
 
 def _non_empty_str(value: Any, field_name: str, *, default: str) -> str:

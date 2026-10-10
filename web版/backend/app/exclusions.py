@@ -12,11 +12,17 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from app.constants import SOURCE_ALLOWED_PREFIXES
+from app.errors import PathOutOfPrefixError, ValidationError
+from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
 Mode = Literal["host", "sources"]
+
+# 用户排除规则的"锚定路径 vs 纯 glob 模式"分界：以 / 开头一律视为锚定路径（含 glob 通配）
+_ANCHOR_PREFIX = "/"
 
 
 class ExclusionRules:
@@ -173,4 +179,61 @@ def _dedupe(rules: list[str]) -> list[str]:
             continue
         seen.add(rule)
         result.append(rule)
+    return result
+
+
+def normalize_user_excludes(
+    excludes: list[str],
+    mapper: PathMapper,
+    *,
+    source_prefixes: tuple[str, ...] = SOURCE_ALLOWED_PREFIXES,
+) -> list[str]:
+    """用户追加排除规则的**三分类归一**（形态换算的单一实现点，主理人裁决定稿）。
+
+    背景：UI 只能收**展示形态**（``/etc/foo``），而 restic ``--exclude`` 匹配的是
+    **容器路径**（``/host/etc/foo``）——不做边界归一，用户排除会在备份/dry-run 中
+    **静默失效**。三分类规则：
+
+    1. 以 ``/`` 开头 → 映射为容器形态后按 ``source_prefixes`` 校验：
+       - 已带容器前缀（``/host`` / ``/sources``，含 glob 通配如 ``/etc/*.conf``）→
+         视为已是容器形态，**不再二次叠加模式根**，按 ``source_prefixes`` 直接校验；
+       - 其余 → :meth:`PathMapper.to_snapshot` 映射（``/etc/*.conf`` →
+         ``/host/etc/*.conf``，restic 对 ``--exclude`` 的 glob 本就支持）；
+    2. 不以 ``/`` 开头 → 原样透传（``*.tmp``、``node_modules`` 等纯模式，
+       restic 无前导 ``/`` 的模式全树匹配，形态无关）；
+    3. 校验越界（含**跨模式锚定**：host 模式下排除 ``/sources/...`` 实际指向容器内
+       数据根，语义错误）→ 422 ``VALIDATION_ERROR``，**不静默保留**
+       （静默保底正是本 bug 的成因）。
+
+    Args:
+        excludes: 用户追加的排除规则（展示形态、容器形态或纯 glob 模式）。
+        mapper: 路径映射器。
+        source_prefixes: 锚定路径允许落进的容器前缀白名单（**应传当前模式根**）。
+
+    Returns:
+        去重保序后的容器形态排除规则（供入库与 ``--exclude`` 下游直用）。
+
+    Raises:
+        ValidationError: 锚定路径（含跨模式前缀）越出 ``source_prefixes``（422）。
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+    container_prefixes = (ExclusionRules.HOST_PREFIX, ExclusionRules.SOURCES_PREFIX)
+    for raw in excludes:
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        if not item.startswith(_ANCHOR_PREFIX):
+            result.append(item)  # 纯 glob 模式：形态无关，原样透传
+            continue
+        # 已是容器形态：不二次叠加模式根，直接校验
+        container = item if item.startswith(container_prefixes) else mapper.to_snapshot(item)
+        try:
+            container = mapper.validate(container, allowed_prefixes=source_prefixes)
+        except PathOutOfPrefixError as exc:
+            raise ValidationError(
+                f"排除规则 {item!r} 不在当前模式根范围内", data={"exclude": item}
+            ) from exc
+        result.append(container)
     return result

@@ -243,4 +243,4 @@ def _looks_locked(lines: list[str]) -> bool:
 
 def _as_optional_int(value: Any) -> int | None:
     """把 restic JSON 字段安全地转为可选整数。"""
-    return int(value) if isinstance(value, (int, float)) else None
+    return int(value) if isinstance(value, int | float) else None

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
-_DB_INSTANCE: "Database | None" = None
+_DB_INSTANCE: Database | None = None
 
 
 class Database:

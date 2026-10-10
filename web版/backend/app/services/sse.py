@@ -76,10 +76,20 @@ class SseChannel:
         snapshot_id = job.snapshot_id
         pending = ""
 
-        with log_path.open("rb") as handle:
+        # 日志文件可能不存在（如 scheduled 冲突跳过的 cancelled 任务从未 spawn 子进程）：
+        # 与 E27 同口径降级为空日志——不抛错，循环内按任务实际状态发终态帧后关闭。
+        handle = log_path.open("rb") if log_path.exists() else None
+        if handle is not None:
             handle.seek(offset)
+        try:
             while True:
-                chunk = handle.read()
+                if handle is None and log_path.exists():
+                    # 文件迟到（罕见）：任务仍在运行时补挂读句柄
+                    handle = log_path.open("rb")
+                    handle.seek(0)
+                    line_no = 0
+                    pending = ""
+                chunk = handle.read() if handle is not None else b""
                 if chunk:
                     pending += chunk.decode("utf-8", errors="replace")
                     complete, pending = _split_complete(pending)
@@ -118,6 +128,9 @@ class SseChannel:
                     last_activity = time.monotonic()
                     yield ": keep-alive\n\n"
                 await asyncio.sleep(self._poll)
+        finally:
+            if handle is not None:
+                handle.close()
 
     # ---------------------------------------------------------------- 内部实现
 

@@ -224,13 +224,15 @@ class DryRunResponse(_Base):
 class ExclusionsResponse(_Base):
     """E32 内置排除集的**只读**暴露（D8：单一事实来源，前端不得自行复制一份规则）。
 
-    ``items`` 为当前模式下完整生效的内置集（容器内路径前缀形式，UI 侧按原路径语义展示需自行
-    过 PathMapper）；``core`` 是其中与挂载模式无关的语义核心 8 条，供 UI 分组标注。
+    ``items`` / ``core`` 为容器前缀形态（wire 兼容，保留）；``display_items`` /
+    ``display_core`` 为剥前缀后的展示形态（前端优先使用，无需自行过 PathMapper）。
     """
 
     mode: RunMode
     items: list[str] = Field(default_factory=list, description="当前模式完整内置排除集（容器内路径）")
     core: list[str] = Field(default_factory=list, description="语义核心子集（与模式无关，供 UI 分组）")
+    display_items: list[str] = Field(default_factory=list, description="items 的展示形态（剥前缀，原路径语义）")
+    display_core: list[str] = Field(default_factory=list, description="core 的展示形态（剥前缀，原路径语义）")
     total: int = 0
 
 
@@ -245,7 +247,13 @@ class PolicyOut(_Base):
     enabled: bool = True
     tag: str | None = None
     sources: list[str] = Field(default_factory=list)
+    display_sources: list[str] = Field(
+        default_factory=list, description="sources 的展示形态（剥前缀，原路径语义；UI 直消费）"
+    )
     excludes: list[str] = Field(default_factory=list)
+    display_excludes: list[str] = Field(
+        default_factory=list, description="excludes 的展示形态（剥前缀，原路径语义；UI 直消费）"
+    )
     keep_last: int = 0
     keep_hourly: int = 0
     keep_daily: int = 0

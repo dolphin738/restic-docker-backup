@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.auth import password as password_mod
 from app.constants import (
     AUDIT_BOOTSTRAP_REGENERATED,
     AUDIT_BOOTSTRAP_SHOWN,
@@ -19,7 +20,6 @@ from app.constants import (
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
-from app.auth import password as password_mod
 from app.errors import BootstrapShownError, InternalError, PasswordWrongError, ValidationError
 from app.settings import Settings, get_settings
 from app.utils.time import add_seconds, now_utc, parse_iso, utc_iso
@@ -126,12 +126,16 @@ class AdminAccountStore:
         return account, plain
 
     async def _reset_random_password(self) -> tuple[AdminAccount, str]:
-        """重新生成随机密码（仅当尚未展示过时调用）。"""
+        """重新生成随机密码（仅当尚未展示过时调用）。
+
+        安全约束（§8）：**只更新密码两字段**，锁定三字段（``failed_attempts`` /
+        ``lock_level`` / ``locked_until``）刻意保留——登录失败计数持久化在 DB，
+        容器重启不得清零，否则攻击者可用"重启"洗掉锁定状态。
+        """
         plain = password_mod.generate_random_password()
         hashed = password_mod.hash_password(plain)
         await self._db.write(
-            "UPDATE admin_account SET password_hash = ?, bootstrap_password_hash = ?, "
-            "failed_attempts = 0, lock_level = 0, locked_until = NULL, updated_at = ? WHERE id = 1",
+            "UPDATE admin_account SET password_hash = ?, bootstrap_password_hash = ?, updated_at = ? WHERE id = 1",
             (hashed, hashed, utc_iso()),
         )
         account = await self.get()

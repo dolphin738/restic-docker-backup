@@ -28,6 +28,7 @@ from app.constants import (
     PATH_OUT_OF_PREFIX,
     POLICY_WRITE_CLOSED,
     RATE_LIMITED,
+    READONLY_KEY,
     RESTIC_FAILED,
     RESTORE_FORBIDDEN,
     UNAUTHORIZED,
@@ -172,6 +173,14 @@ class PolicyWriteClosedError(AppError):
     code = POLICY_WRITE_CLOSED
     status = ERROR_STATUS[POLICY_WRITE_CLOSED]
     message = "P1 仅支持单条默认策略，多策略写开放于 P2"
+
+
+class ReadonlyKeyError(AppError):
+    """409 只读派生键不可直接写（如 ``repo.type``，由服务端按 ``repo.url`` 协议推导落库）。"""
+
+    code = READONLY_KEY
+    status = ERROR_STATUS[READONLY_KEY]
+    message = "该配置项为只读派生键，由服务端自动维护，不可直接修改"
 
 
 class NotCancellableError(AppError):

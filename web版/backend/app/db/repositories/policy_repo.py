@@ -227,7 +227,7 @@ class PolicyRepo:
 
 def _serialize(value: Any) -> Any:
     """把列表字段序列化为 JSON 文本，其余原样返回。"""
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return json.dumps(list(value), ensure_ascii=False)
     return value
 
@@ -267,7 +267,7 @@ def _load_list(raw: Any) -> list[str]:
     """把 JSON 文本列解析为字符串列表；异常时回落空列表。"""
     if raw is None or raw == "":
         return []
-    if isinstance(raw, (list, tuple)):
+    if isinstance(raw, list | tuple):
         return [str(item) for item in raw]
     try:
         parsed = json.loads(str(raw))
