@@ -10,7 +10,11 @@
  * - 收到 `done`/`error` 终态后立即 close：否则浏览器会带着 Last-Event-ID 无限自动重连，
  *   而服务端重放无新行后又判定终态会再补发一次 done → 无限重连循环；
  * - **开流前先 `GET /api/jobs/{id}` 取 `last_event_id` 作为起始游标**（E14 响应自带该字段）：
- *   任务已终态则根本不开流，直接本地收尾；进行中则只收增量，避免挂载/刷新时整份日志回放。
+ *   任务已终态则根本不开流，直接本地收尾；进行中则只收增量，避免挂载/刷新时整份日志回放；
+ * - **断链续传不补齐日志**：`jobs.last_event_id` 由 JobRunner 每 ≥1s 才落库一次，重连取
+ *   `max(本地游标, job.last_event_id)` 时若 DB 已跑到前面，断链期间的行会被跳过且永不补发。
+ *   进度条无影响（后续 progress 帧覆盖），但**日志的完整来源只能是 E27 日志尾部接口**，
+ *   不要指望 SSE 重连能补回断链期间的日志。
  */
 
 import { onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'

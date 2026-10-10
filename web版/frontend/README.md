@@ -29,7 +29,10 @@ pnpm preview     # 预览构建产物
 - 分页：列表 `limit/offset`，目录树/快照文件用不透明游标，**前端不解析、不拼接游标内容**。
 - 路径：界面一律展示"原路径"（如 `/etc/nginx`），容器前缀 `/host` 由后端处理，前端不存不拼。
 - SSE：`GET /api/jobs/{id}/stream`，事件 `progress|log|done|error`，帧 `id` 即日志行号；
-  订阅逻辑集中在 `src/composables/useJobStream.ts`（45s 无数据判定疑似断链 → 回查任务状态 → 按 `Last-Event-ID` 续传）。
+  订阅逻辑集中在 `src/composables/useJobStream.ts`：开流前先回查 E14 取 `last_event_id` 作起始游标
+  （已终态则不开流，本地收尾），45s 无数据判定疑似断链 → 回查任务状态 → 按游标续传。
+  注意：**断链续传不补齐日志**，日志的完整来源是 `GET /api/jobs/{id}/log`。
+- 首启引导：`PUT /api/admin/password` **不下发 session**，前端必须在改密成功后用新密码重新登录。
 - `GET /api/repo/status` 服务端有 30s 缓存，仪表盘按 60s 轮询 + 手动刷新，不做秒级轮询。
 
 ## 目录

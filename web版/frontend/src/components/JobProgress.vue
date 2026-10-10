@@ -37,6 +37,8 @@ const totalFiles = ref(0)
 const skippedCount = ref(0)
 const rateKib = ref(0)
 const drawerOpen = ref(false)
+/** 终态信息（E14/终态帧）：零日志行失败时这是唯一的失败原因来源。 */
+const terminal = ref<{ exitCode: number | null; summary: string | null } | null>(null)
 
 let lastBytes = 0
 let lastAt = 0
@@ -74,6 +76,7 @@ function finalize(payload: JobDonePayload, kind: 'done' | 'failed'): void {
   bytesDone.value = payload.bytes_done ?? bytesDone.value
   filesDone.value = payload.files_done ?? filesDone.value
   skippedCount.value = payload.skipped_count || skippedCount.value
+  terminal.value = { exitCode: payload.exit_code, summary: payload.summary }
   if (kind === 'done') {
     percent.value = 100
     emit('done', payload)
@@ -109,6 +112,25 @@ const filesText = computed(() =>
 )
 
 const logText = computed(() => stream.logs.value.join('\n'))
+
+/** 终态且一行日志都没有时，至少把退出码/摘要显示出来，不留空白失败卡。 */
+const terminalText = computed(() => {
+  if (!terminal.value) {
+    return ''
+  }
+  const parts: string[] = []
+  if (terminal.value.exitCode !== null) {
+    parts.push(`${t('job.exitCode')}：${terminal.value.exitCode}`)
+  }
+  if (terminal.value.summary) {
+    parts.push(`${t('job.summary')}：${terminal.value.summary}`)
+  }
+  return parts.join(' · ')
+})
+
+const noLogHint = computed(
+  () => stream.state.value === 'closed' && logText.value === '' && terminalText.value !== '',
+)
 </script>
 
 <template>
@@ -137,6 +159,13 @@ const logText = computed(() => stream.logs.value.join('\n'))
       <n-text depth="3">{{ t('job.cursor', { n: stream.lastEventId.value }) }}</n-text>
     </n-space>
 
+    <template v-if="terminalText">
+      <n-text depth="2" class="job-progress__terminal">{{ terminalText }}</n-text>
+    </template>
+    <template v-if="noLogHint">
+      <n-text depth="3" class="job-progress__terminal">{{ t('job.noLogHint') }}</n-text>
+    </template>
+
     <template v-if="skippedCount > 0">
       <n-collapse class="job-progress__skipped">
         <n-collapse-item :title="t('job.skippedTitle', { n: skippedCount })" name="skipped">
@@ -160,5 +189,11 @@ const logText = computed(() => stream.logs.value.join('\n'))
 
 .job-progress__skipped {
   margin-top: 8px;
+}
+
+.job-progress__terminal {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
 }
 </style>

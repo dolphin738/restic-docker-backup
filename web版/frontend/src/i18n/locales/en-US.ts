@@ -101,6 +101,9 @@ export default {
     logTitle: 'Live log',
     logEmpty: 'No log output yet',
     cursor: 'Cursor #{n}',
+    exitCode: 'Exit code',
+    summary: 'Summary',
+    noLogHint: 'This job produced no log lines (terminal info comes from job details)',
     resumeNote: 'No data for 45s: resumed from cursor',
     state: {
       idle: 'Idle',

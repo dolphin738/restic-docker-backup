@@ -101,6 +101,9 @@ export default {
     logTitle: '实时日志',
     logEmpty: '暂无日志输出',
     cursor: '游标 #{n}',
+    exitCode: '退出码',
+    summary: '摘要',
+    noLogHint: '该任务未产生日志行（终态信息以任务详情为准）',
     resumeNote: '超过 45 秒无数据：已按游标续传',
     state: {
       idle: '未连接',
