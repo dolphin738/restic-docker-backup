@@ -217,3 +217,136 @@ class DryRunResponse(_Base):
     warnings: list[DryRunWarning] = Field(default_factory=list)
     truncated: bool = False
     error: str | None = None
+
+
+# ---------------------------------------------------------------- E08–E11 策略
+
+class PolicyOut(_Base):
+    """E08 策略输出（API 字段名与 DDL 列名不同者见 PolicyService 换算）。"""
+
+    id: int
+    name: str
+    is_default: bool = False
+    enabled: bool = True
+    tag: str | None = None
+    sources: list[str] = Field(default_factory=list)
+    excludes: list[str] = Field(default_factory=list)
+    keep_last: int = 0
+    keep_hourly: int = 0
+    keep_daily: int = 0
+    keep_weekly: int = 0
+    keep_monthly: int = 0
+    keep_yearly: int = 0
+    group_by: str = "host,paths,tags"
+    cron: str | None = None
+    one_file_system: bool = False
+    compression: str = "auto"
+    check_sample_ratio: float = 0.02
+    monthly_full_day: int = 1
+    prune_interval_days: int = 7
+    limit_up: int = 0      # KiB/s，0=不限（DDL 列 limit_up_kibps）
+    limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
+    last_run_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PolicyUpsertRequest(_Base):
+    """E09 POST / E10 PUT 请求体（``is_default`` 由服务端控制，不接受客户端指定）。"""
+
+    name: str = "default"
+    enabled: bool = True
+    tag: str | None = None
+    sources: list[str] = Field(default_factory=list)
+    excludes: list[str] = Field(default_factory=list)
+    keep_last: int = 0
+    keep_hourly: int = 0
+    keep_daily: int = 0
+    keep_weekly: int = 0
+    keep_monthly: int = 0
+    keep_yearly: int = 0
+    group_by: str = "host,paths,tags"
+    cron: str | None = None
+    one_file_system: bool | None = None   # None=按模式取缺省（sources 模式缺省 true）
+    compression: str = "auto"
+    check_sample_ratio: float = 0.02
+    monthly_full_day: int = 1
+    prune_interval_days: int = 7
+    limit_up: int = 0
+    limit_down: int = 0
+
+
+# ---------------------------------------------------------------- E17/E18 快照
+
+class SnapshotOut(_Base):
+    """E17 快照条目（paths 已映射为原路径语义）。"""
+
+    id: str
+    time: str | None = None
+    host: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+    size: int | None = None
+
+
+class SnapshotFileOut(_Base):
+    """E18 文件树条目（display_path 为原路径语义）。"""
+
+    name: str
+    type: str = "file"
+    path: str
+    display_path: str
+    size: int | None = None
+    mtime: str | None = None
+
+
+class SnapshotFilesResponse(_Base):
+    """E18 文件树响应（游标分页）。"""
+
+    snapshot_id: str
+    path: str
+    items: list[SnapshotFileOut] = Field(default_factory=list)
+    next_cursor: str | None = None
+    truncated: bool = False
+
+
+# ---------------------------------------------------------------- E19 恢复
+
+class RestoreRequest(_Base):
+    """E19 恢复请求：**只有** snapshot_id 与 target，不存在任何覆盖语义参数。"""
+
+    snapshot_id: str = Field(min_length=8, max_length=64)
+    target: str
+
+
+class RestoreResponse(_Base):
+    """E19 响应（202）：服务端计算的时间戳子目录。"""
+
+    job_id: str
+    restore_target: str
+
+
+# ---------------------------------------------------------------- E29/E30 仓库探测
+
+class RepoTestResponse(_Base):
+    """E29 仓库连通性测试（失败必须给出可操作原因，禁止静默）。"""
+
+    ok: bool
+    latency_ms: int = 0
+    reason: str | None = None
+
+
+class RepoCapacity(_Base):
+    """E30 仓库容量（探测失败时字段为 null）。"""
+
+    size: int | None = None
+    snaps: int | None = None
+
+
+class RepoStatusResponse(_Base):
+    """E30 仓库状态（仪表盘状态卡 + 锁残留醒目提示数据源）。"""
+
+    connected: bool = False
+    locked: bool = False
+    capacity: RepoCapacity = Field(default_factory=RepoCapacity)
+    last_error: str | None = None

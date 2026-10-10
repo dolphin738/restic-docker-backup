@@ -117,6 +117,65 @@ class OutputParser:
             return self._file_from_object(payload)
         return LogLine(text=text, raw=payload)
 
+    def parse_snapshot_list(self, text: str) -> list[SnapshotRecord]:
+        """解析 ``restic snapshots --json`` 的整段输出。
+
+        兼容两种输出形态：整段 pretty 打印的 JSON 数组（当前 restic 主流形态），
+        以及逐行独立 JSON 对象（流式形态）。二者都不成立时返回空列表。
+
+        Args:
+            text: 子进程输出的整段文本（可含多行）。
+
+        Returns:
+            按输出顺序排列的快照记录列表。
+        """
+        payload = self.parse_json_blob(text)
+        if isinstance(payload, list):
+            return [self._snapshot_from_object(item) for item in payload if isinstance(item, dict)]
+        records: list[SnapshotRecord] = []
+        for line in text.splitlines():
+            item = self.parse_json_blob(line)
+            if isinstance(item, dict) and "id" in item:
+                records.append(self._snapshot_from_object(item))
+        return records
+
+    def parse_file_list(self, text: str) -> list[FileRecord]:
+        """解析 ``restic ls --json`` 的整段输出（形态兼容策略同 :meth:`parse_snapshot_list`）。
+
+        Args:
+            text: 子进程输出的整段文本（可含多行）。
+
+        Returns:
+            按输出顺序排列的文件条目列表。
+        """
+        payload = self.parse_json_blob(text)
+        if isinstance(payload, list):
+            return [self._file_from_object(item) for item in payload if isinstance(item, dict)]
+        records: list[FileRecord] = []
+        for line in text.splitlines():
+            item = self.parse_json_blob(line)
+            if isinstance(item, dict) and ("path" in item or "name" in item):
+                records.append(self._file_from_object(item))
+        return records
+
+    @staticmethod
+    def parse_json_blob(text: str) -> Any:
+        """把一段（可能跨多行的 pretty 打印）JSON 文本解析为 Python 对象。
+
+        Args:
+            text: 待解析文本。
+
+        Returns:
+            解析结果（dict / list / 标量）；不可解析时返回 ``None``。
+        """
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
     def aggregate(self, state: JobAggregate, ev: ProgressEvent) -> JobAggregate:
         """把进度事件累加进聚合状态（纯函数，返回新实例）。
 

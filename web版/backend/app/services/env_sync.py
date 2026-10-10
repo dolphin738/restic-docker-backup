@@ -51,6 +51,34 @@ def passfile_status(settings: Settings | None = None) -> str:
     return "configured" if passfile_path(settings).is_file() else "missing"
 
 
+async def load_credentials(config_repo: ConfigRepo) -> dict[str, str]:
+    """把 config 中 ``cred.*`` 键还原为子进程环境变量（``AWS_*`` / ``B2_*``）。
+
+    转换规则对应 §4.3 的通配符键表：``cred.aws_<rest>`` → ``AWS_<REST>``、
+    ``cred.b2_<rest>`` → ``B2_<REST>``（故 ``cred.aws_session_token`` 之类
+    未在 :data:`ENV_KEY_MAP` 中的键也能正确还原）。
+
+    本函数是 ``cred.*`` → 子进程环境映射的**唯一实现点**（E05/E17/E18/E19/E29/E30
+    与 JobRunner 共用）；最终注入仍由 :meth:`ResticCmd.build_env` 按前缀白名单二次校验。
+
+    Args:
+        config_repo: 配置仓储。
+
+    Returns:
+        待注入子进程的环境变量字典（键均已落在 ``AWS_`` / ``B2_`` 前缀内）。
+    """
+    rows = await config_repo.list_all()
+    extras: dict[str, str] = {}
+    for row in rows:
+        if not row.value:
+            continue
+        if row.key.startswith("cred.aws_"):
+            extras["AWS_" + row.key[len("cred.aws_") :].upper()] = row.value
+        elif row.key.startswith("cred.b2_"):
+            extras["B2_" + row.key[len("cred.b2_") :].upper()] = row.value
+    return extras
+
+
 async def sync_env_overrides(
     config_repo: ConfigRepo,
     settings: Settings | None = None,

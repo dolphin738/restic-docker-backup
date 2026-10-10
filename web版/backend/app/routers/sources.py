@@ -34,6 +34,7 @@ from app.schemas.api_schemas import (
     SourceBrowseResponse,
     SourceItem,
 )
+from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs
@@ -267,20 +268,6 @@ def _dedupe(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
-
-
-async def _load_credentials(config_repo: ConfigRepo) -> dict[str, str]:
-    """把 config 中 ``cred.*`` 键还原为子进程环境变量。"""
-    rows = await config_repo.list_all()
-    extras: dict[str, str] = {}
-    for row in rows:
-        if not row.value:
-            continue
-        if row.key.startswith("cred.aws_"):
-            extras["AWS_" + row.key[len("cred.aws_"):].upper()] = row.value
-        elif row.key.startswith("cred.b2_"):
-            extras["B2_" + row.key[len("cred.b2_"):].upper()] = row.value
-    return extras
 
 
 class _suppress:

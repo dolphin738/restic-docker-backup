@@ -33,6 +33,7 @@ from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
 from app.errors import JobConflictError, NotCancellableError, NotFoundError, ValidationError
 from app.exclusions import ExclusionRules
+from app.services.env_sync import load_credentials
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
 from app.services.restic import ResticCmd, ResticProcess, WhitelistArgs
 from app.settings import Settings, get_settings
@@ -326,6 +327,7 @@ class JobRunner:
         Returns:
             被改标的任务条数。
         """
+        # pending 在 P1 无排队语义，容器重启即不可恢复，故与 running 一并置 interrupted
         affected = await self._jobs.mark_interrupted_on_startup()
         if affected:
             logger.warning("启动恢复：%d 个遗留任务改标 interrupted", affected)
@@ -454,17 +456,7 @@ class JobRunner:
 
     async def _load_credentials(self) -> dict[str, str]:
         """把 config 中 ``cred.*`` 键还原为子进程环境变量（``AWS_*`` / ``B2_*``）。"""
-        rows = await self._config.list_all()
-        extras: dict[str, str] = {}
-        for row in rows:
-            value = row.value
-            if not value:
-                continue
-            if row.key.startswith("cred.aws_"):
-                extras["AWS_" + row.key[len("cred.aws_"):].upper()] = value
-            elif row.key.startswith("cred.b2_"):
-                extras["B2_" + row.key[len("cred.b2_"):].upper()] = value
-        return extras
+        return await load_credentials(self._config)
 
     async def _set_snapshot(self, job_id: str, snapshot_id: str) -> None:
         """回填任务关联的快照 id（backup 完成后由 summary 事件得到）。"""

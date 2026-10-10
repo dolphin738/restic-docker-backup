@@ -38,11 +38,13 @@ JOB_CONFLICT = "JOB_CONFLICT"
 ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 RATE_LIMITED = "RATE_LIMITED"
 INTERNAL = "INTERNAL"
+RESTIC_FAILED = "RESTIC_FAILED"     # restic 子进程失败（E17/E18/E19/E29 探测类端点）
 
 # 端点级扩展码（§5.0 注）
 PATH_OUT_OF_PREFIX = "PATH_OUT_OF_PREFIX"          # 400 E05/E19
 ENV_OVERRIDDEN = "ENV_OVERRIDDEN"                  # 409 E07
 DEFAULT_POLICY_IMMUTABLE = "DEFAULT_POLICY_IMMUTABLE"  # 409 E11
+POLICY_WRITE_CLOSED = "POLICY_WRITE_CLOSED"            # 409 E09/E10/E11：P1 多策略写未开放
 NOT_CANCELLABLE = "NOT_CANCELLABLE"                # 409 E16
 RESTORE_FORBIDDEN = "RESTORE_FORBIDDEN"            # 403 E19
 BOOTSTRAP_SHOWN = "BOOTSTRAP_SHOWN"                # 410 Bootstrap
@@ -60,9 +62,11 @@ ERROR_STATUS: dict[str, int] = {
     ACCOUNT_LOCKED: 429,
     RATE_LIMITED: 429,
     INTERNAL: 500,
+    RESTIC_FAILED: 500,
     PATH_OUT_OF_PREFIX: 400,
     ENV_OVERRIDDEN: 409,
     DEFAULT_POLICY_IMMUTABLE: 409,
+    POLICY_WRITE_CLOSED: 409,
     NOT_CANCELLABLE: 409,
     RESTORE_FORBIDDEN: 403,
     BOOTSTRAP_SHOWN: 410,
@@ -89,6 +93,10 @@ AUDIT_JOB_RECOVERED = "job.recovered"
 AUDIT_CACHE_CLEAR = "cache.clear"
 AUDIT_ENV_SYNC = "config.env_sync"
 AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
+AUDIT_POLICY_CREATE = "policy.create"
+AUDIT_POLICY_UPDATE = "policy.update"
+AUDIT_POLICY_DELETE = "policy.delete"
+AUDIT_REPO_TEST = "repo.test"
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 
@@ -121,3 +129,19 @@ DRY_RUN_TIMEOUT_SECONDS = 120      # dry-run 预览超时（文档未定义，�
 DRY_RUN_MAX_ITEMS = 5000           # 预览条目上限，超出置 truncated
 # 伪文件系统目录名（方案 §3.2 首备 dry-run 命名警告，命中出黄色警告但不拦截）
 PSEUDO_FS_NAMES: tuple[str, ...] = ("proc", "sys", "dev", "run", "docker", "lost+found")
+
+# ---------------------------------------------------------------- E17/E18 快照浏览
+
+SNAPSHOT_LIST_TIMEOUT_SECONDS = 20      # snapshots --json 探测超时
+SNAPSHOT_FILES_TIMEOUT_SECONDS = 30     # ls --json 探测超时
+SNAPSHOT_FILES_DEFAULT_LIMIT = 200
+SNAPSHOT_FILES_MAX_LIMIT = 1000
+
+# ---------------------------------------------------------------- E29/E30 仓库探测
+
+REPO_PROBE_TIMEOUT_SECONDS = 15         # cat config 连通性探测
+REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
+# 仓库状态进程内缓存 TTL：避免仪表盘轮询反复打仓库（E30 成本可控的关键手段）
+REPO_STATUS_CACHE_SECONDS = 30.0
+# 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）
+SNAPSHOT_FILES_MAX_OFFSET = 1_000_000

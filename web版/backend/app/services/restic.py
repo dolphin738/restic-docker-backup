@@ -10,17 +10,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from app.errors import ValidationError
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
 
-# verb 白名单（§7.1）
-VERBS: tuple[str, ...] = ("backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat")
+# verb 白名单（§7.1 九类 + 批次 3 为 E30 容量探测新增只读 verb ``stats``）
+VERBS: tuple[str, ...] = (
+    "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats",
+)
 
 # 允许注入子进程的环境变量：精确名 + 前缀（凭据走 AWS_*/B2_*，restic 自身走 RESTIC_*）
 ENV_ALLOWED_EXACT: tuple[str, ...] = ("TZ",)
@@ -28,7 +33,24 @@ ENV_ALLOWED_PREFIXES: tuple[str, ...] = ("RESTIC_", "AWS_", "B2_")
 
 COMPRESSION_MODES: tuple[str, ...] = ("auto", "off", "max")
 OVERWRITE_MODES: tuple[str, ...] = ("if-changed", "always", "never")
+# stats --mode 白名单（只读探测，用于 E30 仓库容量）
+STATS_MODES: tuple[str, ...] = ("raw-data", "restore-size", "blobs-per-file", "files-per-contents")
 SNAPSHOT_ID_PATTERN = frozenset("0123456789abcdef")
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """只读探测（E17/E18/E29/E30）的一次调用结果。
+
+    Attributes:
+        exit_code: restic 退出码；``-1`` 表示超时被杀。
+        lines: 采集到的输出行（已去 CR）。
+        truncated: 是否因超时或行数上限被截断（供上层置 ``truncated`` 标记）。
+    """
+
+    exit_code: int = -1
+    lines: list[str] = field(default_factory=list)
+    truncated: bool = False
 
 
 @dataclass
@@ -57,6 +79,7 @@ class WhitelistArgs:
     verbose: bool = False
     read_data: bool = False
     overwrite: str | None = None
+    stats_mode: str | None = None
     extra_positionals: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -169,7 +192,7 @@ class ResticCmd:
         argv.extend(self._global_flags(args))
         argv.append(verb)
         argv.extend(self._verb_flags(verb, args))
-        if verb in ("backup", "restore", "ls"):
+        if verb in ("backup", "restore", "ls", "snapshots", "cat"):
             argv.extend(self._positionals(verb, args))
         return argv
 
@@ -215,6 +238,53 @@ class ResticCmd:
             env=env,
         )
         return ResticProcess(proc, path)
+
+    async def run_json(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        timeout_seconds: float,
+        max_lines: int = 200_000,
+    ) -> ProbeResult:
+        """执行一次带超时与行数上限的 restic 只读调用（E17/E18/E29/E30 探测用）。
+
+        与 :meth:`spawn` 的区别：本方法**同步收完**全部输出并返回 :class:`ProbeResult`，
+        适合输出规模可控的探测类命令；长任务（backup/restore）必须走 :meth:`spawn`
+        + 逐行消费，避免内存无界。
+
+        Args:
+            argv: :meth:`build` 产出的参数列表。
+            env: 子进程环境。
+            timeout_seconds: 超时秒数；超时后 SIGKILL 并返回退出码 -1。
+            max_lines: 采集行数上限，超出即停止读取并 kill（防止探测端点被大仓库拖垮）。
+
+        Returns:
+            :class:`ProbeResult`（退出码 / 输出行 / 是否被截断）。
+        """
+        log_path = self._settings.jobs_dir / f"probe-{uuid4().hex}.log"
+        proc = await self.spawn(argv, log_path, env=env)
+        lines: list[str] = []
+        truncated = False
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async for line in proc.lines():
+                    lines.append(line)
+                    if len(lines) >= max_lines:
+                        truncated = True
+                        break
+            if truncated:
+                proc.kill()
+            exit_code = await proc.wait()
+        except TimeoutError:
+            truncated = True
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            exit_code = -1
+        finally:
+            log_path.unlink(missing_ok=True)
+        return ProbeResult(exit_code=exit_code, lines=lines, truncated=truncated)
 
     # ---------------------------------------------------------------- 内部实现
 
@@ -287,6 +357,13 @@ class ResticCmd:
                 flags.append("--read-data")
             return flags
 
+        if verb == "stats":
+            mode = args.stats_mode or "raw-data"
+            if mode not in STATS_MODES:
+                raise ValidationError(f"stats 模式非法：{mode}", data={"allowed": list(STATS_MODES)})
+            flags.extend(["--mode", mode])
+            return flags
+
         if verb == "unlock" or verb == "init" or verb == "snapshots":
             return flags
 
@@ -316,6 +393,77 @@ class ResticCmd:
     def _env_allowed(key: str) -> bool:
         """判断环境变量键是否允许注入子进程。"""
         return key in ENV_ALLOWED_EXACT or key.startswith(ENV_ALLOWED_PREFIXES)
+
+
+# 失败原因关键词 → 可操作提示（§5.1 E29「原因明示，禁止静默」；按特异性从高到低排列）
+_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("already locked", "unable to create lock", "remove stale locks"),
+        "仓库锁残留（确认无任务运行后可走解锁操作清理）",
+    ),
+    (
+        ("wrong password", "invalid password", "incorrect password", "no key found"),
+        "仓库密码错误（请检查仓库密码文件挂载）",
+    ),
+    (
+        ("does not exist", "not initialized", "unable to open config file", "no such bucket"),
+        "仓库不存在或未初始化（请检查 repo.url，或先执行 init）",
+    ),
+    (
+        ("credentials", "accessdenied", "access denied", "unauthorized", "invalidaccesskey"),
+        "对象存储凭据缺失或无效（请检查 cred.* 配置）",
+    ),
+    (
+        ("no such host", "connection refused", "network is unreachable", "i/o timeout", "tls handshake"),
+        "网络不可达或端点错误（请检查网络与端点地址）",
+    ),
+)
+
+
+def failure_reason(exit_code: int, lines: list[str], timeout_seconds: float | None = None) -> str:
+    """把 restic 探测失败转换为**可直接展示**的原因文案（禁止静默失败）。
+
+    Args:
+        exit_code: restic 退出码（-1 表示超时被杀）。
+        lines: 采集到的输出行。
+        timeout_seconds: 探测超时秒数；退出码为 -1 时用于生成超时文案。
+
+    Returns:
+        中文原因文案（锁残留 / 凭据缺失 / 仓库未初始化 / 网络不可达 / 原始退出码 + 首条错误）。
+    """
+    if exit_code == -1:
+        if timeout_seconds:
+            return f"restic 探测超时（超过 {timeout_seconds:g}s）"
+        return "restic 探测超时"
+    joined = "\n".join(lines).lower()
+    for keywords, reason in _FAILURE_HINTS:
+        if any(keyword in joined for keyword in keywords):
+            return reason
+    detail = _first_meaningful(lines)
+    if detail:
+        return f"restic 退出码 {exit_code}：{detail}"
+    return f"restic 退出码 {exit_code}（无输出）"
+
+
+def _first_meaningful(lines: list[str]) -> str:
+    """取首条可读错误描述：优先 ``exit_error`` 的 message/error 字段，其次非 JSON 行。"""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("{"):
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                for key in ("error", "message", "msg"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()[:200]
+            continue
+        return stripped[:200]
+    return ""
 
 
 def _decode(raw: bytes) -> str:

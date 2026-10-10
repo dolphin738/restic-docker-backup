@@ -26,7 +26,9 @@ from app.constants import (
     NOT_FOUND,
     PASSWORD_WRONG,
     PATH_OUT_OF_PREFIX,
+    POLICY_WRITE_CLOSED,
     RATE_LIMITED,
+    RESTIC_FAILED,
     RESTORE_FORBIDDEN,
     UNAUTHORIZED,
     VALIDATION_ERROR,
@@ -164,6 +166,14 @@ class DefaultPolicyImmutableError(AppError):
     message = "默认策略不可删除"
 
 
+class PolicyWriteClosedError(AppError):
+    """409 P1 多策略写未开放（E09/E10/E11：仅单条默认策略可写）。"""
+
+    code = POLICY_WRITE_CLOSED
+    status = ERROR_STATUS[POLICY_WRITE_CLOSED]
+    message = "P1 仅支持单条默认策略，多策略写开放于 P2"
+
+
 class NotCancellableError(AppError):
     """409 任务非 running/pending，不可取消。"""
 
@@ -227,3 +237,23 @@ class InternalError(AppError):
     code = INTERNAL
     status = ERROR_STATUS[INTERNAL]
     message = "服务器内部错误"
+
+
+class ResticFailedError(AppError):
+    """500 restic 子进程执行失败（探测类端点：原因明示，禁止静默）。"""
+
+    code = RESTIC_FAILED
+    status = ERROR_STATUS[RESTIC_FAILED]
+    message = "restic 执行失败"
+
+    def __init__(self, reason: str, *, exit_code: int | None = None) -> None:
+        """构造 restic 失败错误。
+
+        Args:
+            reason: 可操作的原因说明（锁残留/凭据缺失/仓库未初始化…）。
+            exit_code: restic 退出码，可选。
+        """
+        data: dict[str, object] = {"reason": reason}
+        if exit_code is not None:
+            data["exit_code"] = exit_code
+        super().__init__(f"restic 执行失败：{reason}", data=data)

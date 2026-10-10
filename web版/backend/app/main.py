@@ -43,18 +43,23 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.policy_repo import PolicyRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
 from app.routers import auth as auth_router
 from app.routers import config as config_router
 from app.routers import health as health_router
 from app.routers import jobs as jobs_router
+from app.routers import policies as policies_router
+from app.routers import restore as restore_router
+from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
 from app.schemas.api_schemas import ErrorResponse
 from app.services.env_sync import sync_env_overrides
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
+from app.services.policy_service import PolicyService
 from app.services.restic import ResticCmd
 from app.services.sse import SseChannel
 from app.settings import Settings, get_settings
@@ -106,6 +111,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     auth_service = AuthService(audit, sessions, admin, settings)
     bootstrap = BootstrapService(admin, audit, settings)
 
+    # 策略链路（§4.4）：
+    # policy_repo.get_dict 的签名 (int) -> Awaitable[dict | None] 与 JobRunner 的
+    # PolicyLoader 契约一致，故直接作为回调注入，无需包一层 lambda。
+    policy_repo = PolicyRepo(db)
+    policy_service = PolicyService(policy_repo, settings)
+    await policy_repo.ensure_default(one_file_system=policy_service.default_one_file_system())
+
     # restic 执行链路（§7.1/§7.2/§7.3）
     job_repo = JobRepo(db)
     path_mapper = PathMapper(settings)
@@ -118,8 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         parser,
         audit,
         settings=settings,
-        # TODO(批次 3): policies 路由就绪后由 PolicyRepo 提供策略加载器
-        policy_loader=None,
+        policy_loader=policy_repo.get_dict,
     )
 
     app.state.settings = settings
@@ -130,6 +141,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.admin = admin
     app.state.auth_service = auth_service
     app.state.bootstrap = bootstrap
+    app.state.policy_repo = policy_repo
+    app.state.policy_service = policy_service
     app.state.exclusions = ExclusionRules(settings)
     app.state.job_repo = job_repo
     app.state.path_mapper = path_mapper
@@ -175,10 +188,13 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     # 业务路由：②③ 必须显式挂载，否则首启未改密也能访问（PRD US-A1 AC2）
     protected = [Depends(require_session), Depends(require_bootstrap_done)]
-    app.include_router(sources_router.router, dependencies=protected)   # E05/E31
-    app.include_router(config_router.router, dependencies=protected)    # E06/E07
-    app.include_router(jobs_router.router, dependencies=protected)      # E12–E16/E27
-    # 后续批次（policies/snapshots/restore/ops…）在此按同样方式挂载：
+    app.include_router(sources_router.router, dependencies=protected)    # E05/E31
+    app.include_router(config_router.router, dependencies=protected)     # E06/E07 + E29/E30
+    app.include_router(jobs_router.router, dependencies=protected)       # E12–E16/E27
+    app.include_router(policies_router.router, dependencies=protected)   # E08–E11
+    app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18
+    app.include_router(restore_router.router, dependencies=protected)    # E19
+    # 后续批次（dump/notify/cache/audit…）在此按同样方式挂载：
     #   app.include_router(x_router.router, dependencies=protected)
 
     _register_exception_handlers(app)
