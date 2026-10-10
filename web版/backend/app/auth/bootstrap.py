@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.constants import (
+    AUDIT_BOOTSTRAP_REGENERATED,
     AUDIT_BOOTSTRAP_SHOWN,
     AUDIT_PASSWORD_CHANGED,
 )
@@ -221,10 +222,26 @@ class BootstrapService:
         self._pending_password: str | None = None
 
     async def ensure_initial_admin(self) -> None:
-        """启动期调用：确保账户行存在，并缓存（必要时新生成的）随机密码明文。"""
+        """启动期调用：确保账户行存在，并缓存（必要时新生成的）随机密码明文。
+
+        若账户行已存在但随机密码尚未展示（容器在首启展示前重启），会重新生成随机密码——
+        属安全敏感动作（管理员凭据被重置），故打 WARNING 日志并写一条审计记录。
+        """
+        existed_before = await self._admin.get()
         _, plain = await self._admin.ensure_initialized()
-        if plain is not None:
-            self._pending_password = plain
+        if plain is None:
+            return
+        self._pending_password = plain
+        if existed_before is not None:
+            logger.warning(
+                "容器在首启随机密码展示前重启，已重新生成随机管理密码（此前生成的密码同时失效）"
+            )
+            await self._audit.record(
+                AUDIT_BOOTSTRAP_REGENERATED,
+                target="admin",
+                detail={"reason": "restart_before_bootstrap_shown"},
+                result="ok",
+            )
 
     async def reveal_password(self) -> str:
         """一次性取回首启随机密码明文。

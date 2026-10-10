@@ -1,7 +1,10 @@
 """统一错误模型（§5.0）：所有非 2xx 响应均为 ``{"code", "message", "data"}``。
 
-路由/服务只抛 :class:`AppError` 子类，由 ``main.py`` 注册的全局异常处理器统一转换为响应，
-保证错误码与 HTTP 状态码的映射只有一处实现。
+路由/服务只抛 :class:`AppError` 子类，由 ``main.py`` 注册的全局异常处理器统一转换为响应。
+
+单一真源约束：错误码与其 HTTP 状态码的映射只存在于 ``app/constants.py`` 的
+``ERROR_STATUS``；本模块**只引用不定义**（所有 ``status`` 均由 ``ERROR_STATUS[code]`` 派生），
+避免两处数字双写漂移。
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from app.constants import (
     CSRF_ORIGIN,
     DEFAULT_POLICY_IMMUTABLE,
     ENV_OVERRIDDEN,
+    ERROR_STATUS,
     FORBIDDEN,
     INTERNAL,
     JOB_CONFLICT,
@@ -33,14 +37,14 @@ class AppError(Exception):
     """业务错误基类。
 
     Attributes:
-        status: HTTP 状态码。
+        status: HTTP 状态码（由 ``ERROR_STATUS[code]`` 派生）。
         code: 统一错误码（§5.0 错误码表）。
         message: 默认中文提示，可被构造参数覆盖。
         data: 可选的附加数据（如 ``retry_after``）。
     """
 
-    status: int = 500
     code: str = INTERNAL
+    status: int = ERROR_STATUS[INTERNAL]
     message: str = "服务器内部错误"
 
     def __init__(self, message: str | None = None, *, data: dict[str, Any] | None = None) -> None:
@@ -63,48 +67,48 @@ class AppError(Exception):
 class ValidationError(AppError):
     """422 参数/路径/强度校验失败。"""
 
-    status = 422
     code = VALIDATION_ERROR
+    status = ERROR_STATUS[VALIDATION_ERROR]
     message = "参数校验失败"
 
 
 class UnauthorizedError(AppError):
     """401 未登录或会话过期。"""
 
-    status = 401
     code = UNAUTHORIZED
+    status = ERROR_STATUS[UNAUTHORIZED]
     message = "未登录或会话已过期"
 
 
 class ForbiddenError(AppError):
     """403 通用禁止访问。"""
 
-    status = 403
     code = FORBIDDEN
+    status = ERROR_STATUS[FORBIDDEN]
     message = "禁止访问"
 
 
 class NotFoundError(AppError):
     """404 资源不存在。"""
 
-    status = 404
     code = NOT_FOUND
+    status = ERROR_STATUS[NOT_FOUND]
     message = "资源不存在"
 
 
 class JobConflictError(AppError):
     """409 同仓库已有 running/pending 任务（手动触发拒绝，不排队）。"""
 
-    status = 409
     code = JOB_CONFLICT
+    status = ERROR_STATUS[JOB_CONFLICT]
     message = "已有任务进行中"
 
 
 class AccountLockedError(AppError):
     """429 登录锁定（data 带 retry_after 秒）。"""
 
-    status = 429
     code = ACCOUNT_LOCKED
+    status = ERROR_STATUS[ACCOUNT_LOCKED]
     message = "账号已被临时锁定，请稍后重试"
 
     def __init__(self, retry_after: int, locked_until: str | None = None) -> None:
@@ -123,8 +127,8 @@ class AccountLockedError(AppError):
 class RateLimitedError(AppError):
     """429 登录接口限流。"""
 
-    status = 429
     code = RATE_LIMITED
+    status = ERROR_STATUS[RATE_LIMITED]
     message = "请求过于频繁，请稍后重试"
 
     def __init__(self, retry_after: int = 0) -> None:
@@ -139,72 +143,72 @@ class RateLimitedError(AppError):
 class PathOutOfPrefixError(AppError):
     """400 路径越出白名单前缀（注入防护，方案 §6）。"""
 
-    status = 400
     code = PATH_OUT_OF_PREFIX
+    status = ERROR_STATUS[PATH_OUT_OF_PREFIX]
     message = "路径不在允许的前缀范围内"
 
 
 class EnvOverriddenError(AppError):
     """409 该配置键由环境变量覆盖，界面不可写。"""
 
-    status = 409
     code = ENV_OVERRIDDEN
+    status = ERROR_STATUS[ENV_OVERRIDDEN]
     message = "该配置项由环境变量覆盖，不可在界面修改"
 
 
 class DefaultPolicyImmutableError(AppError):
     """409 默认策略不可删除。"""
 
-    status = 409
     code = DEFAULT_POLICY_IMMUTABLE
+    status = ERROR_STATUS[DEFAULT_POLICY_IMMUTABLE]
     message = "默认策略不可删除"
 
 
 class NotCancellableError(AppError):
     """409 任务非 running/pending，不可取消。"""
 
-    status = 409
     code = NOT_CANCELLABLE
+    status = ERROR_STATUS[NOT_CANCELLABLE]
     message = "该任务当前状态不可取消"
 
 
 class RestoreForbiddenError(AppError):
     """403 恢复目标不在白名单。"""
 
-    status = 403
     code = RESTORE_FORBIDDEN
+    status = ERROR_STATUS[RESTORE_FORBIDDEN]
     message = "恢复目标不在允许的白名单内"
 
 
 class BootstrapShownError(AppError):
     """410 首启随机密码已展示过，不可再次获取。"""
 
-    status = 410
     code = BOOTSTRAP_SHOWN
+    status = ERROR_STATUS[BOOTSTRAP_SHOWN]
     message = "首启随机密码已展示过一次，无法再次查看；如需重新引导请删除 /data 下数据库文件后重启"
 
 
 class PasswordWrongError(AppError):
     """401 密码错误（安全文案不区分细节）。"""
 
-    status = 401
     code = PASSWORD_WRONG
+    status = ERROR_STATUS[PASSWORD_WRONG]
     message = "密码错误"
 
 
 class CsrfOriginError(AppError):
     """403 写方法 Origin/Referer 同源校验失败。"""
 
-    status = 403
     code = CSRF_ORIGIN
+    status = ERROR_STATUS[CSRF_ORIGIN]
     message = "跨站请求被拒绝（Origin 校验失败）"
 
 
 class BootstrapRequiredError(AppError):
     """403 首启未改密门（PRD US-A1 AC2）。"""
 
-    status = 403
     code = BOOTSTRAP_REQUIRED
+    status = ERROR_STATUS[BOOTSTRAP_REQUIRED]
     message = "请先完成首启改密后再访问其他功能"
 
     def __init__(self, steps: list[str] | None = None) -> None:
@@ -220,6 +224,6 @@ class BootstrapRequiredError(AppError):
 class InternalError(AppError):
     """500 兜底（不回内部细节）。"""
 
-    status = 500
     code = INTERNAL
+    status = ERROR_STATUS[INTERNAL]
     message = "服务器内部错误"

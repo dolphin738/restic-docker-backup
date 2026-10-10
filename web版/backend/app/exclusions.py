@@ -38,7 +38,8 @@ class ExclusionRules:
     SOURCES_PREFIX = "/sources"
 
     # host 模式附加：防套娃——部署目录下被再次扫到的 bind-mount 源（方案 §3.1）
-    HOST_EXTRA_DIRS: tuple[str, ...] = ("data", "cache", "restore")
+    # repo：本地路径仓库 bind-mount 落在部署目录下时会被 /host 再次扫到（主理人裁决补入）
+    HOST_EXTRA_DIRS: tuple[str, ...] = ("data", "cache", "restore", "repo")
     # 用于从挂载表反推部署目录的容器侧挂载点（先命中先使用）
     HOST_PROBE_MOUNTPOINTS: tuple[str, ...] = ("/data", "/cache/restic", "/cache", "/restore")
 
@@ -62,7 +63,8 @@ class ExclusionRules:
             mode: ``host`` 或 ``sources``；缺省取 ``settings.restic_web_mode``。
 
         Returns:
-            去重且有序的排除路径列表。
+            按字符串去重且保持原始顺序的排除路径列表（避免同一路径重复出现在
+            restic ``--exclude`` 参数中）。
         """
         resolved = mode or self._settings.restic_web_mode
         prefix = self.HOST_PREFIX if resolved == "host" else self.SOURCES_PREFIX

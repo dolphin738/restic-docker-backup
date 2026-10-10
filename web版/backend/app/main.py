@@ -27,6 +27,7 @@ from app.auth.service import AuthService
 from app.auth.session import SessionService
 from app.constants import (
     CSRF_ORIGIN,
+    ERROR_STATUS,
     FORBIDDEN,
     INTERNAL,
     NOT_FOUND,
@@ -60,7 +61,9 @@ class CSRFOriginMiddleware(BaseHTTPMiddleware):
         """拦截跨站写请求；读方法与同源请求直接放行。"""
         if is_write_method(request) and not is_same_origin(request):
             payload = ErrorResponse(code=CSRF_ORIGIN, message="跨站请求被拒绝（Origin 校验失败）")
-            return JSONResponse(status_code=403, content=payload.model_dump(exclude_none=True))
+            return JSONResponse(
+                status_code=ERROR_STATUS[CSRF_ORIGIN], content=payload.model_dump(exclude_none=True)
+            )
         return await call_next(request)
 
 
@@ -148,7 +151,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def _handle_validation_error(request: Request, exc: Exception) -> JSONResponse:
         detail = jsonable_encoder(getattr(exc, "errors", lambda: [])())
         payload = ErrorResponse(code=VALIDATION_ERROR, message="参数校验失败", data={"errors": detail})
-        return JSONResponse(status_code=422, content=payload.model_dump(exclude_none=True))
+        return JSONResponse(
+            status_code=ERROR_STATUS[VALIDATION_ERROR], content=payload.model_dump(exclude_none=True)
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -164,7 +169,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
             return await _handle_http_exception(request, exc)
         logger.exception("未处理异常：%s %s", request.method, request.url.path)
         payload = ErrorResponse(code=INTERNAL, message="服务器内部错误")
-        return JSONResponse(status_code=500, content=payload.model_dump(exclude_none=True))
+        return JSONResponse(status_code=ERROR_STATUS[INTERNAL], content=payload.model_dump(exclude_none=True))
 
 
 app = create_app()

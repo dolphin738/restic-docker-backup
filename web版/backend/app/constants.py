@@ -74,6 +74,7 @@ AUDIT_LOGIN_FAILED = "login.failed"
 AUDIT_LOGOUT = "logout"
 AUDIT_PASSWORD_CHANGED = "password.changed"
 AUDIT_BOOTSTRAP_SHOWN = "bootstrap.shown"
+AUDIT_BOOTSTRAP_REGENERATED = "bootstrap.regenerated"  # 未展示随机密码前重启 → 重新生成（安全敏感动作）
 AUDIT_CONFIG_UPDATE = "config.update"
 AUDIT_RESTORE_RUN = "restore.run"
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
