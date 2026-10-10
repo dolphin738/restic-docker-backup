@@ -1,0 +1,4 @@
+{"message_type":"status","percent_done":0.0,"total_files":12,"files_done":0,"total_bytes":2048,"bytes_done":0,"current_files":["/host/etc/hosts"],"error_count":0}
+{"message_type":"status","percent_done":0.5,"total_files":12,"files_done":6,"total_bytes":2048,"bytes_done":1024,"current_files":["/host/etc/nginx/nginx.conf"],"error_count":1}
+{"message_type":"error","during":"archival","item":"/host/etc/shadow","error":"open /host/etc/shadow: permission denied"}
+{"message_type":"summary","files_new":3,"files_changed":2,"files_unmodified":7,"dirs_new":1,"dirs_changed":0,"dirs_unmodified":2,"data_blobs":10,"tree_blobs":2,"data_added":1024,"data_added_packed":980,"total_files_processed":12,"total_bytes_processed":2048,"total_duration":1.25,"snapshot_id":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2","snapshot_time":"2026-10-10T01:38:00.123456+08:00"}

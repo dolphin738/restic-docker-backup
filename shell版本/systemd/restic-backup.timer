@@ -1,0 +1,14 @@
+[Unit]
+Description=Run restic-backup daily at 03:30 (catches up on missed runs after boot)
+
+[Timer]
+# 触发时间由 backup.env 第 12 节 SCHEDULE 决定（menu.sh 安装时注入，默认每天 03:30）；
+# 配合自调度模式（POLICY_*_INTERVAL_MIN）时建议改为 OnCalendar=hourly
+OnCalendar=*-*-* 03:30:00
+# 关机错过则开机后补跑（配合 service 的 Restart）
+Persistent=true
+# 随机延迟 0-15 分钟，避开云厂商备份高峰
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+[
+  {
+    "time": "2026-10-01T03:00:00.123456+08:00",
+    "tree": "1111111111111111111111111111111111111111111111111111111111111111",
+    "paths": ["/host/etc/nginx"],
+    "hostname": "nas",
+    "username": "root",
+    "uid": 0,
+    "gid": 0,
+    "tags": ["auto"],
+    "id": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+    "short_id": "a1b2c3d4"
+  },
+  {
+    "time": "2026-10-02T03:00:00.654321+08:00",
+    "tree": "2222222222222222222222222222222222222222222222222222222222222222",
+    "paths": ["/host/var/lib", "/sources/db"],
+    "hostname": "nas",
+    "username": "backup",
+    "uid": 1000,
+    "gid": 1000,
+    "tags": [],
+    "id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "short_id": "01234567"
+  }
+]

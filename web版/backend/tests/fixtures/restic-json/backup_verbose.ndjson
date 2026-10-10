@@ -1,0 +1,2 @@
+{"message_type":"verbose_status","action":"modified","item":"/host/etc/nginx/nginx.conf","duration":0.01,"data_size":512,"size":512,"metadata_time":0,"metadata_size":100}
+{"message_type":"verbose_status","action":"unchanged","item":"/host/etc/hosts","duration":0,"data_size":0,"size":0,"metadata_time":0,"metadata_size":0}

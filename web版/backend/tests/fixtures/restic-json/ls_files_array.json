@@ -1,0 +1,26 @@
+[
+  {
+    "name": "nginx",
+    "type": "dir",
+    "path": "/host/etc/nginx",
+    "uid": 0,
+    "gid": 0,
+    "size": 0,
+    "mode": 2147484141,
+    "permissions": "drwxr-xr-x",
+    "mtime": "2026-01-02T00:00:00+08:00",
+    "struct_type": "node"
+  },
+  {
+    "name": "nginx.conf",
+    "type": "file",
+    "path": "/host/etc/nginx/nginx.conf",
+    "uid": 0,
+    "gid": 0,
+    "size": 512,
+    "mode": 420,
+    "permissions": "-rw-r--r--",
+    "mtime": "2026-01-03T12:00:00+08:00",
+    "struct_type": "node"
+  }
+]

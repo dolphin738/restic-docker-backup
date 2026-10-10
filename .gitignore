@@ -1,5 +1,7 @@
 # ============================================================
-# restic-docker-backup Web 版
+# restic-docker-backup（仓库根）
+#   shell版本/ = bash 脚本版（v1.x，已完成）
+#   web版/     = 容器化 Web 管理版（P1 开发中）
 # ============================================================
 
 # ---------- Python / uv ----------
@@ -10,6 +12,7 @@ __pycache__/
 .Python
 build/
 dist/
+dist-ssr/
 *.egg-info/
 .eggs/
 .installed.cfg
@@ -20,13 +23,14 @@ dist/
 venv/
 env/
 
-# 测试 / lint 缓存
+# 测试 / lint / 覆盖率缓存
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .tox/
 .nox/
 htmlcov/
+coverage/
 .coverage
 .coverage.*
 coverage.xml
@@ -34,19 +38,18 @@ coverage.xml
 
 # ---------- Node / 前端 ----------
 node_modules/
-frontend/dist/
-frontend/dist-ssr/
-frontend/coverage/
-*.local
 .vite/
+.vitest/
+*.local
 vitest.config.ts.timestamp-*
 .eslintcache
 
-# ---------- Docker / 运行期数据 ----------
-# 配置与密钥（保留 example）
+# ---------- 配置与密钥（模板 / example 入库，真值不入库）----------
 .env
 .env.*
 !.env.example
+# shell 版真实配置（含仓库地址、口令文件路径等机器相关信息）
+shell版本/backup.env
 
 # 证书私钥
 *.pem
@@ -54,18 +57,18 @@ vitest.config.ts.timestamp-*
 *.crt
 certs/
 
-# SQLite 数据库及其 WAL 副产物
+# ---------- 运行期数据 / 数据库 ----------
 *.sqlite
 *.sqlite3
 *.sqlite-wal
 *.sqlite-shm
 *.db-journal
 
-# 运行期目录（数据落盘在 data/，勿入库）
 data/
 cache/
 backups/
 restic-cache/
+restore/
 logs/
 *.log
 
