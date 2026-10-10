@@ -1,0 +1,8 @@
+# 本机 pnpm 11 的 symlink 布局在 Windows 上不可靠（vue-tsc 依赖链接落空），
+# 统一用 npm 式扁平复制布局（QA 实测修复 MODULE_NOT_FOUND）。
+# esbuild / vue-demi 的 postinstall 保持忽略：esbuild 在 Node 24 下 postinstall 本身会失败，
+# 运行时经 @esbuild/win32-x64 optional dep 解析二进制；vue-demi 对 vue>=3 无需切换。
+allowBuilds:
+  esbuild: false
+  vue-demi: false
+nodeLinker: hoisted

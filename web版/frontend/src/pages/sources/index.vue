@@ -21,7 +21,7 @@ import { listPolicies, updatePolicy } from '@/api/policies'
 import { browseSources, dryRunSources, getExclusions } from '@/api/sources'
 import type { DryRunResponse, RunMode } from '@/api/types'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
-import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
+import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
