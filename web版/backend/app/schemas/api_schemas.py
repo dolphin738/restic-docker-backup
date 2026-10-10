@@ -10,7 +10,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.enums import ConfigSource, HostMountMode, RunMode
+from app.schemas.enums import ConfigSource, HostMountMode, JobStatus, JobTrigger, JobType, RunMode
 
 T = TypeVar("T")
 
@@ -118,3 +118,102 @@ class ConfigPatchRequest(_Base):
     """E07 配置写请求。"""
 
     patch: dict[str, str | None] = Field(description="键→值；置 null 表示清空该键")
+
+
+# ---------------------------------------------------------------- E12–E16 / E27 任务
+
+class JobOut(_Base):
+    """E14 任务详情（§4.5 字段全集）。"""
+
+    id: str
+    type: JobType
+    status: JobStatus
+    trigger: JobTrigger
+    policy_id: int | None = None
+    snapshot_id: str | None = None
+    bytes_done: int | None = None
+    files_done: int | None = None
+    skipped_count: int = 0
+    last_event_id: int = 0
+    log_path: str
+    summary: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    exit_code: int | None = None
+    created_at: str
+
+
+class JobCreateRequest(_Base):
+    """E12 触发任务请求。"""
+
+    type: JobType = Field(description="任务类型白名单：backup/restore/forget/check/unlock/init/dump")
+    policy_id: int | None = Field(default=None, description="关联策略 id")
+    snapshot_id: str | None = Field(default=None, description="restore/forget 关联快照")
+    params: dict[str, Any] = Field(default_factory=dict, description="补充参数（sources/excludes/target…）")
+
+
+class JobCreateResponse(_Base):
+    """E12 响应（202）。"""
+
+    id: str
+    status: JobStatus = JobStatus.PENDING
+    type: JobType
+
+
+class JobLogResponse(_Base):
+    """E27 任务日志尾部。"""
+
+    id: str
+    log_path: str
+    tail_bytes: int
+    content: str
+    truncated: bool = False
+
+
+# ---------------------------------------------------------------- E05 / E31 备份源
+
+class SourceItem(_Base):
+    """E05 目录浏览条目。"""
+
+    name: str
+    type: str = Field(description="dir|file|other")
+    display_path: str = Field(description="剥掉容器前缀后的原路径语义")
+
+
+class SourceBrowseResponse(_Base):
+    """E05 目录浏览响应。"""
+
+    path: str = Field(description="展示形态的当前路径（如 /etc）")
+    items: list[SourceItem] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class DryRunRequest(_Base):
+    """E31 首备扫描范围预览请求。"""
+
+    sources: list[str] = Field(min_length=1, description="容器内路径（/host 或 /sources 前缀）")
+    excludes: list[str] = Field(default_factory=list, description="用户追加排除规则（内置集自动叠加）")
+
+
+class DryRunItem(_Base):
+    """E31 预览条目。"""
+
+    path: str
+    display_path: str
+    size: int | None = None
+
+
+class DryRunWarning(_Base):
+    """E31 黄色警告（伪文件系统目录名，不拦截）。"""
+
+    type: str = "pseudo_fs_name"
+    path: str
+
+
+class DryRunResponse(_Base):
+    """E31 预览响应（不强制拦截，warnings 仅提示）。"""
+
+    items: list[DryRunItem] = Field(default_factory=list)
+    warnings: list[DryRunWarning] = Field(default_factory=list)
+    truncated: bool = False
+    error: str | None = None

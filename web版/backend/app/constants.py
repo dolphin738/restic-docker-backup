@@ -11,6 +11,10 @@ JOB_TYPES: tuple[str, ...] = ("backup", "restore", "forget", "check", "unlock", 
 JOB_STATUSES: tuple[str, ...] = ("pending", "running", "success", "failed", "interrupted", "cancelled")
 JOB_TRIGGERS: tuple[str, ...] = ("manual", "scheduled")
 
+# 状态分组（§4.5 / §5 状态机）：活跃态用于互斥冲突判定，终态用于 SSE 收流与取消校验
+ACTIVE_JOB_STATUSES: tuple[str, ...] = ("running", "pending")
+TERMINAL_JOB_STATUSES: tuple[str, ...] = ("success", "failed", "interrupted", "cancelled")
+
 # ---------------------------------------------------------------- 路径白名单（§7.3 PathMapper）
 
 # 可被选为备份源的根前缀（按 RESTIC_WEB_MODE 二选一）
@@ -78,7 +82,13 @@ AUDIT_BOOTSTRAP_REGENERATED = "bootstrap.regenerated"  # 未展示随机密码�
 AUDIT_CONFIG_UPDATE = "config.update"
 AUDIT_RESTORE_RUN = "restore.run"
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
+AUDIT_JOB_SUBMIT = "job.submit"
+AUDIT_JOB_CANCEL = "job.cancel"
+AUDIT_JOB_FINISHED = "job.finished"
+AUDIT_JOB_RECOVERED = "job.recovered"
 AUDIT_CACHE_CLEAR = "cache.clear"
+AUDIT_ENV_SYNC = "config.env_sync"
+AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 
@@ -95,3 +105,19 @@ LOCK_MAX_SECONDS = 3600
 # 登录限流：同 IP 5 次/分钟（进程内固定窗口）
 LOGIN_RATE_LIMIT = 5
 LOGIN_RATE_WINDOW_SECONDS = 60
+
+# ---------------------------------------------------------------- SSE / 日志（§5.1 E15/E27）
+
+SSE_HEARTBEAT_SECONDS = 15.0       # 空闲心跳间隔（: keep-alive）
+SSE_POLL_INTERVAL_SECONDS = 0.3    # 日志文件追加轮询间隔
+LOG_TAIL_DEFAULT_BYTES = 65536     # E27 默认尾部字节数
+LOG_TAIL_MAX_BYTES = 1048576       # E27 上限 1 MiB
+
+# ---------------------------------------------------------------- 备份源浏览 / dry-run（E05/E31）
+
+SOURCE_BROWSE_DEFAULT_LIMIT = 200
+SOURCE_BROWSE_MAX_LIMIT = 1000
+DRY_RUN_TIMEOUT_SECONDS = 120      # dry-run 预览超时（文档未定义，按最简合理取值）
+DRY_RUN_MAX_ITEMS = 5000           # 预览条目上限，超出置 truncated
+# 伪文件系统目录名（方案 §3.2 首备 dry-run 命名警告，命中出黄色警告但不拦截）
+PSEUDO_FS_NAMES: tuple[str, ...] = ("proc", "sys", "dev", "run", "docker", "lost+found")

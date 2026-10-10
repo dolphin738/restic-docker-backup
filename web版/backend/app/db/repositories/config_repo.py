@@ -57,19 +57,28 @@ class ConfigRepo:
 
     # ---------------------------------------------------------------- 写
 
-    async def set(self, key: str, value: str | None, *, source: ConfigSource = ConfigSource.UI) -> ConfigRow:
+    async def set(
+        self,
+        key: str,
+        value: str | None,
+        *,
+        source: ConfigSource = ConfigSource.UI,
+        force: bool = False,
+    ) -> ConfigRow:
         """写入（upsert）单个键；``source='env'`` 的键拒绝界面写入。
 
         Args:
             key: 配置键，如 ``repo.url``。
             value: 配置值；None 表示清空。
             source: 来源标记，界面写入恒为 ``ui``。
+            force: 仅供启动期 env→config 同步使用（``env_sync``），
+                跳过 ``source='env'`` 写保护；业务写入路径必须保持 False。
 
         Raises:
-            EnvOverriddenError: 该键已由环境变量覆盖（409 ENV_OVERRIDDEN）。
+            EnvOverriddenError: 该键已由环境变量覆盖且 ``force=False``（409 ENV_OVERRIDDEN）。
         """
         existing = await self.get(key)
-        if existing is not None and existing.source == ConfigSource.ENV:
+        if not force and existing is not None and existing.source == ConfigSource.ENV:
             raise EnvOverriddenError(data={"key": key})
         now = utc_iso()
         await self._db.write(
@@ -103,8 +112,12 @@ class ConfigRepo:
             raise EnvOverriddenError(data={"keys": blocked})
         return [await self.set(key, value) for key, value in patch.items()]
 
-    async def delete(self, key: str) -> bool:
+    async def delete(self, key: str, *, force: bool = False) -> bool:
         """删除单个键；``source='env'`` 的键拒绝删除。
+
+        Args:
+            key: 配置键。
+            force: 仅供启动期 env→config 同步回收失效的 env 覆盖行（``env_sync``）使用。
 
         Returns:
             实际删除返回 True，键不存在返回 False。
@@ -112,7 +125,7 @@ class ConfigRepo:
         existing = await self.get(key)
         if existing is None:
             return False
-        if existing.source == ConfigSource.ENV:
+        if not force and existing.source == ConfigSource.ENV:
             raise EnvOverriddenError(data={"key": key})
         await self._db.write("DELETE FROM config WHERE key = ?", (key,))
         return True

@@ -14,7 +14,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -22,7 +22,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.bootstrap import AdminAccountStore, BootstrapService
-from app.auth.dependencies import is_same_origin, is_write_method
+from app.auth.dependencies import (
+    is_same_origin,
+    is_write_method,
+    require_bootstrap_done,
+    require_session,
+)
 from app.auth.service import AuthService
 from app.auth.session import SessionService
 from app.constants import (
@@ -37,11 +42,21 @@ from app.constants import (
 from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.job_repo import JobRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
 from app.routers import auth as auth_router
+from app.routers import config as config_router
 from app.routers import health as health_router
+from app.routers import jobs as jobs_router
+from app.routers import sources as sources_router
 from app.schemas.api_schemas import ErrorResponse
+from app.services.env_sync import sync_env_overrides
+from app.services.job_runner import JobRunner
+from app.services.parser import OutputParser
+from app.services.path_mapper import PathMapper
+from app.services.restic import ResticCmd
+from app.services.sse import SseChannel
 from app.settings import Settings, get_settings
 
 logger = logging.getLogger("restic-web")
@@ -91,6 +106,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     auth_service = AuthService(audit, sessions, admin, settings)
     bootstrap = BootstrapService(admin, audit, settings)
 
+    # restic 执行链路（§7.1/§7.2/§7.3）
+    job_repo = JobRepo(db)
+    path_mapper = PathMapper(settings)
+    restic_cmd = ResticCmd(settings, path_mapper)
+    parser = OutputParser()
+    sse_channel = SseChannel(parser, job_repo)
+    job_runner = JobRunner(
+        db,
+        restic_cmd,
+        parser,
+        audit,
+        settings=settings,
+        # TODO(批次 3): policies 路由就绪后由 PolicyRepo 提供策略加载器
+        policy_loader=None,
+    )
+
     app.state.settings = settings
     app.state.db = db
     app.state.audit = audit
@@ -100,6 +131,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_service = auth_service
     app.state.bootstrap = bootstrap
     app.state.exclusions = ExclusionRules(settings)
+    app.state.job_repo = job_repo
+    app.state.path_mapper = path_mapper
+    app.state.restic = restic_cmd
+    app.state.parser = parser
+    app.state.sse_channel = sse_channel
+    app.state.job_runner = job_runner
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()
@@ -107,10 +144,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     purged = await sessions.purge_expired()
     if purged:
         logger.info("启动清理过期会话 %d 条", purged)
+    # env→config 一次性同步：使 E07 的 ENV_OVERRIDDEN 真正触发得到（§6 env 覆盖优先）
+    await sync_env_overrides(config_repo, settings, audit)
+    # 启动恢复：遗留 running/pending 改标 interrupted（P1 不做补跑与 AUTO_UNLOCK）
+    await job_runner.recover_on_startup()
 
     try:
         yield
     finally:
+        # 容器 stop 收尾：向 restic 子进程转发 SIGTERM（§6.5）
+        await job_runner.on_shutdown()
         await close_database()
 
 
@@ -130,9 +173,13 @@ def create_app() -> FastAPI:
     app.include_router(health_router.router)
     # auth 路由：E01/E02/E03/bootstrap/E28（②③ 由路由内部按端点声明）
     app.include_router(auth_router.router)
-    # 后续批次（sources/config/policies/jobs/snapshots/restore…）在此挂载：
-    #   app.include_router(x_router.router,
-    #                      dependencies=[Depends(require_session), Depends(require_bootstrap_done)])
+    # 业务路由：②③ 必须显式挂载，否则首启未改密也能访问（PRD US-A1 AC2）
+    protected = [Depends(require_session), Depends(require_bootstrap_done)]
+    app.include_router(sources_router.router, dependencies=protected)   # E05/E31
+    app.include_router(config_router.router, dependencies=protected)    # E06/E07
+    app.include_router(jobs_router.router, dependencies=protected)      # E12–E16/E27
+    # 后续批次（policies/snapshots/restore/ops…）在此按同样方式挂载：
+    #   app.include_router(x_router.router, dependencies=protected)
 
     _register_exception_handlers(app)
     return app
