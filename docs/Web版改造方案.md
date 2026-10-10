@@ -31,7 +31,8 @@
 >
 > v2.3.3 → v2.3.4：PRD 待确认问题裁决落盘——**策略模型增限速字段**（`--limit-upload/--limit-download`，
 > P2 实现，Q5）；**§4.2 归期调整**：rclone P2 优先、sftp P3（Q6）；中英双语/i18n、日志保留可配置、
-> 浏览器支持清单等其余裁决记录于 PRD §8（Q3/Q7/Q8）。
+> 浏览器支持清单等其余裁决记录于 PRD §8（Q3/Q7/Q8）。另：通知模块新增 MeoW 渠道与渠道级脱敏开关
+> （承接 PRD US-G1，随 P2 交付）。
 
 ---
 
@@ -247,7 +248,7 @@ services:
   ②仓库格式安全——防止随手升级二进制把仓库格式顶上去导致无法回退）。
    ==实际成本极低：改一个 tag 字符串 + CI 自动构建==；镜像 tag 双版本标注（如 `restic-web:1.2.0-restic0.19.1`）；   
    restic 发布频率低，属低频主动升级动作，旧版本可一直稳定使用。不建议"宿主机挂载二进制替换"或  
-   `COPY --from=latest`——前者破坏镜像自包含、后者构建不可复现；\**
+   `COPY --from=latest`——前者破坏镜像自包含、后者构建不可复现。
 
 - dump 客户端只装 client，通过 `PGHOST/PGPORT/PGUSER/PGPASSWORD` TCP 连接；
 - **pg_dump 版本策略（v2.3.3）**：pg_dump 要求 **client 主版本 ≥ server**，新 client 可 dump 任意
@@ -275,7 +276,7 @@ services:
 
 | 设置项                                                                  | 归属                                   | 说明                                                                                        |                          |
 | -------------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------ |
-| 仓库地址（RESTIC_REPOSITORY）                                              | **UI**                               | 后端类型联动表单（P1：s3/b2/本地路径；REST Server P2；sftp/rclone P2/P3；Swift/Azure/GCS 不接入——归期全表见 §4.2）                                              |                          |
+| 仓库地址（RESTIC_REPOSITORY）                                              | **UI**                               | 后端类型联动表单（P1：s3/b2/本地路径；REST Server P2；rclone P2（优先）、sftp P3（待设计）；Swift/Azure/GCS 不接入——归期全表见 §4.2）                                              |                          |
 | 后端凭据（AWS\_*/B2\_*）                                                   | **UI**（env 可覆盖）                      | v2.2 已定                                                                                   |                          |
 | host 标识（RESTIC_HOST）                                                 | **UI**                               | 一次性配置                                                                                     |                          |
 | 数据库 dump 全套（DB 类型、PG/MYSQL 主机/端口/账号/**密码**/库名、保留天数）                  | **UI**                               | PGPASSWORD/MYSQL 密码属可轮换凭证，随凭据分级入 SQLite                                                   |                          |
@@ -333,7 +334,7 @@ UI 联动表单按后端类型逐个交付，避免 P1 范围失控）：
 | Dump 模块    | pg_dump/mysqldump                                | 走 TCP 落 `/data/dump`；`/data/dump` 作为默认备份源之一；空文件校验 + 按保留天数清理                                                                 |
 | 保留策略       | forget + prune                                   | 每策略 `forget --tag --group-by --keep-* --json`；**UI 强制 dry-run 预览 → 确认 → --prune**                                           |
 | 校验         | 抽样 + 月度全量                                        | 备份成功后按 subset 抽样；每月第 N 天全量 --read-data（APScheduler 任务）                                                                      |
-| 通知         | healthchecks / webhook / **MeoW**                | /start、/fail、成功摘要 ping；飞书/钉钉 webhook 模板；**MeoW 推送渠道**（POST JSON 至 `api.chuckfang.com/{昵称}`，成功以响应 JSON `status` 判定、HTTP 恒 200，429 时记日志不重试推送）；**渠道级脱敏开关**——勾选后敏感变量（路径/错误详情/仓库/主机名）渲染时**直接剔除、不显示占位符**，仅保留非敏感摘要（任务号/类型/状态/时长/字节数）并附任务详情深链；第三方渠道默认勾选、自建 webhook 默认不勾；UI 配置 + 测试按钮                                                    |
+| 通知         | healthchecks / webhook / **MeoW**                | /start、/fail、成功摘要 ping；飞书/钉钉 webhook 模板；**MeoW 推送渠道**（POST JSON 至 `api.chuckfang.com/{昵称}`，成功以响应 JSON `status` 判定、HTTP 恒 200，429 时记日志不重试推送）；**渠道级脱敏开关**——勾选后敏感变量（路径/错误详情/仓库/主机名/数据库名）渲染时**直接剔除、不显示占位符**，仅保留非敏感摘要（任务号/类型/状态/时长/字节数）并附任务详情深链；第三方渠道默认勾选、自建 webhook 默认不勾；UI 配置 + 测试按钮                                                    |
 | 维护动作       | 缓存管理                                             | UI 查看缓存占用 / 一键清空（清空不丢数据，仅下次备份变慢）                                                                                            |
 | 任务历史       | 审计与排障                                            | 每任务日志文件 /data/jobs/<id>.log + DB 元数据（起止/退出码/摘要/字节数）；容器重启将 running 标记 interrupted 并按策略补跑                                     |
 
@@ -395,9 +396,13 @@ POST /api/auth/login / POST /api/auth/logout   P1   登录/登出（cookie sessi
 GET  /api/auth/me                              P1   会话信息
 GET  /api/health                               P1   健康检查（容器 HEALTHCHECK 用）
 GET  /api/sources                              P1   可选备份源（按模式浏览 /host 或 /sources）
+POST /api/sources/dry-run                      P1   首备扫描范围预览（backup --dry-run + 伪文件系统目录名警告）
+POST /api/repo/test                            P1   仓库连通性测试（复用 restic cat config 探测）
+GET  /api/repo/status                          P1   仓库状态（连接/锁状态/容量；仪表盘数据源）
 GET/PUT /api/config                            P1   配置读写（凭据/密码文件脱敏）
 GET/POST/PUT/DELETE /api/policies              P1   策略 CRUD（P1 单默认策略；P2 开放多策略）
-POST /api/jobs                                 P1   触发任务（类型白名单：backup/forget/check/restore/unlock/init）
+POST /api/jobs                                 P1   触发任务（类型白名单：backup/forget/check/restore/unlock/init；dump 随 P2 Dump 模块生效）
+GET  /api/jobs                                 P1   任务列表（最小：status=running/pending 进行中列表；P2 补分页/筛选）
 GET  /api/jobs/{id}                            P1   任务状态与元数据
 GET  /api/jobs/{id}/stream                     P1   SSE 进度流（Last-Event-ID 断点续传）
 POST /api/jobs/{id}/cancel                     P1   取消运行中/排队任务（v2.3 新增）
@@ -408,7 +413,8 @@ POST /api/restore/preview                      P2   覆盖比对预览（自研�
 POST /api/forget/preview                       P2   forget dry-run 预览
 GET  /api/checks/{id}                          P2   check 任务结果
 GET/PUT /api/notify                            P2   通知配置；POST /api/notify/test 发送测试消息
-GET/POST /api/cache                            P2   缓存占用查看 / 一键清空
+GET  /api/exclusions                           P2   内置排除集按模式派生结果（只读展示数据源）
+GET  /api/cache + POST /api/cache/clear        P2   缓存占用查看 / 一键清空
 GET  /api/audit                                P2   审计日志查询（append-only，§6.1）
 PUT  /api/admin/password                       P1   管理员改密
 ```
@@ -465,7 +471,9 @@ SSE 鉴权与普通 API 走同一 cookie session 体系。
 6. **非 root 档备份能力边界（v2.3）**：非 root 档读不到宿主机 root 属主 600/640 文件，备份侧**静默跳过**  
    （§3.3 四象限）；"ro 档备份/浏览/恢复全部可用"的承诺仅对 root 运行成立；
 7. **备份期间宿主机 IO 显著升高（v2.3）**：全量备份会占满可用 IO（读全盘 + 写缓存/仓库），对同宿主机  
-   其他负载有可感知影响；若 restic 版本支持限速选项可加入策略字段（**待实测验证** 0.19.1 是否提供）。
+   其他负载有可感知影响；缓解：策略限速字段 `--limit-upload/--limit-download`（Q5 已裁决 restic 0.19.1  
+   支持，P2 接入，见 §5 字段表）+ 进程级 nice/ionice 作 IO 优先级补充；P2 实现时对限速实际行为做  
+   确认性实测并记录（非存在性验证）。
 
 ---
 
@@ -481,7 +489,8 @@ SSE 鉴权与普通 API 走同一 cookie session 体系。
 4. Job Runner（backup/restore/unlock/init + **cancel**）+ 互斥锁 + 任务状态机 + 任务库 + `/host` 路径映射；
 5. `backup --json` 解析（线程池）+ SSE 进度（Last-Event-ID 断点续传 + 心跳 + 反代禁缓冲说明）；
 6. SQLite 工程约定落地（WAL + 单写连接 + user_version 幂等迁移器）；
-7. 页面：登录/首启引导、仓库配置、备份源选择（含内置排除集展示 + 首备 dry-run 确认）、  
+7. 页面：登录/首启引导、**仪表盘**（仓库状态卡/最近任务/四象限能力卡；"下次调度时间"卡随 P2  
+   调度器生效）、仓库配置、备份源选择（含内置排除集展示 + 首备 dry-run 确认）、  
    手动备份（实时进度）、快照浏览（snapshots/ls，分页 + 虚拟滚动）、  
    **恢复向导（P1 仅"恢复到时间戳子目录"默认路径）**。
 
