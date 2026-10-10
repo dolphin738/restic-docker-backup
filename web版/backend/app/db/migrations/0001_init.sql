@@ -5,7 +5,7 @@
 -- 4.1 admin_account（单行表：鉴权 + 首启引导状态）
 CREATE TABLE IF NOT EXISTS admin_account (
     id                       INTEGER PRIMARY KEY CHECK (id = 1),  -- 恒单行
-    password_hash            TEXT NOT NULL,    -- argon2id（argon2-cffi 默认 PasswordHasher）；bcrypt 降级时以 "$2b$" 前缀区分
+    password_hash            TEXT NOT NULL,    -- argon2（argon2-cffi 默认 PasswordHasher）；bcrypt 降级时以 "$2b$" 前缀区分
     must_change              INTEGER NOT NULL DEFAULT 1,          -- 1=首启未改密；Bootstrap 门（§5.1）依据
     bootstrap_shown          INTEGER NOT NULL DEFAULT 0,          -- 随机密码是否已展示（仅一次；1 后再取 → 410 BOOTSTRAP_SHOWN）
     bootstrap_password_hash  TEXT,                                 -- 首启随机密码哈希；改密完成后置 NULL

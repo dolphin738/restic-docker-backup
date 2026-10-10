@@ -1,6 +1,6 @@
-"""密码哈希封装（§8）：argon2id 优先，不可用时降级 bcrypt(cost=12)。
+"""密码哈希封装（§8）：argon2 优先，不可用时降级 bcrypt(cost=12)。
 
-- argon2id：argon2-cffi 默认 PasswordHasher（默认 type 即 id 变体）；
+- argon2：argon2-cffi 默认 PasswordHasher（默认 type 即 id 变体）；
 - 降级：bcrypt cost=12，哈希串以 ``$2b$`` 前缀区分（§4.1 注释）；
 - 明文密码不落库、不落日志；校验失败统一返回 False（不抛异常，避免细节泄漏）。
 """
@@ -57,8 +57,8 @@ _ARGON2_HASHER, _BCRYPT = _load_backends()
 
 
 def backend_name() -> str:
-    """返回当前生效的哈希后端名（``argon2id`` 或 ``bcrypt``）。"""
-    return "argon2id" if _ARGON2_HASHER is not None else "bcrypt"
+    """返回当前生效的哈希后端名（``argon2`` 或 ``bcrypt``）。"""
+    return "argon2" if _ARGON2_HASHER is not None else "bcrypt"
 
 
 def is_bcrypt_hash(hashed: str) -> bool:
@@ -73,7 +73,7 @@ def hash_password(plain: str) -> str:
         plain: 明文密码。
 
     Returns:
-        哈希字符串（argon2id 串或 ``$2b$`` 前缀的 bcrypt 串）。
+        哈希字符串（argon2 串或 ``$2b$`` 前缀的 bcrypt 串）。
 
     Raises:
         RuntimeError: 无任何可用哈希后端。
@@ -113,7 +113,7 @@ def verify_password(plain: str, hashed: str | None) -> bool:
 
 
 def needs_rehash(hashed: str) -> bool:
-    """判断哈希是否需要重算（如从 bcrypt 降级态回到 argon2id）。
+    """判断哈希是否需要重算（如从 bcrypt 降级态回到 argon2）。
 
     Args:
         hashed: 库中哈希。
