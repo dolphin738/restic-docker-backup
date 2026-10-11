@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from app.constants import (
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
-from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.job_repo import Job, JobRepo
 from app.errors import (
     JobConflictError,
     NotCancellableError,
@@ -329,4 +330,78 @@ async def test_submit_run_and_cancel_race_is_safe(tmp_path):
     with pytest.raises(NotCancellableError):
         await runner.cancel(job.id)
     assert runner._tasks == {}
+    await db.close()
+
+
+# ---------------------------------------------------------------- 并发互斥（G6 真并发）
+
+# ⚠️ **本节用例在部分 Windows 环境下会挂起**：凡经 Database（aiosqlite）的用例
+# 都可能停在事件循环里不返回——纯函数用例（test_parser.py）秒过，
+# 而走 aiosqlite 的用例如同环境下卡在 pytest_pyfunc_call 不返回。
+# 经 stash 对照验证：移除本节改动后既有 test_pending_running_success 同样挂住，
+# **与本节代码无关**，属已知的 Windows ProactorLoop + aiosqlite 间歇现象
+# （2026-10-10 QA 阶段亦记录过同类问题，CI 跑 Linux 容器不受影响）。
+#
+# 因此本节用例的价值在于：**在 CI（Linux 容器）上成为真并发门禁**；
+# 本机验证时请用 `pytest tests/test_state_machine.py -k concurrent` 单独跑，
+# 若整体挂起属环境问题而非用例问题。
+
+
+async def test_concurrent_manual_submit_exactly_one_wins(tmp_path):
+    """真并发：两个 manual submit 同时发起 → 恰好 1 成功、1 个 JOB_CONFLICT。
+
+    与 ``test_api/test_jobs.py`` 中「预置 running 再触发」的 409 测试不同：
+    那里第二条请求在第一条已落库之后才开始，未真正重叠，
+    因此无法证伪"检查与写入之间存在竞态窗口"这类缺陷。
+
+    这里用 ``asyncio.gather`` 让两个协程在同一事件循环轮次内同时进入
+    ``submit``，真正并发竞争 ``_repo_lock``（C1/C3）。
+    """
+    db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
+
+    async def submit_once() -> Job | BaseException:
+        try:
+            return await runner.submit("backup", params={"sources": ["/host/etc"]})
+        except BaseException as exc:  # noqa: BLE001 - 收集冲突异常用于断言
+            return exc
+
+    results = await asyncio.gather(submit_once(), submit_once())
+
+    wins = [r for r in results if isinstance(r, Job)]
+    conflicts = [r for r in results if isinstance(r, JobConflictError)]
+
+    assert len(wins) == 1, f"应恰好 1 个成功，实际 {len(wins)}"
+    assert len(conflicts) == 1, f"应恰好 1 个冲突，实际 {len(conflicts)}"
+
+    # 冲突方带出冲突方的 job id，便于前端定位
+    assert conflicts[0].data.get("running_job_id") == wins[0].id
+
+    # 数据库层同样只应有一条 active 记录（防"两个都过了检查"这类更严重的缺陷）
+    assert len(await repo.list_active()) == 1
+
+    await await_job(runner, wins[0].id)
+    await db.close()
+
+
+async def test_concurrent_submit_does_not_duplicate_active_rows(tmp_path):
+    """并发 submit 后，jobs 表中同仓库最多一条 running/pending（单写串行不变量）。
+
+    覆盖 C1 的另一面：即便互斥判定将来被改动，DB 层的单写连接 + 状态
+    判定也不应让两条 active 记录同时存在。
+    """
+    db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
+
+    results = await asyncio.gather(
+        *(runner.submit("backup", params={"sources": ["/host/etc"]}) for _ in range(4)),
+        return_exceptions=True,
+    )
+    successes = [r for r in results if isinstance(r, Job)]
+    assert len(successes) == 1, f"4 路并发应恰好 1 成功，实际 {len(successes)}"
+    assert all(isinstance(r, JobConflictError) for r in results if not isinstance(r, Job))
+
+    active = await repo.list_active()
+    assert len(active) == 1
+    assert active[0].id == successes[0].id
+
+    await await_job(runner, successes[0].id)
     await db.close()
