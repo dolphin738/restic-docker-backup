@@ -87,7 +87,6 @@ export default {
     jobsCard: '进行中的任务',
     jobsAutoNote: '列表每 15 秒自动刷新',
     jobsEmpty: '当前没有进行中的任务',
-    quadrantCard: '能力四象限',
     loadFailed: '加载失败：{message}',
   },
   job: {
@@ -113,16 +112,30 @@ export default {
       closed: '已结束',
     },
   },
-  quadrant: {
-    title: '能力四象限',
-    currentTag: '当前组合',
-    axisUser: '运行用户',
-    axisMount: '/host 挂载',
-    root: 'root',
-    nonRoot: '非 root',
-    ro: '只读（ro）',
-    rw: '读写（rw）',
-    combos: {
+  tier: {
+    title: '运行模式',
+    currentTag: '当前模式',
+    user: {
+      root: 'root',
+      nonRoot: '非 root',
+    },
+    mount: {
+      ro: '只读（ro）',
+      rw: '读写（rw）',
+    },
+    // 模式名按「能力形态」取名：视野（能否读全）× 恢复（能否原位）
+    name: {
+      root: {
+        ro: '全览模式',
+        rw: '完整模式',
+      },
+      nonRoot: {
+        ro: '沙盒模式',
+        rw: '受限模式',
+      },
+    },
+    note: '运行模式由部署形态决定：运行用户 × /host 挂载模式；调整 compose 后重启容器生效。',
+    desc: {
       root: {
         ro: '可读绝大多数文件；恢复只能到时间戳子目录，不支持原位恢复。',
         rw: '能力完整：可读绝大多数文件，支持原位恢复（需覆盖清单确认）。',

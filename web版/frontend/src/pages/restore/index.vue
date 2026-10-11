@@ -38,7 +38,7 @@ const gateShow = ref(false)
 const restoring = ref(false)
 const result = ref<{ jobId: string; restoreTarget: string } | null>(null)
 
-// 与 QuadrantCard 同源：/api/auth/me 的 host_mount / user
+// 与 TierCard（运行模式卡）同源：/api/auth/me 的 host_mount / user
 const isReadOnlyMount = computed(() => ui.me?.host_mount === 'ro')
 const inPlaceReason = computed(() =>
   isReadOnlyMount.value ? t('restore.inPlaceRoReason') : t('restore.inPlaceP2Reason'),

@@ -18,7 +18,7 @@ import { isAppError } from '@/api/http'
 import { listActiveJobs } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import JobProgress from '@/components/JobProgress.vue'
-import QuadrantCard from '@/components/QuadrantCard.vue'
+import TierCard from '@/components/TierCard.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -135,9 +135,9 @@ function formatBytes(value: number): string {
         </n-card>
       </n-gi>
 
-      <!-- 能力四象限卡：运行用户 × /host 挂载模式 -->
+      <!-- 运行模式卡：运行用户 × /host 挂载模式，只展示当前模式 -->
       <n-gi>
-        <QuadrantCard :user="ui.me?.user ?? ''" :host-mount="ui.me?.host_mount ?? 'ro'" />
+        <TierCard :user="ui.me?.user ?? ''" :host-mount="ui.me?.host_mount ?? 'ro'" />
       </n-gi>
     </n-grid>
   </n-space>

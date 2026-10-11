@@ -87,7 +87,6 @@ export default {
     jobsCard: 'Running jobs',
     jobsAutoNote: 'List refreshes every 15s',
     jobsEmpty: 'No running jobs',
-    quadrantCard: 'Capability quadrants',
     loadFailed: 'Load failed: {message}',
   },
   job: {
@@ -113,16 +112,30 @@ export default {
       closed: 'Finished',
     },
   },
-  quadrant: {
-    title: 'Capability quadrants',
-    currentTag: 'Current',
-    axisUser: 'Run as user',
-    axisMount: '/host mount',
-    root: 'root',
-    nonRoot: 'non-root',
-    ro: 'read-only (ro)',
-    rw: 'read-write (rw)',
-    combos: {
+  tier: {
+    title: 'Runtime mode',
+    currentTag: 'Current mode',
+    user: {
+      root: 'root',
+      nonRoot: 'non-root',
+    },
+    mount: {
+      ro: 'read-only (ro)',
+      rw: 'read-write (rw)',
+    },
+    // Tier names describe the capability shape: visibility (full vs partial) × restore (in-place vs subdir).
+    name: {
+      root: {
+        ro: 'Full view',
+        rw: 'Full access',
+      },
+      nonRoot: {
+        ro: 'Sandbox',
+        rw: 'Restricted',
+      },
+    },
+    note: 'The runtime mode is fixed by the deployment: run-as user × /host mount mode. Edit compose and restart the container to change it.',
+    desc: {
       root: {
         ro: 'Can read most files; restore is limited to a timestamped subdirectory (no in-place restore).',
         rw: 'Full capability: can read most files and supports in-place restore (with overwrite confirmation).',
