@@ -17,7 +17,9 @@ name: restic-docker-backup-web
 
 services:
   restic-web:
-    image: restic-web:0.1.0-restic0.19.1
+    # 发布标签形如 <应用版本>-restic<restic版本>；与 CI（scripts/ci-docker.sh）产出一致。
+    # 本地构建可改 build: 段自行 docker build（上下文为 web版/）。
+    image: dolphin738/restic-web:1.0.0-restic0.19.1
     container_name: restic-web
     build:
       context: ..

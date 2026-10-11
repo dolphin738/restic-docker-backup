@@ -4,9 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "restic-web"
-version = "0.1.0"
+version = "1.0.0"
 description = "restic-docker-backup Web 版后端（FastAPI + aiosqlite + restic 静态二进制编排）"
 requires-python = ">=3.13"
+# SPDX 许可证标识；完整条款见仓库根 LICENSE（GNU AGPL v3.0）
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later",
+]
 dependencies = [
     # starlette CVE 下限防护（修复版本以 pip-audit/OSV 实测为准）：
     # - >=0.49.1 修复 PYSEC-2026-1942（Range DoS）

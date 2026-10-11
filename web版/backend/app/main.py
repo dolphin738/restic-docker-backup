@@ -177,7 +177,7 @@ def create_app() -> FastAPI:
     """构造 FastAPI 应用实例（供 uvicorn / 测试使用）。"""
     app = FastAPI(
         title="restic-web",
-        version="0.1.0",
+        version="1.0.0",
         description="restic-docker-backup Web 管理端（P1 基础设施 + 鉴权闭环）",
         lifespan=lifespan,
     )

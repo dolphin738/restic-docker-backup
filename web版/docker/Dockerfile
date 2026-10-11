@@ -1,5 +1,5 @@
 # 构建上下文为 web版/ 目录：
-#   docker build -f docker/Dockerfile -t restic-web:0.1.0-restic0.19.1 .
+#   docker build -f docker/Dockerfile -t dolphin738/restic-web:1.0.0-restic0.19.1 .
 # 说明：本镜像为单容器方案（方案 §2），restic 静态二进制随镜像固定版本（§4 D1）。
 
 ARG RESTIC_VERSION=0.19.1
@@ -14,7 +14,9 @@ ARG RESTIC_SHA256=""
 
 LABEL org.opencontainers.image.title="restic-web" \
       org.opencontainers.image.description="restic-docker-backup Web 管理端（FastAPI + restic 静态二进制）" \
-      org.opencontainers.image.version="restic-${RESTIC_VERSION}"
+      org.opencontainers.image.version="restic-${RESTIC_VERSION}" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+      org.opencontainers.image.source="https://cnb.cool/dolphin738/restic-docker-backup"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
