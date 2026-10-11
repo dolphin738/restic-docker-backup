@@ -40,9 +40,11 @@ RUN apk add --no-cache tzdata wget postgresql-client mysql-client \
 WORKDIR /app
 
 # 依赖与源码：pyproject.toml + uv.lock 为依赖唯一事实来源（锁定安装，构建可重复）
+# 用完即删：uv 二进制与 uv 缓存都在同一 RUN 层内移除，不进最终镜像（否则 +25MB）
 COPY backend/pyproject.toml backend/uv.lock /app/
 RUN pip install --no-cache-dir uv \
- && uv sync --frozen --no-dev --no-install-project \
+ && uv sync --frozen --no-dev --no-install-project --no-cache \
+ && pip uninstall --yes uv \
  && apk del .build-deps
 
 # uv sync 建在 /app/.venv，应用依赖全部来自锁文件
