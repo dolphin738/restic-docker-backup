@@ -89,19 +89,75 @@ class CSRFOriginMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# ---- 日志格式（容器日志交由 Docker json-file 轮转，方案 §8.1）----
+# 必须带时间戳：uvicorn 默认格式（`INFO:     消息` / 访问日志）没有时间字段，
+# 容器日志里无法判断时序——排查 SSE 断流、健康检查节奏、restic 长任务耗时全靠猜。
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
+# %z 输出 +0800 偏移：避免把容器 TZ（compose 默认 Asia/Shanghai）误读成 UTC
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S%z"
+
+
+def _log_level_name() -> str:
+    """日志级别（环境变量 ``LOG_LEVEL``，默认 INFO）。"""
+    return os.environ.get("LOG_LEVEL", "INFO").upper()
+
+
 def _configure_logging() -> None:
-    """配置进程日志级别（容器日志交由 Docker json-file 轮转，方案 §8.1）。"""
-    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    """配置 root logger（格式化 + 级别）。
+
+    **必须在模块导入期调用**（早于 ``create_app()``）：uvicorn 以 ``app.main:app``
+    字符串导入本模块，若此刻 root 还没有 handler，``create_app()`` 与 ``main()`` 里的
+    启动日志会被 logging 的 lastResort handler 按 WARNING 门槛**静默丢弃**——
+    表现就是容器里只看得到 uvicorn 那几行，应用自己的启动信息一条都没有。
+    """
     logging.basicConfig(
-        level=getattr(logging, level_name, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        level=getattr(logging, _log_level_name(), logging.INFO),
+        format=LOG_FORMAT,
+        datefmt=LOG_DATEFMT,
     )
+
+
+def _uvicorn_log_config() -> dict[str, object]:
+    """uvicorn 日志配置：沿用其 default/access 双 handler 结构，只换掉格式串补上时间戳。
+
+    刻意**不配置 root**——root handler 由导入期的 ``_configure_logging()`` 装好，
+    配合 ``disable_existing_loggers=False`` 不会被 dictConfig 摘掉，
+    应用日志（``restic-web``）照常经 root 输出且只输出一次。
+    """
+    level = _log_level_name()
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {"format": LOG_FORMAT, "datefmt": LOG_DATEFMT},
+            "access": {"format": LOG_FORMAT, "datefmt": LOG_DATEFMT},
+        },
+        "handlers": {
+            "default": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+                "stream": "ext://sys.stderr",
+            },
+            "access": {
+                "class": "logging.StreamHandler",
+                "formatter": "access",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": level, "propagate": False},
+            "uvicorn.error": {"level": level},
+            "uvicorn.access": {"handlers": ["access"], "level": level, "propagate": False},
+        },
+    }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期：初始化 DB/迁移、装配服务、首启引导准备、过期会话清理。"""
-    _configure_logging()
+    """应用生命周期：初始化 DB/迁移、装配服务、首启引导准备、过期会话清理。
+
+    日志不在此配置——已在模块导入期完成（见 ``_configure_logging`` 说明）。
+    """
     settings = get_settings()
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -277,6 +333,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=ERROR_STATUS[INTERNAL], content=payload.model_dump(exclude_none=True))
 
 
+# 导入期装好 root handler：create_app() 内就有 INFO 级启动日志（如 SPA 挂载结果），
+# 晚一步配置会被 lastResort handler 按 WARNING 门槛丢弃。
+_configure_logging()
 app = create_app()
 
 
@@ -316,6 +375,9 @@ def main() -> None:
         "port": settings.port,
         "proxy_headers": settings.trust_proxy,
         "forwarded_allow_ips": "*" if settings.trust_proxy else "127.0.0.1",
+        # 不传 log_config 时 uvicorn 用自己的默认格式（无时间戳），故显式给出
+        "log_config": _uvicorn_log_config(),
+        "log_level": _log_level_name().lower(),
     }
     if cert_path and key_path:
         logger.info("启用内置 TLS：cert=%s key=%s", cert_path, key_path)
