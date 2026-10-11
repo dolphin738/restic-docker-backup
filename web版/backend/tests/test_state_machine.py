@@ -335,16 +335,12 @@ async def test_submit_run_and_cancel_race_is_safe(tmp_path):
 
 # ---------------------------------------------------------------- 并发互斥（G6 真并发）
 
-# ⚠️ **本节用例在部分 Windows 环境下会挂起**：凡经 Database（aiosqlite）的用例
-# 都可能停在事件循环里不返回——纯函数用例（test_parser.py）秒过，
-# 而走 aiosqlite 的用例如同环境下卡在 pytest_pyfunc_call 不返回。
-# 经 stash 对照验证：移除本节改动后既有 test_pending_running_success 同样挂住，
-# **与本节代码无关**，属已知的 Windows ProactorLoop + aiosqlite 间歇现象
-# （2026-10-10 QA 阶段亦记录过同类问题，CI 跑 Linux 容器不受影响）。
-#
-# 因此本节用例的价值在于：**在 CI（Linux 容器）上成为真并发门禁**；
-# 本机验证时请用 `pytest tests/test_state_machine.py -k concurrent` 单独跑，
-# 若整体挂起属环境问题而非用例问题。
+# ✅ **本节用例在本机 Windows 上可正常通过**（2026-10-11 复核：连跑 3 轮全量
+# 均为 117 passed）。
+# 此前记录的「凡经 aiosqlite 的用例都会挂起」是**误判**，已撤销：当时的挂起由
+# 本会话内几条超时被杀/未回收的 python 进程引起（连续跑 pytest 与多次超时中断
+# 叠加导致），清理进程后即恢复，与事件循环策略、aiosqlite 版本均无关。
+# 如再遇疑似挂起，先排查残留进程（tasklist | findstr python）再下结论。
 
 
 async def test_concurrent_manual_submit_exactly_one_wins(tmp_path):

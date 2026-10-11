@@ -277,6 +277,31 @@ else
   ok 'AGENTS.md 编号锚点与规范 §3.1 一致'
 fi
 
+# ---------------------------------------------------------------- Docker 构建上下文
+
+section 'G8 .dockerignore 与 Dockerfile 一致'
+
+# 无 docker 运行时也要能验证 .dockerignore：排除过头会导致构建失败，
+# 排除不足会把 .venv/.env 打进镜像。校验器解析 Dockerfile 的 COPY 源做双向核对。
+# python3 → python 依次尝试；都没有则跳过（不误报为违反，但会明确提示）。
+PY_BIN=''
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1; then PY_BIN="$cand"; break; fi
+done
+
+if [ -f .dockerignore ] && [ -f docker/Dockerfile ]; then
+  if [ -z "$PY_BIN" ]; then
+    printf '  \033[33m○\033[0m .dockerignore 存在，但无 python 解释器，跳过一致性校验\n'
+  elif out=$("$PY_BIN" scripts/check_dockerignore.py 2>&1); then
+    ok '.dockerignore 与 Dockerfile COPY 源一致'
+  else
+    violation '.dockerignore 与 Dockerfile 不一致（见下）'
+    detail "$out"
+  fi
+else
+  violation '缺少 .dockerignore 或 docker/Dockerfile'
+fi
+
 # ---------------------------------------------------------------- 汇总
 
 printf '\n%s\n' '────────────────────────────────────────'

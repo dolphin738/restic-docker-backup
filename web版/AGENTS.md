@@ -87,7 +87,7 @@ bash scripts/verify_redlines.sh
 - 前端请求走 `src/api/` 唯一出口；SSE 一律用 `useJobStream`（组件不直接持有 EventSource，SSE 数据不进响应式树）；危险操作复用 `ConfirmGate.vue`；路径展示复用 `PathBreadcrumb.vue`；文案全部走 i18n（`<script setup>` 中 `const { t } = useI18n()`，**模板文案禁硬编码中文，代码注释里可以**）；大列表用虚拟滚动（`n-data-table virtual-scroll` / `useVirtualList`）；
 - 改 `useJobStream.ts` 必须有对应测试（vitest 已接入，`pnpm run test`；现有 12 条用例见 `src/composables/__tests__/useJobStream.spec.ts`）；改 `parser.py` 必须跑 fixture 回归；
 - 新增依赖需说明理由并锁版本（后端 `uv.lock`、前端 `pnpm-lock.yaml`），禁止引入与既有选型重叠的库；
-- **构建相关**：Docker 构建上下文为 `web版/`，`.dockerignore` 位于上下文根；改 `Dockerfile`/`compose` 时确认未把 `.venv`/`node_modules`/`.env` 打进镜像。
+- **构建相关**：Docker 构建上下文为 `web版/`，`.dockerignore` 位于上下文根；改 `Dockerfile`/`compose` 时执行 `python scripts/check_dockerignore.py` 确认 COPY 源未被排除（排除过头会构建失败）、`.venv`/`.env` 仍在排除列表（防止打进镜像）。
 
 ## Git 与提交
 
