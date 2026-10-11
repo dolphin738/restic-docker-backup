@@ -161,6 +161,8 @@ async function onSave(): Promise<void> {
     message.success(t('repo.saved'))
     clearCredInput()
     await configQuery.refetch()
+    // 仓库地址/凭据可能已变：服务端已清 E30 缓存，前端立即重取状态卡
+    void statusQuery.refetch()
   } finally {
     saving.value = false
   }

@@ -71,6 +71,7 @@ class JobRunner:
         db_flush_interval: float = 1.0,
         settings: Settings | None = None,
         policy_loader: PolicyLoader | None = None,
+        on_finish: Callable[[], None] | None = None,
     ) -> None:
         """构造执行器。
 
@@ -84,6 +85,8 @@ class JobRunner:
             db_flush_interval: 进度落库最小间隔（秒），避免高频写 SQLite。
             settings: 运行期配置；缺省取进程单例。
             policy_loader: 策略加载回调（批次 3 由 PolicyRepo 注入；P1 可为空）。
+            on_finish: 任务到达终态后的外部回调（如 E30 仓库状态缓存失效）；
+                回调异常只记日志，不影响任务链路。
         """
         self._db = db
         self._restic = restic
@@ -94,6 +97,7 @@ class JobRunner:
         self._db_flush_interval = max(0.1, db_flush_interval)
         self._settings = settings or get_settings()
         self._policy_loader = policy_loader
+        self._on_finish = on_finish
 
         self._jobs = JobRepo(db)
         self._config = ConfigRepo(db)
@@ -318,6 +322,20 @@ class JobRunner:
                 self._processes.pop(job.id, None)
                 self._params.pop(job.id, None)
                 self._tasks.pop(job.id, None)
+                self._notify_finish()
+
+    def _notify_finish(self) -> None:
+        """任务终态后的外部回调（当前用途：E30 仓库状态缓存失效）。
+
+        init/unlock 等任务会改变仓库可连性——不失效缓存的话，用户跑完 init
+        再看状态卡，最多 30s 内拿到的还是"未连接"的旧值。
+        """
+        if self._on_finish is None:
+            return
+        try:
+            self._on_finish()
+        except Exception:  # noqa: BLE001 - 回调只做辅助通知，失败不能影响任务链路
+            logger.exception("JobRunner on_finish 回调执行失败")
 
     # ---------------------------------------------------------------- 启动恢复 / 关闭收尾
 

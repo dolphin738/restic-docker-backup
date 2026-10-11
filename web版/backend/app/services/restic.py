@@ -263,7 +263,13 @@ class ResticCmd:
             :class:`ProbeResult`（退出码 / 输出行 / 是否被截断）。
         """
         log_path = self._settings.jobs_dir / f"probe-{uuid4().hex}.log"
-        proc = await self.spawn(argv, log_path, env=env)
+        try:
+            proc = await self.spawn(argv, log_path, env=env)
+        except OSError as exc:
+            # restic 二进制缺失/不可执行时，探测端点（E29/E30）不能 5xx——
+            # 它们的契约是"失败回结构化结果"，让 failure_reason 生成文案
+            log_path.unlink(missing_ok=True)
+            return ProbeResult(exit_code=-1, lines=[f"restic 启动失败：{exc}"], truncated=False)
         lines: list[str] = []
         truncated = False
         try:

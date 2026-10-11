@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import ORIGIN, finish_bootstrap
+
+
+@pytest.fixture(autouse=True)
+def _reset_repo_status_cache():
+    """E30 的 TTL 缓存是模块级全局：用例间必须清零，否则前一个用例的探测结果会泄漏。"""
+    from app.routers import config as config_router
+
+    config_router._status_cache = None
+    yield
+    config_router._status_cache = None
 
 
 async def test_e06_read_config_masking(app_client):
@@ -123,6 +134,31 @@ async def test_e30_repo_status_cached(make_app):
     resp2 = await ns.client.get("/api/repo/status")
     assert resp2.status_code == 200
     assert resp2.json() == resp1.json()
+
+
+async def test_e30_cache_invalidated_by_config_write(make_app):
+    """E07 写入 repo.url 后 E30 缓存立即失效（真机缺陷：保存后状态卡仍是旧值）。"""
+    ns = await make_app()
+    await finish_bootstrap(ns)
+
+    # 无配置时缓存的是"仓库地址未配置"
+    r1 = await ns.client.get("/api/repo/status")
+    assert r1.status_code == 200
+    first_error = r1.json()["last_error"]
+    assert "未配置" in first_error
+
+    # 保存 repo.url → 缓存必须被清除，下一条状态重新探测（测试环境无 restic 二进制，
+    # 走 run_json 的 OSError 兜底 → exit_code=-1 的结构化失败，而非"未配置"旧缓存）
+    put = await ns.client.put(
+        "/api/config", json={"patch": {"repo.url": "/repo"}}, headers=ORIGIN
+    )
+    assert put.status_code == 200
+
+    r2 = await ns.client.get("/api/repo/status")
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["connected"] is False
+    assert body2["last_error"] != first_error, "E07 写入后 E30 仍返回旧缓存"
 
 
 async def test_e07_readonly_key_repo_type_409(app_client):

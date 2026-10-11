@@ -56,6 +56,7 @@ from app.routers import policies as policies_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
+from app.routers.config import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.env_sync import sync_env_overrides
 from app.services.job_runner import JobRunner
@@ -189,6 +190,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audit,
         settings=settings,
         policy_loader=policy_repo.get_dict,
+        # 任务终态（init/unlock 会改变仓库可连性）→ E30 状态缓存立即失效
+        on_finish=invalidate_repo_status_cache,
     )
 
     app.state.settings = settings

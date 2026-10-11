@@ -98,6 +98,9 @@ async def put_config(
 
     repo = request.app.state.config_repo
     await repo.set_many(payload.patch)
+    # E30 有 30s 进程内 TTL 缓存：配置刚保存（尤其 repo.url/凭据）时必须失效，
+    # 否则用户保存后点「刷新」拿到的仍是旧状态，误以为"保存了也没连上"。
+    invalidate_repo_status_cache()
 
     keys = sorted(payload.patch.keys())
     await request.app.state.audit.record(
@@ -107,6 +110,17 @@ async def put_config(
         result="ok",
     )
     return OkResponse()
+
+
+def invalidate_repo_status_cache() -> None:
+    """清除 E30 的进程内 TTL 缓存。
+
+    调用时机：E07 配置写入（repo.url / 凭据变了）、任务终态（init/unlock 会改变
+    仓库可连性，由 JobRunner 的 ``on_finish`` 回调触发）。本函数无锁——赋值为
+    ``None`` 是原子的，最多让一次并发请求多做一次探测，无正确性问题。
+    """
+    global _status_cache
+    _status_cache = None
 
 
 @router.post(
