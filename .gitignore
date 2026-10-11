@@ -71,6 +71,8 @@ restic-cache/
 restore/
 logs/
 *.log
+# 例外：前端页面目录与运行期目录同名（CI 实测误伤：pages/restore/ 未入库导致 TS2307）
+!web版/frontend/src/pages/restore/
 
 # ---------- 编辑器 / 操作系统 ----------
 .DS_Store
@@ -93,3 +95,4 @@ web版/dev-scripts/.dev-*.pid
 # ---------- 其它 ----------
 tmp/
 temp/
+.ci-image-tags

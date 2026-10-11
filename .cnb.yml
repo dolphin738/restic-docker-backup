@@ -56,31 +56,7 @@
       env:
         RESTIC_VERSION: "0.19.1"
       stages:
-        - name: resolve tags and build
-          script:
-            - CNB_IMG="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
-            - CNB_TAGS="${CNB_IMG}:${CNB_COMMIT_SHORT} ${CNB_IMG}:latest"
-            - HUB_TAGS=""
-            - if [ -n "${DOCKERHUB_NAMESPACE}" ]; then HUB_TAGS="${DOCKERHUB_NAMESPACE}/restic-web:${CNB_COMMIT_SHORT} ${DOCKERHUB_NAMESPACE}/restic-web:latest"; fi
-            - if APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null); then
-                APP_VERSION=${APP_VERSION#v};
-                VTAG="${APP_VERSION}-restic${RESTIC_VERSION}";
-                CNB_TAGS="${CNB_TAGS} ${CNB_IMG}:${VTAG}";
-                if [ -n "${DOCKERHUB_NAMESPACE}" ]; then HUB_TAGS="${HUB_TAGS} ${DOCKERHUB_NAMESPACE}/restic-web:${VTAG}"; fi;
-                echo "发布双版本标签：${VTAG}";
-              else
-                echo "当前 commit 无 git tag，跳过双版本标签";
-              fi
-            - printf '%s\n' ${CNB_TAGS} > .ci-cnb-tags
-            - if [ -n "${HUB_TAGS}" ]; then printf '%s\n' ${HUB_TAGS} > .ci-hub-tags; fi
-            - docker build -f web版/docker/Dockerfile --build-arg RESTIC_VERSION=${RESTIC_VERSION} ${CNB_TAGS} ${HUB_TAGS} web版/
-
-        - name: push (cnb registry)
-          script: for img in $(cat .ci-cnb-tags); do docker push "$img"; done
-
-        - name: push (docker hub, skip if not configured)
-          script:
-            - if [ ! -s .ci-hub-tags ]; then echo "未配置 Docker Hub 凭据（dolphin738/my:docker.yml），跳过推送"; exit 0; fi
-            - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
-            - for img in $(cat .ci-hub-tags); do docker push "$img"; done
-            - docker logout
+        # 构建与推送逻辑收敛为仓库脚本（scripts/ci-docker.sh）：
+        # 可本地审阅/测试，规避 YAML 内联多行 shell 的拼接与展开坑（CI 实测踩坑）
+        - name: build and push
+          script: bash scripts/ci-docker.sh all
