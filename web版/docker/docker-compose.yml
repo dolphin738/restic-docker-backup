@@ -55,7 +55,9 @@ services:
       # 恢复目标（P1 恢复到时间戳子目录；rw 档下也可选 /host 下子目录）
       - /restore:/restore
 
-      # 仅本地路径仓库需要；对象存储后端（s3/b2）可整行注释
+      # 仅"本地路径仓库"需要；s3/b2 等对象存储后端可整行保持注释
+      # 启用时：宿主机目录 → 容器 /repo；UI 仓库地址填 /repo（或 /repo/子目录）；首次使用先跑一次 init
+      # 注意：restic 跑在容器内，只认容器路径——UI 里填宿主机真实路径会报"仓库不存在或未初始化"
       # - /mnt/backup/restic-repo:/repo
 
       # SQLite + 任务日志 + dump（属主要求见方案 §4：非 root 档须 chown 1000:1000）
