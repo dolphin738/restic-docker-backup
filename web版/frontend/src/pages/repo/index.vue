@@ -74,6 +74,9 @@ const testResult = ref<RepoTestResponse | null>(null)
 const unlockShow = ref(false)
 const unlocking = ref(false)
 const unlockJobId = ref('')
+const initShow = ref(false)
+const initializing = ref(false)
+const initJobId = ref('')
 
 const itemMap = computed<Map<string, ConfigItem>>(() => {
   const map = new Map<string, ConfigItem>()
@@ -200,6 +203,25 @@ async function onUnlock(): Promise<void> {
     unlocking.value = false
   }
 }
+
+/** 初始化仓库（E12 init）：仅状态卡显示「未连接」时出现。
+ * P1 无 AUTO_INIT（归 P2 行为开关），而 UI 此前没有任何 init 入口——
+ * 本地路径仓库（/repo）不 init 就永远「未连接」，这是流程级缺口。 */
+async function onInit(): Promise<void> {
+  initializing.value = true
+  try {
+    const created = await createJob('init')
+    initJobId.value = created.id
+    message.success(t('repo.initSubmitted'))
+    void statusQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    initializing.value = false
+  }
+}
 </script>
 
 <template>
@@ -324,6 +346,12 @@ async function onUnlock(): Promise<void> {
             <n-alert v-if="repoStatus?.last_error" type="error" :show-icon="false">
               {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
             </n-alert>
+            <template v-if="repoStatus && !repoStatus.connected">
+              <n-button size="small" type="warning" :loading="initializing" @click="initShow = true">
+                {{ t('repo.initBtn') }}
+              </n-button>
+              <n-text depth="3" class="repo__note">{{ t('repo.initHint') }}</n-text>
+            </template>
             <template v-if="repoStatus?.locked">
               <n-alert type="warning" :show-icon="false">{{ t('repo.lockedNote') }}</n-alert>
               <n-button size="small" type="warning" @click="unlockShow = true">
@@ -332,6 +360,9 @@ async function onUnlock(): Promise<void> {
             </template>
             <n-text depth="3" class="repo__note">{{ t('dashboard.repoCacheNote') }}</n-text>
 
+            <template v-if="initJobId">
+              <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" />
+            </template>
             <template v-if="unlockJobId">
               <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
             </template>
@@ -351,6 +382,20 @@ async function onUnlock(): Promise<void> {
     >
       <template #preview>
         <n-text depth="3">{{ t('repo.unlockPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
+    <!-- 初始化仓库：三步确认门（重复 init 会在错误地址上另建新仓库，须慎重） -->
+    <ConfirmGate
+      v-model:show="initShow"
+      :title="t('repo.initBtn')"
+      :keyword="'INIT'"
+      :description="t('repo.initDesc')"
+      :loading="initializing"
+      @confirm="onInit"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.initPreview') }}</n-text>
       </template>
     </ConfirmGate>
   </n-space>
