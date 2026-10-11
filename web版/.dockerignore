@@ -52,7 +52,6 @@ docs/
 *.md
 
 # ---- 版本控制与 OS 噪声 ----
-.git/
 .gitignore
 .gitattributes
 **/.DS_Store

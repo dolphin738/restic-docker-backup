@@ -59,6 +59,9 @@ class Database:
 
             return int(get_settings().db_busy_timeout_ms)
         except Exception:  # noqa: BLE001 - 启动早期或测试裸构造时回退默认值
+            # 回退本身合理，但要留痕：settings 存在却读失败属于配置错误，
+            # 静默吞掉会让"改了环境变量没生效"这类问题无从排查。
+            logger.warning("settings.db_busy_timeout_ms 读取失败，回退默认值 %sms", DB_BUSY_TIMEOUT_MS)
             return DB_BUSY_TIMEOUT_MS
 
     # ---------------------------------------------------------------- 生命周期
