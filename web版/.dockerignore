@@ -1,0 +1,54 @@
+# Docker 构建上下文排除清单
+#
+# 构建上下文为 web版/（即 `docker build web版/`），Dockerfile 只 COPY
+# backend/pyproject.toml、backend/app、docker/entrypoint.sh 三处。
+# 本清单的作用是：即使有人误用更大的上下文（如仓库根），也不会把
+# 依赖目录、缓存、密钥与本地配置打进镜像层。
+#
+# 注意：.dockerignore 不支持按"未被 COPY"自动裁剪，必须显式排除。
+
+# ---- 依赖与构建产物（体积最大且绝不应进镜像）----
+**/.venv/
+**/venv/
+**/node_modules/
+**/dist/
+**/build/
+**/*.egg-info/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/coverage/
+**/.nyc_output/
+
+# ---- 前端整目录不进后端镜像 ----
+frontend/
+
+# ---- 密钥与本地配置（红线：凭据不得进镜像层）----
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/
+**/.npmrc
+**/.netrc
+**/.git/
+
+# ---- 测试与工具配置（镜像内不需要）----
+backend/tests/
+.pytest_cache/
+.vscode/
+.idea/
+
+# ---- 文档与工作区元数据 ----
+docs/
+.workbuddy/
+*.md
+
+# ---- 版本控制与 OS 噪声 ----
+.git/
+.gitignore
+.gitattributes
+**/.DS_Store
+**/Thumbs.db
