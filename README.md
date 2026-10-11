@@ -101,6 +101,8 @@ docker run -d --name restic-web \
 - **SSE 实时进度必须禁用反代缓冲**：后端已下发 `X-Accel-Buffering: no`，Nginx 侧还需
   `proxy_buffering off; proxy_read_timeout 3600s;`，且空闲心跳默认 15s
   （`SSE_HEARTBEAT_SECONDS`），反代 idle timeout 小于该值时需下调心跳间隔。
+- 容器日志**每行带时间戳**（`2026-10-12 04:30:27+0800 INFO uvicorn.access | ...`，偏移取容器 `TZ`），
+  级别由 `LOG_LEVEL` 调节（默认 `INFO`）。轮转交给 Docker `json-file` 驱动，应用不写日志文件。
 
 ---
 

@@ -32,6 +32,11 @@
   修掉"本地构建产物顶替同名发布镜像、外观无从分辨"的隐患。
 - 依赖安装改为 `uv sync --frozen`（`uv.lock` 锁定），CI 与 Dockerfile 同步，构建可重复。
 - 分支模型收敛为**主干开发**（`main` 唯一长期分支，dev 分支已删除）。
+- `scripts/`（宿主机侧校验脚本：`check_dockerignore.py` / `scan_image.sh` / `verify_redlines.sh`）
+  排除出 Docker 构建上下文——Dockerfile 从不 COPY 它们，原先每次构建白白传输 27.7KB。
+- `scripts/check_dockerignore.py` 新增 `--context`：无 docker 也能出"构建上下文体积账"，
+  按顶层目录聚合、列出 `frontend/` 明细、标出"进了上下文却从不被 COPY"的目录，
+  并单列"跨阶段 COPY"（如 `/fe/dist`）以区分"上下文来源"与"镜像内容"。
 
 ### 修复
 
@@ -46,6 +51,16 @@
     404 处理器仅对"GET/HEAD + 非 `/api` 前缀 + 末段无扩展名"回落 `index.html`（SPA 深链）；
   - 新增 `tests/test_api/test_spa.py` 8 例锁定边界（首页可达、深链回落、资源 404、
     `/api` 不被遮蔽、无 webroot 时仍是 JSON 404）。
+- **容器日志没有时间戳，且应用启动日志被静默丢弃**：
+  - uvicorn 默认 `log_config` 格式串是 `%(levelprefix)s %(message)s`，访问日志同样无时间字段，
+    容器日志里无法判断时序（排查 SSE 断流、健康检查节奏、restic 长任务耗时全靠猜）；
+    改为显式传入 `log_config`，default/access 两个 formatter 都带 `%(asctime)s` 与
+    `datefmt=%Y-%m-%d %H:%M:%S%z`（带 `%z` 偏移，避免把容器 `TZ` 误读成 UTC），
+    并保持 `disable_existing_loggers=False` 以免摘掉 root handler；
+  - `logging.basicConfig` 原先在 lifespan 里调用，而 uvicorn 以 `app.main:app` 字符串**导入**本模块，
+    导入期 root 尚无 handler → `create_app()` 与 `main()` 的 INFO 级启动日志被 lastResort
+    按 WARNING 门槛丢弃（表现：容器里只看得到几行 uvicorn 日志）。改为模块导入期完成配置；
+  - 新增 `tests/test_logging.py` 6 例锁定格式串、"导入期 root 已有 handler"与 `LOG_LEVEL` 生效。
 
 ### 性能
 
