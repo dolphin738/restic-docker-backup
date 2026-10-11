@@ -1,0 +1,57 @@
+# ============================================================
+# CNB 云原生构建流水线 —— 仅手动触发（web_trigger）
+#
+# 设计裁决（用户指令）：**不做任何 push/tag 自动构建**；
+# 全部构建由 CNB 仓库页面手动触发（仓库 → 云原生构建 → 运行流水线）。
+#
+# 手动流水线内容：后端验证（ruff + pytest）→ 前端验证（typecheck + vitest + build）
+# → docker build/push 至 CNB 制品库（tag = COMMIT_SHORT + latest）
+#
+# 镜像产物：docker.cnb.cool/dolphin738/restic-docker-backup
+# 推送凭据：CNB 流水线内置触发者凭据，无需额外配置 secrets
+#
+# 依赖安装源固化：腾讯云 PyPI 镜像（P1 实测 pypi 直连/清华/阿里均不可用，
+# 见《架构设计文档.md》§10.2 v1.2）
+# ============================================================
+
+"$":
+  web_trigger:
+    - name: backend-verify
+      docker:
+        image: python:3.13
+      env:
+        PIP_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
+      stages:
+        - name: install
+          script: pip install -e 'web版/backend[dev]'
+        - name: ruff
+          script: cd web版/backend && ruff check app tests
+        - name: pytest
+          script: cd web版/backend && python -m pytest -q
+
+    - name: frontend-verify
+      docker:
+        image: node:22
+      stages:
+        - name: install
+          script:
+            - corepack enable
+            - cd web版/frontend && pnpm install --frozen-lockfile
+        - name: typecheck
+          script: cd web版/frontend && pnpm run typecheck
+        - name: vitest
+          script: cd web版/frontend && pnpm run test
+        - name: build
+          script: cd web版/frontend && pnpm run build
+
+    - name: docker-build-push
+      services:
+        - docker
+      stages:
+        - name: docker build
+          # 构建上下文 = web版/（.dockerignore 在上下文根），见 AGENTS.md 构建约定
+          script: docker build -f web版/docker/Dockerfile -t "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${CNB_COMMIT_SHORT}" -t "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest" web版/
+        - name: docker push
+          script:
+            - docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${CNB_COMMIT_SHORT}"
+            - docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
