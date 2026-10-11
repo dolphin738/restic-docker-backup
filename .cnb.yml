@@ -9,9 +9,8 @@
 #   条件追加   = 当前 commit 已打 git tag 时，追加双版本标签
 #                <app版本>-restic<restic版本>（如 1.0.0-restic0.19.1，v 前缀自动剥离）
 #
-# Docker Hub 凭据：.cnb/dockerhub-envs.yml（经 imports 注入；当前为空值占位，
-#   配置方法见该文件注释）。注意：填入真实 token 后将随仓库历史保存，
-#   建议使用 Docker Hub 的细粒度 Access Token 而非账号密码。
+# Docker Hub 凭据：经 imports 注入私有仓库 dolphin738/my 的 main 分支 docker.yml，
+#   需定义三个键：DOCKERHUB_USER / DOCKERHUB_TOKEN / DOCKERHUB_NAMESPACE
 #
 # 镜像产物：
 #   CNB 制品库  docker.cnb.cool/dolphin738/restic-docker-backup（内置凭据，免 secrets）
@@ -81,7 +80,7 @@
 
         - name: push (docker hub, skip if not configured)
           script:
-            - if [ ! -s .ci-hub-tags ]; then echo "未配置 Docker Hub 凭据（.cnb/dockerhub-envs.yml），跳过推送"; exit 0; fi
+            - if [ ! -s .ci-hub-tags ]; then echo "未配置 Docker Hub 凭据（dolphin738/my:docker.yml），跳过推送"; exit 0; fi
             - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
             - for img in $(cat .ci-hub-tags); do docker push "$img"; done
             - docker logout
