@@ -50,6 +50,7 @@ from app.errors import AppError
 from app.exclusions import ExclusionRules
 from app.routers import auth as auth_router
 from app.routers import config as config_router
+from app.routers import fs as fs_router
 from app.routers import health as health_router
 from app.routers import jobs as jobs_router
 from app.routers import policies as policies_router
@@ -253,6 +254,7 @@ def create_app() -> FastAPI:
     # 业务路由：②③ 必须显式挂载，否则首启未改密也能访问（PRD US-A1 AC2）
     protected = [Depends(require_session), Depends(require_bootstrap_done)]
     app.include_router(sources_router.router, dependencies=protected)    # E05/E31
+    app.include_router(fs_router.router, dependencies=protected)         # E33 容器文件系统浏览
     app.include_router(config_router.router, dependencies=protected)     # E06/E07 + E29/E30
     app.include_router(jobs_router.router, dependencies=protected)       # E12–E16/E27
     app.include_router(policies_router.router, dependencies=protected)   # E08–E11

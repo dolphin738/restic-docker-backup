@@ -1,8 +1,9 @@
 """API 集成：E05/E31 展示路径契约（语义修订）+ E31 白名单收紧。
 
-Windows 环境无 /host 挂载：文件系统扫描以 monkeypatch ``_scan_dir`` 替身覆盖
+Windows 环境无 /host 挂载：文件系统扫描以 monkeypatch ``scan_dir_async`` 替身覆盖
 （架构 §10.1 认可的"restic 子进程 mock 为预录脚本输出"同款手段），路由/映射/白名单
-契约全部走真实代码路径。
+契约全部走真实代码路径。扫描实现抽到 ``app.services.dir_scan``（与 E33 共用），
+故替身打在路由模块导入的名字上。
 """
 
 from __future__ import annotations
@@ -13,8 +14,8 @@ from pathlib import Path
 from conftest import ORIGIN, finish_bootstrap
 
 
-def _fake_scan_dir(entries: list[tuple[str, str]]):
-    def _scan(path: str) -> list[tuple[str, str]]:  # 路由经 asyncio.to_thread 调用，须为同步函数
+def _fake_scan_dir_async(entries: list[tuple[str, str]]):
+    async def _scan(path: str) -> list[tuple[str, str]]:
         return entries
 
     return _scan
@@ -67,8 +68,8 @@ async def test_e05_display_path_200(app_client, monkeypatch):
     await finish_bootstrap(app_client)
     monkeypatch.setattr(
         sources_module,
-        "_scan_dir",
-        _fake_scan_dir([("nginx", "dir"), ("hosts", "file")]),
+        "scan_dir_async",
+        _fake_scan_dir_async([("nginx", "dir"), ("hosts", "file")]),
     )
 
     resp = await app_client.client.get("/api/sources", params={"path": "/etc"})
@@ -84,7 +85,7 @@ async def test_e05_container_path_still_compat(app_client, monkeypatch):
     import app.routers.sources as sources_module
 
     await finish_bootstrap(app_client)
-    monkeypatch.setattr(sources_module, "_scan_dir", _fake_scan_dir([("nginx", "dir")]))
+    monkeypatch.setattr(sources_module, "scan_dir_async", _fake_scan_dir_async([("nginx", "dir")]))
 
     resp = await app_client.client.get("/api/sources", params={"path": "/host/etc"})
     assert resp.status_code == 200, resp.text
@@ -97,7 +98,7 @@ async def test_e05_default_path_is_mode_root(app_client, monkeypatch):
     await finish_bootstrap(app_client)
     import app.routers.sources as sources_module
 
-    monkeypatch.setattr(sources_module, "_scan_dir", _fake_scan_dir([]))
+    monkeypatch.setattr(sources_module, "scan_dir_async", _fake_scan_dir_async([]))
     resp = await app_client.client.get("/api/sources")
     assert resp.status_code == 200
     assert resp.json()["path"] == "/"

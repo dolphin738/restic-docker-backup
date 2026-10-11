@@ -210,6 +210,26 @@ class DryRunWarning(_Base):
     path: str
 
 
+# ---------------------------------------------------------------- E33 容器文件系统浏览
+
+class FsItem(_Base):
+    """E33 文件系统条目（容器内绝对路径，无展示形态换算）。"""
+
+    name: str
+    type: str = Field(description="dir|file|other")
+    path: str = Field(description="容器内绝对路径（如 /repo/sub）")
+    is_mountpoint: bool = Field(default=False, description="该条目是否为容器挂载点（bind/volume）")
+
+
+class FsBrowseResponse(_Base):
+    """E33 浏览响应；``mounts`` 仅为根目录请求时回（前端做挂载点快跳）。"""
+
+    path: str = Field(description="容器内绝对路径")
+    items: list[FsItem] = Field(default_factory=list)
+    mounts: list[str] = Field(default_factory=list, description="容器挂载点列表（path=/ 时返回）")
+    next_cursor: str | None = None
+
+
 class DryRunResponse(_Base):
     """E31 预览响应（不强制拦截，warnings 仅提示）。"""
 

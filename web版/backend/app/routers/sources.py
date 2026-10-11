@@ -16,10 +16,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
-import os
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -35,7 +32,7 @@ from app.constants import (
     SOURCE_BROWSE_MAX_LIMIT,
 )
 from app.db.repositories.config_repo import ConfigRepo
-from app.errors import ForbiddenError, NotFoundError, PathOutOfPrefixError
+from app.errors import PathOutOfPrefixError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.schemas.api_schemas import (
     DryRunItem,
@@ -47,6 +44,7 @@ from app.schemas.api_schemas import (
     SourceItem,
 )
 from app.schemas.enums import RunMode
+from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper
@@ -92,8 +90,8 @@ async def browse_sources(
         else mapper.validate(settings.mode_root, allowed_prefixes=BROWSE_ALLOWED_PREFIXES)
     )
 
-    entries = await asyncio.to_thread(_scan_dir, container_path)
-    start_index = _cursor_index(entries, cursor)
+    entries = await scan_dir_async(container_path)
+    start_index = cursor_index(entries, cursor)
 
     window = entries[start_index : start_index + limit]
     items = [
@@ -105,7 +103,7 @@ async def browse_sources(
         for name, kind in window
     ]
     has_more = start_index + limit < len(entries)
-    next_cursor = _encode_cursor(window[-1][0]) if (has_more and window) else None
+    next_cursor = encode_cursor(window[-1][0]) if (has_more and window) else None
     return SourceBrowseResponse(path=mapper.to_display(container_path), items=items, next_cursor=next_cursor)
 
 
@@ -270,66 +268,6 @@ def _to_container_path(
     except PathOutOfPrefixError:
         # 新契约：展示路径 → 还原为容器路径后再次校验（normpath 折叠 ../ 防穿越）
         return mapper.validate(mapper.to_snapshot(raw), allowed_prefixes=allowed_prefixes)
-
-
-def _scan_dir(path: str) -> list[tuple[str, str]]:
-    """同步扫描单层目录，返回按名称排序的 ``(name, type)`` 列表。
-
-    Args:
-        path: 已通过白名单校验的容器路径。
-
-    Returns:
-        排序后的条目列表，type 取 ``dir`` / ``file`` / ``other``。
-
-    Raises:
-        NotFoundError: 路径不存在。
-        ValidationError: 路径不是目录。
-        ForbiddenError: 无读取权限（非 root 档常见，R-012）。
-    """
-    target = Path(path)
-    if not target.exists():
-        raise NotFoundError(f"路径不存在：{path}")
-    if not target.is_dir():
-        from app.errors import ValidationError
-
-        raise ValidationError(f"路径不是目录：{path}")
-    try:
-        names = sorted(os.listdir(target))
-    except PermissionError as exc:
-        raise ForbiddenError(f"无权限读取目录：{path}（非 root 档常见，如需全量备份请切 root 档）") from exc
-
-    entries: list[tuple[str, str]] = []
-    for name in names:
-        child = target / name
-        if child.is_symlink():
-            kind = "other"
-        elif child.is_dir():
-            kind = "dir"
-        elif child.is_file():
-            kind = "file"
-        else:
-            kind = "other"
-        entries.append((name, kind))
-    return entries
-
-
-def _cursor_index(entries: list[tuple[str, str]], cursor: str | None) -> int:
-    """把游标换算为起始下标；游标不可解析时从头开始。"""
-    if not cursor:
-        return 0
-    try:
-        decoded = base64.urlsafe_b64decode(cursor.encode()).decode("utf-8")
-    except Exception:  # noqa: BLE001 - 游标损坏直接从头返回，不报错
-        return 0
-    for index, (name, _) in enumerate(entries):
-        if name == decoded:
-            return index + 1
-    return 0
-
-
-def _encode_cursor(name: str) -> str:
-    """把末条目名编码为不透明游标。"""
-    return base64.urlsafe_b64encode(name.encode("utf-8")).decode("utf-8")
 
 
 def _pseudo_warning(path: str) -> DryRunWarning | None:
