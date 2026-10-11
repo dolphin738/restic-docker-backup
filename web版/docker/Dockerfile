@@ -39,11 +39,15 @@ RUN apk add --no-cache tzdata wget postgresql-client mysql-client \
 
 WORKDIR /app
 
-# 依赖与源码：pyproject.toml 为依赖唯一事实来源
-COPY backend/pyproject.toml /app/pyproject.toml
+# 依赖与源码：pyproject.toml + uv.lock 为依赖唯一事实来源（锁定安装，构建可重复）
+COPY backend/pyproject.toml backend/uv.lock /app/
+RUN pip install --no-cache-dir uv \
+ && uv sync --frozen --no-dev --no-install-project \
+ && apk del .build-deps
+
+# uv sync 建在 /app/.venv，应用依赖全部来自锁文件
+ENV PATH="/app/.venv/bin:${PATH}"
 COPY backend/app /app/app
-RUN pip install --no-cache-dir . \
-    && apk del .build-deps
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \

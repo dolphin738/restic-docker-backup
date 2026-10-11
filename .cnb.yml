@@ -23,16 +23,18 @@
   web_trigger:
     - name: backend-verify
       docker:
-        image: python:3.13
+        # 官方 uv 镜像（含 uv + python3.13）；依赖按 uv.lock 锁定安装，构建可重复
+        image: ghcr.io/astral-sh/uv:python3.13-bookworm
       env:
-        PIP_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
+        UV_DEFAULT_INDEX: https://mirrors.cloud.tencent.com/pypi/simple
+        UV_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
       stages:
-        - name: install
-          script: pip install -e 'web版/backend[dev]'
+        - name: sync (frozen)
+          script: cd web版/backend && uv sync --frozen --extra dev
         - name: ruff
-          script: cd web版/backend && ruff check app tests
+          script: cd web版/backend && uv run --no-sync ruff check app tests
         - name: pytest
-          script: cd web版/backend && python -m pytest -q
+          script: cd web版/backend && uv run --no-sync pytest -q
 
     - name: frontend-verify
       docker:
