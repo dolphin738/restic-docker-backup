@@ -41,6 +41,7 @@ frontend/
 
 # ---- 测试与工具配置（镜像内不需要）----
 backend/tests/
+dev-scripts/
 .pytest_cache/
 .vscode/
 .idea/
