@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.constants import DB_BUSY_TIMEOUT_MS, SSE_HEARTBEAT_SECONDS
+
 try:  # pragma: no cover - Windows 等非 POSIX 平台无 pwd 模块
     import pwd
 except ImportError:  # pragma: no cover
@@ -63,6 +65,14 @@ class Settings(BaseSettings):
     # ---- 杂项 ----
     restic_binary: str = "restic"
     audit_detail_limit: int = 2000
+
+    # ---- 可调阈值（默认值与 constants 保持一致；反代超时/高并发部署可覆盖）----
+    # SSE 空闲心跳间隔（秒）。反代 idle timeout 明显小于 15s 的部署需下调，
+    # 否则 nginx/caddy 会先于心跳断开长连接，前端误判为断流并重连。
+    sse_heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS
+    # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
+    # SQLITE_BUSY 可上调；过大则失败延迟变长，需与单写串行策略一起权衡。
+    db_busy_timeout_ms: int = DB_BUSY_TIMEOUT_MS
 
     # ---- 派生属性 ----
     @property

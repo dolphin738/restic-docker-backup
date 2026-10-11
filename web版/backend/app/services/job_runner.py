@@ -278,7 +278,7 @@ class JobRunner:
                     last_event_id=line_no,
                 )
                 if snapshot_id and snapshot_id != job.snapshot_id:
-                    await self._set_snapshot(job.id, snapshot_id)
+                    await self._jobs.set_snapshot(job.id, snapshot_id)
                 await self._audit.record(
                     AUDIT_JOB_FINISHED,
                     target=job.id,
@@ -467,10 +467,6 @@ class JobRunner:
     async def _load_credentials(self) -> dict[str, str]:
         """把 config 中 ``cred.*`` 键还原为子进程环境变量（``AWS_*`` / ``B2_*``）。"""
         return await load_credentials(self._config)
-
-    async def _set_snapshot(self, job_id: str, snapshot_id: str) -> None:
-        """回填任务关联的快照 id（backup 完成后由 summary 事件得到）。"""
-        await self._db.write("UPDATE jobs SET snapshot_id = ? WHERE id = ?", (snapshot_id, job_id))
 
     @staticmethod
     def _summarize(status: str, aggregate: JobAggregate, exit_code: int) -> str:

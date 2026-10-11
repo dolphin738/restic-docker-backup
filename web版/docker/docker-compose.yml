@@ -34,6 +34,12 @@ services:
       # /host 挂载模式：rw（默认，支持原位恢复）/ ro（安全档，仅备份浏览与"恢复到其他位置"）
       HOST_MOUNT_MODE: rw
       PORT: "8000"
+      # SSE 空闲心跳间隔（秒）。反代 idle timeout 明显小于该值时需下调，
+      # 否则反代会先于心跳断开长连接，前端误判为断流并重连。
+      SSE_HEARTBEAT_SECONDS: "15"
+      # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
+      # SQLITE_BUSY 可上调；过大则失败延迟变长。
+      DB_BUSY_TIMEOUT_MS: "5000"
       # 非 root 档部署时由 entrypoint 用于自动 chown（root 档下默认 0:0，无需设置）
       # PUID: "1000"
       # PGID: "1000"

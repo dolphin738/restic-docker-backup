@@ -1,7 +1,8 @@
 """SQLite 访问层（§7.7 / R-010）：aiosqlite 单例 + WAL + user_version 幂等迁移器。
 
 工程约定（方案 §5）：
-- ``journal_mode=WAL`` + ``busy_timeout=5000`` + ``foreign_keys=ON``；
+- ``journal_mode=WAL`` + ``busy_timeout``（默认 5000ms，可经 ``settings.db_busy_timeout_ms`` 覆盖）+
+  ``foreign_keys=ON``；
 - 单写连接：全部写操作经 :meth:`Database.write` 串行化（SQLite 单写多读，规避 SQLITE_BUSY）；
 - schema 版本由 ``PRAGMA user_version`` 记录，启动时按序执行 ``migrations/000N_*.sql``，
   每个文件一个事务、幂等可重复执行。
@@ -16,6 +17,8 @@ from typing import Any
 
 import aiosqlite
 
+from app.constants import DB_BUSY_TIMEOUT_MS
+
 logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -26,16 +29,40 @@ _DB_INSTANCE: Database | None = None
 class Database:
     """aiosqlite 单例封装：唯一持有连接的对象。"""
 
-    def __init__(self, db_path: str | Path, migrations_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        migrations_dir: str | Path | None = None,
+        busy_timeout_ms: int | None = None,
+    ) -> None:
         """构造数据库对象（尚未建立连接）。
 
         Args:
             db_path: SQLite 文件路径，如 ``/data/restic.db``。
             migrations_dir: 迁移脚本目录；缺省为本模块同级 ``migrations/``。
+            busy_timeout_ms: 锁等待超时（毫秒）；缺省取 ``settings.db_busy_timeout_ms``
+                （该字段默认取 ``constants.DB_BUSY_TIMEOUT_MS``）。留 ``None`` 以便
+                测试直接 ``Database(path)`` 构造时无需注入 settings。
         """
         self.db_path = Path(db_path)
         self.migrations_dir = Path(migrations_dir) if migrations_dir else _MIGRATIONS_DIR
+        self._busy_timeout_ms = busy_timeout_ms
         self._conn: aiosqlite.Connection | None = None
+
+    @property
+    def busy_timeout_ms(self) -> int:
+        """实际生效的锁等待超时；未显式注入时读 settings（失败则回退常量）。"""
+        if self._busy_timeout_ms is not None:
+            return self._busy_timeout_ms
+        try:
+            from app.settings import get_settings
+
+            return int(get_settings().db_busy_timeout_ms)
+        except Exception:  # noqa: BLE001 - 启动早期或测试裸构造时回退默认值
+            # 回退本身合理，但要留痕：settings 存在却读失败属于配置错误，
+            # 静默吞掉会让"改了环境变量没生效"这类问题无从排查。
+            logger.warning("settings.db_busy_timeout_ms 读取失败，回退默认值 %sms", DB_BUSY_TIMEOUT_MS)
+            return DB_BUSY_TIMEOUT_MS
 
     # ---------------------------------------------------------------- 生命周期
 
@@ -48,7 +75,7 @@ class Database:
         conn.row_factory = sqlite3.Row
         # WAL 与 busy_timeout 为库级持久化设置；foreign_keys 为连接级，须每次连接开启
         await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
         await conn.execute("PRAGMA foreign_keys=ON")
         await conn.commit()
         self._conn = conn

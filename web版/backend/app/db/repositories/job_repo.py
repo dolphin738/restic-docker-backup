@@ -227,6 +227,14 @@ class JobRepo:
             "UPDATE jobs SET skipped_count = skipped_count + ? WHERE id = ?", (int(delta), job_id)
         )
 
+    async def set_snapshot(self, job_id: str, snapshot_id: str) -> None:
+        """回填任务关联的快照 id（backup 完成后由 summary 事件得到）。
+
+        原先由 JobRunner._set_snapshot 直接拼 SQL，违反 A1「DB 访问只在
+        repositories/」；按唯一实现点纪律收敛到此（规范 §3.1 A1）。
+        """
+        await self._db.write("UPDATE jobs SET snapshot_id = ? WHERE id = ?", (snapshot_id, job_id))
+
     async def mark_interrupted_on_startup(self) -> int:
         """启动恢复：把遗留的 running/pending 改标 interrupted（§6.5）。
 

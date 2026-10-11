@@ -83,9 +83,8 @@ desktop.ini
 *~
 
 # ---------- WorkBuddy ----------
-# 仅跟踪项目记忆/工作日志，其余会话产物忽略
-.workbuddy/*
-!.workbuddy/memory/
+# 会话产物与项目记忆均不入库（2026-10-11 裁决：.workbuddy/ 不入 git、不入 docker）
+.workbuddy/
 
 # ---------- 其它 ----------
 tmp/

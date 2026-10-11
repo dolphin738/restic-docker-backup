@@ -123,6 +123,10 @@ SSE_POLL_INTERVAL_SECONDS = 0.3    # 日志文件追加轮询间隔
 LOG_TAIL_DEFAULT_BYTES = 65536     # E27 默认尾部字节数
 LOG_TAIL_MAX_BYTES = 1048576       # E27 上限 1 MiB
 
+# ---------------------------------------------------------------- SQLite（架构 §7.7 / D2）
+
+DB_BUSY_TIMEOUT_MS = 5000          # 锁等待超时；默认值，实际值走 settings.db_busy_timeout_ms
+
 # ---------------------------------------------------------------- 备份源浏览 / dry-run（E05/E31）
 
 SOURCE_BROWSE_DEFAULT_LIMIT = 200
