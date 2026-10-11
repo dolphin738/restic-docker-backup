@@ -55,21 +55,35 @@ pnpm run build                     # 类型检查 + 构建
    自查：`grep -rn "lost+found" frontend/src backend/app | grep -v exclusions.py | grep -v constants.py`
    *已知噪声：`routers/sources.py` 的 E31 docstring 会命中（解释伪文件系统告警，非复制排除集）。真正要抓的是把 `lost+found` 写进 `excludes` 默认值或模板里的地方。*
 
-9. **[A5] SQLite 单写连接**——全部写经 `Database.write` 串行；禁止第二个写连接/连接池；WAL + `busy_timeout=5000` + **`foreign_keys=ON`** 初始化不得移除。
-   自查：`grep -n "busy_timeout\|journal_mode\|foreign_keys" backend/app/db/database.py`（应恰好 3 处）
+9. **[A5] SQLite 单写连接**——全部写经 `Database.write` 串行；禁止第二个写连接/连接池；WAL + `busy_timeout` + **`foreign_keys=ON`** 初始化不得移除。
+   *`busy_timeout` 实际值走 `settings.db_busy_timeout_ms`（环境变量 `DB_BUSY_TIMEOUT_MS`，默认 5000，取自 `constants.DB_BUSY_TIMEOUT_MS`）——**不得在 `database.py` 里裸写数值**。*
+   自查：`grep -n "busy_timeout\|journal_mode\|foreign_keys" backend/app/db/database.py`（应恰好 3 处 PRAGMA）
 
 10. **[A4/A6] SSE 底座是日志文件、解析层零 IO**——`SseChannel`（`app/services/sse.py`）不得改为纯内存队列（否则丢失断点续传与重启回放）；心跳 15s 与 `X-Accel-Buffering: no` 不得移除；`OutputParser`（`app/services/parser.py`）保持纯函数，**不得 import `os` / `repositories` / `restic`**，破坏 fixture 可回归能力 = 违规。
     自查：`grep -n "^import\|^from" backend/app/services/parser.py`
+
+## 可调阈值（不得裸写数值）
+
+阈值一律走 `settings`（环境变量为大写形式）或构造参数，**常量只作默认值单一真源**。当前可调项：
+
+| 阈值 | settings 字段 | 环境变量 | 默认值 | 出处 |
+|---|---|---|---|---|
+| SSE 空闲心跳 | `sse_heartbeat_seconds` | `SSE_HEARTBEAT_SECONDS` | 15.0 | `constants.SSE_HEARTBEAT_SECONDS` |
+| SQLite 锁等待 | `db_busy_timeout_ms` | `DB_BUSY_TIMEOUT_MS` | 5000 | `constants.DB_BUSY_TIMEOUT_MS` |
+| 进度落库节流 | 构造参数 `JobRunner(db_flush_interval=...)` | — | 1.0 | `job_runner.py` |
+
+参照 `JobRunner.db_flush_interval` 的可注入设计——**新增阈值按此模式，不得裸写在业务逻辑里**。改阈值需同步 `docker-compose.yml` 与架构文档 §4.3 config 键表。
 
 ## 编码约定
 
 - **改解析逻辑必须先补 fixture 再改代码**（用固定版本 restic 的真实输出，放在 `tests/fixtures/`）；
 - 任务状态机改动必须同步 `tests/test_state_machine.py` 转换表；迁移只新增 `000N_*.sql`，不改已发布迁移，且过幂等性测试（`tests/test_migrations.py`）；
 - 错误响应走 `app/errors.py` 唯一映射点，路由里不得裸 `HTTPException` 返回未登记 code；**新增 `ERROR_STATUS` 条目须同 PR 更新架构文档 §5.0 错误码表**；
-- CPU 密集与阻塞 IO 放 `to_thread`，不阻塞事件循环；同仓库任务互斥：手动冲突 409、调度冲突记 cancelled + audit；**`JobRunner.submit` 的并发互斥必须有 `asyncio.gather` 双并发测试**（人工 review 发现不了竞态）；
+- CPU 密集与阻塞 IO 放 `to_thread`，不阻塞事件循环；同仓库任务互斥：手动冲突 409、调度冲突记 cancelled + audit；**`JobRunner.submit` 的并发互斥必须有 `asyncio.gather` 双并发测试**（断言恰好 1 成功；「预置 running 再触发」不是并发测试）——竞态人工 review 发现不了；
 - 前端请求走 `src/api/` 唯一出口；SSE 一律用 `useJobStream`（组件不直接持有 EventSource，SSE 数据不进响应式树）；危险操作复用 `ConfirmGate.vue`；路径展示复用 `PathBreadcrumb.vue`；文案全部走 i18n（`<script setup>` 中 `const { t } = useI18n()`，**模板文案禁硬编码中文，代码注释里可以**）；大列表用虚拟滚动（`n-data-table virtual-scroll` / `useVirtualList`）；
-- 改 `useJobStream.ts` 必须有 mock EventSource 测试；改 `parser.py` 必须跑 fixture 回归；
-- 新增依赖需说明理由并锁版本（后端 `uv.lock`、前端 `pnpm-lock.yaml`），禁止引入与既有选型重叠的库。
+- 改 `useJobStream.ts` 必须有 mock EventSource 测试（vitest 未接入前须手工验证并说明步骤）；改 `parser.py` 必须跑 fixture 回归；
+- 新增依赖需说明理由并锁版本（后端 `uv.lock`、前端 `pnpm-lock.yaml`），禁止引入与既有选型重叠的库；
+- **构建相关**：Docker 构建上下文为 `web版/`，`.dockerignore` 位于上下文根；改 `Dockerfile`/`compose` 时确认未把 `.venv`/`node_modules`/`.env` 打进镜像。
 
 ## Git 与提交
 
