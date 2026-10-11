@@ -1,0 +1,31 @@
+# restic-docker-backup Web 版 —— 本地构建**叠加文件**（overlay，不可单独使用）
+#
+# 为什么拆开：部署模板 docker-compose.yml 只保留 `image:`，不含 build 段。
+# 若两者同文件，本地构建产物会被打上 `dolphin738/restic-web:<版本>-restic<restic版本>` 这个名字，
+# 之后本机执行 `docker compose up` 跑的其实是本地自构建镜像（可能含未提交改动），
+# 外观与官方发布镜像完全一样，难以分辨。拆开后：
+#   部署 = docker-compose.yml（只用已发布镜像）
+#   构建 = docker-compose.yml + 本文件（并显式改用本地专用名，从根上避免同名顶替）
+#
+# 用法（两份一起指定，后者覆盖前者；工作目录 web版/docker）：
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml logs -f restic-web
+#
+# 等价的裸命令（与 CI 的 scripts/ci-docker.sh do_build 同源，构建上下文 = web版/）：
+#   docker build -f docker/Dockerfile --build-arg RESTIC_VERSION=0.19.1 ..
+#
+# 版本同步点（改动时三处需一致）：
+#   ① 本文件 image: 与 args.RESTIC_VERSION
+#   ② docker-compose.yml 的 image:（应用版本）
+#   ③ docker/Dockerfile 的 ARG RESTIC_VERSION（restic 版本）
+
+services:
+  restic-web:
+    # 本地构建专用名：与发布镜像名隔离，绝不顶替 dolphin738/restic-web:*
+    image: restic-web:1.0.0-local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        RESTIC_VERSION: "0.19.1"

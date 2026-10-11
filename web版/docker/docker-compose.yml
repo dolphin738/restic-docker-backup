@@ -17,15 +17,11 @@ name: restic-docker-backup-web
 
 services:
   restic-web:
+    # 本文件是**部署模板**：只用已发布的镜像，不含 build 段（避免本地产物顶替同名发布镜像）。
     # 发布标签形如 <应用版本>-restic<restic版本>；与 CI（scripts/ci-docker.sh）产出一致。
-    # 本地构建可改 build: 段自行 docker build（上下文为 web版/）。
+    # 需要本地自行构建时叠加 docker-compose.build.yml（见该文件头部用法），不要在这里加 build 段。
     image: dolphin738/restic-web:1.0.0-restic0.19.1
     container_name: restic-web
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        RESTIC_VERSION: "0.19.1"
     # 默认 root 档：保证原位恢复完整还原属主/权限；安全敏感场景改 "1000:1000"
     # 改非 root 档前须在宿主机执行：chown -R 1000:1000 ./data ./cache ./secrets
     user: "0:0"
