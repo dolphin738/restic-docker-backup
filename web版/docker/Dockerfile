@@ -6,6 +6,18 @@ ARG RESTIC_VERSION=0.19.1
 
 FROM restic/restic:${RESTIC_VERSION} AS restic-src
 
+# ---- 前端构建阶段 ----
+# 单容器方案（方案 §2）：SPA 产物打进同一镜像，由 FastAPI 在 8000 端口与 API 一起提供，
+# 不引入 nginx 等第二个进程。构建期依赖（node/pnpm/node_modules）只留在本阶段，不进运行时镜像。
+# 用与 CI 前端验证段完全相同的镜像（node:22，Debian），避免 musl 下原生依赖（esbuild 等）行为差异
+FROM node:22 AS frontend-build
+WORKDIR /fe
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN corepack enable \
+ && pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm run build
+
 FROM python:3.13-alpine3.24
 
 # restic 版本与（可选）校验位数：RESTIC_SHA256 非空时执行 sha256sum -c 校验
@@ -52,6 +64,9 @@ RUN pip install --no-cache-dir uv \
 # uv sync 建在 /app/.venv，应用依赖全部来自锁文件
 ENV PATH="/app/.venv/bin:${PATH}"
 COPY backend/app /app/app
+
+# 前端 SPA 产物：由 FastAPI 挂在 "/" 提供（settings.static_dir=/app/webroot）
+COPY --from=frontend-build /fe/dist /app/webroot
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \

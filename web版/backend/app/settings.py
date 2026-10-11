@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     restore_root: str = "/restore"
     repo_root: str = "/repo"
     passfile: str = "/run/secrets/restic-pass"
+    # 前端 SPA 静态产物目录（单容器方案 §2：同一端口提供 API 与页面）。
+    # 目录不存在时后端不挂载静态路由，`/` 仍返回统一 JSON 404（本地开发由 Vite dev server 提供页面）。
+    static_dir: str = "/app/webroot"
 
     # ---- 内置排除集派生（host 模式防套娃条目的部署目录解析，方案 §3.1）----
     # 可选：显式指定 compose 部署目录（宿主机绝对路径）；留空则尝试从 /proc/self/mountinfo 反推。

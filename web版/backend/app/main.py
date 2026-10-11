@@ -13,13 +13,15 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.staticfiles import StaticFiles
 
 from app.auth.bootstrap import AdminAccountStore, BootstrapService
 from app.auth.dependencies import (
@@ -201,7 +203,40 @@ def create_app() -> FastAPI:
     #   app.include_router(x_router.router, dependencies=protected)
 
     _register_exception_handlers(app)
+    # SPA 静态资源最后挂载：Starlette 按注册顺序匹配，业务 /api 路由始终优先于 "/" 挂载
+    _mount_spa(app)
     return app
+
+
+def _mount_spa(app: FastAPI) -> None:
+    """挂载前端 SPA 静态产物（单容器方案 §2：8000 端口同时提供 API 与页面）。
+
+    目录不存在（本地后端开发态）时**不挂载任何静态路由**，页面由 Vite dev server 提供；
+    此时 `/` 仍返回统一 JSON 404，与 API 客户端预期一致。
+    """
+    settings = get_settings()
+    static_dir = Path(settings.static_dir)
+    index = static_dir / "index.html"
+    if not index.is_file():
+        logger.info("静态目录 %s 无 index.html，跳过 SPA 挂载（开发态页面由 Vite 提供）", static_dir)
+        return
+    app.state.spa_index = index
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="spa")
+    logger.info("已挂载 SPA 静态资源：%s", static_dir)
+
+
+def _is_spa_navigation(request: Request) -> bool:
+    """判断 404 是否应回落为 SPA 页面导航（前端路由命中，而非资源缺失）。
+
+    三条排除：① 非 GET/HEAD；② `/api` 前缀——API 客户端必须拿到统一 JSON 错误；
+    ③ 末段带扩展名——确为缺失的静态资源，回落成 HTML 会掩盖真实问题。
+    """
+    if request.method not in ("GET", "HEAD"):
+        return False
+    path = request.url.path
+    if path == "/api" or path.startswith("/api/"):
+        return False
+    return "." not in path.rsplit("/", 1)[-1]
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
@@ -222,14 +257,18 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _handle_http_exception(request: Request, exc: Exception) -> JSONResponse:
+    async def _handle_http_exception(request: Request, exc: Exception) -> Response:
         status_code = getattr(exc, "status_code", 500)
+        spa_index = getattr(request.app.state, "spa_index", None)
+        if status_code == 404 and spa_index is not None and _is_spa_navigation(request):
+            # SPA 深链（/snapshots/xxx 等前端路由）回落 index.html，交由前端路由处理
+            return FileResponse(spa_index, media_type="text/html", headers={"Cache-Control": "no-cache"})
         code = STATUS_FALLBACK_CODE.get(status_code, INTERNAL)
         payload = ErrorResponse(code=code, message=str(getattr(exc, "detail", "")) or "请求失败")
         return JSONResponse(status_code=status_code, content=payload.model_dump(exclude_none=True))
 
     @app.exception_handler(Exception)
-    async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
+    async def _handle_unexpected(request: Request, exc: Exception) -> Response:
         # 兜底：即便 HTTPException 的专用处理器未生效，也保证响应体仍是统一错误结构
         if isinstance(exc, StarletteHTTPException):
             return await _handle_http_exception(request, exc)
