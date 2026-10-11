@@ -37,6 +37,9 @@
 - `scripts/check_dockerignore.py` 新增 `--context`：无 docker 也能出"构建上下文体积账"，
   按顶层目录聚合、列出 `frontend/` 明细、标出"进了上下文却从不被 COPY"的目录，
   并单列"跨阶段 COPY"（如 `/fe/dist`）以区分"上下文来源"与"镜像内容"。
+- 仪表盘「能力四象限」卡改为「运行模式」卡：只展示当前部署形态对应的模式
+  （完整 / 全览 / 受限 / 沙盒，命名按"视野 × 恢复"能力形态），不再四格全铺；
+  附"模式由部署形态决定，调整 compose 后重启容器生效"提示。
 
 ### 修复
 
@@ -61,6 +64,12 @@
     导入期 root 尚无 handler → `create_app()` 与 `main()` 的 INFO 级启动日志被 lastResort
     按 WARNING 门槛丢弃（表现：容器里只看得到几行 uvicorn 日志）。改为模块导入期完成配置；
   - 新增 `tests/test_logging.py` 6 例锁定格式串、"导入期 root 已有 handler"与 `LOG_LEVEL` 生效。
+- **保存仓库配置后，仓库状态卡仍显示「未连接」**：E30 有 30s 进程内 TTL 缓存，但 E07 配置写入
+  不失效它、前端保存后也不重取 → 用户改完 `repo.url` 看到的还是旧状态（30s 内连手动「刷新」
+  都是旧值）。修复：E07 写入即失效缓存；任务终态（init/unlock 改变仓库可连性）经 JobRunner
+  新增的 `on_finish` 回调失效；前端保存成功后立即重取状态卡。
+- 探测链路兜底：restic 二进制缺失/不可执行时 `run_json` 抛 `OSError` → E29/E30 直接 5xx；
+  改为返回退出码 -1 的结构化失败（`failure_reason` 生成文案），维持"探测失败不 5xx"契约。
 
 ### 性能
 
