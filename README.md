@@ -94,6 +94,8 @@ docker run -d --name restic-web \
 ## 4. 端口、健康检查与反向代理
 
 - 监听 `8000`（`PORT` 可覆盖）；`GET /api/health` **免鉴权**，供容器 HEALTHCHECK 使用。
+- 前端 SPA 产物已**内置在镜像里**（`/app/webroot`），8000 端口同时提供页面与 API，
+  不需要额外的静态服务器或第二个容器（单容器方案）。
 - 内置 TLS：在界面/配置中填 `server.tls_cert` 与 `server.tls_key` 后由应用直接以 HTTPS 启动（Q2 裁决）；
   未配置时为纯 HTTP，HTTPS 建议在反向代理终结。
 - **SSE 实时进度必须禁用反代缓冲**：后端已下发 `X-Accel-Buffering: no`，Nginx 侧还需

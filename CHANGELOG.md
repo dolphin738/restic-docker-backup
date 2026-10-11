@@ -39,6 +39,13 @@
   docker 段内联 shell 参数被吞（收敛为 `scripts/ci-docker.sh`）。
 - 发布标签语义：`git describe --exact-match` + 构建前 `git fetch --tags`，
   保证仅对已打 tag 的 commit 产出双版本标签 `<应用版本>-restic<restic版本>`。
+- **镜像不含前端产物、后端无静态路由，浏览器打开首页返回 `{"code":"NOT_FOUND"}`**（P1 页面完全不可用）：
+  - Dockerfile 新增 `frontend-build` 阶段（`node:22` + pnpm `--frozen-lockfile` + `pnpm run build`），
+    产物 COPY 进运行时的 `/app/webroot`（构建期依赖不进最终镜像）；`.dockerignore` 放开 `frontend/` 源码；
+  - 后端新增 `settings.static_dir`，`create_app()` 在业务路由之后挂载 `StaticFiles(html=True)`，
+    404 处理器仅对"GET/HEAD + 非 `/api` 前缀 + 末段无扩展名"回落 `index.html`（SPA 深链）；
+  - 新增 `tests/test_api/test_spa.py` 8 例锁定边界（首页可达、深链回落、资源 404、
+    `/api` 不被遮蔽、无 webroot 时仍是 JSON 404）。
 
 ### 性能
 
