@@ -86,6 +86,10 @@ desktop.ini
 # 会话产物与项目记忆均不入库（2026-10-11 裁决：.workbuddy/ 不入 git、不入 docker）
 .workbuddy/
 
+# ---------- dev-scripts 运行时产物（自 web版/dev-scripts/.gitignore 收口）----------
+web版/dev-scripts/.dev-data/
+web版/dev-scripts/.dev-*.pid
+
 # ---------- 其它 ----------
 tmp/
 temp/
