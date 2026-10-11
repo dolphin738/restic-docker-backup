@@ -92,7 +92,7 @@ bash scripts/verify_redlines.sh
 ## Git 与提交
 
 - Conventional Commits（`feat:/fix:/refactor:/test:/docs:/chore:`），**按特性拆分提交，不混无关改动**——拆分在**实现侧**完成，owner 负责审查与合并，不做事后拆分；
-- 本仓库实际分支模型：`main ← dev ← feat/<topic>`（`feat/*` 与 PR 为目标形态，当前 P1 走 `dev → main`）；单次合入 ≤400 行 diff（豁免仅 `tests/**` 与 `tests/fixtures/**` 路径）；
+- 本仓库实际分支模型（2026-10-12 裁决，**dev 分支已删除**）：主干开发——`main` 唯一长期分支，日常改动走 `feat/<topic>` 短分支 → MR → `main`（小改动可直接在 `main` 上提交）；单次合入 ≤400 行 diff（豁免仅 `tests/**` 与 `tests/fixtures/**` 路径）；
 - AI 代理实现**不自行提交**——实现完成后报告改动清单，由负责人（`restic-web-dev <dev@local>`，与 git 身份一致）审查后提交并决定是否 push；
 - 本地 commit 不自动 push；main 分支仅经审查合并。
 
