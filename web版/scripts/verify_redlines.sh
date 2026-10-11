@@ -53,7 +53,7 @@ section 'S1/A2 路径映射唯一实现点'
 # 文件系统前缀字面量只允许出现在：settings.py（根路径定义）、
 # constants.py（白名单常量）、exclusions.py（模式派生输入）、path_mapper.py（校验实现）。
 # 注：routers/ 下的 "/restore"、"/sources" 是 **API 路由路径**，与文件系统前缀无关。
-out=$(grep -rn '"/host"\|"/sources"\|"/restore"' backend/app frontend/src --include=*.py \
+out=$(grep -rIn '"/host"\|"/sources"\|"/restore"' backend/app frontend/src --include=*.py \
       | grep -v settings.py | grep -v constants.py | grep -v exclusions.py \
       | grep -v path_mapper.py | grep -v 'routers/' 2>/dev/null)
 if [ -n "$out" ]; then
@@ -67,7 +67,7 @@ fi
 
 section 'S2 restic 参数白名单'
 
-out=$(grep -rn 'shell=True\|os\.system\|os\.popen' backend/app 2>/dev/null)
+out=$(grep -rIn 'shell=True\|os\.system\|os\.popen' backend/app 2>/dev/null)
 if [ -n "$out" ]; then
   violation 'S2 出现 shell=True / os.system / os.popen'
   detail "$out"
@@ -80,7 +80,7 @@ fi
 section 'S3 凭据零泄漏'
 
 # 凭据出现在日志/打印语句中即为泄漏。注意排除常量定义与 getenv 本身。
-out=$(grep -rniE 'logger\.(debug|info|warning|error).*(RESTIC_PASSWORD|AWS_SECRET|token)' backend/app 2>/dev/null)
+out=$(grep -rIniE 'logger\.(debug|info|warning|error).*(RESTIC_PASSWORD|AWS_SECRET|token)' backend/app 2>/dev/null)
 if [ -n "$out" ]; then
   violation 'S3 疑似把凭据/token 写入日志'
   detail "$out"
@@ -109,7 +109,7 @@ fi
 
 # SSE 与其他端点禁止 query token 鉴权。current_token/next_token 是 E28 改密的
 # 合法业务字段名，不是鉴权 token，须排除。
-out=$(grep -rn 'token=' backend/app/routers 2>/dev/null | grep -vi 'current_token\|next_token')
+out=$(grep -rIn 'token=' backend/app/routers 2>/dev/null | grep -vi 'current_token\|next_token')
 if [ -n "$out" ]; then
   violation 'S4 routers 中出现 token=（疑似 query token 鉴权）'
   detail "$out"
@@ -122,7 +122,7 @@ fi
 section 'S6 审计只增不改'
 
 # audit_logs 是 append-only，出现 UPDATE/DELETE 即破坏不变量。
-out=$(grep -rniE 'UPDATE[[:space:]]+audit_logs|DELETE[[:space:]]+FROM[[:space:]]+audit' backend/app 2>/dev/null)
+out=$(grep -rIniE 'UPDATE[[:space:]]+audit_logs|DELETE[[:space:]]+FROM[[:space:]]+audit' backend/app 2>/dev/null)
 if [ -n "$out" ]; then
   violation 'S6 audit_logs 出现 UPDATE/DELETE（append-only 被破坏）'
   detail "$out"
@@ -132,7 +132,7 @@ fi
 
 # 危险操作必须埋点：动作名一律取 constants 的 AUDIT_* 常量，
 # 直接写裸字符串说明绕过了常量单一真源。
-out=$(grep -rn '"login.failed"\|"cache.clear"\|"config.update"' backend/app --include=*.py 2>/dev/null \
+out=$(grep -rIn '"login.failed"\|"cache.clear"\|"config.update"' backend/app --include=*.py 2>/dev/null \
       | grep -v constants.py | grep -v migrations/)
 if [ -n "$out" ]; then
   detail "S6 审计动作名出现裸字符串（应引用 constants.AUDIT_*）：$out"
@@ -144,7 +144,7 @@ section 'S7 禁止覆盖语义'
 
 # --overwrite 仅限时间戳子目录场景由 JobRunner 固定注入（架构 §6.3），
 # 经 restic.py 的 OVERWRITE_MODES 白名单校验、界面无入口——属合规。
-out=$(grep -rn 'overwrite' backend/app frontend/src 2>/dev/null \
+out=$(grep -rIn 'overwrite' backend/app frontend/src 2>/dev/null \
       | grep -v 'restic.py' | grep -v 'job_runner.py' | grep -v 'locales' | grep -v 'restore.py')
 if [ -n "$out" ]; then
   violation 'S7 overwrite 出现在预期之外的路径'
@@ -159,7 +159,7 @@ section 'A1 DB 访问只在 repositories/'
 
 # 豁免：app/auth/（架构 §1.1 明确的独立模块，自成表边界）、health.py 探针。
 # 预期仅命中 job_runner.py 的 jobs 写入（已知待收口项，见规范 A1 豁免小节）。
-out=$(grep -rn 'SELECT \|INSERT INTO\|UPDATE \|DELETE FROM' backend/app --include=*.py 2>/dev/null \
+out=$(grep -rIn 'SELECT \|INSERT INTO\|UPDATE \|DELETE FROM' backend/app --include=*.py 2>/dev/null \
       | grep -v 'app/db/' | grep -v 'app/auth/' | grep -v constants.py | grep -v 'health.py')
 if [ -n "$out" ]; then
   violation 'A1 非仓储层出现 SQL（豁免仅 auth/ 与 health 探针）'
@@ -180,7 +180,7 @@ section 'A3 内置排除集单一来源'
 #     grep 无法区分文档与代码，用 -v 滤掉以行首引号或文档注释开头的命中。
 # PSEUDO_FS_NAMES 与 exclusions.CORE 有 4 项字面重复（proc/sys/dev/run/lost+found），
 # 这是设计上的有意重叠（都源自方案 §3.2），但**若 exclusions.CORE 变更需同步复核**。
-out=$(grep -rn 'lost+found' frontend/src backend/app 2>/dev/null \
+out=$(grep -rIn 'lost+found' frontend/src backend/app 2>/dev/null \
       | grep -v exclusions.py | grep -v constants.py \
       | grep -vE ':[[:space:]]*(#|"""|[^\x27"]*$)' | grep -vE '命中|置黄色|告警')
 if [ -n "$out" ]; then
@@ -231,7 +231,7 @@ section '可调阈值单一真源'
 # 因此「常量文件里存在 SSE_HEARTBEAT_SECONDS = 15.0 / DB_BUSY_TIMEOUT_MS = 5000」
 # 是**正确设计而非违规**；真正的违规是业务逻辑层裸写数值。
 # 断言方向：constants.py / settings.py 之外的文件不得直接出现该数值。
-out=$(grep -rn '15\.0' backend/app/services backend/app/routers backend/app/db --include=*.py 2>/dev/null \
+out=$(grep -rIn '15\.0' backend/app/services backend/app/routers backend/app/db --include=*.py 2>/dev/null \
       | grep -i 'heartbeat')
 if [ -n "$out" ]; then
   violation 'SSE 心跳间隔在业务层裸写数值（应走 settings.sse_heartbeat_seconds）'
@@ -240,7 +240,7 @@ else
   ok 'SSE 心跳未在业务层硬编码'
 fi
 
-out=$(grep -rniE 'busy_timeout[ =]+[0-9]{3,}' backend/app --include=*.py 2>/dev/null \
+out=$(grep -rIniE 'busy_timeout[ =]+[0-9]{3,}' backend/app --include=*.py 2>/dev/null \
       | grep -v constants.py)
 if [ -n "$out" ]; then
   violation 'SQLite busy_timeout 在业务层裸写数值（应走 settings.db_busy_timeout_ms）'
