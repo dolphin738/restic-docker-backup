@@ -162,6 +162,22 @@ export interface SourceBrowseResponse {
   next_cursor: string | null
 }
 
+/** E33 文件系统条目：path 为容器绝对路径，is_mountpoint 标注其为挂载点。 */
+export interface FsItem {
+  name: string
+  type: string
+  path: string
+  is_mountpoint: boolean
+}
+
+/** E33 浏览响应；mounts 为容器挂载点列表（根目录请求才有，供快跳使用）。 */
+export interface FsBrowseResponse {
+  path: string
+  items: FsItem[]
+  mounts: string[]
+  next_cursor: string | null
+}
+
 /** E32 内置排除集（只读）。items/core 为容器前缀形态（wire 兼容保留）；
  * display_items/display_core 是剥好前缀的展示形态，前端只用这俩。 */
 export interface ExclusionsResponse {

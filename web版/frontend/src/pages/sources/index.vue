@@ -21,7 +21,7 @@ import { listPolicies, updatePolicy } from '@/api/policies'
 import { browseSources, dryRunSources, getExclusions } from '@/api/sources'
 import type { DryRunResponse } from '@/api/types'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
-import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
+import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -71,6 +71,7 @@ const defaultPolicy = computed(() =>
 const selectedSources = ref<string[]>([])
 const appendedExcludes = ref<string[]>([])
 const excludeDraft = ref('')
+const manualDraft = ref('')
 const saving = ref(false)
 
 function addExclude(): void {
@@ -88,6 +89,30 @@ function addExclude(): void {
 
 function removeSource(path: string): void {
   selectedSources.value = selectedSources.value.filter((item) => item !== path)
+}
+
+/** 树里点目录/文件即加入已选（去重）；目录展开由行首三角形负责，不与选中冲突。 */
+function onTreeSelect(item: TreeItem): void {
+  if (selectedSources.value.includes(item.path)) {
+    message.info(t('sources.alreadyAdded', { path: item.path }))
+    return
+  }
+  selectedSources.value = selectedSources.value.concat(item.path)
+  message.success(t('sources.picked', { path: item.path }))
+}
+
+/** 手动输入路径加入已选：本地只去空格与重复，越界交给 E31 dry-run（400 PATH_OUT_OF_PREFIX）把关。 */
+function addManualSource(): void {
+  const value = manualDraft.value.trim()
+  if (!value) {
+    return
+  }
+  if (selectedSources.value.includes(value)) {
+    manualDraft.value = ''
+    return
+  }
+  selectedSources.value = selectedSources.value.concat(value)
+  manualDraft.value = ''
 }
 
 function removeExclude(rule: string): void {
@@ -186,7 +211,14 @@ function addCurrentDir(): void {
         <n-card :title="t('sources.treeTitle')" size="small">
           <n-space vertical :size="10">
             <PathBreadcrumb :path="currentPath" @select="currentPath = $event" />
-            <VirtualTree :root-path="currentPath" :load-children="treeLoader" :height="420" />
+            <VirtualTree
+              :root-path="currentPath"
+              :load-children="treeLoader"
+              :height="420"
+              select-dir
+              @select="onTreeSelect"
+            />
+            <n-text depth="3" class="sources__hint">{{ t('sources.treeHint') }}</n-text>
             <n-space>
               <n-button size="small" type="primary" @click="addCurrentDir">
                 {{ t('sources.addCurrentDir', { path: currentPath }) }}
@@ -204,6 +236,17 @@ function addCurrentDir(): void {
         <n-card :title="t('sources.sourcesTitle')" size="small">
           <n-space vertical :size="12">
             <n-text strong>{{ t('sources.selected') }}</n-text>
+            <!-- 手动输入路径：与树浏览并列的第二条入口（越界在 dry-run 时被拦截） -->
+            <n-space :size="6">
+              <n-input
+                v-model:value="manualDraft"
+                size="small"
+                class="sources__manual"
+                :placeholder="t('sources.manualPlaceholder')"
+                @keydown.enter.prevent="addManualSource"
+              />
+              <n-button size="small" @click="addManualSource">{{ t('sources.manualAdd') }}</n-button>
+            </n-space>
             <n-empty v-if="selectedSources.length === 0" :description="t('sources.selectedEmpty')" size="small" />
             <n-space v-else :size="6">
               <n-tag
@@ -311,8 +354,14 @@ function addCurrentDir(): void {
     <n-drawer v-model:show="drawerShow" :width="640" placement="right">
       <n-drawer-content :title="t('sources.treeDrawer')" closable>
         <n-space vertical :size="10">
-          <PathBreadcrumb :path="currentPath" @select="currentPath = $event" />
-          <VirtualTree :root-path="currentPath" :load-children="treeLoader" :height="480" />
+        <PathBreadcrumb :path="currentPath" @select="currentPath = $event" />
+        <VirtualTree
+          :root-path="currentPath"
+          :load-children="treeLoader"
+          :height="480"
+          select-dir
+          @select="onTreeSelect"
+        />
         </n-space>
       </n-drawer-content>
     </n-drawer>
@@ -322,6 +371,15 @@ function addCurrentDir(): void {
 <style scoped>
 .sources__rule {
   margin: 0 4px 4px 0;
+}
+
+.sources__manual {
+  flex: 1 1 240px;
+}
+
+.sources__hint {
+  display: block;
+  font-size: 12px;
 }
 
 .sources__preview {

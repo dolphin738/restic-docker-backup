@@ -30,9 +30,14 @@ const DEFAULT_HEIGHT = 360
 const props = defineProps<{
   /** 根目录（展示形态；首次挂载即加载该层直接子项）。 */
   rootPath: string
-  /** 单层加载器：调用方适配 E05 / E18；一次请求只取一层直接子项，游标只透传。 */
+  /** 单层加载器：调用方适配 E05 / E18 / E33；一次请求只取一层直接子项，游标只透传。 */
   loadChildren: (path: string, cursor?: string) => Promise<TreePage>
   height?: number
+  /** true：点目录名 = 选中（emit select）并同步展开；false（默认）：点目录名只展开。
+   *  展开/收起**始终**由行首三角形触发，避免与选中手势互相打架。 */
+  selectDir?: boolean
+  /** 高亮行（当前选中/生效路径）。 */
+  selectedPath?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -127,22 +132,32 @@ async function loadMore(dirPath: string | undefined): Promise<void> {
   }
 }
 
+/** 展开/收起：由行首三角形触发，点体表（名称）不再折叠。 */
+function toggle(item: TreeItem): void {
+  if (!isDir(item)) {
+    return
+  }
+  const next = new Set(expanded.value)
+  if (next.has(item.path)) {
+    next.delete(item.path)
+  } else {
+    next.add(item.path)
+    void loadDir(item.path)
+  }
+  expanded.value = next
+}
+
 function onRowClick(row: Row): void {
   if (row.kind !== 'item') {
     return
   }
-  if (!isDir(row.item)) {
-    emit('select', row.item)
+  const item = row.item
+  // 文件永远可选中；目录仅在 selectDir 模式下可选中（默认保持"点行=展开"的旧行为）
+  if (isDir(item) && !props.selectDir) {
+    toggle(item)
     return
   }
-  const next = new Set(expanded.value)
-  if (next.has(row.item.path)) {
-    next.delete(row.item.path)
-  } else {
-    next.add(row.item.path)
-    void loadDir(row.item.path)
-  }
-  expanded.value = next
+  emit('select', item)
 }
 
 const rows = computed<Row[]>(() => {
@@ -224,17 +239,22 @@ watch(
           v-for="row in visibleRows"
           :key="row.key"
           class="vtree__row"
-          :class="{ 'vtree__row--dir': row.kind === 'item' && isDir(row.item) }"
+          :class="{
+            'vtree__row--dir': row.kind === 'item' && isDir(row.item),
+            'vtree__row--selected':
+              row.kind === 'item' && !!selectedPath && row.item.path === selectedPath,
+          }"
           :style="{
             top: `${row.top}px`,
             height: `${ROW_HEIGHT}px`,
             paddingLeft: `${row.depth * 16 + 8}px`,
           }"
-          @click="onRowClick(row)"
         >
           <template v-if="row.kind === 'item'">
-            <span class="vtree__caret">{{ isDir(row.item) ? (expanded.has(row.item.path) ? '▾' : '▸') : '' }}</span>
-            <span class="vtree__name">{{ row.item.name }}</span>
+            <span class="vtree__caret" @click.stop="toggle(row.item)">
+              {{ isDir(row.item) ? (expanded.has(row.item.path) ? '▾' : '▸') : '' }}
+            </span>
+            <span class="vtree__name" @click.stop="onRowClick(row)">{{ row.item.name }}</span>
           </template>
           <n-button v-else size="tiny" quaternary :loading="row.loadingMore" @click.stop="loadMore(row.dirPath)">
             {{ t('tree.loadMore') }}
@@ -273,6 +293,21 @@ watch(
   display: inline-block;
   width: 14px;
   color: rgba(128, 128, 128, 0.8);
+  cursor: pointer;
+  pointer-events: none;
+}
+
+/* 只有目录行的三角形可点（全局开启后文件行仍不可点） */
+.vtree__row--dir .vtree__caret {
+  pointer-events: auto;
+}
+
+.vtree__caret:hover {
+  color: var(--n-primary-color, rgba(128, 128, 128, 0.9));
+}
+
+.vtree__row--selected {
+  background: rgba(0, 128, 0, 0.12);
 }
 
 .vtree__name {

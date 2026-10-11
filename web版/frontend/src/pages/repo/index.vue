@@ -11,6 +11,8 @@ import {
   NInput,
   NSpace,
   NStatistic,
+  NTabPane,
+  NTabs,
   NTag,
   NText,
   NTooltip,
@@ -18,6 +20,7 @@ import {
 } from 'naive-ui'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { browseFs } from '@/api/fs'
 import { getConfig, putConfig, testRepo } from '@/api/config'
 import { createJob } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
@@ -25,6 +28,8 @@ import { isAppError } from '@/api/http'
 import type { ConfigItem, RepoTestResponse } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
+import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
+import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -77,6 +82,46 @@ const unlockJobId = ref('')
 const initShow = ref(false)
 const initializing = ref(false)
 const initJobId = ref('')
+
+// ---------------------------------------------------------------- 本地路径浏览器（E33）
+const CONTAINER_ROOT = '/'
+const browsePath = ref(CONTAINER_ROOT)
+/** 已挂载点快跳列表：只在浏览容器根时才有（mounts 由 /proc/mounts 过滤伪文件系统得出） */
+const mountChips = ref<string[]>([])
+const urlMode = ref<'browse' | 'manual'>('manual')
+
+function fsLoader(path: string, cursor?: string): Promise<TreePage> {
+  return browseFs(path, cursor).then((page) => {
+    if (page.path === CONTAINER_ROOT) {
+      mountChips.value = page.mounts
+    }
+    return {
+      items: page.items.map((item) => ({
+        key: item.path,
+        name: item.name,
+        type: item.type,
+        path: item.path,
+      })),
+      nextCursor: page.next_cursor,
+    }
+  })
+}
+
+/** 点目录 = 选为仓库地址（同时把浏览器同步到该目录，便于继续向下钻）。 */
+function onTreeSelect(item: TreeItem): void {
+  form.url = item.path
+  if (item.type === 'dir') {
+    browsePath.value = item.path
+  }
+}
+
+function useCurrentDir(): void {
+  form.url = browsePath.value
+}
+
+function jumpTo(path: string): void {
+  browsePath.value = path
+}
 
 const itemMap = computed<Map<string, ConfigItem>>(() => {
   const map = new Map<string, ConfigItem>()
@@ -246,7 +291,59 @@ async function onInit(): Promise<void> {
                 </n-space>
               </n-form-item>
               <n-form-item :label="t('repo.url')">
-                <n-input v-model:value="form.url" :placeholder="t('repo.urlPlaceholder')" />
+                <!-- 本地路径：浏览 / 手动输入 双入口；对象存储只保留手动输入 -->
+                <n-space vertical :size="6" class="repo__cred">
+                  <n-tabs
+                    v-if="repoType === 'local'"
+                    v-model:value="urlMode"
+                    type="segment"
+                    size="small"
+                  >
+                    <n-tab-pane name="browse" :tab="t('repo.urlBrowseTab')" />
+                    <n-tab-pane name="manual" :tab="t('repo.urlManualTab')" />
+                  </n-tabs>
+
+                  <template v-if="repoType === 'local' && urlMode === 'browse'">
+                    <n-space :size="6" class="repo__mounts">
+                      <n-tag size="small" round @click="jumpTo(CONTAINER_ROOT)">
+                        {{ t('repo.mountRoot') }}
+                      </n-tag>
+                      <n-tag
+                        v-for="mount in mountChips"
+                        :key="mount"
+                        size="small"
+                        round
+                        type="info"
+                        class="repo__mount"
+                        @click="jumpTo(mount)"
+                      >
+                        {{ mount }}
+                      </n-tag>
+                    </n-space>
+                    <PathBreadcrumb :path="browsePath" @select="browsePath = $event" />
+                    <VirtualTree
+                      :root-path="browsePath"
+                      :load-children="fsLoader"
+                      :height="280"
+                      select-dir
+                      :selected-path="form.url"
+                      @select="onTreeSelect"
+                    />
+                    <n-space align="center" :size="8">
+                      <n-button size="small" secondary @click="useCurrentDir">
+                        {{ t('repo.useThisDir', { path: browsePath }) }}
+                      </n-button>
+                      <n-input v-model:value="form.url" size="small" class="repo__picked" />
+                    </n-space>
+                    <n-text depth="3" class="repo__note">{{ t('repo.browseHint') }}</n-text>
+                  </template>
+
+                  <n-input
+                    v-else
+                    v-model:value="form.url"
+                    :placeholder="t('repo.urlPlaceholder')"
+                  />
+                </n-space>
               </n-form-item>
               <n-form-item :label="t('repo.hostTag')">
                 <n-input v-model:value="form.hostTag" :placeholder="t('repo.hostTagPlaceholder')" />
@@ -409,5 +506,18 @@ async function onInit(): Promise<void> {
 
 .repo__cred {
   width: 100%;
+}
+
+.repo__mounts {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.repo__mount {
+  cursor: pointer;
+}
+
+.repo__picked {
+  flex: 1 1 200px;
 }
 </style>
