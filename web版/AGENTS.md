@@ -19,10 +19,14 @@ uv run pytest tests/test_parser.py # 只跑解析器 fixture 回归
 
 # 前端（frontend/，用 pnpm——仓库前端依赖由 pnpm 管理，锁文件 pnpm-lock.yaml）
 pnpm run typecheck                 # vue-tsc --noEmit
+pnpm run test                      # vitest run（前端单测）
 pnpm run build                     # 类型检查 + 构建
+
+# 红线机器校验（规范 §3.1 的可执行断言：各红线 grep + 双文档编号锚点一致性）
+bash scripts/verify_redlines.sh
 ```
 
-> 前端 **eslint / vitest 尚未接入**（无 `lint` script、无相关依赖、无任何 `*.spec.ts`），**不要执行** `npm run lint`、`npx vitest run`、`eslint .`——它们会失败。详见规范 §7 过渡期说明。
+> 前端 **eslint 尚未接入**（无 `lint` script、无相关依赖），**不要执行** `npm run lint` 或 `eslint .`——会失败。详见规范 §7 过渡期说明。
 
 ## 🔴 红线（写代码时不得违反）
 
@@ -48,8 +52,8 @@ pnpm run build                     # 类型检查 + 构建
    *`--overwrite` 仅限时间戳子目录场景按架构 §6.3 由 `JobRunner` 固定注入（默认 `if-changed`，经 `OVERWRITE_MODES` 白名单校验，界面无入口）；P1 无任何用户可触达的覆盖路径。*
    自查：`grep -rn "overwrite" backend/app frontend/src | grep -vi "restic.py\|job_runner.py\|locales\|restore.py:12"`
 
-7. **[A1] DB 访问只在 `app/db/repositories/`**——路由层与服务层不得直接 import aiosqlite 或拼 SQL。**豁免仅限已合入的 `app/auth/`（独立 auth 模块，自成表边界）与 `routers/health.py` 探针；新增代码不得援引此豁免**（`job_runner.py` 的 jobs 写入应收敛到 `job_repo.py`，属待办）。
-   自查：`grep -rn "SELECT \|INSERT INTO\|UPDATE \|DELETE FROM" backend/app --include=*.py | grep -v "app/db/" | grep -v "app/auth/" | grep -v constants.py` —— 当前仅应命中 `health.py` 探针与 `job_runner.py:473`（jobs 写入待收口至 `job_repo.py`），出现其他文件即违规。
+7. **[A1] DB 访问只在 `app/db/repositories/`**——路由层与服务层不得直接 import aiosqlite 或拼 SQL。**豁免仅限已合入的 `app/auth/`（独立 auth 模块，自成表边界）与 `routers/health.py` 探针；新增代码不得援引此豁免**。
+   自查：`bash scripts/verify_redlines.sh`（A1 段应零命中）｜ 或 `grep -rn "SELECT \|INSERT INTO\|UPDATE \|DELETE FROM" backend/app --include=*.py | grep -v "app/db/" | grep -v "app/auth/" | grep -v constants.py | grep -v "health.py"`
 
 8. **[A3] 内置排除集唯一来源是 `app/exclusions.py` 的 `ExclusionRules`**——前端/后端其他位置复制该清单 = 违规（单一事实来源 D8）；UI 只读展示走 E32 端点。
    自查：`grep -rn "lost+found" frontend/src backend/app | grep -v exclusions.py | grep -v constants.py`
@@ -81,7 +85,7 @@ pnpm run build                     # 类型检查 + 构建
 - 错误响应走 `app/errors.py` 唯一映射点，路由里不得裸 `HTTPException` 返回未登记 code；**新增 `ERROR_STATUS` 条目须同 PR 更新架构文档 §5.0 错误码表**；
 - CPU 密集与阻塞 IO 放 `to_thread`，不阻塞事件循环；同仓库任务互斥：手动冲突 409、调度冲突记 cancelled + audit；**`JobRunner.submit` 的并发互斥必须有 `asyncio.gather` 双并发测试**（断言恰好 1 成功；「预置 running 再触发」不是并发测试）——竞态人工 review 发现不了；
 - 前端请求走 `src/api/` 唯一出口；SSE 一律用 `useJobStream`（组件不直接持有 EventSource，SSE 数据不进响应式树）；危险操作复用 `ConfirmGate.vue`；路径展示复用 `PathBreadcrumb.vue`；文案全部走 i18n（`<script setup>` 中 `const { t } = useI18n()`，**模板文案禁硬编码中文，代码注释里可以**）；大列表用虚拟滚动（`n-data-table virtual-scroll` / `useVirtualList`）；
-- 改 `useJobStream.ts` 必须有 mock EventSource 测试（vitest 未接入前须手工验证并说明步骤）；改 `parser.py` 必须跑 fixture 回归；
+- 改 `useJobStream.ts` 必须有对应测试（vitest 已接入，`pnpm run test`；现有 12 条用例见 `src/composables/__tests__/useJobStream.spec.ts`）；改 `parser.py` 必须跑 fixture 回归；
 - 新增依赖需说明理由并锁版本（后端 `uv.lock`、前端 `pnpm-lock.yaml`），禁止引入与既有选型重叠的库；
 - **构建相关**：Docker 构建上下文为 `web版/`，`.dockerignore` 位于上下文根；改 `Dockerfile`/`compose` 时确认未把 `.venv`/`node_modules`/`.env` 打进镜像。
 
