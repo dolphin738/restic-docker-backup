@@ -51,7 +51,7 @@
           script: cd web版/frontend && pnpm run build
 
     - name: docker-build-push
-      imports: https://cnb.cool/dolphin738/restic-docker-backup/-/blob/main/.cnb/dockerhub-envs.yml
+      imports: https://cnb.cool/dolphin738/my/-/blob/main/docker.yml
       services:
         - docker
       env:
