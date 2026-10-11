@@ -41,7 +41,11 @@
 .git/
 **/.git/
 
-# ---- 测试与工具配置（镜像内不需要）----
+# ---- 测试与宿主机侧校验脚本（镜像内不需要）----
+# scripts/ 是在宿主机上跑的校验脚本（check_dockerignore.py / scan_image.sh / verify_redlines.sh），
+# Dockerfile 从不 COPY 它们，放进上下文只是白白传输。
+# 复核命令：python scripts/check_dockerignore.py --context（列出"进了上下文却从不被 COPY"的目录）
+scripts/
 backend/tests/
 dev-scripts/
 .pytest_cache/

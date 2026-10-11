@@ -35,6 +35,10 @@ services:
       # SSE 空闲心跳间隔（秒）。反代 idle timeout 明显小于该值时需下调，
       # 否则反代会先于心跳断开长连接，前端误判为断流并重连。
       SSE_HEARTBEAT_SECONDS: "15"
+      # 日志级别：DEBUG / INFO（默认）/ WARNING / ERROR。
+      # 容器日志行首固定带时间戳（取本 TZ，形如 2026-10-12 04:30:27+0800），
+      # 访问日志（uvicorn.access）每请求一行，含 30s 一次的健康探测。
+      LOG_LEVEL: "INFO"
       # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
       # SQLITE_BUSY 可上调；过大则失败延迟变长。
       DB_BUSY_TIMEOUT_MS: "5000"

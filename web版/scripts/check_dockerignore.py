@@ -13,8 +13,13 @@
 用法：
     python scripts/check_dockerignore.py            # 校验并输出报告
     python scripts/check_dockerignore.py --json     # 机器可读（供 CI 消费）
+    python scripts/check_dockerignore.py --context  # 追加"构建上下文体积账"（无 docker 也能查）
 
 退出码：0 = 一致；1 = 不一致（CI 应阻塞）
+
+`--context` 解决的是另一类问题：本机没有 docker，`.dockerignore` 写了但"到底哪些文件真的
+会被打进上下文、最终镜像里有没有多余东西"只能靠猜。`--json` 管"能不能构建成功"，
+`--context` 管"打进去的东西该不该打进去"。
 
 零依赖要求：只用标准库；若 pathspec 可用则用它以贴合 docker 真实语义，
 否则回退到内置的等价实现（覆盖 dockerignore 的常用子集）。
@@ -23,8 +28,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,6 +165,83 @@ def parse_copy_sources(dockerfile: Path) -> list[str]:
     return sources
 
 
+# ---------------------------------------------------------------- 上下文体积账
+
+def _human(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f}B" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
+def scan_context(di: DockerIgnore) -> list[tuple[str, int]]:
+    """返回"未被 .dockerignore 排除"的全部文件（即真正会进构建上下文的清单）。
+
+    目录被命中时整棵剪枝——与 docker 行为一致（命中目录 == 命中其下所有文件）。
+    """
+    included: list[tuple[str, int]] = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        rel_dir = Path(dirpath).relative_to(ROOT).as_posix()
+        if rel_dir == ".":
+            rel_dir = ""
+        dirnames[:] = [
+            d for d in dirnames if not di.ignored(f"{rel_dir}/{d}" if rel_dir else d)
+        ]
+        for name in filenames:
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            if di.ignored(rel):
+                continue
+            included.append((rel, (ROOT / rel).stat().st_size))
+    return included
+
+
+def report_context(di: DockerIgnore, copy_srcs: list[str]) -> None:
+    """打印上下文体积账，并标出"进了上下文却从不被 COPY"的纯噪声目录。"""
+    included = scan_context(di)
+    total = sum(s for _, s in included)
+
+    size_by_top: dict[str, int] = defaultdict(int)
+    count_by_top: dict[str, int] = defaultdict(int)
+    for rel, size in included:
+        top = rel.split("/")[0] if "/" in rel else "(根)"
+        size_by_top[top] += size
+        count_by_top[top] += 1
+
+    print("\n" + "─" * 60)
+    print(f"构建上下文（{ROOT}）体积账：{len(included)} 个文件 / {_human(total)}")
+    print("─" * 60)
+    for top, size in sorted(size_by_top.items(), key=lambda kv: -kv[1]):
+        print(f"  {top:<24} {count_by_top[top]:>5} 个  {_human(size)}")
+
+    # 顶层目录是否被 Dockerfile 用到：`COPY frontend/` 的顶层是 frontend
+    used_tops = {src.split("/")[0] if "/" in src else src for src in copy_srcs}
+    noise = [t for t in size_by_top if t not in used_tops and t != "(根)"]
+    if noise:
+        print("\n⚠ 进了上下文但 Dockerfile 从不 COPY 的顶层目录（可加进 .dockerignore）：")
+        for t in sorted(noise):
+            print(f"  · {t}  {_human(size_by_top[t])}")
+    else:
+        print("\n✓ 上下文内没有「从不被 COPY」的目录")
+
+    fe = [(r, s) for r, s in included if r.startswith("frontend/")]
+    print(f"\nfrontend/ 明细：{len(fe)} 个文件 / {_human(sum(s for _, s in fe))}（>10KB 或顶层）：")
+    for rel, size in sorted(fe, key=lambda kv: -kv[1]):
+        if size > 10 * 1024 or rel.count("/") <= 1:
+            print(f"  {_human(size):>8}  {rel}")
+
+    print("\n上下文内最大的 8 个文件：")
+    for rel, size in sorted(included, key=lambda kv: -kv[1])[:8]:
+        print(f"  {_human(size):>8}  {rel}")
+
+    print("\nDockerfile 从**其它构建阶段** COPY 的来源（不占上下文）：")
+    for raw in DOCKERFILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("COPY") and "--from=" in line:
+            print(f"  · {line}")
+
+
 # ---------------------------------------------------------------- 校验
 
 def main() -> int:
@@ -213,6 +297,9 @@ def main() -> int:
             print("\n✓ .dockerignore 与 Dockerfile 一致")
             print("  · Dockerfile 的 COPY 源均未被排除（可构建）")
             print("  · .venv / node_modules / .env / docs / tests 均已排除（无泄漏与臃肿）")
+
+    if "--context" in sys.argv:
+        report_context(di, copy_srcs)
 
     return 1 if problems else 0
 
