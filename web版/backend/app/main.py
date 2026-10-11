@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     path_mapper = PathMapper(settings)
     restic_cmd = ResticCmd(settings, path_mapper)
     parser = OutputParser()
-    sse_channel = SseChannel(parser, job_repo)
+    sse_channel = SseChannel(parser, job_repo, heartbeat_seconds=settings.sse_heartbeat_seconds)
     job_runner = JobRunner(
         db,
         restic_cmd,
