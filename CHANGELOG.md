@@ -27,6 +27,9 @@
 
 - 应用版本口径统一为 `1.0.0`（原 `0.1.0` 为开发期占位），与 git tag 一致。
 - `docker-compose.yml` 镜像名补全命名空间：`dolphin738/restic-web:1.0.0-restic0.19.1`。
+- 部署模板与本地构建拆成两份：`docker-compose.yml` 移除 `build:` 段（只用已发布镜像），
+  新增叠加文件 `docker-compose.build.yml`（`build:` 段 + 本地专用镜像名 `restic-web:1.0.0-local`）。
+  修掉"本地构建产物顶替同名发布镜像、外观无从分辨"的隐患。
 - 依赖安装改为 `uv sync --frozen`（`uv.lock` 锁定），CI 与 Dockerfile 同步，构建可重复。
 - 分支模型收敛为**主干开发**（`main` 唯一长期分支，dev 分支已删除）。
 

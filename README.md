@@ -44,6 +44,10 @@ docker run -d --name restic-web \
 更推荐直接用仓库内模板（含注释与两种挂载模式切换说明）：
 `web版/docker/docker-compose.yml` → 复制后 `docker compose up -d`。
 
+> 部署模板**不含 `build:` 段**（只用已发布镜像）。需要本地构建时用叠加文件：
+> `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`
+> （详见 `web版/docs/部署指南.md` §2.5）。
+
 ```bash
 # ④ 打开 http://<宿主机IP>:8000 —— 首启引导页会一次性展示随机管理密码
 #    务必立即保存，并用它作为「旧密码」设置新密码（展示过即失效，端点返回 410）
