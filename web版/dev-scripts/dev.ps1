@@ -44,8 +44,8 @@
 # ===========================================================================
 # 说明：
 #   - 后端 = backend/（FastAPI + aiosqlite，uv 管理的 .venv），前端 = frontend/（Vite + Vue3，pnpm）。
-#   - 开发库固定在 backend\.dev-data\restic.db（经 DATA_DIR 注入），避免跟随盘符漂移；
-#     如需沿用旧开发库，把旧 restic.db 移到该目录或修改下方 $devDataDir。
+#   - 开发库固定在 dev-scripts\.dev-data\restic.db（经 DATA_DIR 注入），避免跟随盘符漂移；
+#     该目录为运行时产物，已被仓库根 .gitignore 收口忽略，不入 git。
 #   - 首启（或 resetdb 后）需在 Web 界面完成 bootstrap（一次性随机密码），无脚本方式。
 #   - Node 探测顺序：workbuddy -> PATH；pnpm 缺失时报错而非回退 npm。
 # ===========================================================================
@@ -90,7 +90,7 @@ $scriptsDir      = Join-Path $root "scripts"
 $venv            = Join-Path $backend ".venv"
 $venvPython      = Join-Path $venv "Scripts\python.exe"
 $pyproject       = Join-Path $backend "pyproject.toml"
-$devDataDir      = Join-Path $backend ".dev-data"     # 开发库固定目录（DATA_DIR）
+$devDataDir      = Join-Path $PSScriptRoot ".dev-data"  # 开发库固定目录（DATA_DIR），随脚本放 dev-scripts 下，不入 git
 $backendPidFile  = Join-Path $PSScriptRoot ".dev-backend.pid"
 $frontendPidFile = Join-Path $PSScriptRoot ".dev-frontend.pid"
 

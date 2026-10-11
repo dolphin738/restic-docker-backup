@@ -1,0 +1,86 @@
+# ============================================================
+# CNB 云原生构建流水线 —— 仅手动触发（web_trigger），无任何自动构建
+#
+# 单条手动流水线：后端验证 → 前端验证 → docker build → 推 CNB 制品库 → 推 Docker Hub
+# （Docker Hub 未配置凭据时该段自动跳过，不影响日常构建）
+#
+# 标签策略（对齐《Web版改造方案.md》L249/L526 与《架构设计文档.md》§10.2）：
+#   固定标签   = sha 短标签（COMMIT_SHORT）+ latest
+#   条件追加   = 当前 commit 已打 git tag 时，追加双版本标签
+#                <app版本>-restic<restic版本>（如 1.0.0-restic0.19.1，v 前缀自动剥离）
+#
+# Docker Hub 凭据：经 imports 注入私有仓库 dolphin738/my 的 main 分支 docker.yml，
+#   需定义三个键：DOCKERHUB_USER / DOCKERHUB_TOKEN / DOCKERHUB_NAMESPACE
+#
+# 镜像产物：
+#   CNB 制品库  docker.cnb.cool/dolphin738/restic-docker-backup（内置凭据，免 secrets）
+#   Docker Hub <DOCKERHUB_NAMESPACE>/restic-web
+#
+# 依赖安装源固化：腾讯云 PyPI 镜像（P1 实测 pypi 直连/清华/阿里均不可用）
+# ============================================================
+
+"$":
+  web_trigger:
+    - name: backend-verify
+      docker:
+        image: python:3.13
+      env:
+        PIP_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
+      stages:
+        - name: install
+          script: pip install -e 'web版/backend[dev]'
+        - name: ruff
+          script: cd web版/backend && ruff check app tests
+        - name: pytest
+          script: cd web版/backend && python -m pytest -q
+
+    - name: frontend-verify
+      docker:
+        image: node:22
+      stages:
+        - name: install
+          script:
+            - corepack enable
+            - cd web版/frontend && pnpm install --frozen-lockfile
+        - name: typecheck
+          script: cd web版/frontend && pnpm run typecheck
+        - name: vitest
+          script: cd web版/frontend && pnpm run test
+        - name: build
+          script: cd web版/frontend && pnpm run build
+
+    - name: docker-build-push
+      imports: https://cnb.cool/dolphin738/my/-/blob/main/docker.yml
+      services:
+        - docker
+      env:
+        RESTIC_VERSION: "0.19.1"
+      stages:
+        - name: resolve tags and build
+          script:
+            - CNB_IMG="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            - CNB_TAGS="${CNB_IMG}:${CNB_COMMIT_SHORT} ${CNB_IMG}:latest"
+            - HUB_TAGS=""
+            - if [ -n "${DOCKERHUB_NAMESPACE}" ]; then HUB_TAGS="${DOCKERHUB_NAMESPACE}/restic-web:${CNB_COMMIT_SHORT} ${DOCKERHUB_NAMESPACE}/restic-web:latest"; fi
+            - if APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null); then
+                APP_VERSION=${APP_VERSION#v};
+                VTAG="${APP_VERSION}-restic${RESTIC_VERSION}";
+                CNB_TAGS="${CNB_TAGS} ${CNB_IMG}:${VTAG}";
+                if [ -n "${DOCKERHUB_NAMESPACE}" ]; then HUB_TAGS="${HUB_TAGS} ${DOCKERHUB_NAMESPACE}/restic-web:${VTAG}"; fi;
+                echo "发布双版本标签：${VTAG}";
+              else
+                echo "当前 commit 无 git tag，跳过双版本标签";
+              fi
+            - printf '%s\n' ${CNB_TAGS} > .ci-cnb-tags
+            - if [ -n "${HUB_TAGS}" ]; then printf '%s\n' ${HUB_TAGS} > .ci-hub-tags; fi
+            - docker build -f web版/docker/Dockerfile --build-arg RESTIC_VERSION=${RESTIC_VERSION} ${CNB_TAGS} ${HUB_TAGS} web版/
+
+        - name: push (cnb registry)
+          script: for img in $(cat .ci-cnb-tags); do docker push "$img"; done
+
+        - name: push (docker hub, skip if not configured)
+          script:
+            - if [ ! -s .ci-hub-tags ]; then echo "未配置 Docker Hub 凭据（dolphin738/my:docker.yml），跳过推送"; exit 0; fi
+            - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
+            - for img in $(cat .ci-hub-tags); do docker push "$img"; done
+            - docker logout
