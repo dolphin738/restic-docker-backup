@@ -33,8 +33,10 @@ resolve_tags() {
     printf '%s\n' "${HUB_IMG}:${CNB_COMMIT_SHORT}" >> "$TAG_FILE"
     printf '%s\n' "${HUB_IMG}:latest" >> "$TAG_FILE"
   fi
-  # 条件标签：HEAD 有 git tag → 双版本 <app版本>-restic<restic版本>
-  if app_version=$(git describe --tags --abbrev=0 2>/dev/null); then
+  # 条件标签：HEAD 恰好是某个 git tag 的目标时 → 双版本 <app版本>-restic<restic版本>
+  # （发布语义：只对显式打 tag 的 commit 出发布标签，日常构建不出）
+  git fetch --tags origin 2>/dev/null || true   # CI 检出可能不带 tags，补拉（失败不阻断）
+  if app_version=$(git describe --tags --exact-match HEAD 2>/dev/null); then
     app_version="${app_version#v}"
     vtag="${app_version}-restic${RESTIC_VERSION}"
     printf '%s\n' "${CNB_IMG}:${vtag}" >> "$TAG_FILE"
