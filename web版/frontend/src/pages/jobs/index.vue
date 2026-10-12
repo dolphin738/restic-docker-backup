@@ -183,6 +183,8 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
             </n-space>
           </n-space>
           <JobProgress :job-id="job.id" :title="`${job.type} · ${job.status}`" />
+          <!-- 备份类任务：首次最慢属预期，小字提示不抢焦点 -->
+          <n-text v-if="job.type === 'backup'" depth="3">{{ t('jobs.firstBackupSlowNote') }}</n-text>
         </n-space>
       </n-card>
     </template>

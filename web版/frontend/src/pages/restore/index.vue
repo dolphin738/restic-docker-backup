@@ -14,9 +14,9 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { listSnapshots } from '@/api/snapshots'
 import { RESTORE_TARGET_ROOT, restoreSnapshot } from '@/api/restore'
 import ConfirmGate from '@/components/ConfirmGate.vue'
@@ -25,6 +25,7 @@ import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const ui = useUiStore()
 
 const message = useMessage()
@@ -33,7 +34,12 @@ onUnmounted(() => ui.setMessageApi(null))
 
 /** 1=选快照与目标 2=三步确认 3=执行与结果 */
 const step = ref(1)
+/** 当前选中快照；列表加载后默认取最新版本，之后用户可自由改选。 */
 const snapshotId = ref<string | null>(null)
+/** URL ?snapshot= 预选（快照页「恢复此快照」直达入口，PRD §5 页面 8）；缺省 null。 */
+const requestedSnapshotId = ref<string | null>(
+  typeof route.query.snapshot === 'string' && route.query.snapshot ? route.query.snapshot : null,
+)
 const gateShow = ref(false)
 const restoring = ref(false)
 const result = ref<{ jobId: string; restoreTarget: string } | null>(null)
@@ -46,15 +52,32 @@ const inPlaceReason = computed(() =>
 
 const snapshotsQuery = useQuery({ queryKey: ['snapshots', 'restore-picker'], queryFn: () => listSnapshots(50) })
 
+/** 列表按 time 降序：后端 E17 已保证最新在前，前端再兜底排序一次，首项即最新版本。 */
+const snapshotItems = computed(() =>
+  [...(snapshotsQuery.data.value?.items ?? [])].sort((a, b) => (b.time ?? '').localeCompare(a.time ?? '')),
+)
+
 const snapshotOptions = computed(() =>
-  (snapshotsQuery.data.value?.items ?? []).map((snapshot) => ({
+  snapshotItems.value.map((snapshot) => ({
     label: `${snapshot.time ?? t('common.none')} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
     value: snapshot.id,
   })),
 )
 
-const selectedSnapshot = computed(() =>
-  (snapshotsQuery.data.value?.items ?? []).find((snapshot) => snapshot.id === snapshotId.value) ?? null,
+const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => snapshot.id === snapshotId.value) ?? null)
+
+/** 默认选中：列表就绪后，?snapshot= 预选命中则用之，否则取最新版本；
+ *  当前选择仍有效（含用户改选）时不打扰；预选 id 不存在时忽略并回落默认最新。 */
+watch(
+  snapshotItems,
+  (items) => {
+    if (snapshotId.value && items.some((item) => item.id === snapshotId.value)) {
+      return
+    }
+    const requested = requestedSnapshotId.value
+    snapshotId.value = (requested ? items.find((item) => item.id === requested)?.id : undefined) ?? items[0]?.id ?? null
+  },
+  { immediate: true },
 )
 
 function goConfirm(): void {

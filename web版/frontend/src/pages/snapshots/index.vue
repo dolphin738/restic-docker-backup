@@ -16,12 +16,14 @@ import {
 } from 'naive-ui'
 import { computed, h, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
 import type { SnapshotOut } from '@/api/types'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 
 const PAGE_SIZE = 20
 const { t } = useI18n()
+const router = useRouter()
 
 const page = ref(1)
 const snapshotsQuery = useQuery({
@@ -40,6 +42,15 @@ const activeSnapshot = ref<SnapshotOut | null>(null)
 function openTree(snapshot: SnapshotOut): void {
   activeSnapshot.value = snapshot
   treeShow.value = true
+}
+
+/** 「恢复此快照」直达恢复向导（PRD §5 页面 8）：快照 ID 走 query，由恢复页负责预选。 */
+function restoreActiveSnapshot(): void {
+  const snapshotId = activeSnapshot.value?.id
+  if (!snapshotId) {
+    return
+  }
+  void router.push({ name: 'restore', query: { snapshot: snapshotId } })
 }
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
@@ -144,7 +155,12 @@ const errorText = computed(() => {
     <n-drawer v-model:show="treeShow" :width="720" placement="right">
       <n-drawer-content :title="`${t('snap.filesTitle')} ${activeSnapshot?.id.slice(0, 8) ?? ''}`" closable>
         <n-space vertical :size="10">
-          <n-text depth="3">{{ activeSnapshot?.paths.join(', ') }}</n-text>
+          <n-space align="center" justify="space-between">
+            <n-text depth="3">{{ activeSnapshot?.paths.join(', ') }}</n-text>
+            <n-button size="small" secondary type="primary" @click="restoreActiveSnapshot">
+              {{ t('snap.restoreThis') }}
+            </n-button>
+          </n-space>
           <VirtualTree v-if="treeShow" root-path="/" :load-children="treeLoader" :height="520" />
         </n-space>
       </n-drawer-content>
