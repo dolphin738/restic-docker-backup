@@ -1,0 +1,125 @@
+%% 增量设计-多备份任务-2026-10-13.md §1.3 类图抽取（与主文档同步维护）
+classDiagram
+    direction LR
+
+    class Repos {
+        <<stub>>
+        id TEXT PK
+        name TEXT
+        created_at TEXT
+    }
+
+    class BackupTask {
+        id INTEGER PK
+        repo_id TEXT FK
+        name TEXT
+        enabled INTEGER
+        tag TEXT UNIQUE
+        sources JSON
+        excludes JSON
+        keep_last..keep_yearly INTEGER
+        group_by TEXT
+        cron TEXT?
+        one_file_system INTEGER
+        compression TEXT
+        check_sample_ratio REAL
+        monthly_full_day INTEGER
+        prune_interval_days INTEGER
+        limit_up_kibps INTEGER
+        limit_down_kibps INTEGER
+        dry_run_pending INTEGER
+        last_run_at TEXT?
+        legacy_policy_id INTEGER?
+        created_at TEXT
+        updated_at TEXT
+    }
+
+    class Job {
+        id TEXT PK
+        type TEXT
+        status TEXT
+        trigger TEXT
+        policy_id INTEGER? legacy
+        task_id INTEGER? FK
+        snapshot_id TEXT?
+        ...
+    }
+
+    class TaskRepo {
+        +get(task_id) BackupTask?
+        +get_by_tag(tag) BackupTask?
+        +list_all(repo_id) BackupTask[]
+        +get_dict(task_id) dict?
+        +create(values) BackupTask
+        +update(task_id, values) BackupTask?
+        +delete(task_id) bool
+        +set_last_run_at(task_id, ts)
+        +clear_dry_run_pending(task_id)
+    }
+
+    class TaskService {
+        -repo TaskRepo
+        -policy_service PolicyService
+        +to_api(task) dict
+        +normalize(payload) dict
+        +generate_tag(task_id) str
+    }
+
+    class PolicyService {
+        +normalize(payload) dict
+        +to_api(policy) dict
+        +display_of(value, mapper) str
+    }
+
+    class JobRunner {
+        -task_loader TaskLoader?
+        +submit(job_type, task_id?, policy_id?, trigger, snapshot_id?, params?)
+        -_load_profile(job) dict
+        +cancel(job_id) Job
+        +recover_on_startup() int
+    }
+
+    class SchedulerService {
+        -tasks TaskRepo
+        -runner JobRunner
+        -config ConfigRepo
+        +reload() void
+        +start() void
+        +shutdown() void
+        +catchup_on_startup() void
+        +next_fire_time(task) str?
+        +_due_for_prune(task) bool
+        -_fire_backup(task_id) void
+    }
+
+    class ResticCmd {
+        +build(verb, *, args, env_extras?) list
+    }
+
+    class WhitelistArgs {
+        +include tuple~str~
+        ...
+    }
+
+    class BackupTasksRouter {
+        <<E34/E35/E36>>
+        +list_tasks(repo_id)
+        +get_task(repo_id, id)
+        +create_task(repo_id, payload)
+        +update_task(repo_id, id, payload)
+        +delete_task(repo_id, id)
+        +dry_run_task(repo_id, id, payload?)
+    }
+
+    Repos "1" <-- "N" BackupTask : repo_id
+    BackupTask "1" <-- "N" Job : task_id（删除置空）
+    TaskRepo ..> BackupTask : 读写
+    TaskService --> TaskRepo
+    TaskService --> PolicyService : 共享字段校验委托
+    JobRunner ..> TaskRepo : task_loader 注入
+    SchedulerService --> TaskRepo
+    SchedulerService --> JobRunner : submit(scheduled)
+    BackupTasksRouter --> TaskService
+    BackupTasksRouter --> TaskRepo
+    JobRunner --> ResticCmd : build
+    ResticCmd ..> WhitelistArgs

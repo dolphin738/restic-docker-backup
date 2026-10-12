@@ -1,0 +1,89 @@
+%% 增量设计-多备份任务-2026-10-13.md §6 时序图抽取（与主文档同步维护）
+%% 图 1：创建备份任务（E35）
+sequenceDiagram
+    participant B as 浏览器（向导）
+    participant RT as backup_tasks 路由（E35）
+    participant TS as TaskService
+    participant TR as TaskRepo
+    participant DB as SQLite（单写连接）
+    participant AU as AuditRepo
+
+    B->>RT: POST /api/repos/default/backup-tasks（TaskUpsertRequest，无 tag）
+    RT->>TS: normalize(payload)
+    TS->>TS: 共享字段委托 PolicyService.normalize（sources/excludes 归一、cron/keep_* 校验）
+    TS-->>RT: 列名字典（dry_run_pending=1）
+    RT->>TR: create(values)
+    TR->>DB: INSERT backup_tasks
+    TR->>DB: UPDATE tag='task-'||id（同方法内回写）
+    TR-->>RT: BackupTask
+    RT->>AU: record(task.create, target=id)
+    RT-->>B: 201 TaskOut（tag 只读）
+    Note over RT: 保存后 scheduler.reload()（cron 生效，无需重启）
+
+%% 图 2：任务卡片手动 Start（E12 按任务触发与 409 冲突）
+sequenceDiagram
+    participant B as 浏览器（任务卡片 Start）
+    participant RT as jobs 路由（E12）
+    participant JR as JobRunner
+    participant TR as TaskRepo
+    participant DB as SQLite
+    participant RE as restic 子进程
+
+    B->>RT: POST /api/jobs {type: backup, task_id: 2}
+    RT->>JR: submit("backup", task_id=2, trigger=manual)
+    JR->>JR: 仓库维度 asyncio.Lock（E1 不变）
+    JR->>DB: SELECT 同仓库 running/pending
+    alt 冲突
+        JR->>TR: 读运行中任务的 task_id → 任务名
+        JR-->>RT: JobConflictError{running_job_id, running_task_name}
+        RT-->>B: 409 JOB_CONFLICT「已有任务进行中：<任务名>」（不排队）
+    else 空闲
+        JR->>DB: INSERT jobs(pending, task_id=2)
+        JR->>JR: _load_profile：task_loader(2) → sources/tag/keep_*/limit_*/host_tag
+        JR->>RE: spawn restic backup --tag task-2 /host/...（凭据 env 注入）
+        RE-->>JR: --json 逐行 → 解析/节流落库/SSE（既有链路）
+        JR-->>B: SSE progress → done {snapshot_id, skipped_count}
+    end
+
+%% 图 3：调度触发与启动补跑（SchedulerService per-task）
+sequenceDiagram
+    participant APS as AsyncIOScheduler
+    participant SC as SchedulerService
+    participant DB as SQLite
+    participant JR as JobRunner
+
+    Note over APS: 任务 PUT（cron 变更）→ reload() 全量重建触发器
+    APS->>SC: cron 触发 backup-task-2（tz=config.timezone）
+    SC->>DB: 读任务：enabled 复核
+    SC->>SC: sleep(jitter=schedule.jitter)
+    SC->>DB: UPDATE last_run_at=now（先记账后执行）
+    SC->>JR: submit("backup", task_id=2, trigger=scheduled)
+    alt 冲突（如手动任务在跑）
+        JR->>DB: INSERT jobs(cancelled, trigger=scheduled) + audit job.skipped_conflict
+        Note over JR: 不排队；下个 cron 周期自然再试
+    else 空闲
+        JR->>JR: 正常执行链路（同 E12）
+    end
+    Note over SC: 容器重启：catchup_on_startup 扫「当天已过点且无成功 backup」→ 补跑 submit
+
+%% 图 4：B1 文件级恢复（E19 + --include）
+sequenceDiagram
+    participant B as 浏览器（恢复向导）
+    participant RT as restore 路由（E19）
+    participant PM as PathMapper
+    participant DB as SQLite
+    participant JR as JobRunner
+    participant RE as restic 子进程
+
+    B->>RT: POST /api/restore {snapshot_id, target:"/restore", paths:["/etc","/home/u/x"]}
+    RT->>PM: target.validate（/restore 白名单）
+    loop 每个 path（展示形态）
+        RT->>PM: to_snapshot + validate（模式根白名单）
+        PM-->>RT: 容器形态；越界 → 400 PATH_OUT_OF_PREFIX
+    end
+    RT->>RT: 计算时间戳子目录（既有逻辑）
+    RT->>DB: INSERT jobs(restore) + audit restore.run{include_count}
+    RT->>JR: submit("restore", params={target, include})
+    JR->>RE: build：restore <id> --target <ts子目录> --include /host/etc --include /host/home/u/x --overwrite=if-changed
+    RE-->>JR: --json 逐行（复用 6.2 解析/SSE 链路）
+    JR-->>B: SSE progress → done {restore_target, files_done}
