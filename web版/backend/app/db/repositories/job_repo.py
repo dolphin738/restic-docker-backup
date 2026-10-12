@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.constants import ACTIVE_JOB_STATUSES
+from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from app.db.database import Database
 from app.utils.time import utc_iso
 
 _COLUMNS = (
-    "id", "type", "status", "trigger", "policy_id", "snapshot_id", "bytes_done", "files_done",
+    "id", "type", "status", "trigger", "policy_id", "task_id", "snapshot_id", "bytes_done", "files_done",
     "skipped_count", "last_event_id", "log_path", "summary", "started_at", "finished_at",
     "exit_code", "created_at",
 )
@@ -19,13 +19,19 @@ _SELECT = "SELECT " + ", ".join(_COLUMNS) + " FROM jobs"
 
 @dataclass(frozen=True)
 class Job:
-    """jobs 表一行（§4.5）。"""
+    """jobs 表一行（§4.5）。
+
+    ``task_id`` 语义（增量设计 §1.2 决策二）：该 job 由哪个备份任务产生；新任务
+    （backup/forget）落 ``task_id``、``policy_id`` 为 NULL；legacy 行仅 ``policy_id``；
+    删除任务后 ``task_id`` 经外键 ``ON DELETE SET NULL`` 置空（行与日志保留）。
+    """
 
     id: str
     type: str
     status: str
     trigger: str
     policy_id: int | None
+    task_id: int | None
     snapshot_id: str | None
     bytes_done: int | None
     files_done: int | None
@@ -70,6 +76,7 @@ class JobRepo:
         self,
         *,
         statuses: tuple[str, ...] | None = None,
+        task_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Job], int]:
@@ -77,24 +84,75 @@ class JobRepo:
 
         Args:
             statuses: 状态过滤；None 表示不过滤。
+            task_id: 备份任务过滤（E13 任务历史按任务筛选，N7）；None 表示不过滤。
             limit: 每页条数。
             offset: 偏移量。
 
         Returns:
             ``(jobs, total)``。
         """
-        where, params = ("", ())
+        clauses: list[str] = []
+        params: list[Any] = []
         if statuses:
             placeholders = ",".join("?" * len(statuses))
-            where = f"WHERE status IN ({placeholders})"
-            params = tuple(statuses)
-        total_row = await self._db.fetch_one(f"SELECT COUNT(*) AS total FROM jobs {where}", params)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        total_row = await self._db.fetch_one(f"SELECT COUNT(*) AS total FROM jobs {where}", tuple(params))
         total = int(total_row["total"]) if total_row else 0
         rows = await self._db.fetch_all(
             f"{_SELECT} {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            params + (max(1, limit), max(0, offset)),
+            tuple(params) + (max(1, limit), max(0, offset)),
         )
         return [_to_job(row) for row in rows], total
+
+    async def latest_backup_by_tasks(self, task_ids: list[int]) -> dict[int, str]:
+        """每任务最近一次 **terminal** backup 任务的状态（E34 卡片 ``last_result`` 数据源）。
+
+        只认终态（success/failed/interrupted/cancelled）——卡片 ``status`` 已由活跃 job
+        派生为 running/pending，``last_result`` 展示的是上一次**已完成**运行的结果
+        （设计 §2.1 示例：status=running 时 last_result=success）。按
+        ``created_at DESC, id DESC`` 取每任务首条（ULID 时间有序，同秒并列以 id 决胜）。
+
+        Args:
+            task_ids: 任务 id 列表；空列表直接返回空字典（不发 SQL）。
+
+        Returns:
+            ``{task_id: 最近一次终态 backup 状态}``；无终态 backup 历史的任务不出现在字典中。
+        """
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" * len(task_ids))
+        terminal_placeholders = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT task_id, status FROM jobs WHERE type = 'backup' AND task_id IN ({placeholders}) "
+            f"AND status IN ({terminal_placeholders}) ORDER BY created_at DESC, id DESC",
+            tuple(task_ids) + tuple(TERMINAL_JOB_STATUSES),
+        )
+        latest: dict[int, str] = {}
+        for row in rows:
+            task_id = int(row["task_id"])
+            if task_id not in latest:
+                latest[task_id] = str(row["status"])
+        return latest
+
+    async def last_backup_success_finished_at(self, task_id: int) -> str | None:
+        """该任务最近一次**成功** backup 的 ``finished_at``（ISO 8601 UTC 文本）。
+
+        调度器补跑判定（当天已过点且无成功）与 prune 到期判定（距上次成功超间隔）
+        共用的单一查询点；从未成功或 finished_at 缺失返回 None。
+        """
+        row = await self._db.fetch_one(
+            "SELECT finished_at FROM jobs WHERE type = 'backup' AND task_id = ? "
+            "AND status = 'success' AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+            (task_id,),
+        )
+        if row is None or row["finished_at"] is None:
+            return None
+        return str(row["finished_at"])
 
     # ---------------------------------------------------------------- 写
 
@@ -106,6 +164,7 @@ class JobRepo:
         trigger: str,
         log_path: str,
         policy_id: int | None = None,
+        task_id: int | None = None,
         snapshot_id: str | None = None,
         status: str = "pending",
     ) -> Job:
@@ -116,7 +175,8 @@ class JobRepo:
             job_type: 任务类型（E12 白名单）。
             trigger: ``manual`` / ``scheduled``。
             log_path: 日志文件路径（插入即确定，供 SSE 回放）。
-            policy_id: 关联策略；可为空。
+            policy_id: 关联策略（legacy）；可为空。
+            task_id: 关联备份任务（与 policy_id 互斥由上层保证）；可为空。
             snapshot_id: 关联快照；可为空。
             status: 初始状态，默认 ``pending``。
 
@@ -125,9 +185,9 @@ class JobRepo:
         """
         now = utc_iso()
         await self._db.write(
-            "INSERT INTO jobs (id, type, status, trigger, policy_id, snapshot_id, skipped_count, "
-            "last_event_id, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
-            (job_id, job_type, status, trigger, policy_id, snapshot_id, log_path, now),
+            "INSERT INTO jobs (id, type, status, trigger, policy_id, task_id, snapshot_id, "
+            "skipped_count, last_event_id, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+            (job_id, job_type, status, trigger, policy_id, task_id, snapshot_id, log_path, now),
         )
         created = await self.get(job_id)
         if created is None:  # pragma: no cover - 理论不可达
@@ -264,6 +324,7 @@ def _to_job(row: Any) -> Job:
         status=str(row["status"]),
         trigger=str(row["trigger"]),
         policy_id=None if row["policy_id"] is None else int(row["policy_id"]),
+        task_id=None if row["task_id"] is None else int(row["task_id"]),
         snapshot_id=None if row["snapshot_id"] is None else str(row["snapshot_id"]),
         bytes_done=None if row["bytes_done"] is None else int(row["bytes_done"]),
         files_done=None if row["files_done"] is None else int(row["files_done"]),

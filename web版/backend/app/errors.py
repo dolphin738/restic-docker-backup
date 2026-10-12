@@ -29,8 +29,10 @@ from app.constants import (
     POLICY_WRITE_CLOSED,
     RATE_LIMITED,
     READONLY_KEY,
+    REPO_NOT_FOUND,
     RESTIC_FAILED,
     RESTORE_FORBIDDEN,
+    TASK_RUNNING,
     UNAUTHORIZED,
     VALIDATION_ERROR,
 )
@@ -266,3 +268,39 @@ class ResticFailedError(AppError):
         if exit_code is not None:
             data["exit_code"] = exit_code
         super().__init__(f"restic 执行失败：{reason}", data=data)
+
+
+class TaskRunningError(AppError):
+    """409 运行中/等待中任务拒绝删除（E35''：先取消再删除）。"""
+
+    code = TASK_RUNNING
+    status = ERROR_STATUS[TASK_RUNNING]
+    message = "任务正在运行或等待中，请先取消后再删除"
+
+    def __init__(self, running_job_id: str, task_name: str) -> None:
+        """构造任务运行中错误。
+
+        Args:
+            running_job_id: 阻塞删除的活跃 job id（供前端定位取消入口）。
+            task_name: 任务名称（UI 提示「已有任务进行中：<任务名>」）。
+        """
+        super().__init__(
+            f"任务「{task_name}」正在运行或等待中，请先取消后再删除",
+            data={"running_job_id": running_job_id, "task_name": task_name},
+        )
+
+
+class RepoNotFoundError(AppError):
+    """404 repo 作用域 id 不存在（E34–E36 路径前缀；P2 仅 ``default``）。"""
+
+    code = REPO_NOT_FOUND
+    status = ERROR_STATUS[REPO_NOT_FOUND]
+    message = "仓库不存在"
+
+    def __init__(self, repo_id: str) -> None:
+        """构造仓库不存在错误。
+
+        Args:
+            repo_id: 请求的 repo 作用域 id（回显供前端排障）。
+        """
+        super().__init__(f"仓库 {repo_id!r} 不存在", data={"repo_id": repo_id})
