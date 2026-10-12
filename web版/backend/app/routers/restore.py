@@ -19,6 +19,7 @@ import logging
 import posixpath
 import re
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
@@ -61,8 +62,15 @@ async def restore_snapshot(
 ) -> RestoreResponse:
     """提交恢复任务并返回服务端计算的时间戳子目录（202）。
 
+    B1 文件级恢复（R-027）：``paths`` 为**展示形态**的文件/目录清单，逐条
+    ``to_snapshot`` + :meth:`PathMapper.validate`（模式根白名单）归一为容器形态，
+    越界 400 ``PATH_OUT_OF_PREFIX``（data 带 path）——S1 校验点①；归一后经
+    ``params.include`` 入 JobRunner，由 ``ResticCmd`` 白名单拼 ``--include``
+    （校验点②，纵深防御）。缺省/空 paths = 整快照恢复（兼容既有行为）。
+
     Raises:
         RestoreForbiddenError: ``target`` 不在恢复白名单（403 RESTORE_FORBIDDEN）。
+        PathOutOfPrefixError: ``paths`` 中某条越出模式根白名单（400 PATH_OUT_OF_PREFIX）。
         JobConflictError: 同仓库已有 running/pending 任务（409 JOB_CONFLICT）。
     """
     del session
@@ -78,27 +86,79 @@ async def restore_snapshot(
             f"恢复目标不在允许的白名单内（{allowed}）", data={"target": payload.target}
         ) from exc
 
+    include = _normalize_include_paths(payload.paths, mapper, settings)
+
     stamp = format_local(now_utc(), settings.tz, "%Y%m%d-%H%M")
     stem = await _resolve_stem(request, payload.snapshot_id)
     restore_target = posixpath.join(target_root.rstrip("/"), f"{stem}-{stamp}")
 
+    params: dict[str, Any] = {"target": restore_target}
+    if include:
+        params["include"] = include
     job = await runner.submit(
         "restore",
         trigger="manual",
         snapshot_id=payload.snapshot_id,
-        params={"target": restore_target},
+        params=params,
     )
     await request.app.state.audit.record(
         AUDIT_RESTORE_RUN,
         target=restore_target,
-        detail={"snapshot_id": payload.snapshot_id, "job_id": job.id, "requested_target": payload.target},
+        detail={
+            "snapshot_id": payload.snapshot_id,
+            "job_id": job.id,
+            "requested_target": payload.target,
+            # B1：只加 detail 字段，不新增动作名（S6）
+            "include_count": len(include),
+        },
         result="ok",
     )
-    logger.info("恢复任务已提交：job=%s snapshot=%s target=%s", job.id, payload.snapshot_id, restore_target)
+    logger.info(
+        "恢复任务已提交：job=%s snapshot=%s target=%s include=%d",
+        job.id,
+        payload.snapshot_id,
+        restore_target,
+        len(include),
+    )
     return RestoreResponse(job_id=job.id, restore_target=restore_target)
 
 
 # ---------------------------------------------------------------- 内部实现
+
+def _normalize_include_paths(
+    paths: list[str], mapper: PathMapper, settings: Settings
+) -> list[str]:
+    """B1 恢复路径归一（S1 校验点①）：展示形态 → 容器形态 + 模式根白名单校验。
+
+    Args:
+        paths: 请求体 ``paths``（展示形态，如 ``/etc``、``/home/u/x``）。
+        mapper: 路径映射器。
+        settings: 运行期配置（取当前模式根）。
+
+    Returns:
+        去重保序的容器形态路径清单（供 ``params.include`` 入 JobRunner）。
+
+    Raises:
+        PathOutOfPrefixError: 某条路径越出当前模式根（400，data 带 path）。
+    """
+    include: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        item = str(raw).strip()
+        if not item:
+            continue
+        try:
+            container = mapper.validate(
+                mapper.to_snapshot(item), allowed_prefixes=(settings.mode_root,)
+            )
+        except PathOutOfPrefixError as exc:
+            raise PathOutOfPrefixError(
+                f"恢复路径 {item!r} 不在当前模式根范围内", data={"path": item}
+            ) from exc
+        if container not in seen:
+            seen.add(container)
+            include.append(container)
+    return include
 
 async def _resolve_stem(request: Request, snapshot_id: str) -> str:
     """解析时间戳子目录的"源目录名"（best-effort，失败回退快照 id 前 8 位）。

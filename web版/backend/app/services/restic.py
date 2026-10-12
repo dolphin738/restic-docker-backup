@@ -62,6 +62,7 @@ class WhitelistArgs:
     target_dir: str | None = None
     tags: tuple[str, ...] = ()
     excludes: tuple[str, ...] = ()
+    include: tuple[str, ...] = ()  # B1 文件级恢复：restore --include（容器形态，过 PathMapper 校验）
     host: str | None = None
     group_by: str | None = None
     keep_last: int | None = None
@@ -334,6 +335,19 @@ class ResticCmd:
         if verb == "restore":
             if args.target_dir:
                 flags.extend(["--target", self._path_mapper.validate(args.target_dir)])
+            # B1 --include（R-027）：目录含子树、文件精确匹配；白名单前缀取当前模式根
+            # （host=/host、sources=/sources——与 sources 归一口径一致，
+            # exclusions.py normalize_user_excludes 先例）。S1 校验点②（纵深防御）：
+            # 路由层已 display→container 归一，此处再过一次白名单，杜绝绕过路由直拼。
+            for include in args.include:
+                flags.extend(
+                    [
+                        "--include",
+                        self._path_mapper.validate(
+                            include, allowed_prefixes=(self._settings.mode_root,)
+                        ),
+                    ]
+                )
             if args.overwrite:
                 if args.overwrite not in OVERWRITE_MODES:
                     raise ValidationError(
