@@ -46,9 +46,11 @@ from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.policy_repo import PolicyRepo
+from app.db.repositories.task_repo import TaskRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
 from app.routers import auth as auth_router
+from app.routers import backup_tasks as backup_tasks_router
 from app.routers import config as config_router
 from app.routers import fs as fs_router
 from app.routers import health as health_router
@@ -65,7 +67,9 @@ from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.policy_service import PolicyService
 from app.services.restic import ResticCmd
+from app.services.scheduler import SchedulerService
 from app.services.sse import SseChannel
+from app.services.task_service import TaskService
 from app.settings import Settings, get_settings
 
 logger = logging.getLogger("restic-web")
@@ -178,6 +182,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     policy_service = PolicyService(policy_repo, settings)
     await policy_repo.ensure_default(one_file_system=policy_service.default_one_file_system())
 
+    # 任务链路（增量设计 §1.1：任务即策略；共享字段校验委托 PolicyService，不复制第二套）
+    task_repo = TaskRepo(db)
+    task_service = TaskService(task_repo, policy_service)
+
     # restic 执行链路（§7.1/§7.2/§7.3）
     job_repo = JobRepo(db)
     path_mapper = PathMapper(settings)
@@ -191,8 +199,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audit,
         settings=settings,
         policy_loader=policy_repo.get_dict,
+        task_loader=task_repo.get_dict,
         # 任务终态（init/unlock 会改变仓库可连性）→ E30 状态缓存立即失效
         on_finish=invalidate_repo_status_cache,
+    )
+
+    # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载
+    scheduler = SchedulerService(
+        task_repo,
+        job_runner,
+        config_repo,
+        settings=settings,
+        jobs=job_repo,
     )
 
     app.state.settings = settings
@@ -205,6 +223,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.bootstrap = bootstrap
     app.state.policy_repo = policy_repo
     app.state.policy_service = policy_service
+    app.state.task_repo = task_repo
+    app.state.task_service = task_service
     app.state.exclusions = ExclusionRules(settings)
     app.state.job_repo = job_repo
     app.state.path_mapper = path_mapper
@@ -212,6 +232,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.parser = parser
     app.state.sse_channel = sse_channel
     app.state.job_runner = job_runner
+    app.state.scheduler = scheduler
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()
@@ -226,11 +247,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("已按 repo.url 协议回填 repo.type")
     # 启动恢复：遗留 running/pending 改标 interrupted（P1 不做补跑与 AUTO_UNLOCK）
     await job_runner.recover_on_startup()
+    # 调度器启动（§4.3）：recover 之后 start（内部 reload + 当天补跑），
+    # 与 interrupted 改标共享同一启动窗口（US-026-07 AC4）
+    await scheduler.start()
 
     try:
         yield
     finally:
-        # 容器 stop 收尾：向 restic 子进程转发 SIGTERM（§6.5）
+        # 容器 stop 收尾（§4.3 时序）：先停调度（不再触发新任务）再收尾 restic 子进程
+        await scheduler.shutdown()
         await job_runner.on_shutdown()
         await close_database()
 
@@ -258,6 +283,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router.router, dependencies=protected)     # E06/E07 + E29/E30
     app.include_router(jobs_router.router, dependencies=protected)       # E12–E16/E27
     app.include_router(policies_router.router, dependencies=protected)   # E08–E11
+    app.include_router(backup_tasks_router.router, dependencies=protected)  # E34–E36（选项② R-026）
     app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18
     app.include_router(restore_router.router, dependencies=protected)    # E19
     # 后续批次（dump/notify/cache/audit…）在此按同样方式挂载：
