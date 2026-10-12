@@ -1,4 +1,8 @@
-"""迁移器回归（§10.1）：user_version 推进、幂等重跑、六表+索引、PRAGMA 工程约定。"""
+"""迁移器回归（§10.1）：user_version 推进、幂等重跑、六表+索引、PRAGMA 工程约定。
+
+0002_multi_backup_tasks.sql（选项② R-026）：repos / backup_tasks / jobs.task_id 三结构断言；
+greenfield（owner 2026-10-13 裁决）——**无物化断言**（不产生首任务）。
+"""
 
 from __future__ import annotations
 
@@ -8,9 +12,13 @@ import pytest
 
 from app.db.database import Database
 
-EXPECTED_TABLES = {"admin_account", "sessions", "config", "policies", "jobs", "audit_logs"}
+EXPECTED_TABLES = {
+    "admin_account", "sessions", "config", "policies", "jobs", "audit_logs",
+    "repos", "backup_tasks",
+}
 
 # 0001_init.sql 内的全部 CREATE INDEX（§4.2/4.4/4.5/4.6；共 6 个——任务书口径"5 索引"少计了 1 个）
+# + 0002_multi_backup_tasks.sql 的 2 个（idx_backup_tasks_repo / idx_jobs_task）
 EXPECTED_INDEXES = {
     "idx_sessions_expires_at",
     "idx_policies_default",
@@ -18,6 +26,8 @@ EXPECTED_INDEXES = {
     "idx_jobs_policy",
     "idx_audit_ts",
     "idx_audit_action",
+    "idx_backup_tasks_repo",
+    "idx_jobs_task",
 }
 
 _JOB_INSERT = (
@@ -25,11 +35,17 @@ _JOB_INSERT = (
     "VALUES (?, 'backup', 'pending', 'manual', '/tmp/x.log', '2026-01-01T00:00:00Z', 999)"
 )
 
+_TASK_INSERT = (
+    "INSERT INTO backup_tasks (name, tag, sources, excludes, dry_run_pending, created_at, updated_at) "
+    "VALUES ('每日全量', 'task-1', '[\"/host/etc\"]', '[]', 1, "
+    "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+)
+
 
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 1
+    assert await db.user_version() == 2
     await db.close()
 
 
@@ -39,7 +55,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 1
+    assert await db.user_version() == 2
     await db.close()
 
 
@@ -52,7 +68,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 1
+    assert await db2.user_version() == 2
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -71,6 +87,87 @@ async def test_six_tables_and_indexes_exist(tmp_path):
         for row in await db.fetch_all("SELECT name FROM sqlite_master WHERE type = 'index'")
     }
     assert indexes >= EXPECTED_INDEXES
+    await db.close()
+
+
+async def test_0002_repos_seeded_with_default_row(tmp_path):
+    """0002 种 default 仓库行（身份注册表，不镜像 url）；幂等重跑不产生第二行。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    rows = await db.fetch_all("SELECT id, name, created_at FROM repos")
+    assert len(rows) == 1
+    assert rows[0]["id"] == "default"
+    assert rows[0]["name"]
+    assert rows[0]["created_at"]
+
+    assert await db.migrate() == 0
+    rows = await db.fetch_all("SELECT id FROM repos")
+    assert len(rows) == 1
+    await db.close()
+
+
+async def test_0002_backup_tasks_structure(tmp_path):
+    """backup_tasks 关键列在位：repo_id 外键 + dry_run_pending；**无 legacy_policy_id**（greenfield）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
+    assert {"id", "repo_id", "name", "enabled", "tag", "sources", "excludes", "cron"} <= columns
+    assert "dry_run_pending" in columns
+    assert "last_run_at" in columns
+    assert "legacy_policy_id" not in columns
+    await db.close()
+
+
+async def test_0002_jobs_task_id_column_exists(tmp_path):
+    """jobs.task_id 列存在（ALTER TABLE ADD COLUMN，由 user_version 守卫幂等）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(jobs)")}
+    assert "task_id" in columns
+    assert "policy_id" in columns  # legacy 列保留（历史兼容读）
+    await db.close()
+
+
+async def test_0002_no_task_materialized(tmp_path):
+    """greenfield：迁移不物化首任务——全新部署从「新建首个任务」开始（Q4 裁决）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    row = await db.fetch_one("SELECT COUNT(*) AS total FROM backup_tasks")
+    assert int(row["total"]) == 0
+    await db.close()
+
+
+async def test_0002_task_id_foreign_key_enforced(tmp_path):
+    """jobs.task_id → backup_tasks(id) 外键真实生效（E7：FK 字面落地，拒绝悬挂引用）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    with pytest.raises(sqlite3.IntegrityError):
+        await db.write(
+            "INSERT INTO jobs (id, type, status, trigger, log_path, created_at, task_id) "
+            "VALUES ('job-fk-task', 'backup', 'pending', 'manual', '/tmp/x.log', "
+            "'2026-01-01T00:00:00Z', 999)"
+        )
+    await db.close()
+
+
+async def test_0002_task_delete_sets_jobs_task_id_null(tmp_path):
+    """删除任务 → jobs.task_id 经 ON DELETE SET NULL 置空，jobs 行保留（US-026-03 AC1）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    await db.write(_TASK_INSERT)
+    task_id = int((await db.fetch_one("SELECT last_insert_rowid() AS id"))["id"])
+    await db.write(
+        "INSERT INTO jobs (id, type, status, trigger, log_path, created_at, task_id) "
+        "VALUES ('job-bound', 'backup', 'success', 'scheduled', '/tmp/x.log', "
+        "'2026-01-01T00:00:00Z', ?)",
+        (task_id,),
+    )
+
+    await db.write("DELETE FROM backup_tasks WHERE id = ?", (task_id,))
+
+    job = await db.fetch_one("SELECT task_id FROM jobs WHERE id = 'job-bound'")
+    assert job["task_id"] is None
+    assert await db.fetch_one("SELECT COUNT(*) AS total FROM backup_tasks") is not None
     await db.close()
 
 
