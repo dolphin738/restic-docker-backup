@@ -32,7 +32,7 @@ function loader(): Promise<TreePage> {
   })
 }
 
-function childLoader(parentPath: string | undefined, cursor?: string): Promise<TreePage> {
+function childLoader(parentPath: string | undefined): Promise<TreePage> {
   if (parentPath === '/') {
     return loader()
   }
