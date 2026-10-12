@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import weakref
 from types import SimpleNamespace
 
 import httpx
@@ -11,6 +12,52 @@ import pytest
 # 测试内所有写方法请求携带的同源 Origin（与 httpx base_url 的 host 匹配）
 ORIGIN = {"Origin": "http://testserver"}
 NEW_PASSWORD = "Str0ngPass!23"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def db_registry():
+    """会话级：登记所有 ``Database`` 实例（弱引用，不阻止回收）。
+
+    为 :func:`close_leaked_databases` 提供实例清单——该夹具需要知道「本用例新建了
+    哪些连接」才能兜底关闭。以弱引用持有，避免测试夹具自身延长对象生命周期。
+    """
+    from app.db.database import Database
+
+    registry: weakref.WeakSet = weakref.WeakSet()
+    original_init = Database.__init__
+
+    def patched_init(self, *args: object, **kwargs: object) -> None:
+        original_init(self, *args, **kwargs)
+        registry.add(self)
+
+    Database.__init__ = patched_init
+    try:
+        yield registry
+    finally:
+        Database.__init__ = original_init
+
+
+@pytest.fixture(autouse=True)
+async def close_leaked_databases(db_registry):
+    """用例结束后兜底关闭**本用例新建**且未 close 的 Database 连接。
+
+    根因（实测）：aiosqlite 的连接 worker 线程是**非 daemon 线程**
+    （``aiosqlite/core.py`` 的 ``Thread(target=_connection_worker_thread, ...)``
+    未设 daemon），只要有一个连接没关，解释器退出时就无限期等待该线程——
+    表现为「pytest 跑完却不退出」，CI 无超时即永久卡死。用例一旦抛异常，
+    正文里的 ``await db.close()`` 就被跳过，故在此兜底。
+
+    ``Database.close`` 本身幂等，重复调用无副作用；本夹具只关闭本用例新增的
+    实例（按对象 id 比对），不动会话级/上游夹具持有的连接。
+    """
+    before = {id(db) for db in db_registry}
+    yield
+    for db in list(db_registry):
+        if id(db) in before:
+            continue
+        # 兜底路径不得掩盖用例本身的失败（吞掉异常是刻意的，非遗漏）
+        with contextlib.suppress(Exception):
+            await db.close()
 
 
 @pytest.fixture()
