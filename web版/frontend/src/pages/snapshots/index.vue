@@ -9,6 +9,7 @@ import {
   NDrawerContent,
   NEmpty,
   NPagination,
+  NSelect,
   NSpace,
   NTag,
   NText,
@@ -17,6 +18,7 @@ import {
 import { computed, h, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { listBackupTasks } from '@/api/backupTasks'
 import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
 import type { SnapshotOut } from '@/api/types'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
@@ -26,14 +28,52 @@ const { t } = useI18n()
 const router = useRouter()
 
 const page = ref(1)
+/** R-026-10：按任务标签筛选（E17 ?tag=；空 = 全部）。 */
+const tagFilter = ref<string | null>(null)
+
+/** 标签选项：E34 任务列表 {id,name,tag} + 当前页快照中出现的历史遗留 tag。 */
+const tasksQuery = useQuery({
+  queryKey: ['backup-tasks', 'tag-options'],
+  queryFn: () => listBackupTasks(50),
+})
+
 const snapshotsQuery = useQuery({
-  queryKey: ['snapshots', page],
-  queryFn: () => listSnapshots(PAGE_SIZE, (page.value - 1) * PAGE_SIZE),
+  queryKey: ['snapshots', page, tagFilter],
+  queryFn: () => listSnapshots(PAGE_SIZE, (page.value - 1) * PAGE_SIZE, tagFilter.value ?? undefined),
   placeholderData: (previous) => previous,
 })
 
 const snapshots = computed(() => snapshotsQuery.data.value?.items ?? [])
 const total = computed(() => snapshotsQuery.data.value?.total ?? 0)
+
+const tagOptions = computed(() => {
+  const options = [{ label: t('snapshot.allTags'), value: '' }]
+  for (const task of tasksQuery.data.value?.items ?? []) {
+    options.push({ label: `${task.name}（${task.tag}）`, value: task.tag })
+  }
+  // 历史遗留 tag（无对应任务）：从当前（未筛选）页快照归并，去重
+  const known = new Set(options.map((option) => option.value))
+  for (const snapshot of snapshots.value) {
+    for (const tag of snapshot.tags) {
+      if (!known.has(tag)) {
+        known.add(tag)
+        options.push({ label: tag, value: tag })
+      }
+    }
+  }
+  return options
+})
+
+/** 分组头（筛选态摘要）：任务名（未知标签兜底）· 快照数 = total · 最新时间 = 首条 time。 */
+const groupHeaderText = computed(() => {
+  if (!tagFilter.value) {
+    return ''
+  }
+  const task = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === tagFilter.value)
+  const name = task?.name ?? t('snapshot.unknownTag')
+  const latest = snapshots.value[0]?.time ?? t('common.none')
+  return t('snapshot.groupHeader', { name, n: total.value, time: latest })
+})
 
 // ---------------------------------------------------------------- 文件树抽屉
 const treeShow = ref(false)
@@ -129,6 +169,21 @@ const errorText = computed(() => {
     <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
 
     <n-card :title="t('nav.snapshots')" size="small">
+      <!-- R-026-10：tag 筛选 + 分组头（当前筛选维度摘要） -->
+      <n-space vertical :size="10" class="snapshots__filter">
+        <n-select
+          v-model:value="tagFilter"
+          :options="tagOptions"
+          size="small"
+          class="snapshots__tag-select"
+          :placeholder="t('snapshot.tagFilter')"
+          clearable
+        />
+        <n-text v-if="groupHeaderText" depth="2" class="snapshots__group">
+          {{ groupHeaderText }}
+        </n-text>
+      </n-space>
+
       <n-alert v-if="!snapshotsQuery.isLoading.value && snapshots.length === 0 && !errorText" type="default" :show-icon="false">
         <n-empty :description="t('snap.empty')" />
       </n-alert>
@@ -171,5 +226,17 @@ const errorText = computed(() => {
 <style scoped>
 .snapshots__pager {
   margin-top: 12px;
+}
+
+.snapshots__filter {
+  margin-bottom: 4px;
+}
+
+.snapshots__tag-select {
+  max-width: 320px;
+}
+
+.snapshots__group {
+  font-size: 12px;
 }
 </style>

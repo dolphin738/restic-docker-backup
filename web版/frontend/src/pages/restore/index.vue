@@ -17,10 +17,12 @@ import {
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { listSnapshots } from '@/api/snapshots'
+import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
 import { RESTORE_TARGET_ROOT, restoreSnapshot } from '@/api/restore'
+import type { JobDonePayload } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
+import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -42,7 +44,11 @@ const requestedSnapshotId = ref<string | null>(
 )
 const gateShow = ref(false)
 const restoring = ref(false)
-const result = ref<{ jobId: string; restoreTarget: string } | null>(null)
+const result = ref<{ jobId: string; restoreTarget: string; filesDone: number | null } | null>(null)
+
+/** B1 文件级恢复：已选文件/目录（展示形态，如 /etc、/home/u/x）；
+ *  空集合 = 整快照恢复（E19 缺省行为，回归零影响）。 */
+const selectedFiles = ref<Set<string>>(new Set())
 
 // 与 TierCard（运行模式卡）同源：/api/auth/me 的 host_mount / user
 const isReadOnlyMount = computed(() => ui.me?.host_mount === 'ro')
@@ -80,6 +86,39 @@ watch(
   { immediate: true },
 )
 
+/** 换快照即清空已选文件：文件路径是快照内相对语义，跨快照不通用。 */
+watch(snapshotId, () => {
+  selectedFiles.value = new Set()
+})
+
+// ---------------------------------------------------------------- 文件树多选（B1，E18）
+function treeLoader(path: string, cursor?: string): Promise<TreePage> {
+  const id = snapshotId.value ?? ''
+  return listSnapshotFiles(id, path, cursor).then((data) => ({
+    items: data.items.map((item) => ({
+      key: item.path,
+      name: item.name,
+      type: item.type,
+      path: item.display_path,
+    })),
+    nextCursor: data.next_cursor,
+  }))
+}
+
+/** 点目录名（selectDir）/文件名 = 勾选/取消勾选；展开由行首三角形负责。 */
+function onFileSelect(item: TreeItem): void {
+  const next = new Set(selectedFiles.value)
+  if (next.has(item.path)) {
+    next.delete(item.path)
+  } else {
+    next.add(item.path)
+  }
+  selectedFiles.value = next
+}
+
+const selectedFileList = computed(() => [...selectedFiles.value])
+const selectedFileCount = computed(() => selectedFiles.value.size)
+
 function goConfirm(): void {
   if (!snapshotId.value) {
     message.warning(t('restore.needSnapshot'))
@@ -89,18 +128,25 @@ function goConfirm(): void {
   gateShow.value = true
 }
 
-/** 确认门通过后提交：请求体只有 snapshot_id 与 target；restore_target 由服务端返回。 */
+/** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。 */
 async function onConfirmed(): Promise<void> {
   if (!snapshotId.value) {
     return
   }
   restoring.value = true
   try {
-    const data = await restoreSnapshot(snapshotId.value, RESTORE_TARGET_ROOT)
-    result.value = { jobId: data.job_id, restoreTarget: data.restore_target }
+    const data = await restoreSnapshot(snapshotId.value, RESTORE_TARGET_ROOT, selectedFileList.value)
+    result.value = { jobId: data.job_id, restoreTarget: data.restore_target, filesDone: null }
     step.value = 3
   } finally {
     restoring.value = false
+  }
+}
+
+/** SSE 终态帧带回 files_done：结果区展示本次恢复的文件数。 */
+function onJobDone(payload: JobDonePayload): void {
+  if (result.value) {
+    result.value.filesDone = payload.files_done
   }
 }
 
@@ -121,7 +167,7 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
       </n-steps>
 
       <n-space vertical :size="14" class="restore__body">
-        <!-- 步骤 1：选快照 + 目标模式 -->
+        <!-- 步骤 1：选快照 + 目标模式 + 文件多选 -->
         <template v-if="step === 1">
           <n-select
             v-model:value="snapshotId"
@@ -152,6 +198,26 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
             </n-alert>
           </n-space>
 
+          <!-- B1：文件级多选（可选）；不选 = 整快照 -->
+          <n-space vertical :size="6">
+            <n-text strong>{{ t('restore.filesTitle') }}</n-text>
+            <n-text depth="3">{{ t('restore.filesHint') }}</n-text>
+            <VirtualTree
+              v-if="snapshotId"
+              :key="`files-${snapshotId}`"
+              root-path="/"
+              :load-children="treeLoader"
+              :height="300"
+              select-dir
+              :selected-paths="selectedFiles"
+              @select="onFileSelect"
+            />
+            <n-text v-if="selectedFileCount > 0" depth="2">
+              {{ t('restore.filesSelected', { n: selectedFileCount }) }}
+            </n-text>
+            <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
+          </n-space>
+
           <n-space justify="end">
             <n-button type="primary" :disabled="!snapshotId" @click="goConfirm">
               {{ t('confirm.next') }}
@@ -175,9 +241,12 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
             <n-text>
               {{ t('restore.restoreTarget') }}：<n-tag size="small">{{ result?.restoreTarget }}</n-tag>
             </n-text>
+            <n-text v-if="result?.filesDone !== null && result?.filesDone !== undefined" depth="3">
+              {{ t('job.filesOnly', { done: result.filesDone }) }}
+            </n-text>
             <n-text depth="3">{{ t('restore.targetNote') }}</n-text>
           </n-space>
-          <JobProgress v-if="result" :job-id="result.jobId" :title="result.jobId" />
+          <JobProgress v-if="result" :job-id="result.jobId" :title="result.jobId" @done="onJobDone" />
           <n-space justify="end">
             <n-button secondary @click="goJobs">{{ t('restore.goJobs') }}</n-button>
           </n-space>
@@ -199,6 +268,19 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
           <n-text>{{ t('restore.gateSnapshot') }}：{{ selectedSnapshot?.time ?? snapshotId }}</n-text>
           <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
           <n-text>{{ t('restore.gateTarget') }}：{{ RESTORE_TARGET_ROOT }}</n-text>
+          <!-- B1：已选文件清单（前 N 条 + 共 M 条）；空 = 整快照 -->
+          <template v-if="selectedFileCount > 0">
+            <n-text strong>{{ t('restore.gateFiles', { n: 20, m: selectedFileCount }) }}</n-text>
+            <n-text
+              v-for="path in selectedFileList.slice(0, 20)"
+              :key="path"
+              depth="3"
+              class="restore__gate-file"
+            >
+              {{ path }}
+            </n-text>
+          </template>
+          <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
         </n-space>
       </template>
     </ConfirmGate>
@@ -208,5 +290,10 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
 <style scoped>
 .restore__body {
   margin-top: 16px;
+}
+
+.restore__gate-file {
+  display: block;
+  font-size: 12px;
 }
 </style>
