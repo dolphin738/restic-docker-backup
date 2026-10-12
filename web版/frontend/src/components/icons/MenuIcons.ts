@@ -1,6 +1,6 @@
 /** 菜单图标：零依赖内联 SVG（24×24 线性图标，stroke=currentColor）。
  * 裁决依据：docs/UI视觉对齐Duplicati设计方案.md §4.2-2 —— Naive UI 无内置图标集，不新增 @vicons 依赖。
- * 前 7 个对应导航项，IconMenu（汉堡）供 <960px 顶栏菜单按钮使用。
+ * 前 5 个对应导航项（R-026/Q2 退役备份源/策略后 7→5），IconMenu（汉堡）供 <960px 顶栏菜单按钮使用。
  */
 
 import { h, type FunctionalComponent, type SVGAttributes } from 'vue'
@@ -32,20 +32,6 @@ export const IconRepo: FunctionalComponent<SVGAttributes> = () =>
     h('ellipse', { cx: 12, cy: 5.5, rx: 8, ry: 3 }),
     h('path', { d: 'M4 5.5v13c0 1.66 3.58 3 8 3s8-1.34 8-3v-13' }),
     h('path', { d: 'M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3' }),
-  ])
-
-/** 备份源：文件夹。 */
-export const IconSources: FunctionalComponent<SVGAttributes> = () =>
-  h('svg', LINE_ICON_BASE, [
-    h('path', { d: 'M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }),
-  ])
-
-/** 策略与调度：日历。 */
-export const IconPolicies: FunctionalComponent<SVGAttributes> = () =>
-  h('svg', LINE_ICON_BASE, [
-    h('rect', { x: 3.5, y: 5, width: 17, height: 15.5, rx: 2 }),
-    h('path', { d: 'M8 3v4M16 3v4' }),
-    h('path', { d: 'M3.5 10.5h17' }),
   ])
 
 /** 任务历史：活动线（脉冲）。 */

@@ -30,11 +30,9 @@ import {
   IconDashboard,
   IconJobs,
   IconMenu,
-  IconPolicies,
   IconRepo,
   IconRestore,
   IconSnapshots,
-  IconSources,
 } from '@/components/icons/MenuIcons'
 import logoSrc from '@/assets/restic-logo.png'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
@@ -66,11 +64,11 @@ function withNIcon(icon: Component): () => VNodeChild {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
+/** 菜单 7→5 项（R-026/Q2：备份源页与策略页退役，源选择与调度随任务向导走；
+ *  「新建备份任务」入口在仪表盘任务卡列表内）。 */
 const menuOptions = computed<MenuOption[]>(() => [
   { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
   { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
-  { label: t('nav.sources'), key: 'sources', icon: withNIcon(IconSources) },
-  { label: t('nav.policies'), key: 'policies', icon: withNIcon(IconPolicies) },
   { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
   { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
   { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
