@@ -12,10 +12,12 @@ import {
 } from 'naive-ui'
 import { computed } from 'vue'
 import { useUiStore } from '@/stores/ui'
+import { darkThemeOverrides, lightThemeOverrides } from '@/theme/tokens'
 
 const ui = useUiStore()
 
 const theme = computed(() => (ui.isDark ? darkTheme : null))
+const themeOverrides = computed(() => (ui.isDark ? darkThemeOverrides : lightThemeOverrides))
 const naiveLocale = computed(() => (ui.locale === 'en-US' ? naiveEnUS : naiveZhCN))
 const naiveDateLocale = computed(() => (ui.locale === 'en-US' ? dateEnUS : dateZhCN))
 </script>
@@ -23,6 +25,7 @@ const naiveDateLocale = computed(() => (ui.locale === 'en-US' ? dateEnUS : dateZ
 <template>
   <n-config-provider
     :theme="theme"
+    :theme-overrides="themeOverrides"
     :locale="naiveLocale"
     :date-locale="naiveDateLocale"
     inline-theme-disabled

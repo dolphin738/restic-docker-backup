@@ -1,6 +1,10 @@
 <script setup lang="ts">
+import { useMediaQuery } from '@vueuse/core'
+import { useQuery } from '@tanstack/vue-query'
 import {
   NButton,
+  NDrawer,
+  NIcon,
   NLayout,
   NLayoutContent,
   NLayoutHeader,
@@ -12,13 +16,27 @@ import {
   NSpace,
   NTag,
   NText,
+  NTooltip,
   useMessage,
   type MenuOption,
 } from 'naive-ui'
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, h, onUnmounted, ref, watch, type Component, type VNodeChild } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { logout } from '@/api/auth'
+import { listActiveJobs } from '@/api/jobs'
+import { getRepoStatus } from '@/api/repo'
+import {
+  IconDashboard,
+  IconJobs,
+  IconMenu,
+  IconPolicies,
+  IconRepo,
+  IconRestore,
+  IconSnapshots,
+  IconSources,
+} from '@/components/icons/MenuIcons'
+import logoSrc from '@/assets/restic-logo.png'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -33,15 +51,85 @@ onUnmounted(() => ui.setMessageApi(null))
 
 const collapsed = ref(false)
 
+// Duplicati 式响应式断点（设计方案 §4.2-3）：<960px 收抽屉，≥960px 常驻可折叠
+const isMobile = useMediaQuery('(max-width: 959px)')
+const drawerShow = ref(false)
+// 跨断点（如拖窗放大）时收起抽屉，避免桌面态残留浮层
+watch(isMobile, (mobile) => {
+  if (!mobile) {
+    drawerShow.value = false
+  }
+})
+
+/** 把内联 SVG 图标包进 NIcon：统一尺寸，颜色随文字色（currentColor）继承。 */
+function withNIcon(icon: Component): () => VNodeChild {
+  return () => h(NIcon, null, { default: () => h(icon) })
+}
+
 const menuOptions = computed<MenuOption[]>(() => [
-  { label: t('nav.dashboard'), key: 'dashboard' },
-  { label: t('nav.repo'), key: 'repo' },
-  { label: t('nav.sources'), key: 'sources' },
-  { label: t('nav.policies'), key: 'policies' },
-  { label: t('nav.jobs'), key: 'jobs' },
-  { label: t('nav.snapshots'), key: 'snapshots' },
-  { label: t('nav.restore'), key: 'restore' },
+  { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
+  { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
+  { label: t('nav.sources'), key: 'sources', icon: withNIcon(IconSources) },
+  { label: t('nav.policies'), key: 'policies', icon: withNIcon(IconPolicies) },
+  { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
+  { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
+  { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
 ])
+
+// 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。
+// 查询键带 header 后缀，与页面级查询（['repo','status'] / ['jobs','active']）隔离，
+// 避免顶栏轮询改变仪表盘/仓库页既有的 60s 轮询节奏。
+const repoStatusQuery = useQuery({
+  queryKey: ['repo', 'status', 'header'],
+  queryFn: getRepoStatus,
+  refetchInterval: 15_000,
+  retry: 1,
+})
+const activeJobsQuery = useQuery({
+  queryKey: ['jobs', 'active', 'header'],
+  queryFn: () => listActiveJobs(20),
+  refetchInterval: 15_000,
+  retry: 1,
+})
+
+type RepoStatusState = 'connected' | 'disconnected' | 'unknown'
+
+/** 查询失败或尚未取到数据 → 中性 unknown；不抛出未捕获错误。 */
+const repoStatusState = computed<RepoStatusState>(() => {
+  if (repoStatusQuery.error.value) {
+    return 'unknown'
+  }
+  const data = repoStatusQuery.data.value
+  if (!data) {
+    return 'unknown'
+  }
+  return data.connected ? 'connected' : 'disconnected'
+})
+
+const repoStatusTagType = computed<'success' | 'error' | 'default'>(() => {
+  switch (repoStatusState.value) {
+    case 'connected':
+      return 'success'
+    case 'disconnected':
+      return 'error'
+    default:
+      return 'default'
+  }
+})
+
+const repoStatusText = computed(() => t(`header.repoStatus.${repoStatusState.value}`))
+
+// QA Nit 3 + QA 意见：未连接时透出后端 last_error（服务端原文，无需翻译）；
+// 已连接/未知态无 tooltip，避免噪声。
+const repoStatusTooltip = computed<string>(() => {
+  if (repoStatusState.value === 'disconnected') {
+    return repoStatusQuery.data.value?.last_error ?? ''
+  }
+  return ''
+})
+
+// listActiveJobs 服务端已按 running,pending 过滤，total 即二者合计
+const runningJobsCount = computed(() => activeJobsQuery.data.value?.total ?? 0)
 
 const activeKey = computed(() => String(route.name ?? ''))
 const currentUser = computed(() => ui.me?.user ?? '-')
@@ -50,6 +138,12 @@ const currentMount = computed(() => ui.me?.host_mount ?? '-')
 
 function onMenuSelect(key: string | number): void {
   void router.push({ name: String(key) })
+}
+
+/** 抽屉内选中：跳转后收起抽屉。 */
+function onDrawerMenuSelect(key: string | number): void {
+  onMenuSelect(key)
+  drawerShow.value = false
 }
 
 function onThemeChange(value: string | number): void {
@@ -73,7 +167,9 @@ async function onLogout(): Promise<void> {
 
 <template>
   <n-layout has-sider style="height: 100vh">
+    <!-- 桌面态（≥960px）：常驻可折叠 sider，200px ↔ 64px -->
     <n-layout-sider
+      v-if="!isMobile"
       bordered
       show-trigger
       collapse-mode="width"
@@ -82,8 +178,9 @@ async function onLogout(): Promise<void> {
       :native-scrollbar="false"
       v-model:collapsed="collapsed"
     >
-      <div class="brand">
-        <n-text strong>{{ t('common.appName') }}</n-text>
+      <div class="brand" :class="{ 'brand--collapsed': collapsed }">
+        <img class="brand__logo" :src="logoSrc" :alt="t('common.appName')" />
+        <n-text v-show="!collapsed" strong>{{ t('common.appName') }}</n-text>
       </div>
       <n-menu
         :options="menuOptions"
@@ -97,12 +194,28 @@ async function onLogout(): Promise<void> {
 
     <n-layout>
       <n-layout-header bordered class="header">
-        <n-space align="center" :size="12" wrap>
-          <n-text strong>{{ t(route.meta.titleKey ?? 'common.appName') }}</n-text>
+        <n-space class="header__left" align="center" :size="12" wrap>
+          <!-- 移动态菜单入口：汉堡按钮滑出抽屉 -->
+          <n-button v-if="isMobile" quaternary size="small" @click="drawerShow = true">
+            <n-icon :size="20"><IconMenu /></n-icon>
+          </n-button>
+          <n-text strong class="header__title">
+            {{ t(route.meta.titleKey ?? 'common.appName') }}
+          </n-text>
           <n-tag size="small" round type="info">{{ currentUser }}</n-tag>
           <n-tag size="small" round>{{ currentMode }}</n-tag>
           <n-tag size="small" round :type="currentMount === 'rw' ? 'success' : 'warning'">
             {{ currentMount }}
+          </n-tag>
+          <n-tooltip v-if="repoStatusTooltip" trigger="hover">
+            <template #trigger>
+              <n-tag size="small" round :type="repoStatusTagType">{{ repoStatusText }}</n-tag>
+            </template>
+            {{ repoStatusTooltip }}
+          </n-tooltip>
+          <n-tag v-else size="small" round :type="repoStatusTagType">{{ repoStatusText }}</n-tag>
+          <n-tag v-if="runningJobsCount > 0" size="small" round type="info">
+            {{ t('header.runningJobs', { n: runningJobsCount }) }}
           </n-tag>
         </n-space>
 
@@ -124,10 +237,21 @@ async function onLogout(): Promise<void> {
         </n-space>
       </n-layout-header>
 
-      <n-layout-content content-style="padding: 16px;" :native-scrollbar="false">
+      <n-layout-content content-style="padding: 20px;" :native-scrollbar="false">
         <router-view />
       </n-layout-content>
     </n-layout>
+
+    <!-- 移动态（<960px）：抽屉式菜单，标题区为品牌 logo + 应用名 -->
+    <n-drawer v-model:show="drawerShow" placement="left" :width="240">
+      <template #header>
+        <div class="drawer-brand">
+          <img class="brand__logo" :src="logoSrc" :alt="t('common.appName')" />
+          <n-text strong>{{ t('common.appName') }}</n-text>
+        </div>
+      </template>
+      <n-menu :options="menuOptions" :value="activeKey" @update:value="onDrawerMenuSelect" />
+    </n-drawer>
   </n-layout>
 </template>
 
@@ -135,10 +259,28 @@ async function onLogout(): Promise<void> {
 .brand {
   display: flex;
   align-items: center;
+  gap: 10px;
   height: 56px;
   padding: 0 16px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.brand--collapsed {
+  justify-content: center;
+  padding: 0;
+}
+
+.brand__logo {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+}
+
+.drawer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .header {
@@ -148,5 +290,19 @@ async function onLogout(): Promise<void> {
   gap: 12px;
   height: 56px;
   padding: 0 16px;
+}
+
+/* <960px 顶栏拥挤（设计方案 §4.2-3）：左组可收缩，标题文字省略 */
+.header__left {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.header__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
