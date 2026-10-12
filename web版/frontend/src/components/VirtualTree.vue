@@ -38,6 +38,8 @@ const props = defineProps<{
   selectDir?: boolean
   /** 高亮行（当前选中/生效路径）。 */
   selectedPath?: string | null
+  /** 多选态：命中集合的行走绿勾样式（B1 文件级恢复；仅样式，不改点击语义）。 */
+  selectedPaths?: Set<string> | null
 }>()
 
 const emit = defineEmits<{
@@ -243,6 +245,8 @@ watch(
             'vtree__row--dir': row.kind === 'item' && isDir(row.item),
             'vtree__row--selected':
               row.kind === 'item' && !!selectedPath && row.item.path === selectedPath,
+            'vtree__row--checked':
+              row.kind === 'item' && !!selectedPaths && selectedPaths.has(row.item.path),
           }"
           :style="{
             top: `${row.top}px`,
@@ -308,6 +312,18 @@ watch(
 
 .vtree__row--selected {
   background: rgba(0, 128, 0, 0.12);
+}
+
+/* 多选态（B1 文件级恢复）：绿勾标记，语义对齐 Duplicati 三态选择器（UI 文档 §2.4/§4.3） */
+.vtree__row--checked {
+  background: rgba(0, 128, 0, 0.12);
+}
+
+.vtree__row--checked .vtree__name::before {
+  content: '✓';
+  margin-right: 6px;
+  color: rgba(0, 128, 0, 0.9);
+  font-weight: 700;
 }
 
 .vtree__name {

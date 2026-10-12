@@ -131,6 +131,13 @@ const terminalText = computed(() => {
 const noLogHint = computed(
   () => stream.state.value === 'closed' && logText.value === '' && terminalText.value !== '',
 )
+
+/** 供外层（如任务卡片操作行）打开同一日志抽屉，避免重复持有一条 SSE 订阅。 */
+defineExpose({
+  openLog: (): void => {
+    drawerOpen.value = true
+  },
+})
 </script>
 
 <template>

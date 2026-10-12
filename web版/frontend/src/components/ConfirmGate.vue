@@ -15,6 +15,8 @@ const props = defineProps<{
   description?: string
   /** 确认动作执行中：禁用确认按钮并显示 loading。 */
   loading?: boolean
+  /** 第三步确认按钮文案；缺省用 confirm.confirmBtn（删除门等场景覆盖，如「确认删除」）。 */
+  confirmLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -88,7 +90,7 @@ function onConfirm(): void {
           <n-space justify="end">
             <n-button @click="step = 2">{{ t('confirm.back') }}</n-button>
             <n-button type="error" :loading="loading" @click="onConfirm">
-              {{ t('confirm.confirmBtn') }}
+              {{ props.confirmLabel ?? t('confirm.confirmBtn') }}
             </n-button>
           </n-space>
         </template>
