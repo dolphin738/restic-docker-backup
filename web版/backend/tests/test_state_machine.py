@@ -19,6 +19,7 @@ from app.constants import (
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.job_repo import Job, JobRepo
+from app.db.repositories.task_repo import TaskRepo
 from app.errors import (
     JobConflictError,
     NotCancellableError,
@@ -80,8 +81,10 @@ class FakeRestic:
         self.exit_code = exit_code
         self.spawn_error = spawn_error
         self.last_process: FakeProcess | None = None
+        self.last_args = None  # 最近一次 build 的 WhitelistArgs（profile 透传断言用）
 
     def build(self, verb, *, args, env_extras=None):  # noqa: ANN001, ANN202
+        self.last_args = args
         return ["restic-fake", verb]
 
     def build_env(self, *, repo_url, env_extras=None):  # noqa: ANN001, ANN202
@@ -109,6 +112,24 @@ async def make_runner(tmp_path, **fake_kwargs) -> tuple[Database, JobRunner, Job
     return db, runner, JobRepo(db)
 
 
+async def make_runner_with_tasks(tmp_path, **fake_kwargs) -> tuple[Database, JobRunner, JobRepo, TaskRepo]:
+    """带 task_loader 的 runner（选项②：profile 解析走 TaskRepo.get_dict 注入）。"""
+    db = Database(tmp_path / "jobs.db")
+    await db.connect()
+    settings = Settings(data_dir=str(tmp_path))
+    settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    task_repo = TaskRepo(db)
+    runner = JobRunner(
+        db,
+        FakeRestic(**fake_kwargs),  # type: ignore[arg-type]
+        OutputParser(),
+        AuditRepo(db),
+        settings=settings,
+        task_loader=task_repo.get_dict,
+    )
+    return db, runner, JobRepo(db), task_repo
+
+
 async def await_job(runner: JobRunner, job_id: str) -> None:
     """等待 submit 派生的后台执行任务结束（保证确定性）。"""
     task = runner._tasks.get(job_id)
@@ -116,13 +137,21 @@ async def await_job(runner: JobRunner, job_id: str) -> None:
         await task
 
 
-async def insert_job(repo: JobRepo, job_id: str, status: str, *, trigger: str = "manual") -> None:
+async def insert_job(
+    repo: JobRepo,
+    job_id: str,
+    status: str,
+    *,
+    trigger: str = "manual",
+    task_id: int | None = None,
+) -> None:
     await repo.create(
         job_id=job_id,
         job_type="backup",
         trigger=trigger,
         log_path=f"/tmp/{job_id}.log",
         status=status,
+        task_id=task_id,
     )
 
 
@@ -205,7 +234,8 @@ async def test_manual_submit_conflict_raises_409(tmp_path):
 
     with pytest.raises(JobConflictError) as excinfo:
         await runner.submit("backup", params={"sources": ["/host/etc"]})
-    assert excinfo.value.data == {"running_job_id": "existing"}
+    # E12 契约（选项②）：data 增 running_task_name（运行中 job 无任务关联时为 None）
+    assert excinfo.value.data == {"running_job_id": "existing", "running_task_name": None}
     await db.close()
 
 
@@ -397,4 +427,118 @@ async def test_concurrent_submit_does_not_duplicate_active_rows(tmp_path):
     assert active[0].id == successes[0].id
 
     await await_job(runner, successes[0].id)
+    await db.close()
+
+
+# --------------------------------- 任务维度提交（选项② R-026：task_id + task_loader）
+
+async def test_task_submit_lands_task_id_and_uses_task_profile(tmp_path):
+    """task_id 提交：jobs 落 task_id、policy_id=NULL；profile 经 task_loader 加载。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path, lines=BACKUP_LINES)
+    task = await task_repo.create({"name": "每日全量", "sources": ["/host/srv"], "excludes": []})
+
+    job = await runner.submit("backup", task_id=task.id, trigger="manual")
+    assert job.task_id == task.id
+    assert job.policy_id is None  # 新任务 job 不落 legacy policy_id（§1.2 决策二）
+
+    await await_job(runner, job.id)
+    final = await repo.get(job.id)
+    assert final.status == "success"
+
+    # profile 来自任务而非 params：sources/tag 均取任务值
+    args = runner._restic.last_args  # noqa: SLF001 - 测试替身断言（与既有 _tasks/_processes 同风格）
+    assert args.targets == ("/host/srv",)
+    assert args.tags == (f"task-{task.id}",)
+
+    rows, total = await AuditRepo(db).query(action="job.submit")
+    assert total == 1
+    assert '"task_id": ' + str(task.id) in (rows[0].detail or "")
+    await db.close()
+
+
+async def test_task_submit_profile_fallback_does_not_block(tmp_path):
+    """task_loader 未注入时 profile 为空字典，由 params 兜底（不中断执行）。
+
+    注意：task_id 必须用**真实存在的任务行**——``jobs.task_id`` 带指向
+    ``backup_tasks(id)`` 的外键（0002 迁移；Q7 裁决：删任务时 ON DELETE SET NULL
+    自动解绑），故「任务已删」在库里的真实表现为 task_id=NULL，而非指向孤儿 id。
+    本用例校验的是「profile 解析为空时不阻塞」，与「任务不存在」是两件事。
+    """
+    db, runner, _ = await make_runner(tmp_path, lines=BACKUP_LINES)  # 无 task_loader
+    task = await TaskRepo(db).create({"name": "无回调任务", "sources": ["/host/srv"]})
+
+    job = await runner.submit(
+        "backup", task_id=task.id, trigger="manual", params={"sources": ["/host/etc"]}
+    )
+    assert job.task_id == task.id
+
+    await await_job(runner, job.id)
+    final = await JobRepo(db).get(job.id)
+    assert final.status == "success"  # params.sources 兜底生效
+    await db.close()
+
+
+async def test_manual_conflict_data_includes_running_task_name(tmp_path):
+    """E12 409 data 增 running_task_name（US-026-04 AC2：UI 提示任务名）。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path)
+    task = await task_repo.create({"name": "在跑任务", "sources": ["/host/srv"]})
+    await insert_job(repo, "existing", "running", task_id=task.id)
+
+    with pytest.raises(JobConflictError) as excinfo:
+        await runner.submit("backup", task_id=task.id, params={"sources": ["/host/etc"]})
+    data = excinfo.value.data
+    assert data["running_job_id"] == "existing"
+    assert data["running_task_name"] == "在跑任务"
+    await db.close()
+
+
+async def test_scheduled_conflict_skipped_job_carries_task_id(tmp_path):
+    """scheduled 冲突：cancelled 跳过任务带 task_id（调度不排队，下周期再试）。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path)
+    task = await task_repo.create({"name": "调度任务", "sources": ["/host/srv"]})
+    await insert_job(repo, "active", "running")
+
+    skipped = await runner.submit("backup", task_id=task.id, trigger="scheduled")
+    assert skipped.status == "cancelled"
+    assert skipped.task_id == task.id
+    assert skipped.trigger == "scheduled"
+
+    rows, total = await AuditRepo(db).query(action="job.skipped_conflict")
+    assert total == 1
+    assert f'"task_id": {task.id}' in (rows[0].detail or "")
+    await db.close()
+
+
+async def test_concurrent_task_submit_exactly_one_wins(tmp_path):
+    """真并发（asyncio.gather）：两个 task 维度 submit 同时竞争 → 恰好 1 成功。
+
+    与「预置 running 再触发」的本质区别：两个协程在同一事件循环轮次内同时进入
+    submit，真正并发竞争 ``_repo_lock``——竞态人工 review 发现不了（AGENTS.md 约定）。
+    冲突方 data 带出运行中任务名，DB 层同样只应有一条 active 记录。
+    """
+    db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path, lines=BACKUP_LINES)
+    task = await task_repo.create({"name": "竞速任务", "sources": ["/host/srv"]})
+
+    async def submit_once() -> Job | BaseException:
+        try:
+            return await runner.submit(
+                "backup", task_id=task.id, params={"sources": ["/host/etc"]}
+            )
+        except BaseException as exc:  # noqa: BLE001 - 收集冲突异常用于断言
+            return exc
+
+    results = await asyncio.gather(submit_once(), submit_once())
+
+    wins = [r for r in results if isinstance(r, Job)]
+    conflicts = [r for r in results if isinstance(r, JobConflictError)]
+
+    assert len(wins) == 1, f"应恰好 1 个成功，实际 {len(wins)}"
+    assert len(conflicts) == 1, f"应恰好 1 个冲突，实际 {len(conflicts)}"
+    assert conflicts[0].data.get("running_job_id") == wins[0].id
+    assert conflicts[0].data.get("running_task_name") == "竞速任务"
+    assert wins[0].task_id == task.id
+
+    assert len(await repo.list_active()) == 1
+
+    await await_job(runner, wins[0].id)
     await db.close()

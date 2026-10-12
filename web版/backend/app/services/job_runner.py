@@ -43,6 +43,9 @@ from app.utils.ulid import new_job_id
 logger = logging.getLogger(__name__)
 
 PolicyLoader = Callable[[int], Awaitable[dict[str, Any] | None]]
+# task_loader 与 policy_loader 同构契约（(int) -> Awaitable[dict | None]）：
+# TaskRepo.get_dict / PolicyRepo.get_dict 均按此签名注入（增量设计 §1.1 仿先例）。
+TaskLoader = PolicyLoader
 
 
 class NoopNotifier:
@@ -71,6 +74,7 @@ class JobRunner:
         db_flush_interval: float = 1.0,
         settings: Settings | None = None,
         policy_loader: PolicyLoader | None = None,
+        task_loader: TaskLoader | None = None,
         on_finish: Callable[[], None] | None = None,
     ) -> None:
         """构造执行器。
@@ -85,6 +89,8 @@ class JobRunner:
             db_flush_interval: 进度落库最小间隔（秒），避免高频写 SQLite。
             settings: 运行期配置；缺省取进程单例。
             policy_loader: 策略加载回调（批次 3 由 PolicyRepo 注入；P1 可为空）。
+            task_loader: 任务加载回调（选项②由 TaskRepo.get_dict 注入）；
+                profile 解析时 task_id 优先于 policy_id（任务即策略，legacy 兼容）。
             on_finish: 任务到达终态后的外部回调（如 E30 仓库状态缓存失效）；
                 回调异常只记日志，不影响任务链路。
         """
@@ -97,6 +103,7 @@ class JobRunner:
         self._db_flush_interval = max(0.1, db_flush_interval)
         self._settings = settings or get_settings()
         self._policy_loader = policy_loader
+        self._task_loader = task_loader
         self._on_finish = on_finish
 
         self._jobs = JobRepo(db)
@@ -124,6 +131,7 @@ class JobRunner:
         job_type: str,
         *,
         policy_id: int | None = None,
+        task_id: int | None = None,
         trigger: str = "manual",
         snapshot_id: str | None = None,
         params: dict[str, Any] | None = None,
@@ -132,16 +140,19 @@ class JobRunner:
 
         Args:
             job_type: 任务类型（E12 白名单）。
-            policy_id: 关联策略 id；可为空（由 params 提供来源）。
+            policy_id: 关联策略 id（legacy）；可为空。
+            task_id: 关联备份任务 id（选项②；与 policy_id 互斥由上层校验）；
+                新任务 job 落 ``task_id``、``policy_id`` 为 NULL（§1.2 决策二）。
             trigger: ``manual`` / ``scheduled``。
             snapshot_id: 关联快照（restore/forget）。
-            params: 补充参数（sources/excludes/target/read_data…）。
+            params: 补充参数（sources/excludes/target/include…）。
 
         Returns:
             新建任务（manual 冲突时抛错；scheduled 冲突时返回一条 cancelled 任务）。
 
         Raises:
-            JobConflictError: manual 触发且已有 running/pending 任务（409）。
+            JobConflictError: manual 触发且已有 running/pending 任务（409，
+                data 带 ``running_job_id`` 与 ``running_task_name``）。
         """
         if job_type not in JOB_TYPES:
             raise ValidationError(f"不支持的任务类型：{job_type}", data={"allowed": list(JOB_TYPES)})
@@ -151,9 +162,16 @@ class JobRunner:
         async with lock:
             active = await self._jobs.list_active()
             if active:
-                conflict_id = active[0].id
+                conflict = active[0]
                 if trigger == "manual":
-                    raise JobConflictError(data={"running_job_id": conflict_id})
+                    raise JobConflictError(
+                        data={
+                            "running_job_id": conflict.id,
+                            # US-026-04 AC2：UI 提示「已有任务进行中：<任务名>」；
+                            # 运行中 job 无任务关联（legacy 策略 job）时为 None。
+                            "running_task_name": await self._task_name(conflict.task_id),
+                        }
+                    )
                 # scheduled 冲突：不返回 409，落一条 cancelled + 审计后跳过（§5.1 E12 注）
                 skipped = await self._jobs.create(
                     job_id=new_job_id(),
@@ -161,13 +179,14 @@ class JobRunner:
                     trigger=trigger,
                     log_path=str(self._settings.jobs_dir / f"{job_type}-skipped.log"),
                     policy_id=policy_id,
+                    task_id=task_id,
                     snapshot_id=snapshot_id,
                     status="cancelled",
                 )
                 await self._audit.record(
                     AUDIT_JOB_SKIPPED_CONFLICT,
                     target=skipped.id,
-                    detail={"job_type": job_type, "conflict_job_id": conflict_id},
+                    detail={"job_type": job_type, "conflict_job_id": conflict.id, "task_id": task_id},
                     result="denied",
                 )
                 return skipped
@@ -180,6 +199,7 @@ class JobRunner:
                 trigger=trigger,
                 log_path=log_path,
                 policy_id=policy_id,
+                task_id=task_id,
                 snapshot_id=snapshot_id,
             )
 
@@ -187,7 +207,7 @@ class JobRunner:
         await self._audit.record(
             AUDIT_JOB_SUBMIT,
             target=job_id,
-            detail={"type": job_type, "trigger": trigger, "policy_id": policy_id},
+            detail={"type": job_type, "trigger": trigger, "policy_id": policy_id, "task_id": task_id},
             result="ok",
         )
         self._tasks[job_id] = asyncio.create_task(self._run(job), name=f"job-{job_id}")
@@ -363,8 +383,13 @@ class JobRunner:
 
         只做进程收尾，**不改任务状态**——遗留任务由下次启动的
         :meth:`recover_on_startup` 统一改标 interrupted。
+
+        无子进程但仍有未收尾的后台任务时（如任务刚 submit 尚未 spawn）同样要走
+        取消+ gather 路径：否则任务可能在与 ``close_database`` 的竞态中带着
+        「Connection closed」异常孤立结束（asyncio 报 Task exception was never
+        retrieved，且 ``_tasks`` 条目残留）。
         """
-        if not self._processes:
+        if not self._processes and not self._tasks:
             return
         logger.info("关闭收尾：向 %d 个 restic 子进程转发 SIGTERM", len(self._processes))
         for proc in self._processes.values():
@@ -397,8 +422,8 @@ class JobRunner:
     async def _prepare(self, job: Job, repo_url: str) -> tuple[list[str], dict[str, str]]:
         """拼装 argv 与子进程环境。"""
         params = self._params.get(job.id, {})
-        policy = await self._load_policy(job.policy_id)
-        args = self._build_args(job.type, job.snapshot_id, params, policy)
+        profile = await self._load_profile(job)
+        args = self._build_args(job.type, job.snapshot_id, params, profile)
         env_extras = await self._load_credentials()
         argv = self._restic.build(job.type, args=args, env_extras=env_extras)
         env = self._restic.build_env(repo_url=repo_url, env_extras=env_extras)
@@ -446,6 +471,9 @@ class JobRunner:
                 snapshot_id=snapshot_id or params.get("snapshot_id"),
                 target_dir=str(target),
                 overwrite=str(params.get("overwrite") or "if-changed"),
+                # B1 文件级恢复：容器形态的 include 清单（路由层已 display→container 归一，
+                # 此处再过 ResticCmd 白名单校验——S1 双重校验点②）
+                include=tuple(str(item) for item in params.get("include") or []),
             )
 
         if job_type == "check":
@@ -481,6 +509,43 @@ class JobRunner:
             logger.warning("加载策略 %s 失败：%s", policy_id, exc)
             return {}
         return policy or {}
+
+    async def _load_task(self, task_id: int | None) -> dict[str, Any]:
+        """加载任务字典；无 loader 或任务缺失时返回空字典（与 ``_load_policy`` 同构）。"""
+        if task_id is None or self._task_loader is None:
+            return {}
+        try:
+            task = await self._task_loader(task_id)
+        except Exception as exc:  # noqa: BLE001 - 任务不可读不应中断任务执行
+            logger.warning("加载任务 %s 失败：%s", task_id, exc)
+            return {}
+        return task or {}
+
+    async def _load_profile(self, job: Job) -> dict[str, Any]:
+        """profile 解析（增量设计 §7.1）：``task_id`` 优先，legacy ``policy_id`` 兼容。
+
+        任务即策略（1:1）——新任务 job 只落 task_id；policy_id 仅为 legacy 行兼容读。
+        """
+        if job.task_id is not None:
+            return await self._load_task(job.task_id)
+        return await self._load_policy(job.policy_id)
+
+    async def _task_name(self, task_id: int | None) -> str | None:
+        """解析运行中 job 的任务名（E12 409 data 的 ``running_task_name``）。
+
+        无任务关联（legacy 策略 job）或任务不可读时返回 None——UI 回落「已有任务进行中」。
+        """
+        if task_id is None or self._task_loader is None:
+            return None
+        try:
+            profile = await self._task_loader(task_id)
+        except Exception as exc:  # noqa: BLE001 - 名称解析失败不应影响冲突判定本身
+            logger.warning("加载任务 %s 名称失败：%s", task_id, exc)
+            return None
+        if not profile:
+            return None
+        name = profile.get("name")
+        return str(name) if name else None
 
     async def _load_credentials(self) -> dict[str, str]:
         """把 config 中 ``cred.*`` 键还原为子进程环境变量（``AWS_*`` / ``B2_*``）。"""

@@ -57,12 +57,19 @@ async def create_job(
 ) -> JobCreateResponse:
     """触发一个任务（manual）；同仓库已有 running/pending 时返回 409 JOB_CONFLICT。
 
+    ``task_id`` 与 ``policy_id`` 互斥（同供 422 ``VALIDATION_ERROR``）：任务域 job
+    落 ``task_id``（profile 经 ``task_loader`` 加载），legacy 策略 job 落 ``policy_id``。
     ``params.excludes`` 为用户追加的排除规则（展示形态或纯 glob 模式），在**提交前**
     经 :func:`normalize_user_excludes` 三分类归一为容器形态——放在路由层而非 JobRunner，
     越界锚定路径才能以 422 ``VALIDATION_ERROR`` 同步回给前端，而不是把任务打进 failed。
     """
     del session
     runner = request.app.state.job_runner
+    if payload.task_id is not None and payload.policy_id is not None:
+        raise ValidationError(
+            "task_id 与 policy_id 互斥，只能指定其中一个",
+            data={"task_id": payload.task_id, "policy_id": payload.policy_id},
+        )
     params = dict(payload.params)
     if params.get("excludes"):
         # 锚定路径白名单收紧为当前模式根（越界 → 422），见 exclusions.normalize_user_excludes
@@ -74,6 +81,7 @@ async def create_job(
     job = await runner.submit(
         str(payload.type),
         policy_id=payload.policy_id,
+        task_id=payload.task_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,
         params=params,
@@ -85,15 +93,19 @@ async def create_job(
 async def list_jobs(
     request: Request,
     status: str | None = Query(default=None, description="仅支持 running/pending（逗号分隔）"),
+    task_id: int | None = Query(default=None, description="按备份任务筛选（N7：本批仅放开该维度）"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(require_session),
 ) -> Page[JobOut]:
-    """P1 最小版：只提供"进行中"列表（running/pending），P2 再开放全量分页/筛选/retention。"""
+    """P1 最小版：只提供"进行中"列表（running/pending），P2 再开放全量分页/筛选/retention。
+
+    ``task_id`` 过滤维度供任务卡片「日志」入口与任务历史（N7：status 门禁语义不变）。
+    """
     del session
     statuses = _parse_active_statuses(status)
     repo = request.app.state.job_repo
-    jobs, total = await repo.list_page(statuses=statuses, limit=limit, offset=offset)
+    jobs, total = await repo.list_page(statuses=statuses, task_id=task_id, limit=limit, offset=offset)
     return Page(items=[_to_out(job) for job in jobs], total=total, limit=limit, offset=offset)
 
 
