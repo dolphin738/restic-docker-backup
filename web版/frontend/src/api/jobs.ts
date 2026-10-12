@@ -16,16 +16,18 @@ export function getJob(jobId: string): Promise<JobOut> {
   return request<JobOut>(`/api/jobs/${encodeURIComponent(jobId)}`)
 }
 
-/** 触发任务（manual）；同仓库已有 running/pending → 409 JOB_CONFLICT，不排队。 */
+/** 触发任务（manual）；同仓库已有 running/pending → 409 JOB_CONFLICT，不排队。
+ * R-026：taskId 与 policyId 互斥，同供 409 JOB_CONFLICT 的 data 带 running_task_name。 */
 export function createJob(
   type: JobType,
-  options: { policyId?: number; snapshotId?: string; params?: Record<string, unknown> } = {},
+  options: { policyId?: number; taskId?: number; snapshotId?: string; params?: Record<string, unknown> } = {},
 ): Promise<JobCreateResponse> {
   return request<JobCreateResponse>('/api/jobs', {
     method: 'POST',
     body: {
       type,
       ...(options.policyId === undefined ? {} : { policy_id: options.policyId }),
+      ...(options.taskId === undefined ? {} : { task_id: options.taskId }),
       ...(options.snapshotId === undefined ? {} : { snapshot_id: options.snapshotId }),
       ...(options.params === undefined ? {} : { params: options.params }),
     },

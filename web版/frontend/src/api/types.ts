@@ -54,6 +54,8 @@ export interface JobOut {
   status: JobStatus
   trigger: string
   policy_id: number | null
+  /** R-026：该 job 由哪个备份任务产生（legacy job 为 null；删除任务后置 null）。 */
+  task_id: number | null
   snapshot_id: string | null
   bytes_done: number | null
   files_done: number | null
@@ -261,6 +263,105 @@ export interface PolicyUpsertRequest {
   prune_interval_days: number
   limit_up: number
   limit_down: number
+}
+
+// ---------------------------------------------------------------- 多备份任务（R-026，增量设计 §2）
+
+/** E34 卡片状态（派生，无状态机列）：paused > 活跃 job > 最近 backup 终态 > never_run。 */
+export type TaskCardStatus =
+  | 'paused'
+  | 'running'
+  | 'pending'
+  | 'success'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+  | 'never_run'
+
+/** E34 任务卡片输出（仪表盘列表）。 */
+export interface TaskCard {
+  id: number
+  name: string
+  enabled: boolean
+  /** 自动生成只读：task-<id>。 */
+  tag: string
+  cron: string | null
+  status: TaskCardStatus
+  last_run_at: string | null
+  /** 最近一次 backup job 终态（success/failed/interrupted/cancelled）。 */
+  last_result: string | null
+  /** null = 仅手动或已暂停。 */
+  next_run_at: string | null
+  /** 有活跃 job 时非空（卡片内联进度/取消/日志入口）。 */
+  running_job_id: string | null
+  /** true 时 UI 拦截 Start，引导去 dry-run 预览（R-026-08）。 */
+  dry_run_pending: boolean
+  /** 保留清理到期提示（只提示，不自动执行）。 */
+  prune_due: boolean
+  updated_at: string
+}
+
+/** E34b 任务详情/编辑预填（sources/excludes 为容器形态，display_* 为展示形态，前端只用 display_*）。 */
+export interface BackupTask {
+  id: number
+  repo_id: string
+  name: string
+  enabled: boolean
+  tag: string
+  sources: string[]
+  display_sources: string[]
+  excludes: string[]
+  display_excludes: string[]
+  keep_last: number
+  keep_hourly: number
+  keep_daily: number
+  keep_weekly: number
+  keep_monthly: number
+  keep_yearly: number
+  group_by: string
+  cron: string | null
+  one_file_system: boolean
+  compression: string
+  check_sample_ratio: number
+  monthly_full_day: number
+  prune_interval_days: number
+  limit_up: number
+  limit_down: number
+  dry_run_pending: boolean
+  last_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** E35/E35b 任务写请求体（全量语义，无 tag 字段——服务端生成）。 */
+export interface TaskUpsertRequest {
+  name: string
+  enabled: boolean
+  /** 展示形态（如 /etc）；服务端归一为容器形态入库。 */
+  sources: string[]
+  excludes: string[]
+  keep_last: number
+  keep_hourly: number
+  keep_daily: number
+  keep_weekly: number
+  keep_monthly: number
+  keep_yearly: number
+  group_by: string
+  /** 空串按缺省传 null（仅手动）。 */
+  cron: string | null
+  one_file_system: boolean | null
+  compression: string
+  check_sample_ratio: number
+  monthly_full_day: number
+  prune_interval_days: number
+  limit_up: number
+  limit_down: number
+}
+
+/** E36 任务域 dry-run 请求（均可选，缺省取任务存量值）。 */
+export interface TaskDryRunRequest {
+  sources?: string[]
+  excludes?: string[]
 }
 
 /** E17 快照条目（paths 为原路径语义；P1 size 恒为 null）。 */
