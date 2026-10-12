@@ -123,13 +123,18 @@ class ConfigPatchRequest(_Base):
 # ---------------------------------------------------------------- E12–E16 / E27 任务
 
 class JobOut(_Base):
-    """E14 任务详情（§4.5 字段全集）。"""
+    """E14 任务详情（§4.5 字段全集）。
+
+    ``task_id`` 语义（选项② §1.2 决策二）：该 job 由哪个备份任务产生；legacy 行
+    仅 ``policy_id``；删除任务后 ``task_id`` 经外键置空（行与日志保留）。
+    """
 
     id: str
     type: JobType
     status: JobStatus
     trigger: JobTrigger
     policy_id: int | None = None
+    task_id: int | None = None
     snapshot_id: str | None = None
     bytes_done: int | None = None
     files_done: int | None = None
@@ -147,7 +152,8 @@ class JobCreateRequest(_Base):
     """E12 触发任务请求。"""
 
     type: JobType = Field(description="任务类型白名单：backup/restore/forget/check/unlock/init/dump")
-    policy_id: int | None = Field(default=None, description="关联策略 id")
+    policy_id: int | None = Field(default=None, description="关联策略 id（legacy；与 task_id 互斥）")
+    task_id: int | None = Field(default=None, description="关联备份任务 id（与 policy_id 互斥，同供 422）")
     snapshot_id: str | None = Field(default=None, description="restore/forget 关联快照")
     params: dict[str, Any] = Field(default_factory=dict, description="补充参数（sources/excludes/target…）")
 
@@ -193,6 +199,17 @@ class DryRunRequest(_Base):
 
     sources: list[str] = Field(min_length=1, description="容器内路径（/host 或 /sources 前缀）")
     excludes: list[str] = Field(default_factory=list, description="用户追加排除规则（内置集自动叠加）")
+
+
+class TaskDryRunRequest(_Base):
+    """E36 任务域 dry-run 预览请求：字段均可选，缺省取任务存量值（支撑「源集合变更后重新预览」）。
+
+    与 :class:`DryRunRequest`（E31 无实体向导内预览，sources 必填）的差异即在此——
+    任务实体已在库中，允许空 body 全量取存量值重新预览。
+    """
+
+    sources: list[str] | None = Field(default=None, description="展示形态备份源；None=取任务存量值")
+    excludes: list[str] | None = Field(default=None, description="展示形态/纯 glob 排除；None=取任务存量值")
 
 
 class DryRunItem(_Base):
@@ -319,6 +336,102 @@ class PolicyUpsertRequest(_Base):
     limit_down: int = 0
 
 
+# ---------------------------------------------------------------- E34–E36 备份任务（选项② R-026）
+
+class TaskOut(_Base):
+    """E34' 任务详情/编辑预填（全字段 + display 派生，tag 只读露出）。
+
+    与 :class:`PolicyOut` 的差异：``repo_id`` 作用域外键（E7）、``dry_run_pending``
+    首跑门标记；``legacy_policy_id`` 恒为 None（greenfield 无存量策略可继承，
+    DDL 无此列——字段仅为 wire 兼容占位）。
+    """
+
+    id: int
+    repo_id: str = "default"
+    name: str
+    enabled: bool = True
+    tag: str
+    sources: list[str] = Field(default_factory=list)
+    display_sources: list[str] = Field(
+        default_factory=list, description="sources 的展示形态（剥前缀，原路径语义；UI 直消费）"
+    )
+    excludes: list[str] = Field(default_factory=list)
+    display_excludes: list[str] = Field(
+        default_factory=list, description="excludes 的展示形态（剥前缀，原路径语义；UI 直消费）"
+    )
+    keep_last: int = 0
+    keep_hourly: int = 0
+    keep_daily: int = 0
+    keep_weekly: int = 0
+    keep_monthly: int = 0
+    keep_yearly: int = 0
+    group_by: str = "host,paths,tags"
+    cron: str | None = None
+    one_file_system: bool = False
+    compression: str = "auto"
+    check_sample_ratio: float = 0.02
+    monthly_full_day: int = 1
+    prune_interval_days: int = 7
+    limit_up: int = 0      # KiB/s，0=不限（DDL 列 limit_up_kibps）
+    limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
+    dry_run_pending: bool = False
+    last_run_at: str | None = None
+    legacy_policy_id: int | None = None   # greenfield 恒 None（无 legacy_policy_id 列）
+    created_at: str
+    updated_at: str
+
+
+class TaskCardOut(_Base):
+    """E34 任务卡片（派生状态聚合：见增量设计 §1.2 派生规则）。
+
+    ``status`` 词表：paused（enabled=0）/ running / pending / success / failed /
+    interrupted / cancelled / never_run；``last_result`` 为最近一次 backup 终态。
+    """
+
+    id: int
+    name: str
+    enabled: bool = True
+    tag: str
+    cron: str | None = None
+    status: str = Field(
+        description="派生状态：paused/running/pending/success/failed/interrupted/cancelled/never_run"
+    )
+    last_run_at: str | None = None
+    last_result: str | None = None
+    next_run_at: str | None = Field(default=None, description="cron 推导；null=仅手动或已暂停")
+    running_job_id: str | None = Field(default=None, description="有活跃 job 时非空（卡片内联进度入口）")
+    dry_run_pending: bool = Field(default=False, description="true 时 UI 拦截 Start（R-026-08）")
+    prune_due: bool = Field(default=False, description="保留清理到期提示（只提示，不自动执行，N3）")
+    updated_at: str
+
+
+class TaskUpsertRequest(_Base):
+    """E35 POST / E35' PUT 请求体（全量语义）。
+
+    **无 tag 字段**——服务端生成只读 ``task-<id>``；``one_file_system=null`` 按模式缺省。
+    """
+
+    name: str = Field(min_length=1, max_length=120, description="任务名称（必填非空）")
+    enabled: bool = True
+    sources: list[str] = Field(default_factory=list, description="备份源（展示形态，如 /etc）")
+    excludes: list[str] = Field(default_factory=list, description="用户追加排除（展示形态/纯 glob）")
+    keep_last: int = 0
+    keep_hourly: int = 0
+    keep_daily: int = 0
+    keep_weekly: int = 0
+    keep_monthly: int = 0
+    keep_yearly: int = 0
+    group_by: str = "host,paths,tags"
+    cron: str | None = None
+    one_file_system: bool | None = None   # None=按模式取缺省（sources 模式缺省 true）
+    compression: str = "auto"
+    check_sample_ratio: float = 0.02
+    monthly_full_day: int = 1
+    prune_interval_days: int = 7
+    limit_up: int = 0
+    limit_down: int = 0
+
+
 # ---------------------------------------------------------------- E17/E18 快照
 
 class SnapshotOut(_Base):
@@ -356,10 +469,19 @@ class SnapshotFilesResponse(_Base):
 # ---------------------------------------------------------------- E19 恢复
 
 class RestoreRequest(_Base):
-    """E19 恢复请求：**只有** snapshot_id 与 target，不存在任何覆盖语义参数。"""
+    """E19 恢复请求：目标只有时间戳子目录，不存在任何覆盖语义参数。
+
+    ``paths`` 为 B1 文件级恢复入参（**展示形态**，如 ``/etc``、``/home/u/x``）；
+    缺省/空数组 = 整快照恢复（兼容既有行为）。服务端逐条还原为容器形态并过
+    :class:`PathMapper` 白名单校验（越界 400 ``PATH_OUT_OF_PREFIX``）。
+    """
 
     snapshot_id: str = Field(min_length=8, max_length=64)
     target: str
+    paths: list[str] = Field(
+        default_factory=list,
+        description="要恢复的文件/目录（展示形态）；缺省或空 = 整快照恢复",
+    )
 
 
 class RestoreResponse(_Base):

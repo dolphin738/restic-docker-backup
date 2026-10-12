@@ -69,9 +69,9 @@ class PolicyService:
             "enabled": policy.enabled,
             "tag": policy.tag,
             "sources": list(policy.sources),
-            "display_sources": [_display_of(item, self._path_mapper) for item in policy.sources],
+            "display_sources": [self.display_of(item) for item in policy.sources],
             "excludes": list(policy.excludes),
-            "display_excludes": [_display_of(item, self._path_mapper) for item in policy.excludes],
+            "display_excludes": [self.display_of(item) for item in policy.excludes],
             "keep_last": policy.keep_last,
             "keep_hourly": policy.keep_hourly,
             "keep_daily": policy.keep_daily,
@@ -138,6 +138,16 @@ class PolicyService:
     def default_one_file_system(self) -> bool:
         """sources 模式缺省开启 ``--one-file-system``（方案 §3.2 四层防线第一层）。"""
         return self._settings.restic_web_mode == "sources"
+
+    def display_of(self, value: str) -> str:
+        """容器形态 → 展示形态（display 派生专用；共享给 TaskService，避免第二套换算）。
+
+        纯 glob 模式（不以 ``/`` 开头，如 ``*.tmp``）**原样返回**——它们形态无关，
+        过 :meth:`PathMapper.to_display` 会被补上前导 ``/`` 造成回显与用户输入不一致。
+        """
+        if not value.startswith("/"):
+            return value
+        return self._path_mapper.to_display(value)
 
     # ---------------------------------------------------------------- 内部实现
 
@@ -220,17 +230,6 @@ class PolicyService:
         if len(fields) not in (5, 6):
             raise ValidationError("cron 表达式须为 5 或 6 个字段", data={"cron": candidate})
         return candidate
-
-
-def _display_of(value: str, mapper: PathMapper) -> str:
-    """容器形态 → 展示形态（display 派生专用）。
-
-    纯 glob 模式（不以 ``/`` 开头，如 ``*.tmp``）**原样返回**——它们形态无关，
-    过 :meth:`PathMapper.to_display` 会被补上前导 ``/`` 造成回显与用户输入不一致。
-    """
-    if not value.startswith("/"):
-        return value
-    return mapper.to_display(value)
 
 
 def _non_empty_str(value: Any, field_name: str, *, default: str) -> str:
