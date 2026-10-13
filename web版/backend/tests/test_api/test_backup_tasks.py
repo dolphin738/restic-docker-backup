@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from conftest import ORIGIN, finish_bootstrap
 
 # ---------------------------------------------------------------- 测试替身（E36 dry-run）
@@ -143,6 +144,57 @@ async def test_e35_create_rejects_empty_name_422(app_client):
     )
     assert resp.status_code == 422
     assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.parametrize(
+    "cron",
+    [
+        "0 3 * * sun-sat",  # 跨周围绕区间（APScheduler 与标准 cron 均不支持）
+        "0 3 * * */8",  # 越界步长
+        "0 3 * * 8",  # 越界星期
+        "0 3 * * 5-1",  # 环绕数字区间
+    ],
+)
+async def test_e35_create_rejects_unparsable_cron_422(app_client, cron):
+    """语义非法的 cron → 422，且错误信息带 APScheduler 原始原因（Q4 静默防线）。
+
+    缺陷背景：原校验只看字段数 == 5，放过 ``sun-sat`` / ``*/8`` / ``0 3 * * 8`` 这类
+    表达式——它们能顺利保存，随后调度器 ``_build_trigger`` 解析失败返回 None + 一条
+    WARNING，任务退化「仅手动」，**前端无任何提示**，管理员不知道自己配的调度根本没
+    生效。与缺陷 A 同属「配置看起来成功、只是悄悄不生效」的静默问题，故写入侧直接
+    422 拒绝，并把原始报错文本透出以便定位具体哪里错。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/repos/default/backup-tasks",
+        json={"name": "x", "sources": ["/etc"], "cron": cron},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "无法解析" in body["message"]
+    assert body["data"]["cron"] == cron
+    assert body["data"]["reason"]  # APScheduler 原始报错文本，不得为空
+
+
+@pytest.mark.parametrize(
+    "cron",
+    [
+        "0 3 * * 1",  # 真机任务 #1 的写法（标准语义每周一）
+        "0 3 * * */2",  # 步长（展开为枚举后合法）
+        "0 3 * * 0-6",  # 跨周日边界区间
+        "0 3 * * mon-fri",  # 名称区间
+        "0 3 * * *",  # 每天
+    ],
+)
+async def test_e35_create_accepts_valid_cron_forms(app_client, cron):
+    """对照组：合法 cron 各形态照常 201 保存（语义校验不得误伤）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    body = await _create_task(ns, cron=cron)
+    assert body["cron"] == cron
 
 
 async def test_e35_create_rejects_bad_cron_and_source_422(app_client):

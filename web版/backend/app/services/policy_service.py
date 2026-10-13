@@ -15,12 +15,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from app.db.repositories.policy_repo import Policy, PolicyRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.services.path_mapper import PathMapper
+from app.services.scheduler import _cron_trigger
 from app.settings import Settings, get_settings
 
 COMPRESSION_MODES: tuple[str, ...] = ("auto", "off", "max")
@@ -228,6 +230,18 @@ class PolicyService:
         自行分字段校验，星期字段按标准 crontab 语义换算后交给 APScheduler——
         不直接用 ``from_crontab``，后者在 3.x 有星期偏移一天的历史缺陷，issue #286）。
         放行 6 字段（秒级）会导致保存成功但任务永不自动触发，故在写入侧直接 422 拒绝。
+
+        **语义可解析性（Q4 静默防线）**：只校验字段数会放过 ``sun-sat``（跨周围绕）、
+        ``*/8``（越界步长）、``0 3 * * 8``（越界星期）这类表达式——它们能顺利保存，
+        随后调度器解析失败返回 ``None`` + 一条 WARNING，任务退化「仅手动」，前端无
+        任何提示，管理员不知道自己配的调度根本没生效（与缺陷 A 同类的静默问题）。
+        故写入侧用 ``_cron_trigger`` 试构造一次，失败即 422，并把 APScheduler 的
+        **原始报错文本**透出（如 "the minimum value in a range must not be higher
+        than the maximum"），让管理员知道具体哪里错了。
+
+        影响面：本方法是**任务与策略共用的共享校验**（:class:`TaskService` 委托
+        ``PolicyService.normalize``），故两侧写入路径同时生效——口径统一，期望行为。
+        校验只在写入路径生效，已有数据不受影响。
         """
         if value is None or str(value).strip() == "":
             return None
@@ -235,6 +249,12 @@ class PolicyService:
         fields = candidate.split()
         if len(fields) != 5:
             raise ValidationError("cron 须为 5 字段（分 时 日 月 周）", data={"cron": candidate})
+        try:
+            _cron_trigger(candidate, timezone=UTC)  # 语义试构造（时区与字段校验无关，取 UTC）
+        except ValueError as exc:
+            raise ValidationError(
+                f"cron 无法解析：{exc}", data={"cron": candidate, "reason": str(exc)}
+            ) from exc
         return candidate
 
 
