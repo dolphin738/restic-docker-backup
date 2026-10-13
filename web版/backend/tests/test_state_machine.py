@@ -672,3 +672,44 @@ async def test_callback_failure_does_not_break_success_terminal(tmp_path):
     assert final.exit_code == 0
     await db.close()
 
+
+
+# ---------------------------------------------------------------- R-016 forget 执行链（G3 + prune）
+
+async def test_forget_without_keep_rule_fails_job(tmp_path):
+    """G3 服务端兜底：无任何保留规则的 forget → 执行期 ValidationError → job failed。
+
+    E21 预览与 E12 执行两侧同拒（routers/ops.py require_keep_rule 与
+    JobRunner._build_args forget 分支同口径）——绕过预览直接提交「全删」语义
+    不可能成功。
+    """
+    db, runner, jobs = await make_runner(tmp_path)
+    job = await runner.submit("forget", trigger="manual", params={"tags": ["task-1"]})
+    await await_job(runner, job.id)
+
+    final = await jobs.get(job.id)
+    assert final is not None and final.status == "failed"
+    # _run 兜底 summary 只记异常类型名（不泄漏内部细节，既有口径）；G3 拒绝的
+    # 可读原因在任务日志与 E21 预览侧（require_keep_rule 的 422 文案）。
+    assert "ValidationError" in (final.summary or "")
+
+
+async def test_forget_with_keep_rule_and_prune_passes_flags(tmp_path):
+    """有保留规则的 forget 正常执行；prune=True → WhitelistArgs.prune 透传。"""
+    db, runner, jobs = await make_runner(tmp_path)
+    fake = runner._restic  # FakeRestic
+    job = await runner.submit(
+        "forget",
+        trigger="manual",
+        params={"tags": ["task-1"], "keep_daily": 7, "prune": True},
+    )
+    await await_job(runner, job.id)
+
+    final = await jobs.get(job.id)
+    assert final is not None and final.status == "success"
+    args = fake.last_args
+    assert args is not None
+    assert args.keep_daily == 7
+    assert args.prune is True
+    assert args.dry_run is False  # 执行路径绝不带 --dry-run
+    assert args.tags == ("task-1",)

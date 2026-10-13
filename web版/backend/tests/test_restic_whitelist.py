@@ -120,3 +120,45 @@ def test_backup_target_out_of_prefix_rejected():
     cmd = make_cmd("host")
     with pytest.raises(PathOutOfPrefixError):
         cmd.build("backup", args=WhitelistArgs(targets=("/repo/etc",)))
+
+
+# ---------------------------------------------------------------- R-016 forget --dry-run / --prune
+
+def test_forget_dry_run_and_prune_assembled():
+    """E21 预览/确认执行的 forget flag 拼装：keep-* + group-by + --dry-run/--prune。"""
+    cmd = make_cmd()
+    argv = cmd.build(
+        "forget",
+        args=WhitelistArgs(
+            tags=("task-1",),
+            group_by="host,paths,tags",
+            keep_daily=7,
+            keep_weekly=4,
+            dry_run=True,
+        ),
+    )
+    assert "--dry-run" in argv
+    assert "--prune" not in argv  # 预览恒只读
+    idx = argv.index("forget")
+    assert argv[idx + 1: idx + 3] == ["--tag", "task-1"]
+    assert argv[argv.index("--keep-daily") + 1] == "7"
+    assert argv[argv.index("--group-by") + 1] == "host,paths,tags"
+
+
+def test_forget_prune_only_when_confirmed():
+    """--prune 只在执行参数显式携带时拼入（确认后的 E12 type=forget）。"""
+    cmd = make_cmd()
+    argv = cmd.build(
+        "forget",
+        args=WhitelistArgs(keep_daily=7, prune=True),
+    )
+    assert "--prune" in argv
+    assert "--dry-run" not in argv
+
+
+def test_forget_defaults_have_no_dry_run_or_prune():
+    """既有 forget（调度/手动，未传 prune）行为零回归：两个 flag 都不出现。"""
+    cmd = make_cmd()
+    argv = cmd.build("forget", args=WhitelistArgs(keep_last=3))
+    assert "--dry-run" not in argv
+    assert "--prune" not in argv

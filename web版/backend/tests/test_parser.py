@@ -225,3 +225,57 @@ def test_parse_line_with_event_id_note():
     assert ev.event_id == 0
     ev.event_id = 2
     assert ev.event_id == 2
+
+
+# ---------------------------------------------------------------- forget --json（R-016 E21）
+
+def _forget_group(keep_id: str, remove_id: str) -> dict:
+    def _snapshot(snapshot_id: str) -> dict:
+        return {
+            "id": snapshot_id,
+            "time": "2026-10-01T03:00:00+08:00",
+            "hostname": "nas",
+            "tags": ["task-1"],
+            "paths": ["/host/etc"],
+        }
+
+    return {"keep": [_snapshot(keep_id)], "remove": [_snapshot(remove_id)], "reasons": []}
+
+
+KEEP_ID = "a" * 64
+REMOVE_ID = "b" * 64
+
+
+def test_parse_forget_groups_ndjson_stream():
+    """restic forget 的真实形态：逐组独立 JSON 对象（NDJSON）。"""
+    import json
+
+    parser = OutputParser()
+    text = "\n".join(json.dumps(_forget_group(KEEP_ID, REMOVE_ID)) for _ in range(2))
+    groups = parser.parse_forget_groups(text)
+
+    assert len(groups) == 2
+    assert groups[0].keep[0].snapshot_id == KEEP_ID
+    assert groups[0].remove[0].snapshot_id == REMOVE_ID
+    assert groups[0].keep[0].host == "nas"
+
+
+def test_parse_forget_groups_pretty_array():
+    """整段 JSON 数组形态（兼容策略同 parse_snapshot_list）解析结果一致。"""
+    import json
+
+    parser = OutputParser()
+    text = json.dumps([_forget_group(KEEP_ID, REMOVE_ID)])
+    groups = parser.parse_forget_groups(text)
+
+    assert len(groups) == 1
+    assert groups[0].keep[0].snapshot_id == KEEP_ID
+    assert groups[0].remove[0].snapshot_id == REMOVE_ID
+
+
+def test_parse_forget_groups_garbage_returns_empty():
+    parser = OutputParser()
+    assert parser.parse_forget_groups("") == []
+    assert parser.parse_forget_groups("not json at all") == []
+    # 快照对象（无 keep/remove 键）不构成分组，不误收
+    assert parser.parse_forget_groups('{"id": "a1b2", "paths": ["/host/etc"]}') == []
