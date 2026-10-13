@@ -196,8 +196,23 @@ const dryRunLoading = ref(false)
 const dryRunResult = ref<DryRunResponse | null>(null)
 const dryRunError = ref('')
 
-/** 预览成功后才可「确认并立即首跑」；E36 成功即清服务端 dry_run_pending。 */
-const dryRunOk = computed(() => dryRunResult.value !== null && dryRunResult.value.error === null)
+/** 预览成功才可「确认并立即首跑」：无 error **且未截断**（F1 修复，QA 复验 Low 项）。
+ *  与服务端契约对齐——E36 仅在「无 error 且未截断」时才清 dry_run_pending；
+ *  截断 = 只看到部分扫描范围（DRY_RUN_MAX_ITEMS 上限），服务端保守保持 pending=1，
+ *  前端同样禁止在盲区下启动首跑。 */
+const dryRunOk = computed(
+  () =>
+    dryRunResult.value !== null &&
+    dryRunResult.value.error === null &&
+    !dryRunResult.value.truncated,
+)
+
+/** 按钮禁用时的工具提示：截断场景直接复用截断警告键（已有 i18n，零新增键）。 */
+const dryRunBlockHint = computed(() =>
+  dryRunResult.value?.truncated === true
+    ? `${t('wizard.dry_run_truncated')} · ${t('wizard.dry_run_hint')}`
+    : t('wizard.dry_run_hint'),
+)
 
 async function onDryRun(): Promise<void> {
   if (form.sources.length === 0) {
@@ -212,7 +227,8 @@ async function onDryRun(): Promise<void> {
       ? await dryRunBackupTask(props.taskId!, { sources: form.sources, excludes: form.excludes })
       : await dryRunSources(form.sources, form.excludes)
     if (isEdit.value && dryRunOk.value) {
-      // E36 预览成功已清除 dry_run_pending：刷新本地任务态，让门禁提示即时消失
+      // E36 预览成功（无 error 且未截断）才清除 dry_run_pending：刷新本地任务态，
+      // 让门禁提示即时消失；截断时服务端保持 pending=1，无需刷新（F1）
       await queryClient.invalidateQueries({ queryKey: ['backup-task', props.taskId ?? 0] })
     }
   } catch (error) {
@@ -282,7 +298,7 @@ async function onSaveAndRun(): Promise<void> {
     return
   }
   if (!dryRunOk.value) {
-    message.warning(t('wizard.dry_run_hint'))
+    message.warning(dryRunBlockHint.value)
     return
   }
   saving.value = true
@@ -510,7 +526,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
                   {{ t('wizard.dry_run_confirm') }}
                 </n-button>
               </template>
-              {{ t('wizard.dry_run_hint') }}
+              {{ dryRunBlockHint }}
             </n-tooltip>
             <n-button v-else type="primary" :loading="saving" @click="onSaveAndRun">
               {{ t('wizard.dry_run_confirm') }}
