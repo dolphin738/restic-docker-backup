@@ -22,6 +22,7 @@ import { listBackupTasks } from '@/api/backupTasks'
 import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
 import type { SnapshotOut } from '@/api/types'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
+import { formatDateTimeOr } from '@/utils/datetime'
 
 const PAGE_SIZE = 20
 const { t } = useI18n()
@@ -71,7 +72,7 @@ const groupHeaderText = computed(() => {
   }
   const task = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === tagFilter.value)
   const name = task?.name ?? t('snapshot.unknownTag')
-  const latest = snapshots.value[0]?.time ?? t('common.none')
+  const latest = formatDateTimeOr(snapshots.value[0]?.time ?? null, t('common.none'))
   return t('snapshot.groupHeader', { name, n: total.value, time: latest })
 })
 
@@ -117,7 +118,8 @@ const columns = computed<DataTableColumns<SnapshotOut>>(() => [
     title: t('snap.time'),
     key: 'time',
     width: 180,
-    render: (row) => row.time ?? '—',
+    // 缺陷 C：ISO 原始串（含纳秒/UTC 偏移）收口为本地可读时间，空/解析失败回落 —
+    render: (row) => formatDateTimeOr(row.time, '—'),
   },
   {
     title: t('snap.host'),

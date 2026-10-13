@@ -23,6 +23,7 @@ import type { JobDonePayload } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
+import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -65,7 +66,8 @@ const snapshotItems = computed(() =>
 
 const snapshotOptions = computed(() =>
   snapshotItems.value.map((snapshot) => ({
-    label: `${snapshot.time ?? t('common.none')} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
+    // 缺陷 C：选择项时间收口为本地可读形式；无 time 时回落「无」
+    label: `${formatDateTimeOr(snapshot.time, t('common.none'))} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
     value: snapshot.id,
   })),
 )
@@ -265,7 +267,8 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
     >
       <template #preview>
         <n-space vertical :size="4">
-          <n-text>{{ t('restore.gateSnapshot') }}：{{ selectedSnapshot?.time ?? snapshotId }}</n-text>
+          <!-- 缺陷 C：确认门快照时间同样收口；无 time 时回落快照 id（保持原兜底语义） -->
+          <n-text>{{ t('restore.gateSnapshot') }}：{{ formatDateTimeOr(selectedSnapshot?.time, selectedSnapshot ? DATETIME_FALLBACK : (snapshotId ?? DATETIME_FALLBACK)) }}</n-text>
           <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
           <n-text>{{ t('restore.gateTarget') }}：{{ RESTORE_TARGET_ROOT }}</n-text>
           <!-- B1：已选文件清单（前 N 条 + 共 M 条）；空 = 整快照 -->

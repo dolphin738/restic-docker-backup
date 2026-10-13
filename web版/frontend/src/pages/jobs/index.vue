@@ -21,6 +21,7 @@ import { useI18n } from 'vue-i18n'
 import { cancelJob, getJobLog, listActiveJobs } from '@/api/jobs'
 import { useUiStore } from '@/stores/ui'
 import JobProgress from '@/components/JobProgress.vue'
+import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
 const ui = useUiStore()
@@ -168,7 +169,8 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
               <n-tag size="small" round :type="job.status === 'running' ? 'success' : 'info'">
                 {{ job.status }}
               </n-tag>
-              <n-text depth="3">{{ job.created_at }}</n-text>
+              <!-- 缺陷 C 排查收口：job.created_at 为后端 ISO 串，直出改本地可读时间 -->
+              <n-text depth="3">{{ formatDateTime(job.created_at) }}</n-text>
             </n-space>
             <n-space :size="6">
               <n-button size="tiny" secondary @click="openLog(job.id)">{{ t('job.viewLog') }}</n-button>
