@@ -104,6 +104,8 @@ AUDIT_POLICY_CREATE = "policy.create"
 AUDIT_POLICY_UPDATE = "policy.update"
 AUDIT_POLICY_DELETE = "policy.delete"
 AUDIT_REPO_TEST = "repo.test"
+AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
+AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_TASK_CREATE = "task.create"
 AUDIT_TASK_UPDATE = "task.update"
 AUDIT_TASK_DELETE = "task.delete"
@@ -154,6 +156,12 @@ SNAPSHOT_FILES_MAX_LIMIT = 1000
 # ---------------------------------------------------------------- E21 forget 预览（R-016）
 
 FORGET_PREVIEW_TIMEOUT_SECONDS = 60     # forget --dry-run 扫描快照超时（大仓库比 snapshots 慢）
+
+# ---------------------------------------------------------------- R-018 通知（E23/E24）
+
+NOTIFY_HTTP_TIMEOUT_SECONDS = 10        # 单渠道推送超时（通知绝不阻塞任务链路，超时即放弃）
+NOTIFY_SKIPPED_THRESHOLD_DEFAULT = 100  # skipped 告警阈值缺省（Q4 裁决：0=只要有 skipped 即告警）
+NOTIFY_SKIPPED_THRESHOLD_MAX = 1_000_000  # 阈值写爆兜底
 
 # ---------------------------------------------------------------- E29/E30 仓库探测
 

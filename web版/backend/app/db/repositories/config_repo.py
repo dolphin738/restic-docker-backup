@@ -18,7 +18,8 @@ from app.utils.time import utc_iso
 
 # 敏感键：API 只回 has_value + source，不回明文（§4.3 键表"敏感=是"的项）
 SENSITIVE_PREFIXES: tuple[str, ...] = ("cred.",)
-SENSITIVE_EXACT_KEYS: tuple[str, ...] = ("dump.password",)
+# R-018：通知渠道 URL 内嵌令牌（healthchecks ping UUID / webhook 地址），同凭据口径脱敏
+SENSITIVE_EXACT_KEYS: tuple[str, ...] = ("dump.password", "notify.healthchecks_url", "notify.webhook.url")
 
 # 仓库地址与派生类型键（§4.3 键表）
 REPO_URL_KEY = "repo.url"
