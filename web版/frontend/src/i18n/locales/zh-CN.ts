@@ -172,6 +172,7 @@ export default {
       never_run: '尚未运行',
     },
     last_run_label: '上次运行：',
+    last_result_label: '上次结果：',
     next_run: '下次运行',
     manual_only: '仅手动',
     paused: '已暂停',

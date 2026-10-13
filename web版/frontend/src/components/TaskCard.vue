@@ -11,6 +11,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import JobProgress from '@/components/JobProgress.vue'
+import { formatDateTimeOr } from '@/utils/datetime'
 
 const props = defineProps<{
   task: TaskCardModel
@@ -45,13 +46,14 @@ const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'err
 const isActive = computed(() => props.task.status === 'running' || props.task.status === 'pending')
 const runningJobId = computed(() => props.task.running_job_id)
 
-const lastRunText = computed(() => props.task.last_run_at ?? t('common.none'))
+/** 上次运行：ISO 原始串收口为本地可读时间；无记录时回落「无」。 */
+const lastRunText = computed(() => formatDateTimeOr(props.task.last_run_at, t('common.none')))
 
 const nextRunText = computed(() => {
   if (!props.task.enabled) {
     return t('task.paused')
   }
-  return props.task.next_run_at ?? t('task.manual_only')
+  return formatDateTimeOr(props.task.next_run_at, t('task.manual_only'))
 })
 
 /** dry-run 门禁（R-026-08）：未预览过扫描范围时拦截 Start，工具提示引导去向导第 5 步。 */
@@ -131,7 +133,8 @@ function openLogs(): void {
           :title="t('task.progress')"
         />
         <n-space v-else-if="lastResultText" align="center" :size="6">
-          <n-text depth="3">{{ t('task.last_run_label') }}</n-text>
+          <!-- 缺陷 B：结果徽章用独立键 task.last_result_label，与「上次运行：」区分，避免同屏两个同义标签 -->
+          <n-text depth="3">{{ t('task.last_result_label') }}</n-text>
           <n-tag size="small" round :type="statusTagType">{{ lastResultText }}</n-tag>
         </n-space>
       </div>
