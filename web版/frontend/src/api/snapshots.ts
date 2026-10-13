@@ -3,7 +3,7 @@
 import { passCursor, request } from './http'
 import type { Page, SnapshotFilesResponse, SnapshotOut } from './types'
 
-/** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选）。 */
+/** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。 */
 export function listSnapshots(limit = 50, offset = 0, tag?: string): Promise<Page<SnapshotOut>> {
   return request<Page<SnapshotOut>>('/api/snapshots', { query: { limit, offset, tag } })
 }
