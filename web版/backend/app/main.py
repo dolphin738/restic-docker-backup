@@ -64,6 +64,7 @@ from app.routers.config import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.env_sync import sync_env_overrides
 from app.services.job_runner import JobRunner
+from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.policy_service import PolicyService
@@ -187,12 +188,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     task_repo = TaskRepo(db)
     task_service = TaskService(task_repo, policy_service)
 
+    # 调度器晚于 JobRunner 构造，而自动 forget（N3 裁决 2026-10-14 开放）要在
+    # backup 成功回调里调 scheduler——用 late-binding 引用解装配顺序环。
+    scheduler_ref: list[SchedulerService] = []
+
+    async def on_task_backup_success(task_id: int) -> None:
+        """backup success 终态回调：清 dry_run_pending（X6）+ 自动 forget 判定（N3 开放）。"""
+        await task_repo.clear_dry_run_pending(task_id)
+        if scheduler_ref:
+            await scheduler_ref[0].maybe_auto_forget(task_id)
+
     # restic 执行链路（§7.1/§7.2/§7.3）
     job_repo = JobRepo(db)
     path_mapper = PathMapper(settings)
     restic_cmd = ResticCmd(settings, path_mapper)
     parser = OutputParser()
     sse_channel = SseChannel(parser, job_repo, heartbeat_seconds=settings.sse_heartbeat_seconds)
+    notifier = Notifier(config_repo)
     job_runner = JobRunner(
         db,
         restic_cmd,
@@ -203,9 +215,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_loader=task_repo.get_dict,
         # 任务终态（init/unlock 会改变仓库可连性）→ E30 状态缓存立即失效
         on_finish=invalidate_repo_status_cache,
-        # X6：backup success 终态且 task_id 非空 → 清 dry_run_pending（R-026-08 后半；
-        # 调仓储方法，A1 合规不在业务层写 SQL）
-        on_task_backup_success=task_repo.clear_dry_run_pending,
+        # X6 + N3：backup success 终态且 task_id 非空 → 清 dry_run_pending + prune 到期自动 forget
+        on_task_backup_success=on_task_backup_success,
+        # R-018：真实 Notifier（healthchecks/webhook/MeoW；全渠道未配置时零网络调用）
+        notifier=notifier,
     )
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载
@@ -216,6 +229,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings=settings,
         jobs=job_repo,
     )
+    scheduler_ref.append(scheduler)
 
     app.state.settings = settings
     app.state.db = db
@@ -237,6 +251,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sse_channel = sse_channel
     app.state.job_runner = job_runner
     app.state.scheduler = scheduler
+    app.state.notifier = notifier
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()

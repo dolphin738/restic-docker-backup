@@ -5,7 +5,9 @@
 2. ``catchup_on_startup`` 补跑判据（当天已过点且无成功 → 补跑；当天有成功 → 不补跑；
    跨天边界；冲突走 scheduled 分支落 cancelled + ``job.skipped_conflict`` 审计）；
 3. jitter 范围与「先记账后执行」顺序；
-4. prune 只提示不执行（N3：到期不自动提交 forget）；
+4. prune 判定与自动 forget（N3 裁决 2026-10-14 开放：到期自动提交；
+   catchup/fire 链路本身仍只提交 backup——自动 forget 只挂在 backup 成功回调
+   ``maybe_auto_forget`` 上；判定基准 = 距上次成功 forget 的间隔）；
 5. ``_build_trigger`` 兜底（任务级非法 cron 与 config ``schedule.cron_default``
    坏值均退化为「仅手动」，WARNING 不崩溃）；
 6. ``start`` / ``shutdown`` 生命周期时序。
@@ -104,11 +106,13 @@ async def create_task(task_repo: TaskRepo, name: str, **overrides) -> object:
     return await task_repo.create(values)
 
 
-async def insert_success_job(job_repo: JobRepo, job_id: str, task_id: int, finished_at: str) -> None:
-    """落一条成功 backup（带 finished_at）——补跑/prune 判定的历史数据。"""
+async def insert_success_job(
+    job_repo: JobRepo, job_id: str, task_id: int, finished_at: str, *, job_type: str = "backup"
+) -> None:
+    """落一条成功 job（带 finished_at）——补跑/prune 判定的历史数据。"""
     await job_repo.create(
         job_id=job_id,
-        job_type="backup",
+        job_type=job_type,
         trigger="scheduled",
         log_path=f"/tmp/{job_id}.log",
         status="success",
@@ -440,14 +444,18 @@ async def test_fire_backup_skips_disabled_task(tmp_path):
     await db.close()
 
 
-# ---------------------------------------------------------------- 4. prune 只提示（N3）
+# ---------------------------------------------------------------- 4. prune 判定与自动 forget（N3）
 
 
 async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
-    """N3：prune 到期只判定提示——catchup 与 fire 链路全程不得提交 forget。"""
+    """catchup 与 fire 链路全程只提交 backup——自动 forget 只挂在 backup 成功回调。
+
+    N3 裁决（2026-10-14）：自动 forget 由 ``maybe_auto_forget`` 在 backup success
+    终态回调里触发，**不在** catchup/fire 链路内（回归护栏）。
+    """
     db, scheduler, task_repo, job_repo, config_repo, runner = await make_scheduler(tmp_path)
     task = await create_task(task_repo, "prune 到期", cron="0 3 * * *", prune_interval_days=7)
-    # 10 天前的成功 backup → 距上次成功超 7 天 → 到期
+    # 从未 forget 过 + 有成功 backup → 首次到期（新语义）
     await insert_success_job(job_repo, "job-old-ok", task.id, utc_iso(now_utc() - timedelta(days=10)))
     await config_repo.set(SCHEDULE_JITTER_KEY, "0")  # 去掉随机睡眠，保证测试确定性
 
@@ -467,7 +475,7 @@ async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
     await scheduler.catchup_on_startup()
     await scheduler._fire_backup(task.id)  # noqa: SLF001
 
-    # 两次链路只提交 backup，绝不自动 forget（R-016 预览-确认流不在本批）
+    # 两条链路只提交 backup（自动 forget 不在链路内）
     assert [job_type for job_type, _ in submitted] == ["backup", "backup"]
     jobs, _ = await job_repo.list_page()
     assert all(job.type != "forget" for job in jobs)
@@ -477,23 +485,117 @@ async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
     await db.close()
 
 
-async def test_due_for_prune_false_when_recent_never_or_zero_interval(tmp_path):
-    """未到期（近期成功）/ 从未成功 / 间隔 0（不启用）→ False。"""
+async def test_due_for_prune_semantics(tmp_path):
+    """到期判定（2026-10-14 语义修正）：基准 = 距上次成功 forget 的间隔。
+
+    - 从未 forget + 有成功 backup → True（首次到期）；
+    - 从未 forget + 从未成功 backup → False（无可清理对象）；
+    - 近期刚成功 forget → False；
+    - 上次 forget 超间隔 → True；
+    - prune_interval_days=0 → False（显式不启用）。
+    """
     db, scheduler, task_repo, job_repo, _, _ = await make_scheduler(tmp_path)
 
-    recent = await create_task(task_repo, "近期成功", prune_interval_days=7)
-    await insert_success_job(job_repo, "job-recent", recent.id, utc_iso(now_utc() - timedelta(days=1)))
+    first = await create_task(task_repo, "首次到期", prune_interval_days=7)
+    await insert_success_job(job_repo, "job-first-bk", first.id, utc_iso(now_utc() - timedelta(days=10)))
+    assert await scheduler._due_for_prune(first) is True
+
+    bare = await create_task(task_repo, "从未成功", prune_interval_days=7)
+    assert await scheduler._due_for_prune(bare) is False
+
+    recent = await create_task(task_repo, "近期清理过", prune_interval_days=7)
+    await insert_success_job(job_repo, "job-rc-bk", recent.id, utc_iso(now_utc() - timedelta(days=10)))
+    await insert_success_job(
+        job_repo, "job-rc-fg", recent.id, utc_iso(now_utc() - timedelta(days=1)), job_type="forget"
+    )
     assert await scheduler._due_for_prune(recent) is False
 
-    never = await create_task(task_repo, "从未成功", prune_interval_days=7)
-    assert await scheduler._due_for_prune(never) is False
+    stale = await create_task(task_repo, "清理已过期", prune_interval_days=7)
+    await insert_success_job(
+        job_repo, "job-st-fg", stale.id, utc_iso(now_utc() - timedelta(days=8)), job_type="forget"
+    )
+    assert await scheduler._due_for_prune(stale) is True
 
-    # prune_interval_days=0 读回归一已由 X3 修复并有 test_repos.py 护栏；
-    # 此处直接用仓储读回的行验证 due_for_prune 的 <=0 分支
     zero_row = await create_task(task_repo, "间隔为零", prune_interval_days=0)
-    assert zero_row.prune_interval_days == 0
-    await insert_success_job(job_repo, "job-zero", zero_row.id, utc_iso(now_utc() - timedelta(days=99)))
+    await insert_success_job(job_repo, "job-zr-bk", zero_row.id, utc_iso(now_utc() - timedelta(days=99)))
     assert await scheduler._due_for_prune(zero_row) is False
+    await db.close()
+
+
+async def test_maybe_auto_forget_submits_when_due(tmp_path):
+    """到期 + 有保留规则 → 自动提交 forget（scheduled + prune=True，keep 规则经 profile）。"""
+    db, scheduler, task_repo, job_repo, _, runner = await make_scheduler(tmp_path)
+    task = await create_task(task_repo, "自动清理", prune_interval_days=7, keep_daily=7)
+    await insert_success_job(job_repo, "job-auto-bk", task.id, utc_iso(now_utc() - timedelta(days=10)))
+
+    submitted: list[tuple[str, dict]] = []
+    forget_jobs: list[object] = []
+    original_submit = runner.submit
+
+    async def recording_submit(job_type, **kwargs):  # noqa: ANN001, ANN202
+        job = await original_submit(job_type, **kwargs)
+        submitted.append((job_type, kwargs))
+        if job_type == "forget":
+            forget_jobs.append(job)
+        return job
+
+    runner.submit = recording_submit
+    await scheduler.maybe_auto_forget(task.id)
+
+    assert [job_type for job_type, _ in submitted] == ["forget"]
+    assert submitted[0][1]["task_id"] == task.id
+    assert submitted[0][1]["trigger"] == "scheduled"
+    assert submitted[0][1]["params"] == {"prune": True}
+
+    # 执行链真实跑通：keep 规则来自任务 profile，tags 来自任务 tag
+    if forget_jobs:
+        await await_job(runner, forget_jobs[0].id)  # type: ignore[attr-defined]
+    await db.close()
+
+
+async def test_maybe_auto_forget_guards(tmp_path):
+    """护栏：未到期 / 全零 keep 规则 / 间隔 0 / 已停用 → 一律不提交。"""
+    db, scheduler, task_repo, job_repo, _, runner = await make_scheduler(tmp_path)
+    submitted: list[str] = []
+    original_submit = runner.submit
+
+    async def recording_submit(job_type, **kwargs):  # noqa: ANN001, ANN202
+        job = await original_submit(job_type, **kwargs)
+        submitted.append(job_type)
+        return job
+
+    runner.submit = recording_submit
+
+    # 1) 全零 keep 规则（默认建任务形态）→ 绝不自动裁剪（G3）
+    no_rules = await create_task(task_repo, "无保留规则", prune_interval_days=7)
+    await insert_success_job(job_repo, "job-nr-bk", no_rules.id, utc_iso(now_utc() - timedelta(days=10)))
+    await scheduler.maybe_auto_forget(no_rules.id)
+    assert submitted == []
+
+    # 2) 近期刚 forget 过 → 未到期
+    recent = await create_task(task_repo, "近期清理", prune_interval_days=7, keep_daily=7)
+    await insert_success_job(
+        job_repo, "job-rr-fg", recent.id, utc_iso(now_utc() - timedelta(days=1)), job_type="forget"
+    )
+    await scheduler.maybe_auto_forget(recent.id)
+    assert submitted == []
+
+    # 3) prune_interval_days=0 → 显式关闭自动清理
+    off = await create_task(task_repo, "已关闭", prune_interval_days=0, keep_daily=7)
+    await insert_success_job(job_repo, "job-of-bk", off.id, utc_iso(now_utc() - timedelta(days=99)))
+    await scheduler.maybe_auto_forget(off.id)
+    assert submitted == []
+
+    # 4) 停用任务 → 不提交
+    disabled = await create_task(task_repo, "已停用", prune_interval_days=7, keep_daily=7, enabled=0)
+    await insert_success_job(job_repo, "job-ds-bk", disabled.id, utc_iso(now_utc() - timedelta(days=99)))
+    await scheduler.maybe_auto_forget(disabled.id)
+    assert submitted == []
+
+    # 5) 不存在的任务 → 静默返回
+    await scheduler.maybe_auto_forget(99999)
+    assert submitted == []
+
     await db.close()
 
 

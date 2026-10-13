@@ -154,6 +154,21 @@ class JobRepo:
             return None
         return str(row["finished_at"])
 
+    async def last_forget_success_finished_at(self, task_id: int) -> str | None:
+        """该任务最近一次**成功** forget 的 ``finished_at``（自动 forget 到期判定，N3）。
+
+        与 :meth:`last_backup_success_finished_at` 同构：从未成功 forget 返回 None
+        （调用方以「从未清理 → 有成功备份即到期」兜底）。
+        """
+        row = await self._db.fetch_one(
+            "SELECT finished_at FROM jobs WHERE type = 'forget' AND task_id = ? "
+            "AND status = 'success' AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+            (task_id,),
+        )
+        if row is None or row["finished_at"] is None:
+            return None
+        return str(row["finished_at"])
+
     async def latest_backup_success_by_tasks(self, task_ids: list[int]) -> dict[int, str]:
         """每任务最近一次**成功** backup 的 ``finished_at``（E34 列表批量版）。
 

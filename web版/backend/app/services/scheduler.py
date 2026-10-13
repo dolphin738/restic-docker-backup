@@ -8,8 +8,11 @@
 - jitter 在 fire 回调内 sleep（顺序：查 enabled → jitter → 记账 → submit），
   先记账后执行防崩溃重复触发（§6.4）；
 - 补跑（:meth:`catchup_on_startup`）：当天首个应触发点已过且无成功 backup → 补跑一次；
-- **prune 边界（N3 裁决）**：:meth:`_due_for_prune` 只判定并在 E34 卡片暴露
-  ``prune_due``，本批**不自动提交 forget**（R-016 预览-确认流不在本增量池内）。
+- **prune 边界（N3 裁决 2026-10-14 开放自动）**：:meth:`_due_for_prune` 判定到期；
+  手动裁剪走 R-016 预览-确认流（E21 + 三重确认门），**自动 forget** 由
+  :meth:`maybe_auto_forget` 在 backup 成功回调里触发（per-task keep 规则 + prune，
+  G3 服务端兜底与审计沿用 JobRunner forget 分支既有语义；结果经 R-018 Notifier
+  事后告知——「事后告知」替代「事前确认」的裁决口径）。
 
 线程/并发模型：单进程单事件循环；提交仍全量走 :class:`JobRunner` 的仓库维度互斥
 （E1 不回归——调度器自身不并行设计，冲突落 cancelled + 审计后下个周期自然再试）。
@@ -365,20 +368,67 @@ class SchedulerService:
         return utc_iso(nxt) if nxt is not None else None
 
     async def _due_for_prune(self, task: Task) -> bool:
-        """prune 到期独立判定（§6.4 / N3）：距上次成功 backup 超 ``prune_interval_days``。
+        """prune 到期判定（§6.4 / N3）：距上次**成功 forget** 超 ``prune_interval_days``。
 
-        **只判定，不执行**——到期仅在 E34 卡片暴露 ``prune_due`` 提示；自动 forget
-        留待 R-016 预览-确认流（G3：不发生未经确认门的裁剪事故）。
-        ``prune_interval_days <= 0`` 视为不启用（与 ``limit_*=0`` 不限同口径）；
-        从未成功备份 → 无可清理对象 → False。
+        语义修正（2026-10-14，随 N3 自动 forget 开放）：原实现「距上次成功 backup 超
+        间隔」在备份正常进行的场景下**永不触发**（每次成功备份都把时间归零），等于
+        配置形同虚设；改为以清理动作自身为基准——距上次成功 forget 超间隔即到期；
+        **从未 forget 过**且存在成功备份 → 首次到期（首个备份完成即清理一次，
+        之后每 interval 天一轮）。
+        ``prune_interval_days <= 0`` 视为不启用（与 ``limit_*=0`` 不限同口径）。
         """
         if task.prune_interval_days <= 0:
             return False
-        last_success = await self._jobs.last_backup_success_finished_at(task.id)
-        finished = parse_iso(last_success) if last_success else None
+        last_forget = await self._jobs.last_forget_success_finished_at(task.id)
+        finished = parse_iso(last_forget) if last_forget else None
         if finished is None:
-            return False
+            # 从未清理过：有成功备份即到期（首次清理）
+            return (await self._jobs.last_backup_success_finished_at(task.id)) is not None
         return datetime.now(UTC) - finished > timedelta(days=task.prune_interval_days)
+
+    # ---------------------------------------------------------------- 自动 forget（N3 裁决开放）
+
+    async def maybe_auto_forget(self, task_id: int) -> None:
+        """backup 成功回调：到期则自动提交 forget（per-task keep 规则 + ``--prune``）。
+
+        护栏（G3，全部前置判定，不满足静默返回）：
+        - 任务存在且 ``enabled``；
+        - ``prune_interval_days > 0``（显式关闭自动清理的开关）；
+        - :meth:`_due_for_prune` 到期；
+        - 任务至少一个 ``keep_* > 0``（0 = 未启用，全零任务**绝不**自动裁剪——
+          JobRunner forget 分支的 G3 兜底也会拒绝，此处预检避免无谓落库）。
+
+        提交走 ``trigger="scheduled"``：仓库忙时按既有语义 cancelled + 审计后跳过，
+        下次 backup 成功后再判（E1 不回归）。结果经 R-018 Notifier 事后告知。
+        """
+        try:
+            task = await self._tasks.get(task_id)
+            if task is None or not task.enabled or task.prune_interval_days <= 0:
+                return
+            if not await self._due_for_prune(task):
+                return
+            keep_rules = (
+                task.keep_last,
+                task.keep_hourly,
+                task.keep_daily,
+                task.keep_weekly,
+                task.keep_monthly,
+                task.keep_yearly,
+            )
+            if all(rule <= 0 for rule in keep_rules):
+                logger.info("任务 %s 未配置任何保留规则（keep_*=0），跳过自动 forget（G3）", task_id)
+                return
+            logger.info("任务 %s prune 到期（interval=%s 天），自动提交 forget", task_id, task.prune_interval_days)
+            # keep 规则经任务 profile（task_loader）透传，与 E12 手动路径同源；
+            # prune=True：自动清理的目的是回收存储，只 forget 不 prune 达不成目的。
+            await self._runner.submit(
+                "forget",
+                task_id=task.id,
+                trigger="scheduled",
+                params={"prune": True},
+            )
+        except Exception:  # noqa: BLE001 - 自动清理失败不影响 backup 成功回调主链路
+            logger.exception("自动 forget 判定/提交失败：task=%s", task_id)
 
     # ---------------------------------------------------------------- 触发链（§4.1）
 

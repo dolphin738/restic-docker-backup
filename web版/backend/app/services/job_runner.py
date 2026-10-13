@@ -49,15 +49,28 @@ TaskLoader = PolicyLoader
 
 
 class NoopNotifier:
-    """通知模块占位实现（P1 空转，不产生任何副作用）。
+    """通知器空实现（未注入真实 Notifier 时的缺省；接口与 :class:`app.services.notifier.Notifier` 同形）。
 
-    TODO(P2): 通知模块（healthchecks / webhook / MeoW + 渠道级脱敏）实现后由真实 Notifier 替换注入，
-    届时本类可整体删除（JobRunner 侧无需改动，仅改注入）。
+    R-018 落地后生产装配注入真实 Notifier（main.py）；测试与缺省路径仍用本类——
+    零副作用契约不变。
     """
 
-    async def notify(self, *, job_type: str, status: str, detail: dict[str, Any] | None = None) -> None:
-        """空实现：仅记录 debug 日志，便于排障确认调用点已接通。"""
-        logger.debug("NoopNotifier 收到通知（P2 才真正发送）：type=%s status=%s", job_type, status)
+    async def on_start(self, job: Job) -> None:
+        """空实现：任务进入 running 的通知点。"""
+        return
+
+    async def on_finish(
+        self,
+        job: Job,
+        *,
+        status: str,
+        task_name: str | None = None,
+        file_count: int = 0,
+        bytes_done: int = 0,
+        skipped_count: int = 0,
+    ) -> None:
+        """空实现：任务终态通知点（失败/skipped 超阈值/成功开关由真实实现分派）。"""
+        return
 
 
 class JobRunner:
@@ -268,6 +281,8 @@ class JobRunner:
             line_no = 0
             try:
                 await self._jobs.update_status(job.id, "running", started_at=utc_iso())
+                # R-018：healthchecks /start ping（真实 Notifier）；空实现零副作用。
+                await self._safe_notify_start(job)
                 argv, env = await self._prepare(job, repo_url)
                 log_path = Path(job.log_path)
                 proc = await self._restic.spawn(argv, log_path, env=env)
@@ -321,10 +336,14 @@ class JobRunner:
                     },
                     result="ok" if status == "success" else "failed",
                 )
-                await self._notifier.notify(
-                    job_type=job.type,
+                # R-018 终态通知（失败/skipped 超阈值恒告警；成功仅 on_success 开启时）。
+                # 外壳吞异常：此处若上抛会落进 except Exception 把已落库 success 篡改为 failed。
+                await self._safe_notify_finish(
+                    job,
                     status=status,
-                    detail={"job_id": job.id, "skipped_count": aggregate.skipped_count},
+                    file_count=aggregate.files_done,
+                    bytes_done=aggregate.bytes_done,
+                    skipped_count=aggregate.skipped_count,
                 )
                 if status == "success" and job.type == "backup" and job.task_id is not None:
                     # X6（owner 裁决）：「E36 预览成功**或首次成功备份**」清 dry_run_pending
@@ -348,6 +367,8 @@ class JobRunner:
                     detail={"type": job.type, "status": "failed", "error": type(exc).__name__},
                     result="failed",
                 )
+                # R-018：异常路径同样要触发失败告警（外壳吞异常，不影响已落库终态）
+                await self._safe_notify_finish(job, status="failed")
             finally:
                 self._processes.pop(job.id, None)
                 self._params.pop(job.id, None)
@@ -366,6 +387,37 @@ class JobRunner:
             self._on_finish()
         except Exception:  # noqa: BLE001 - 回调只做辅助通知，失败不能影响任务链路
             logger.exception("JobRunner on_finish 回调执行失败")
+
+    async def _safe_notify_start(self, job: Job) -> None:
+        """任务进入 running 的通知点（R-018 on_start）。异常就地吞掉——通知绝不影响任务链路，
+        尤其此处失败若上抛会落进 except Exception 把任务打成 failed。"""
+        try:
+            await self._notifier.on_start(job)
+        except Exception:  # noqa: BLE001 - 通知失败不能影响任务链路
+            logger.warning("JobRunner on_start 通知执行失败（job=%s）", job.id, exc_info=True)
+
+    async def _safe_notify_finish(
+        self,
+        job: Job,
+        *,
+        status: str,
+        file_count: int = 0,
+        bytes_done: int = 0,
+        skipped_count: int = 0,
+    ) -> None:
+        """任务终态通知点（R-018 on_finish）。异常就地吞掉——调用点在 finalize 之后，
+        上抛会被外层 except 再次 finalize，篡改已落库终态（见 _run 内注释）。"""
+        try:
+            await self._notifier.on_finish(
+                job,
+                status=status,
+                task_name=await self._task_name(job.task_id),
+                file_count=file_count,
+                bytes_done=bytes_done,
+                skipped_count=skipped_count,
+            )
+        except Exception:  # noqa: BLE001 - 通知失败不能影响任务链路
+            logger.warning("JobRunner on_finish 通知执行失败（job=%s）", job.id, exc_info=True)
 
     async def _notify_task_backup_success(self, task_id: int) -> None:
         """backup 类型任务 success 终态后的任务级回调（X6：清 ``dry_run_pending``）。
@@ -509,13 +561,15 @@ class JobRunner:
         if job_type == "forget":
             # R-016：执行参数与 E21 预览同源（params 优先，回退 profile 字段）；
             # prune 只属于确认后的执行（预览恒 dry_run 且不带 --prune）。
+            # 0 值口径：Task.keep_* 默认 0——0 = 规则未启用（与 --keep-last 0 的
+            # 歧义 restic 语义切割），统一转 None 交 G3 兜底判定。
             keep = {
-                "keep_last": _as_optional_int(params.get("keep_last", policy.get("keep_last"))),
-                "keep_hourly": _as_optional_int(params.get("keep_hourly", policy.get("keep_hourly"))),
-                "keep_daily": _as_optional_int(params.get("keep_daily", policy.get("keep_daily"))),
-                "keep_weekly": _as_optional_int(params.get("keep_weekly", policy.get("keep_weekly"))),
-                "keep_monthly": _as_optional_int(params.get("keep_monthly", policy.get("keep_monthly"))),
-                "keep_yearly": _as_optional_int(params.get("keep_yearly", policy.get("keep_yearly"))),
+                "keep_last": _as_keep_rule(params.get("keep_last", policy.get("keep_last"))),
+                "keep_hourly": _as_keep_rule(params.get("keep_hourly", policy.get("keep_hourly"))),
+                "keep_daily": _as_keep_rule(params.get("keep_daily", policy.get("keep_daily"))),
+                "keep_weekly": _as_keep_rule(params.get("keep_weekly", policy.get("keep_weekly"))),
+                "keep_monthly": _as_keep_rule(params.get("keep_monthly", policy.get("keep_monthly"))),
+                "keep_yearly": _as_keep_rule(params.get("keep_yearly", policy.get("keep_yearly"))),
             }
             # G3 服务端兜底：无任何保留规则的 forget 会删除分组内全部快照——
             # 与 E21 预览同拒 422（routers/ops.py require_keep_rule），杜绝绕过
@@ -605,6 +659,17 @@ class JobRunner:
 def _as_optional_int(value: Any) -> int | None:
     """把策略字段安全地转为可选整数。"""
     return int(value) if isinstance(value, int | float) else None
+
+
+def _as_keep_rule(value: Any) -> int | None:
+    """forget 保留规则归一（R-016 0 值口径）：``>0`` 整数为规则；0/缺失/非法 = 未启用。
+
+    ``Task.keep_*`` 默认 0（backup_tasks DDL 缺省），若照原值传 restic 会产生
+    ``--keep-last 0`` 的歧义语义（该桶保留 0 个＝全删），故 0 一律视为未配置，
+    交由 G3「至少一个规则」兜底判定拒绝或忽略该维度。
+    """
+    converted = _as_optional_int(value)
+    return converted if converted is not None and converted > 0 else None
 
 
 def _clean_host(value: Any) -> str | None:
