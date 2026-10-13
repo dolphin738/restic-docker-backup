@@ -81,6 +81,8 @@ class WhitelistArgs:
     read_data: bool = False
     overwrite: str | None = None
     stats_mode: str | None = None
+    # R-016 forget：--prune 随 forget 回收数据（预览恒 dry_run=True，不落 prune）
+    prune: bool = False
     extra_positionals: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -370,6 +372,12 @@ class ResticCmd:
                     flags.extend([flag, str(int(value))])
             if args.group_by:
                 flags.extend(["--group-by", _assert_safe_value(args.group_by, "group_by")])
+            # E21 预览：--dry-run 只读（R-016 预览恒 dry_run，由路由层强制）；
+            # 实际执行（E12 type=forget）经确认后才允许 --prune 回收数据。
+            if args.dry_run:
+                flags.append("--dry-run")
+            if args.prune:
+                flags.append("--prune")
             return flags
 
         if verb == "check":

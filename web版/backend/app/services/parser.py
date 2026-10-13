@@ -75,6 +75,18 @@ class JobAggregate:
     percent: float = 0.0
 
 
+@dataclass
+class ForgetGroup:
+    """``forget --json`` 单个分组（R-016 E21 预览解析产物）。
+
+    restic forget 按 ``--group-by`` 维度分组评估保留策略，每组各带 keep / remove
+    两个快照数组（元素为完整快照对象，形状同 ``snapshots --json``）。
+    """
+
+    keep: list[SnapshotRecord] = field(default_factory=list)
+    remove: list[SnapshotRecord] = field(default_factory=list)
+
+
 class OutputParser:
     """restic ``--json`` 行解析器（零 IO）。"""
 
@@ -138,6 +150,46 @@ class OutputParser:
             if isinstance(item, dict) and "id" in item:
                 records.append(self._snapshot_from_object(item))
         return records
+
+    def parse_forget_groups(self, text: str) -> list[ForgetGroup]:
+        """解析 ``restic forget --json`` 的整段输出（R-016 E21 预览）。
+
+        restic forget 的 JSON 输出为**逐组独立对象**（每组 ``{"keep": [...],
+        "remove": [...], "reasons": [...]}``），形态兼容策略同 :meth:`parse_snapshot_list`：
+        整段数组与逐行 NDJSON 都能解析；二者都不成立时返回空列表。
+
+        Args:
+            text: 子进程输出的整段文本（可含多行）。
+
+        Returns:
+            按输出顺序排列的分组列表（keep/remove 内为完整快照记录）。
+        """
+        groups: list[ForgetGroup] = []
+
+        def _absorb(payload: Any) -> None:
+            if isinstance(payload, dict) and ("keep" in payload or "remove" in payload):
+                groups.append(
+                    ForgetGroup(
+                        keep=self._snapshots_from(payload.get("keep")),
+                        remove=self._snapshots_from(payload.get("remove")),
+                    )
+                )
+
+        blob = self.parse_json_blob(text)
+        if isinstance(blob, list):
+            for item in blob:
+                _absorb(item)
+            if groups:
+                return groups
+        for line in text.splitlines():
+            _absorb(self.parse_json_blob(line))
+        return groups
+
+    def _snapshots_from(self, payload: Any) -> list[SnapshotRecord]:
+        """把分组内 keep/remove 数组解析为快照记录（形状同 snapshots --json 单条）。"""
+        if not isinstance(payload, list):
+            return []
+        return [self._snapshot_from_object(item) for item in payload if isinstance(item, dict)]
 
     def parse_file_list(self, text: str) -> list[FileRecord]:
         """解析 ``restic ls --json`` 的整段输出（形态兼容策略同 :meth:`parse_snapshot_list`）。

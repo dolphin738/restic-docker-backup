@@ -466,6 +466,51 @@ class SnapshotFilesResponse(_Base):
     truncated: bool = False
 
 
+# ---------------------------------------------------------------- E21 forget 预览（R-016）
+
+class ForgetPreviewRequest(_Base):
+    """E21 forget 预览请求（R-016：策略参数 → forget --dry-run --json）。
+
+    至少一个 ``keep_*`` 规则必须显式给出——无保留规则的 forget 会删除组内**全部**
+    快照（G3 服务端兜底：preview 与 E12 执行两侧同拒 422）。
+    """
+
+    tag: str | None = Field(default=None, description="按 tag 限定 forget 范围（如任务 tag task-1）；缺省作用于全仓库")
+    group_by: str = Field(default="host,paths,tags", description="分组维度（restic --group-by）")
+    keep_last: int | None = Field(default=None, ge=0)
+    keep_hourly: int | None = Field(default=None, ge=0)
+    keep_daily: int | None = Field(default=None, ge=0)
+    keep_weekly: int | None = Field(default=None, ge=0)
+    keep_monthly: int | None = Field(default=None, ge=0)
+    keep_yearly: int | None = Field(default=None, ge=0)
+    prune: bool = Field(default=True, description="确认执行后是否随 forget --prune 回收数据（预览本身恒只读）")
+
+
+class ForgetPreviewSnapshot(_Base):
+    """E21 预览中的单条快照（paths 已映射为原路径语义，与 E17 口径一致）。"""
+
+    id: str
+    time: str | None = None
+    host: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+
+
+class ForgetPreviewResponse(_Base):
+    """E21 预览响应：将被裁剪的快照列表 + 参数回显（确认提交 E12 与预览同源）。
+
+    ``params`` 为回显的执行参数（tag/group_by/keep_*/prune），前端确认门第三步
+    提交 E12 时原样透传，保证「预览与实际结果一致」（R-016 验收口径）。
+    """
+
+    remove: list[ForgetPreviewSnapshot] = Field(default_factory=list)
+    remove_count: int = 0
+    keep_count: int = 0
+    group_count: int = 0
+    params: dict[str, Any] = Field(default_factory=dict)
+    truncated: bool = False
+
+
 # ---------------------------------------------------------------- E19 恢复
 
 class RestoreRequest(_Base):

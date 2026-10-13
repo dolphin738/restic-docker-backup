@@ -507,15 +507,30 @@ class JobRunner:
             return WhitelistArgs(read_data=bool(params.get("read_data", False)))
 
         if job_type == "forget":
+            # R-016：执行参数与 E21 预览同源（params 优先，回退 profile 字段）；
+            # prune 只属于确认后的执行（预览恒 dry_run 且不带 --prune）。
+            keep = {
+                "keep_last": _as_optional_int(params.get("keep_last", policy.get("keep_last"))),
+                "keep_hourly": _as_optional_int(params.get("keep_hourly", policy.get("keep_hourly"))),
+                "keep_daily": _as_optional_int(params.get("keep_daily", policy.get("keep_daily"))),
+                "keep_weekly": _as_optional_int(params.get("keep_weekly", policy.get("keep_weekly"))),
+                "keep_monthly": _as_optional_int(params.get("keep_monthly", policy.get("keep_monthly"))),
+                "keep_yearly": _as_optional_int(params.get("keep_yearly", policy.get("keep_yearly"))),
+            }
+            # G3 服务端兜底：无任何保留规则的 forget 会删除分组内全部快照——
+            # 与 E21 预览同拒 422（routers/ops.py require_keep_rule），杜绝绕过
+            # 预览门直接提交「全删」语义。
+            if all(value is None for value in keep.values()):
+                raise ValidationError(
+                    "forget 必须至少指定一个保留规则（keep_last/keep_hourly/…），"
+                    "否则会删除分组内全部快照",
+                    data={"keep_fields": list(keep)},
+                )
             return WhitelistArgs(
                 tags=tags,
                 group_by=str(params.get("group_by") or policy.get("group_by") or "host,paths,tags"),
-                keep_last=_as_optional_int(params.get("keep_last", policy.get("keep_last"))),
-                keep_hourly=_as_optional_int(params.get("keep_hourly", policy.get("keep_hourly"))),
-                keep_daily=_as_optional_int(params.get("keep_daily", policy.get("keep_daily"))),
-                keep_weekly=_as_optional_int(params.get("keep_weekly", policy.get("keep_weekly"))),
-                keep_monthly=_as_optional_int(params.get("keep_monthly", policy.get("keep_monthly"))),
-                keep_yearly=_as_optional_int(params.get("keep_yearly", policy.get("keep_yearly"))),
+                **keep,  # type: ignore[arg-type]
+                prune=bool(params.get("prune", False)),
             )
 
         return WhitelistArgs()

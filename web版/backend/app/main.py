@@ -55,6 +55,7 @@ from app.routers import config as config_router
 from app.routers import fs as fs_router
 from app.routers import health as health_router
 from app.routers import jobs as jobs_router
+from app.routers import ops as ops_router
 from app.routers import policies as policies_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
@@ -288,6 +289,7 @@ def create_app() -> FastAPI:
     app.include_router(policies_router.router, dependencies=protected)   # E08–E11
     app.include_router(backup_tasks_router.router, dependencies=protected)  # E34–E36（选项② R-026）
     app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18
+    app.include_router(ops_router.router, dependencies=protected)        # E21 forget 预览（R-016）
     app.include_router(restore_router.router, dependencies=protected)    # E19
     # 后续批次（dump/notify/cache/audit…）在此按同样方式挂载：
     #   app.include_router(x_router.router, dependencies=protected)

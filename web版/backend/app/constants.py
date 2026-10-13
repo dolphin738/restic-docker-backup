@@ -91,6 +91,7 @@ AUDIT_BOOTSTRAP_SHOWN = "bootstrap.shown"
 AUDIT_BOOTSTRAP_REGENERATED = "bootstrap.regenerated"  # 未展示随机密码前重启 → 重新生成（安全敏感动作）
 AUDIT_CONFIG_UPDATE = "config.update"
 AUDIT_RESTORE_RUN = "restore.run"
+AUDIT_FORGET_PREVIEW = "forget.preview"  # R-016 E21 预览请求（只读，但属敏感动作留痕）
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
 AUDIT_JOB_SUBMIT = "job.submit"
 AUDIT_JOB_CANCEL = "job.cancel"
@@ -149,6 +150,10 @@ SNAPSHOT_LIST_TIMEOUT_SECONDS = 20      # snapshots --json 探测超时
 SNAPSHOT_FILES_TIMEOUT_SECONDS = 30     # ls --json 探测超时
 SNAPSHOT_FILES_DEFAULT_LIMIT = 200
 SNAPSHOT_FILES_MAX_LIMIT = 1000
+
+# ---------------------------------------------------------------- E21 forget 预览（R-016）
+
+FORGET_PREVIEW_TIMEOUT_SECONDS = 60     # forget --dry-run 扫描快照超时（大仓库比 snapshots 慢）
 
 # ---------------------------------------------------------------- E29/E30 仓库探测
 
