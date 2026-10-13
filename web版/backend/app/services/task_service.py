@@ -1,8 +1,9 @@
 """任务服务（增量设计 §1.1/§2.1 E34–E36）：字段校验、归一与列↔API 字段换算。
 
 共享字段校验**委托既有 :class:`PolicyService`**（§1.1 选型表）：任务与策略字段同构，
-sources/excludes 三分类归一、cron 5/6 字段校验、keep_* 非负、compression 白名单、
-one_file_system 模式缺省——全部复用策略域单一真源，**不复制第二套校验**。
+sources/excludes 三分类归一、cron 5 字段校验（X5 收紧，与调度器 from_crontab 对齐）、
+keep_* 非负、compression 白名单、one_file_system 模式缺省——全部复用策略域单一真源，
+**不复制第二套校验**。
 
 任务域特有规则（策略域不适用，故在本模块实现）：
 - ``name`` 必填非空（策略域有 ``DEFAULT_NAME`` 缺省，任务无默认名）；

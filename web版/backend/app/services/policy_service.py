@@ -222,13 +222,17 @@ class PolicyService:
 
     @staticmethod
     def _normalize_cron(value: Any) -> str | None:
-        """cron 轻量校验：仅检查字段数（5 或 6），P2 调度器接管后做语义校验。"""
+        """cron 校验：**只收 5 字段（分 时 日 月 周）**（X5 owner 裁决收紧）。
+
+        调度器 ``CronTrigger.from_crontab`` 的解析上限即 5 字段——放行 6 字段（秒级）
+        会导致保存成功但任务永不自动触发，故在写入侧直接 422 拒绝。
+        """
         if value is None or str(value).strip() == "":
             return None
         candidate = str(value).strip()
         fields = candidate.split()
-        if len(fields) not in (5, 6):
-            raise ValidationError("cron 表达式须为 5 或 6 个字段", data={"cron": candidate})
+        if len(fields) != 5:
+            raise ValidationError("cron 须为 5 字段（分 时 日 月 周）", data={"cron": candidate})
         return candidate
 
 

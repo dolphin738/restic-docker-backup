@@ -146,7 +146,11 @@ async def test_e35_create_rejects_empty_name_422(app_client):
 
 
 async def test_e35_create_rejects_bad_cron_and_source_422(app_client):
-    """cron 字段数非法 / 备份源越界 → 422（与策略页同规则，共享校验委托）。"""
+    """cron 字段数非法 / 备份源越界 → 422（与策略页同规则，共享校验委托）。
+
+    X5（owner 裁决）：6 字段（秒级）同样拒绝——调度器 from_crontab 只收 5 字段，
+    放行会导致保存成功但永不触发。
+    """
     await finish_bootstrap(app_client)
     resp = await app_client.client.post(
         "/api/repos/default/backup-tasks",
@@ -154,6 +158,16 @@ async def test_e35_create_rejects_bad_cron_and_source_422(app_client):
         headers=ORIGIN,
     )
     assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+    resp = await app_client.client.post(
+        "/api/repos/default/backup-tasks",
+        json={"name": "x", "sources": ["/etc"], "cron": "0 3 * * * *"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+    assert "5 字段" in resp.json()["message"]
 
     resp = await app_client.client.post(
         "/api/repos/default/backup-tasks", json={"name": "x", "sources": []}, headers=ORIGIN

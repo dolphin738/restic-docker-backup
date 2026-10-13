@@ -192,3 +192,32 @@ async def test_excludes_cross_mode_422_on_e10(app_client):
     assert resp.status_code == 422
     assert resp.json()["code"] == "VALIDATION_ERROR"
     assert resp.json()["data"]["exclude"] == "/sources/data"
+
+
+async def test_cron_must_be_five_fields(app_client):
+    """X5（owner 裁决）：cron 只收 5 字段——6 字段（秒级）保存后永不触发，写入侧 422 拒绝。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+
+    # 基线：5 字段合法（分 时 日 月 周）
+    body = await _update_default_policy(ns.client, cron="30 2 * * 1-5")
+    assert body["cron"] == "30 2 * * 1-5"
+
+    # 6 字段（带秒）→ 422
+    resp = await ns.client.put(
+        "/api/policies/1",
+        json={"name": "default", "sources": ["/host/etc"], "cron": "0 0 3 * * *"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+    assert "5 字段" in resp.json()["message"]
+
+    # 非 5 段（4 字段）同样拒绝
+    resp = await ns.client.put(
+        "/api/policies/1",
+        json={"name": "default", "sources": ["/host/etc"], "cron": "0 3 *"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
