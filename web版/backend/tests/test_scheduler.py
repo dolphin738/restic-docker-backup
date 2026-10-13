@@ -625,26 +625,33 @@ def _make_fixed_datetime(moment: datetime) -> type[datetime]:
 
 
 async def test_zz_ci_diagnose(tmp_path, monkeypatch):
-    """临时诊断（CI 复盘用，定位后删）：把时区链关键值打进断言消息。"""
+    """临时诊断（CI 复盘用，定位后删）：实跑 catchup 并打出判据内部值。"""
     db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz="UTC")
     task = await create_task(task_repo, "diag", cron="0 18 * * *")
     monkeypatch.setattr(scheduler_module, "datetime", _make_fixed_datetime(FIXED_NOW))
 
-    import datetime as _dt
+    calls: list[str] = []
+    orig_submit = scheduler._submit
 
-    now = _dt.datetime.now(_dt.UTC)
+    async def spy(t, *, reason):  # noqa: ANN001, ANN202
+        calls.append(reason)
+        return await orig_submit(t, reason=reason)
+
+    scheduler._submit = spy  # noqa: SLF001
+
+    await scheduler.catchup_on_startup()
+
+    now = scheduler_module.datetime.now(UTC)
     today_start = now.astimezone(scheduler._tz).replace(  # noqa: SLF001
         hour=0, minute=0, second=0, microsecond=0
     )
     trigger = scheduler._build_trigger(task.id, "0 18 * * *")  # noqa: SLF001
     nxt = trigger.get_next_fire_time(None, today_start)
-    import apscheduler
-
+    jobs, total = await JobRepo(db).list_page(task_id=task.id)
     raise AssertionError(  # noqa: TRY003, EM101
-        f"DIAG settings_tz={scheduler._settings.tz!r} "  # noqa: SLF001
-        f"scheduler_tz={scheduler._tz!r} "  # noqa: SLF001
+        f"DIAG2 submit_calls={calls} total={total} "
+        f"now={now!r} tz={scheduler._tz!r} "  # noqa: SLF001
+        f"today_start={today_start!r} first_fire={nxt!r} "
         f"trigger_tz={trigger.timezone!r} "
-        f"now={now!r} today_start={today_start!r} next_fire={nxt!r} "
-        f"apscheduler={apscheduler.__version__} "
         f"TZ_ENV={__import__('os').environ.get('TZ')!r}"
     )
