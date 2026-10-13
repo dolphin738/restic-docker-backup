@@ -14,6 +14,12 @@
 真实仓储与落库值断言；补跑/到期判定的「当前时刻」以冻结
 ``app.services.scheduler.datetime`` 的方式保证确定性（APScheduler 触发器本身
 用真实时间，不受影响）。
+
+时区（CI 复盘 X3）：调度语义（cron 解释、today_start 锚点）全部**时区相对**——
+``make_scheduler`` 接受 ``monkeypatch`` 时把进程 ``TZ`` 与 ``get_settings`` 缓存
+对齐到入参 ``tz``（CI 容器 ``TZ=Asia/Shanghai``，不允许依赖"本地恰好 UTC"）；
+``next_fire_time`` 回退与 catchup 两条判据均以 ``TZ_CASES`` 参数化，UTC 与
+Asia/Shanghai 两组各自断言该时区下的正确行为。
 """
 
 from __future__ import annotations
@@ -21,14 +27,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import pytest
 from test_state_machine import BACKUP_LINES, FakeRestic, await_job, insert_job
 
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
-from app.db.repositories.task_repo import Task, TaskRepo
+from app.db.repositories.task_repo import TaskRepo
 from app.services import scheduler as scheduler_module
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser
@@ -39,11 +47,15 @@ from app.services.scheduler import (
     SCHEDULE_JITTER_MAX_SECONDS,
     SchedulerService,
 )
-from app.settings import Settings
+from app.settings import Settings, get_settings
 from app.utils.time import now_utc, parse_iso, utc_iso
 
 # 补跑/到期判定的冻结时刻：2026-10-13 12:00:00 UTC（周二）
 FIXED_NOW = datetime(2026, 10, 13, 12, 0, 0, tzinfo=UTC)
+
+# 时区参数化（CI 复盘）：CI 容器 TZ=Asia/Shanghai，调度语义（cron 解释、today_start）
+# 全部时区相对——两组时区都必须有正确行为断言，不允许"统一成 UTC 把 CI 场景藏掉"
+TZ_CASES = ["UTC", "Asia/Shanghai"]
 
 
 # ---------------------------------------------------------------- 测试基座
@@ -51,12 +63,22 @@ FIXED_NOW = datetime(2026, 10, 13, 12, 0, 0, tzinfo=UTC)
 
 async def make_scheduler(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch | None = None,
     *,
     lines: list[str] | None = None,
     exit_code: int = 0,
     tz: str = "UTC",
 ) -> tuple[Database, SchedulerService, TaskRepo, JobRepo, ConfigRepo, JobRunner]:
-    """构造带真实仓储与离线 restic 替身的调度器（DB 落 tmp_path 隔离）。"""
+    """构造带真实仓储与离线 restic 替身的调度器（DB 落 tmp_path 隔离）。
+
+    ``monkeypatch`` 传入时，先把进程 ``TZ`` 环境变量与 ``get_settings`` 缓存对齐到
+    ``tz`` 再构造（CI 复盘：CI 容器 ``TZ=Asia/Shanghai``——时区必须显式控制，
+    不能依赖"本地恰好 UTC"）。缺省 None 时仍以显式 ``Settings(tz=...)`` 构造
+    （init 优先级高于 env，实测验证），行为不变。
+    """
+    if monkeypatch is not None:
+        monkeypatch.setenv("TZ", tz)
+        get_settings.cache_clear()
     db = Database(tmp_path / "sched.db")
     await db.connect()
     settings = Settings(data_dir=str(tmp_path), tz=tz)
@@ -204,20 +226,29 @@ async def test_next_fire_time_disabled_or_manual_returns_none(tmp_path):
     await db.close()
 
 
-async def test_next_fire_time_falls_back_to_config_cron_default(tmp_path):
-    """任务 cron 为空 → 回退 config schedule.cron_default（A8 基线；变更后 reload 生效）。"""
-    db, scheduler, task_repo, _, config_repo, _ = await make_scheduler(tmp_path)
+@pytest.mark.parametrize("tz", TZ_CASES)
+async def test_next_fire_time_falls_back_to_config_cron_default(tmp_path, monkeypatch, tz):
+    """任务 cron 为空 → 回退 config schedule.cron_default（A8 基线；变更后 reload 生效）。
+
+    时区参数化（CI 复盘 X3）：cron 在**任务时区**内解释——UTC 组下次触发 05:00 UTC，
+    Asia/Shanghai 组 05:00 CST（=21:00 UTC）。断言口径与 tz 无关：换算回该时区后
+    小时数应为 cron 声明值，且必须是未来时刻。
+    """
+    db, scheduler, task_repo, _, config_repo, _ = await make_scheduler(tmp_path, monkeypatch, tz=tz)
     task = await create_task(task_repo, "全局缺省")
 
     await config_repo.set(SCHEDULE_CRON_DEFAULT_KEY, "0 5 * * *")
     await scheduler.reload()
     first = parse_iso(scheduler.next_fire_time(task))
-    assert first is not None and first.hour == 5
+    assert first is not None
+    assert first.astimezone(ZoneInfo(tz)).hour == 5
+    assert first > now_utc()
 
     await config_repo.set(SCHEDULE_CRON_DEFAULT_KEY, "0 6 * * *")
     await scheduler.reload()
     second = parse_iso(scheduler.next_fire_time(task))
-    assert second is not None and second.hour == 6
+    assert second is not None
+    assert second.astimezone(ZoneInfo(tz)).hour == 6
     await db.close()
 
 
@@ -252,21 +283,37 @@ async def test_catchup_skips_when_success_after_todays_point(tmp_path, monkeypat
     await db.close()
 
 
-async def test_catchup_skips_when_point_not_yet_due(tmp_path, monkeypatch):
-    """当天应触发点未到（18:00 > 冻结时刻 12:00）→ 不补跑。"""
-    db, scheduler, task_repo, job_repo, _, _ = await make_scheduler(tmp_path)
-    task = await create_task(task_repo, "未到点", cron="0 18 * * *")
+@pytest.mark.parametrize(("tz", "expected_jobs"), [("UTC", 0), ("Asia/Shanghai", 1)])
+async def test_catchup_due_point_is_timezone_relative(tmp_path, monkeypatch, tz, expected_jobs):
+    """「当天应触发点是否已过」是**时区相对**的（CI 复盘 X3）：冻结 now=12:00 UTC。
+
+    UTC：今天 18:00 UTC 未到 → 不补跑（0 条）；Asia/Shanghai：今天 18:00 CST
+    （=10:00 UTC）已过 → 补跑（1 条）。生产语义两者都正确——cron 与 today_start
+    均在 config.timezone→settings.tz 内解释（设计 §4.1）。
+    """
+    db, scheduler, task_repo, job_repo, _, runner = await make_scheduler(tmp_path, monkeypatch, tz=tz)
+    task = await create_task(task_repo, "时区相对", cron="0 18 * * *")
     monkeypatch.setattr(scheduler_module, "datetime", _make_fixed_datetime(FIXED_NOW))
 
     await scheduler.catchup_on_startup()
 
-    assert (await job_repo.list_page(task_id=task.id))[1] == 0
+    jobs, total = await job_repo.list_page(task_id=task.id)
+    assert total == expected_jobs
+    for job in jobs:  # 收尾后台执行任务（CI teardown 噪声修复：先 await 再 close）
+        await await_job(runner, job.id)
     await db.close()
 
 
-async def test_catchup_yesterdays_success_does_not_suppress_today(tmp_path, monkeypatch):
-    """跨天边界：前一日 23:30 的成功不满足「finished_at ≥ 当天 00:00」→ 仍补跑。"""
-    db, scheduler, task_repo, job_repo, _, runner = await make_scheduler(tmp_path)
+@pytest.mark.parametrize(("tz", "expected_total"), [("UTC", 2), ("Asia/Shanghai", 1)])
+async def test_catchup_cross_day_boundary_is_timezone_relative(tmp_path, monkeypatch, tz, expected_total):
+    """跨天边界（时区相对，CI 复盘 X3）：前一日 23:30 UTC 的成功是否算「今天已成功」
+    取决于 today_start 的时区锚点。
+
+    UTC：today_start=10-13 00:00 UTC，成功（10-12 23:30 UTC）更早 → 不抑制 → 补跑（共 2 条）；
+    Asia/Shanghai：today_start=10-13 00:00 CST（=10-12 16:00 UTC），成功（10-12 23:30 UTC
+    =10-13 07:30 CST）已落在今天 → 抑制 → 不补跑（仍 1 条）。
+    """
+    db, scheduler, task_repo, job_repo, _, runner = await make_scheduler(tmp_path, monkeypatch, tz=tz)
     task = await create_task(task_repo, "跨天", cron="0 0 * * *")  # 当天 00:00 已过
     await insert_success_job(job_repo, "job-ok-yesterday", task.id, "2026-10-12T23:30:00Z")
     monkeypatch.setattr(scheduler_module, "datetime", _make_fixed_datetime(FIXED_NOW))
@@ -274,10 +321,9 @@ async def test_catchup_yesterdays_success_does_not_suppress_today(tmp_path, monk
     await scheduler.catchup_on_startup()
 
     jobs, total = await job_repo.list_page(task_id=task.id)
-    assert total == 2  # 历史成功 + 今天补跑
-    catchup = next(job for job in jobs if job.id != "job-ok-yesterday")
-    assert catchup.trigger == "scheduled"
-    await await_job(runner, catchup.id)
+    assert total == expected_total
+    for job in jobs:  # 收尾后台执行任务（历史成功行无 _run 任务，await_job 自动跳过）
+        await await_job(runner, job.id)
     await db.close()
 
 
@@ -404,7 +450,7 @@ async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
     await insert_success_job(job_repo, "job-old-ok", task.id, utc_iso(now_utc() - timedelta(days=10)))
     await config_repo.set(SCHEDULE_JITTER_KEY, "0")  # 去掉随机睡眠，保证测试确定性
 
-    assert await scheduler._due_for_prune(task) is True  # noqa: SLF001 - 判定为真（供卡片提示）
+    assert await scheduler._due_for_prune(task) is True
 
     submitted: list[tuple[str, object]] = []
     original_submit = runner.submit
@@ -431,34 +477,22 @@ async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
 
 
 async def test_due_for_prune_false_when_recent_never_or_zero_interval(tmp_path):
-    """未到期（近期成功）/ 从未成功 / 间隔 0（不启用）→ False。
-
-    间隔 0 用例直接用 dataclass 构造 Task（纯判定语义）：仓储读回层
-    ``prune_interval_days or 7`` 会把 0 归一成 7（已知缺陷，已报 team-lead，
-    不在本测试任务内修），此处聚焦 ``_due_for_prune`` 自身的 ``<= 0`` 分支。
-    """
+    """未到期（近期成功）/ 从未成功 / 间隔 0（不启用）→ False。"""
     db, scheduler, task_repo, job_repo, _, _ = await make_scheduler(tmp_path)
 
     recent = await create_task(task_repo, "近期成功", prune_interval_days=7)
     await insert_success_job(job_repo, "job-recent", recent.id, utc_iso(now_utc() - timedelta(days=1)))
-    assert await scheduler._due_for_prune(recent) is False  # noqa: SLF001
+    assert await scheduler._due_for_prune(recent) is False
 
     never = await create_task(task_repo, "从未成功", prune_interval_days=7)
-    assert await scheduler._due_for_prune(never) is False  # noqa: SLF001
+    assert await scheduler._due_for_prune(never) is False
 
+    # prune_interval_days=0 读回归一已由 X3 修复并有 test_repos.py 护栏；
+    # 此处直接用仓储读回的行验证 due_for_prune 的 <=0 分支
     zero_row = await create_task(task_repo, "间隔为零", prune_interval_days=0)
-    # 仓储读回层 or 7 会把 0 归一成 7（已知缺陷已报 team-lead）；此处以 dataclass
-    # 显式构造 prune_interval_days=0 的 Task，聚焦 _due_for_prune 自身的 <=0 分支
-    zero_task = Task(
-        id=zero_row.id,
-        repo_id=zero_row.repo_id,
-        name=zero_row.name,
-        enabled=zero_row.enabled,
-        tag=zero_row.tag,
-        prune_interval_days=0,
-    )
+    assert zero_row.prune_interval_days == 0
     await insert_success_job(job_repo, "job-zero", zero_row.id, utc_iso(now_utc() - timedelta(days=99)))
-    assert await scheduler._due_for_prune(zero_task) is False  # noqa: SLF001
+    assert await scheduler._due_for_prune(zero_row) is False
     await db.close()
 
 
