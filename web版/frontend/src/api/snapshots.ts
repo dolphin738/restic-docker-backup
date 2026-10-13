@@ -1,7 +1,8 @@
-/** E17 快照列表（limit/offset 分页，可选 tag 精确过滤）+ E18 快照文件树（不透明游标，只透传）。 */
+/** E17 快照列表（limit/offset 分页，可选 tag 精确过滤）+ E18 快照文件树（不透明游标，只透传）+
+ * E21 forget 预览（R-016 预览-确认流前半，服务端恒 --dry-run 只读）。 */
 
 import { passCursor, request } from './http'
-import type { Page, SnapshotFilesResponse, SnapshotOut } from './types'
+import type { ForgetPreviewRequest, ForgetPreviewResponse, Page, SnapshotFilesResponse, SnapshotOut } from './types'
 
 /** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。 */
 export function listSnapshots(limit = 50, offset = 0, tag?: string): Promise<Page<SnapshotOut>> {
@@ -18,4 +19,9 @@ export function listSnapshotFiles(
   return request<SnapshotFilesResponse>(`/api/snapshots/${encodeURIComponent(snapshotId)}/files`, {
     query: { path, cursor: passCursor(cursor), limit },
   })
+}
+
+/** E21 forget 预览：返回将被裁剪的快照列表（只读，不落任何裁剪）。至少一个 keep_* 必填。 */
+export function previewForget(payload: ForgetPreviewRequest): Promise<ForgetPreviewResponse> {
+  return request<ForgetPreviewResponse>('/api/forget/preview', { method: 'POST', body: payload })
 }

@@ -393,6 +393,38 @@ export interface SnapshotFilesResponse {
   truncated: boolean
 }
 
+/** E21 forget 预览中的单条快照（paths 为原路径语义，与 E17 口径一致）。 */
+export interface ForgetPreviewSnapshot {
+  id: string
+  time: string | null
+  host: string | null
+  tags: string[]
+  paths: string[]
+}
+
+/** E21 forget 预览响应：remove 为将被裁剪的快照；params 为参数回显（确认提交 E12 原样透传）。 */
+export interface ForgetPreviewResponse {
+  remove: ForgetPreviewSnapshot[]
+  remove_count: number
+  keep_count: number
+  group_count: number
+  params: Record<string, unknown>
+  truncated: boolean
+}
+
+/** E21 forget 预览请求（keep_* 不设 = 不启用该维度；至少一个必填，服务端 422 兜底）。 */
+export interface ForgetPreviewRequest {
+  tag?: string
+  group_by?: string
+  keep_last?: number | null
+  keep_hourly?: number | null
+  keep_daily?: number | null
+  keep_weekly?: number | null
+  keep_monthly?: number | null
+  keep_yearly?: number | null
+  prune?: boolean
+}
+
 /** E19 恢复响应（202）：restore_target 由服务端计算的时间戳子目录，前端不自己拼。 */
 export interface RestoreResponse {
   job_id: string
