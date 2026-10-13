@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import pytest
 from test_state_machine import BACKUP_LINES, FakeRestic, await_job, insert_job
@@ -48,7 +47,7 @@ from app.services.scheduler import (
     SchedulerService,
 )
 from app.settings import Settings, get_settings
-from app.utils.time import now_utc, parse_iso, utc_iso
+from app.utils.time import now_utc, parse_iso, resolve_timezone, utc_iso
 
 # 补跑/到期判定的冻结时刻：2026-10-13 12:00:00 UTC（周二）
 FIXED_NOW = datetime(2026, 10, 13, 12, 0, 0, tzinfo=UTC)
@@ -241,14 +240,16 @@ async def test_next_fire_time_falls_back_to_config_cron_default(tmp_path, monkey
     await scheduler.reload()
     first = parse_iso(scheduler.next_fire_time(task))
     assert first is not None
-    assert first.astimezone(ZoneInfo(tz)).hour == 5
+    # 换算回任务时区必须用 resolve_timezone（CI 复盘 cnb-dgc-1k4qqhg77：
+    # 直接 ZoneInfo(tz) 在 tzdata 异常的容器里 utcoffset 非零，UTC 组被平移 8h 误报）
+    assert first.astimezone(resolve_timezone(tz)).hour == 5
     assert first > now_utc()
 
     await config_repo.set(SCHEDULE_CRON_DEFAULT_KEY, "0 6 * * *")
     await scheduler.reload()
     second = parse_iso(scheduler.next_fire_time(task))
     assert second is not None
-    assert second.astimezone(ZoneInfo(tz)).hour == 6
+    assert second.astimezone(resolve_timezone(tz)).hour == 6
     await db.close()
 
 
