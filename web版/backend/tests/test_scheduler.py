@@ -633,14 +633,16 @@ async def test_zz_ci_diagnose(tmp_path, monkeypatch):
     import datetime as _dt
 
     now = _dt.datetime.now(_dt.UTC)
-    today_start = now.astimezone(scheduler._tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    trigger = scheduler._build_trigger(task.id, "0 18 * * *")
+    today_start = now.astimezone(scheduler._tz).replace(  # noqa: SLF001
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    trigger = scheduler._build_trigger(task.id, "0 18 * * *")  # noqa: SLF001
     nxt = trigger.get_next_fire_time(None, today_start)
     import apscheduler
 
-    assert False, (
-        f"DIAG settings_tz={scheduler._settings.tz!r} "
-        f"scheduler_tz={scheduler._tz!r} "
+    raise AssertionError(  # noqa: TRY003, EM101
+        f"DIAG settings_tz={scheduler._settings.tz!r} "  # noqa: SLF001
+        f"scheduler_tz={scheduler._tz!r} "  # noqa: SLF001
         f"trigger_tz={trigger.timezone!r} "
         f"now={now!r} today_start={today_start!r} next_fire={nxt!r} "
         f"apscheduler={apscheduler.__version__} "
