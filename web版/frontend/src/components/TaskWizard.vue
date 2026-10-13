@@ -43,6 +43,7 @@ import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
 } from '@/components/task/ScheduleRetentionForm.vue'
 import SourcesPicker from '@/components/task/SourcesPicker.vue'
+import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
 import TierCard from '@/components/TierCard.vue'
 import { useUiStore } from '@/stores/ui'
 
@@ -113,12 +114,19 @@ const taskQuery = useQuery({
   queryFn: () => (props.taskId == null ? Promise.resolve(null) : getBackupTask(props.taskId)),
 })
 
+/** 预填只执行一次：onDryRun 成功后会 invalidate 本 query 触发 refetch，
+ *  refetch 返回的新对象引用会再次命中本 watch——若放行会用服务端存量值覆盖
+ *  用户正在编辑的表单（改动丢失），并把 originalSources 重置导致 sourcesChanged 恒 false
+ *  （S-1 stale 判定随之失效）。服务端权威态由保存路径回填，此处只管首次进表单。 */
+let hydrated = false
+
 watch(
   () => taskQuery.data.value,
   (task) => {
-    if (!task) {
+    if (!task || hydrated) {
       return
     }
+    hydrated = true
     loadedTask.value = task
     form.name = task.name
     form.enabled = task.enabled
@@ -196,23 +204,40 @@ const dryRunLoading = ref(false)
 const dryRunResult = ref<DryRunResponse | null>(null)
 const dryRunError = ref('')
 
-/** 预览成功才可「确认并立即首跑」：无 error **且未截断**（F1 修复，QA 复验 Low 项）。
- *  与服务端契约对齐——E36 仅在「无 error 且未截断」时才清 dry_run_pending；
- *  截断 = 只看到部分扫描范围（DRY_RUN_MAX_ITEMS 上限），服务端保守保持 pending=1，
- *  前端同样禁止在盲区下启动首跑。 */
-const dryRunOk = computed(
-  () =>
-    dryRunResult.value !== null &&
-    dryRunResult.value.error === null &&
-    !dryRunResult.value.truncated,
+/** 预览时的源集合指纹：stale 判定基准（S-1）。
+ *  口径是「预览后源集合是否又变过」——改源→预览→立即首跑是放行的（预览即当前值）；
+ *  预览后再改源 → 指纹失配 → 旧预览作废须重扫。与 sourcesChanged（表单 vs 库中存量）
+ *  是两个语义，不得混用。 */
+const previewedFingerprint = ref<string | null>(null)
+
+function sourcesFingerprint(): string {
+  return `${form.sources.join('\n')}\u0000${form.excludes.join('\n')}`
+}
+
+/** 旧预览是否失效：预览过且当前源集合与预览时不一致。 */
+const stalePreview = computed(
+  () => previewedFingerprint.value !== null && sourcesFingerprint() !== previewedFingerprint.value,
 )
 
-/** 按钮禁用时的工具提示：截断场景直接复用截断警告键（已有 i18n，零新增键）。 */
-const dryRunBlockHint = computed(() =>
-  dryRunResult.value?.truncated === true
-    ? `${t('wizard.dry_run_truncated')} · ${t('wizard.dry_run_hint')}`
-    : t('wizard.dry_run_hint'),
-)
+/** 预览成功才可「确认并立即首跑」：无 error **且未截断**（F1，QA 复验 Low 项），
+ *  且预览后源集合未再变更（S-1：stale 预览不得放行首跑）。
+ *  与服务端契约对齐——E36 仅在「无 error 且未截断」时才清 dry_run_pending；
+ *  截断 = 只看到部分扫描范围（DRY_RUN_MAX_ITEMS 上限），服务端保守保持 pending=1，
+ *  前端同样禁止在盲区下启动首跑。判定逻辑单一实现点见 ./task/dryRunGate.ts。 */
+const dryRunOk = computed(() => isDryRunOk(dryRunResult.value, stalePreview.value))
+
+/** 按钮禁用时的工具提示（零新增 i18n 键）：stale → rescan_required；
+ *  截断 → 截断警告 + 通用提示；其余 → 通用提示。 */
+const dryRunBlockHint = computed(() => {
+  switch (dryRunBlockReason(dryRunResult.value, stalePreview.value)) {
+    case 'stale':
+      return t('wizard.rescan_required')
+    case 'truncated':
+      return `${t('wizard.dry_run_truncated')} · ${t('wizard.dry_run_hint')}`
+    default:
+      return t('wizard.dry_run_hint')
+  }
+})
 
 async function onDryRun(): Promise<void> {
   if (form.sources.length === 0) {
@@ -226,9 +251,12 @@ async function onDryRun(): Promise<void> {
     dryRunResult.value = isEdit.value
       ? await dryRunBackupTask(props.taskId!, { sources: form.sources, excludes: form.excludes })
       : await dryRunSources(form.sources, form.excludes)
-    if (isEdit.value && dryRunOk.value) {
-      // E36 预览成功（无 error 且未截断）才清除 dry_run_pending：刷新本地任务态，
-      // 让门禁提示即时消失；截断时服务端保持 pending=1，无需刷新（F1）
+    // 记录本次预览的源集合指纹（S-1 stale 判定基准）；无论成功与否都按本次请求口径记
+    previewedFingerprint.value = sourcesFingerprint()
+    if (isEdit.value && isDryRunOk(dryRunResult.value)) {
+      // E36 预览成功（无 error 且未截断，服务端已清 dry_run_pending）：刷新本地任务态，
+      // 让门禁提示即时消失；截断时服务端保持 pending=1，无需刷新（F1）。
+      // stale 与此处无关——invalidate 只回填服务端权威态，预填由 hydrated 标志挡住。
       await queryClient.invalidateQueries({ queryKey: ['backup-task', props.taskId ?? 0] })
     }
   } catch (error) {
