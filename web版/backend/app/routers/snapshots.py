@@ -57,9 +57,18 @@ async def list_snapshots(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    tag: str | None = Query(
+        default=None,
+        description="按快照 tags 数组**包含**过滤（如任务 tag task-1）；缺省不过滤",
+    ),
     session: SessionContext = Depends(require_session),
 ) -> Page[SnapshotOut]:
-    """``restic snapshots --json`` → 映射原路径语义 → 按时间倒序 → 分页。"""
+    """``restic snapshots --json`` → 映射原路径语义 →（可选 tag 包含过滤）→ 按时间倒序 → 分页。
+
+    ``?tag=`` 过滤（X2 owner 裁决）在 **Python 侧**对取回结果做——restic snapshot 的
+    tags 是数组、任务 tag 形如 ``task-<id>``，语义为"包含该 tag 则保留"；不往 restic
+    argv 传 ``--tag``（S2 白名单不扩面）。参数缺省时行为与既有契约完全一致。
+    """
     del session
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
@@ -80,6 +89,9 @@ async def list_snapshots(
 
     records = await asyncio.to_thread(parser.parse_snapshot_list, "\n".join(probe.lines))
     items = [_to_snapshot_out(record, mapper) for record in records if record.snapshot_id]
+    if tag:
+        # X2：包含语义过滤（tags 数组含该 tag 即保留），分页前先过滤保证 total 正确
+        items = [item for item in items if tag in item.tags]
     items.sort(key=lambda item: item.time or "", reverse=True)  # 最新在前，restic 默认升序
     return Page(items=items[offset : offset + limit], total=len(items), limit=limit, offset=offset)
 
