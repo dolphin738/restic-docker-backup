@@ -161,6 +161,47 @@ async def test_jobs_routes_require_session(app_client):
     assert resp.status_code == 401
 
 
+async def test_e12_manual_backup_books_last_run_at(app_client):
+    """手动「立即运行」backup → 记账 ``last_run_at``（与调度触发路径同口径）。
+
+    缺陷背景：``last_run_at`` 原先只在调度器 ``_fire_backup`` 写入，只跑过手动备份的
+    任务卡片显示「上次运行：无」，与跑过调度备份的任务「上次运行：[成功]」并存。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    task = await ns.app.state.task_repo.create(
+        {"name": "手动记账", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+    )
+    assert (await ns.app.state.task_repo.get(task.id)).last_run_at is None
+
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "task_id": task.id}, headers=ORIGIN
+    )
+    assert resp.status_code == 202
+    assert (await ns.app.state.task_repo.get(task.id)).last_run_at is not None
+
+
+async def test_e12_manual_restore_does_not_book_last_run_at(app_client):
+    """手动 restore **不**记账：``last_run_at`` 语义是「上次备份时间」，不得被污染。
+
+    若 restore/check/forget/unlock/init/dump 也写，该字段会退化成「上次任何作业时间」，
+    E34 卡片的「上次运行」与 prune 到期判定口径随之失真。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    task = await ns.app.state.task_repo.create(
+        {"name": "恢复不记账", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+    )
+
+    resp = await ns.client.post(
+        "/api/jobs",
+        json={"type": "restore", "task_id": task.id, "snapshot_id": "snap-0001"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 202
+    assert (await ns.app.state.task_repo.get(task.id)).last_run_at is None
+
+
 async def test_job_id_is_ulid_sorted(app_client):
     """E12 生成的任务 id 为 ULID（26 字符，可排序）。"""
     from ulid import ULID

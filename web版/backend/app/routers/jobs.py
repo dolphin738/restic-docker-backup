@@ -29,7 +29,8 @@ from app.schemas.api_schemas import (
     OkResponse,
     Page,
 )
-from app.schemas.enums import JobStatus
+from app.schemas.enums import JobStatus, JobType
+from app.utils.time import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ async def create_job(
     ``params.excludes`` 为用户追加的排除规则（展示形态或纯 glob 模式），在**提交前**
     经 :func:`normalize_user_excludes` 三分类归一为容器形态——放在路由层而非 JobRunner，
     越界锚定路径才能以 422 ``VALIDATION_ERROR`` 同步回给前端，而不是把任务打进 failed。
+
+    手动触发同样**记账**（``task_id`` 非空且 ``type=backup`` 时写任务的 ``last_run_at``）
+    ——与调度触发路径同口径，否则只跑过手动备份的任务卡片会显示「上次运行：无」；
+    非 backup 类型不写，保住「上次备份时间」语义。
     """
     del session
     runner = request.app.state.job_runner
@@ -86,6 +91,12 @@ async def create_job(
         snapshot_id=payload.snapshot_id,
         params=params,
     )
+    # 手动「立即运行」同样记账（与调度触发路径同口径：写入 last_run_at）——否则
+    # 只跑过手动备份的任务卡片会显示「上次运行：无」，与「上次运行：[成功]」并存。
+    # 仅 backup 类型记账：restore/check/forget/unlock/init/dump 写入会把
+    # 「上次备份时间」污染成「上次任何作业时间」，语义必须守住。
+    if payload.task_id is not None and payload.type == JobType.BACKUP:
+        await request.app.state.task_repo.set_last_run_at(payload.task_id, utc_iso())
     return JobCreateResponse(id=job.id, status=JobStatus(job.status), type=payload.type)
 
 
