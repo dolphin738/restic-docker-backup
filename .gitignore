@@ -92,6 +92,12 @@ desktop.ini
 
 # ---------- dev-scripts 运行时产物（自 web版/dev-scripts/.gitignore 收口）----------
 web版/dev-scripts/.dev-data/
+
+# ---------- 真机 E2E 脚本与产物 ----------
+# playwright-cli 的 daemon session 跨命令不保活，改用 Node 脚本常驻持有浏览器；
+# 脚本内含本机绝对路径（DevEco node 前缀），对他人不可复用，故不入库。
+# 方案与踩坑已记入 .workbuddy/memory/（同样不入库），需要时按记录重建。
+.e2e/
 web版/dev-scripts/.dev-*.pid
 
 # ---------- 其它 ----------
