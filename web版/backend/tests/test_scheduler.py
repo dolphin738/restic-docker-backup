@@ -622,3 +622,27 @@ def _make_fixed_datetime(moment: datetime) -> type[datetime]:
             return moment.astimezone(tz) if tz else moment
 
     return _FixedDatetime
+
+
+async def test_zz_ci_diagnose(tmp_path, monkeypatch):
+    """临时诊断（CI 复盘用，定位后删）：把时区链关键值打进断言消息。"""
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz="UTC")
+    task = await create_task(task_repo, "diag", cron="0 18 * * *")
+    monkeypatch.setattr(scheduler_module, "datetime", _make_fixed_datetime(FIXED_NOW))
+
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.UTC)
+    today_start = now.astimezone(scheduler._tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    trigger = scheduler._build_trigger(task.id, "0 18 * * *")
+    nxt = trigger.get_next_fire_time(None, today_start)
+    import apscheduler
+
+    assert False, (
+        f"DIAG settings_tz={scheduler._settings.tz!r} "
+        f"scheduler_tz={scheduler._tz!r} "
+        f"trigger_tz={trigger.timezone!r} "
+        f"now={now!r} today_start={today_start!r} next_fire={nxt!r} "
+        f"apscheduler={apscheduler.__version__} "
+        f"TZ_ENV={__import__('os').environ.get('TZ')!r}"
+    )
