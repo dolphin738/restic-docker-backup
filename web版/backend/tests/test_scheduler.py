@@ -547,6 +547,285 @@ async def test_valid_config_cron_default_still_builds_trigger(tmp_path):
     await db.close()
 
 
+# ---------------------------------------------------------------- 7. cron 星期字段标准语义（缺陷护栏）
+
+
+def _next_fire_weekdays(trigger, tz_name: str, count: int = 6) -> list[int]:
+    """连续取 ``count`` 个触发点，换算回任务时区后的星期序号（Monday=0 … Sunday=6）。
+
+    触发点以「上一个触发点」为游标推进（APScheduler ``get_next_fire_time`` 语义），
+    故工作日区间 ``1-5`` 取 6 个点必然覆盖周一至周五全部五天。
+    """
+    zone = resolve_timezone(tz_name)
+    weekdays: list[int] = []
+    previous = None
+    now = datetime.now(UTC)
+    for _ in range(count):
+        moment = trigger.get_next_fire_time(previous, now if previous is None else previous)
+        assert moment is not None
+        weekdays.append(moment.astimezone(zone).weekday())
+        previous = moment
+    return weekdays
+
+
+@pytest.mark.parametrize("tz", TZ_CASES)
+@pytest.mark.parametrize(
+    ("cron", "expected_weekdays"),
+    [
+        ("0 3 * * 1", {0}),  # 标准 crontab 1=周一（APScheduler 原生会落到周二）
+        ("0 3 * * 2", {1}),  # 2=周二
+        ("0 3 * * 6", {5}),  # 6=周六
+        ("0 3 * * 0", {6}),  # 0=周日
+        ("0 3 * * 7", {6}),  # 7=周日（与 0 同义，非越界）
+        ("0 3 * * 1-5", {0, 1, 2, 3, 4}),  # 工作日（周一至周五）
+    ],
+)
+async def test_cron_weekday_uses_standard_crontab_semantics(
+    tmp_path, monkeypatch, tz, cron, expected_weekdays
+):
+    """星期字段必须按**标准 crontab** 语义解释：0/7=周日、1=周一 … 6=周六。
+
+    护栏背景（真机缺陷）：APScheduler 3.x ``CronTrigger.from_crontab`` 存在官方承认的
+    历史缺陷（docstring warning / issue #286）——其星期编号 0=周一，与标准 crontab 的
+    0=周日正好差一天。真机任务 #1 配 ``cron="0 3 * * 1"``（管理员意图「每周一 03:00」），
+    接口返回的下次运行落在**周二**，即该缺陷的实证。本产品 cron 由管理员直接填写、
+    按标准 crontab 语义理解，故调度器必须换算（``(n + 6) % 7``）后再构造触发器。
+    """
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz=tz)
+    task = await create_task(task_repo, "星期语义", cron=cron)
+    await scheduler.reload()
+
+    trigger = scheduler._build_trigger(task.id, cron)  # noqa: SLF001
+    assert trigger is not None
+    assert set(_next_fire_weekdays(trigger, tz)) == expected_weekdays
+
+    # 卡片口径（next_fire_time）同样落在正确星期——真机任务 #1 的观察面
+    nxt = parse_iso(scheduler.next_fire_time(task))
+    assert nxt is not None
+    assert nxt.astimezone(resolve_timezone(tz)).weekday() in expected_weekdays
+    await db.close()
+
+
+@pytest.mark.parametrize("tz", TZ_CASES)
+async def test_cron_minute_step_unaffected_by_weekday_conversion(tmp_path, monkeypatch, tz):
+    """对照组：``*/10 * * * *`` 无星期字段，换算不得改变其行为（整 10 分点、间隔 10 分钟）。"""
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz=tz)
+    task = await create_task(task_repo, "十分钟", cron="*/10 * * * *")
+    await scheduler.reload()
+
+    trigger = scheduler._build_trigger(task.id, "*/10 * * * *")  # noqa: SLF001
+    assert trigger is not None
+    zone = resolve_timezone(tz)
+    previous = None
+    now = datetime.now(UTC)
+    for _ in range(3):
+        moment = trigger.get_next_fire_time(previous, now if previous is None else previous)
+        assert moment is not None
+        local = moment.astimezone(zone)
+        assert local.minute % 10 == 0
+        if previous is not None:
+            assert (moment - previous).total_seconds() == 600
+        previous = moment
+    await db.close()
+
+
+@pytest.mark.parametrize(
+    ("raw_weekday", "expected_expr"),
+    [
+        ("0", "6"),  # 周日
+        ("1", "0"),  # 周一
+        ("6", "5"),  # 周六
+        ("7", "6"),  # 周日（与 0 同义）
+        ("*", "*"),  # 通配符：两边同为「全部」，不变
+        ("mon-fri", "mon-fri"),  # 名称写法两边语义一致，不换算
+        ("sun", "sun"),  # 单个名称同理
+        # 数字区间：先展开成标准星期集合再逐项换算——**不得对端点独立取模**
+        # （``0-6`` 独立取模会变成 ``6-5``，首值大于末值撞 APScheduler ``first > last``
+        # 校验抛 ValueError → 任务退化「仅手动」＝备份静默停止）
+        ("1-5", "0,1,2,3,4"),  # 工作日
+        ("0-1", "6,0"),  # 周日、周一（跨周日边界）
+        ("0-6", "6,0,1,2,3,4,5"),  # 周日至周六 = 每天
+        ("5-6", "4,5"),  # 周五、周六
+        ("0-0", "6"),  # 仅周日
+        ("6-6", "5"),  # 仅周六
+        ("1-7", "0,1,2,3,4,5,6"),  # 周一至周日 = 每天（末位保留周日）
+        ("7-1", "6,0"),  # 7 与 0 同为周日 → 等价 0-1
+        ("7-6", "6,0,1,2,3,4,5"),  # 等价 0-6 = 每天
+        ("0,6", "6,5"),  # 枚举值逐个换算
+        # 步长写法：不能只换算数字（两边起算点不同），必须展开为显式枚举
+        ("*/2", "6,1,3,5"),  # 标准 {0,2,4,6}=周日/周二/周四/周六
+        ("*/3", "6,2,5"),  # 标准 {0,3,6}=周日/周三/周六
+        ("*/1", "6,0,1,2,3,4,5"),  # 每天
+        ("2/2", "1,3,5"),  # 标准 2..6 步长 2 = 周二/周四/周六
+        ("1-5/2", "0,2,4"),  # 标准 {1,3,5} = 周一/周三/周五
+    ],
+)
+def test_cron_trigger_weekday_field_conversion(raw_weekday, expected_expr):
+    """换算自检：数字/区间/步长一律「先取标准集合再逐项换算」，名称与非法形态原样保留。"""
+    trigger = scheduler_module._cron_trigger(  # noqa: SLF001
+        f"0 3 * * {raw_weekday}", timezone=resolve_timezone("UTC")
+    )
+    assert str(trigger.fields[4]) == expected_expr  # fields[4] = day_of_week
+
+
+@pytest.mark.parametrize(
+    "raw_weekday",
+    [
+        "0-fri",  # 数字与名称混杂（畸形）
+        "*/0",  # 步长 0
+        "*/8",  # 步长越界（P2：不得被展开成「仅周日」这种合法值）
+        "*/99",  # 步长越界
+        "*/x",  # 步长非数字
+        "8",  # 数字越界
+        "5-1",  # 环绕区间（标准 cron 亦不支持，两边一致报错）
+        "0-8",  # 区间端点越界
+    ],
+)
+def test_cron_trigger_weekday_invalid_passthrough_raises(raw_weekday):
+    """非法/无法识别的星期写法**原样透传**给 APScheduler → ``ValueError``。
+
+    关键：不得静默取模把非法值变成合法星期（``8`` 取模会变成周一、``*/0`` 会被
+    当成每天、``*/8`` 展开后会变成「仅周日」）——这类"静默把非法值变合法值"正是
+    本缺陷的定级依据，故必须由 APScheduler 报错并走「退化仅手动 + WARNING」的兜底。
+    """
+    with pytest.raises(ValueError):
+        scheduler_module._cron_trigger(  # noqa: SLF001
+            f"0 3 * * {raw_weekday}", timezone=resolve_timezone("UTC")
+        )
+
+
+@pytest.mark.parametrize("tz", TZ_CASES)
+@pytest.mark.parametrize(
+    ("cron", "expected_weekdays"),
+    [
+        ("0 3 * * */2", {6, 1, 3, 5}),  # 标准 */2 = 周日、周二、周四、周六
+        ("0 3 * * */3", {6, 2, 5}),  # 标准 */3 = 周日、周三、周六
+        ("0 3 * * *", {0, 1, 2, 3, 4, 5, 6}),  # 每天
+        ("0 3 * * 1-5", {0, 1, 2, 3, 4}),  # 工作日
+        ("0 3 * * mon-fri", {0, 1, 2, 3, 4}),  # 名称写法同样落在工作日
+        ("0 3 * * 0,6", {5, 6}),  # 周六、周日
+    ],
+)
+async def test_cron_weekday_fire_set_matches_standard_crontab(
+    tmp_path, monkeypatch, tz, cron, expected_weekdays
+):
+    """**触发星期集合**必须与标准 crontab 一致（不只断言换算后的表达式字符串）。
+
+    步长写法是本缺陷最隐蔽的一面：APScheduler 的 ``*/N`` 从它自己的 0（周一）起算，
+    标准 crontab 从 0（周日）起算——两者不是"平移一天"而是**完全不同的集合**
+    （``*/2``：标准 {周日,周二,周四,周六} vs APScheduler 原生 {周一,周三,周五,周日}，
+    只在周日相交）。故「保留 ``*/2`` 原样、只是锚点差一天」的判断不成立，必须展开枚举
+    （APScheduler 3.x 不支持 ``6/2`` 带起点的步长，实测报 "the step value ... is
+    higher than the total range"，展开是唯一通路）。
+
+    断言口径：连续取 7 个触发点，换算回任务时区后映射为星期序号（Monday=0 … Sunday=6），
+    断言集合相等——与 team-lead 取证表同口径。
+    """
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz=tz)
+    task = await create_task(task_repo, "星期集合", cron=cron)
+    await scheduler.reload()
+
+    trigger = scheduler._build_trigger(task.id, cron)  # noqa: SLF001
+    assert trigger is not None
+    assert set(_next_fire_weekdays(trigger, tz, count=7)) == expected_weekdays
+    await db.close()
+
+
+def _fire_weekdays_within_week(trigger, tz_name: str, week_start: datetime) -> set[int]:
+    """取 ``[week_start, week_start+7d)`` 内**全部**触发点映射为星期序号集合。
+
+    与 QA 复验同口径：起点取**周一 00:00（任务时区）**，一周窗口内每天至多命中一次，
+    集合即该 cron 的真实星期集合——不受"取 N 次 fire time"时起始星期的影响。
+    """
+    zone = resolve_timezone(tz_name)
+    end = week_start + timedelta(days=7)
+    weekdays: set[int] = set()
+    previous = None
+    while True:
+        moment = trigger.get_next_fire_time(previous, week_start if previous is None else previous)
+        if moment is None or moment >= end:
+            break
+        weekdays.add(moment.astimezone(zone).weekday())
+        previous = moment
+    return weekdays
+
+
+@pytest.mark.parametrize("tz", TZ_CASES)
+@pytest.mark.parametrize(
+    ("cron", "expected_weekdays"),
+    [
+        # P1 回归面：跨周日边界的数字区间（端点独立取模会撞 APScheduler first>last）
+        ("0 3 * * 0-1", {6, 0}),  # 周日、周一
+        ("0 3 * * 0-2", {6, 0, 1}),  # 周日至周二
+        ("0 3 * * 0-3", {6, 0, 1, 2}),  # 周日至周三
+        ("0 3 * * 0-4", {6, 0, 1, 2, 3}),  # 周日至周四
+        ("0 3 * * 0-5", {6, 0, 1, 2, 3, 4}),  # 周日至周五
+        ("0 3 * * 0-6", {0, 1, 2, 3, 4, 5, 6}),  # 周日至周六 = 每天
+        ("0 3 * * 7-1", {6, 0}),  # 7≡0：等价 0-1
+        ("0 3 * * 7-2", {6, 0, 1}),
+        ("0 3 * * 7-3", {6, 0, 1, 2}),
+        ("0 3 * * 7-4", {6, 0, 1, 2, 3}),
+        ("0 3 * * 7-5", {6, 0, 1, 2, 3, 4}),
+        ("0 3 * * 7-6", {0, 1, 2, 3, 4, 5, 6}),  # 等价 0-6 = 每天
+        # 同义/相邻写法（原已正常，防回归）
+        ("0 3 * * 1-7", {0, 1, 2, 3, 4, 5, 6}),  # 周一至周日 = 每天
+        ("0 3 * * 1-5", {0, 1, 2, 3, 4}),  # 工作日
+        ("0 3 * * 5-6", {4, 5}),  # 周五、周六
+        ("0 3 * * 0-0", {6}),  # 仅周日
+        ("0 3 * * 6-6", {5}),  # 仅周六
+        ("0 3 * * 0,6", {5, 6}),  # 周末两天
+    ],
+)
+async def test_cron_weekday_range_fire_set_matches_standard_crontab(
+    tmp_path, monkeypatch, tz, cron, expected_weekdays
+):
+    """数字区间 `0-N` / `7-N` 的**触发星期集合**必须与标准 crontab 一致（P1 回归护栏）。
+
+    回归背景：区间两端**独立取模**时 ``0-6`` → ``6-5``（首值 > 末值）撞 APScheduler
+    ``triggers/cron/expressions.py`` 的 ``first > last`` 校验抛 ``ValueError`` →
+    ``_build_trigger`` 返回 ``None`` → 任务退化「仅手动」。方向虽是 fail-safe，但
+    「任务永不自动触发」＝备份静默停止，与原始缺陷同样致命。修法与步长同构：
+    先展开标准星期集合、再逐项换算（``7`` 作为起点等价 ``0``，作为终点保留为末位周日）。
+    """
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path, monkeypatch, tz=tz)
+    task = await create_task(task_repo, "区间集合", cron=cron)
+    await scheduler.reload()
+
+    trigger = scheduler._build_trigger(task.id, cron)  # noqa: SLF001
+    assert trigger is not None
+    zone = resolve_timezone(tz)
+    week_start = datetime(2026, 10, 19, tzinfo=zone)  # 2026-10-19 是周一
+    assert _fire_weekdays_within_week(trigger, tz, week_start) == expected_weekdays
+    await db.close()
+
+
+async def test_cron_weekday_out_of_range_degrades_to_manual_only(tmp_path, caplog):
+    """星期字段越界（``8``）不换算、原样交给 APScheduler 报错 → WARNING + 退化「仅手动」。
+
+    ``(8 + 6) % 7 = 0`` 会把非法值静默变成周一，故越界数字必须原样透传由 APScheduler
+    抛 ``ValueError``，走既有兜底路径（记 WARNING、不建触发器）。
+    """
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path)
+    task = await create_task(task_repo, "越界星期", cron="0 3 * * 8")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scheduler"):
+        await scheduler.reload()
+        nxt = scheduler.next_fire_time(task)
+
+    assert nxt is None
+    assert _job_ids(scheduler) == set()
+    assert "无法解析" in caplog.text
+    await db.close()
+
+
+async def test_cron_trigger_rejects_non_five_field_expression():
+    """字段数校验（沿用 ``from_crontab`` 口径）：非 5 字段直接 ``ValueError``。"""
+    with pytest.raises(ValueError):
+        scheduler_module._cron_trigger("0 3 *", timezone=resolve_timezone("UTC"))  # noqa: SLF001
+    with pytest.raises(ValueError):
+        scheduler_module._cron_trigger("0 3 * * * *", timezone=resolve_timezone("UTC"))  # noqa: SLF001
+
+
 # ---------------------------------------------------------------- 6. start / shutdown 生命周期
 
 
