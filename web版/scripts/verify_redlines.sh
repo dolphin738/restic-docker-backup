@@ -223,6 +223,28 @@ else
   ok 'A6 parser.py 保持纯函数'
 fi
 
+# ---------------------------------------------------------------- 时间语义唯一实现点
+
+section 'C8 时间语义唯一实现点'
+
+# zoneinfo 只允许在 app/utils/time.py 直连（resolve_timezone 的唯一实现点）；
+# 业务与测试一律走 resolve_timezone()/now_utc()/parse_iso()——直连 ZoneInfo 在
+# tzdata 异常的容器里 utcoffset 非零（CI 复盘 cnb-opa-1k4qp8tdh、cnb-dgc-1k4qqhg77）。
+# -I 跳过二进制，避免 __pycache__ 漂移误报。
+out=$(grep -rIln 'from zoneinfo import\|^import zoneinfo' backend/app backend/tests --include=*.py 2>/dev/null \
+      | grep -v 'utils/time.py')
+if [ -n "$out" ]; then
+  violation 'C8 zoneinfo 直连出现在 utils/time.py 之外（应走 resolve_timezone）'
+  detail "$out"
+else
+  ok 'C8 zoneinfo 直连仅限 utils/time.py'
+fi
+
+# 反向锚点：resolve_timezone 必须真实存在（唯一实现点不能是空悬引用）
+if ! grep -q 'def resolve_timezone' backend/app/utils/time.py 2>/dev/null; then
+  violation 'C8 utils/time.py 缺少 resolve_timezone（唯一实现点悬空）'
+fi
+
 # ---------------------------------------------------------------- 可调阈值
 
 section '可调阈值单一真源'
@@ -267,8 +289,8 @@ if [ ! -f AGENTS.md ]; then
 elif [ ! -f docs/代码审查规范.md ]; then
   violation 'docs/代码审查规范.md 缺失（红线唯一权威版本）'
 else
-  # AGENTS.md 引用的编号必须在规范里真实存在
-  for id in $(grep -oE '\[(S|A)[0-9]+(/[SA][0-9]+)*\]' AGENTS.md 2>/dev/null \
+  # AGENTS.md 引用的编号必须在规范里真实存在（含 C 类正确性红线）
+  for id in $(grep -oE '\[(S|A|C)[0-9]+(/[SA][0-9]+)*\]' AGENTS.md 2>/dev/null \
               | tr -d '[]' | tr '/' '\n' | sort -u); do
     if ! grep -qE "^\| $id \|" docs/代码审查规范.md 2>/dev/null; then
       violation "同步失败：AGENTS.md 引用的编号 [$id] 在规范 §3.1 中不存在"

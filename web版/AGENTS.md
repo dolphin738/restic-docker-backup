@@ -67,6 +67,9 @@ bash scripts/verify_redlines.sh
 10. **[A4/A6] SSE 底座是日志文件、解析层零 IO**——`SseChannel`（`app/services/sse.py`）不得改为纯内存队列（否则丢失断点续传与重启回放）；心跳 15s 与 `X-Accel-Buffering: no` 不得移除；`OutputParser`（`app/services/parser.py`）保持纯函数，**不得 import `os` / `repositories` / `restic`**，破坏 fixture 可回归能力 = 违规。
     自查：`grep -n "^import\|^from" backend/app/services/parser.py`
 
+11. **[C8] 时间语义只走 `app/utils/time.py`**——`zoneinfo` 只允许在 `utils/time.py` 直连（`resolve_timezone` 的唯一实现点）；业务代码与测试的时区处理一律走 `resolve_timezone()` / `now_utc()` / `parse_iso()`，直连 `ZoneInfo` = Blocker：tzdata 异常的容器里 `ZoneInfo("UTC")` 的 utcoffset 非零，同刻换算结果随环境漂移（CI 复盘 cnb-opa-1k4qp8tdh、cnb-dgc-1k4qqhg77 两次同签名事故）。
+    自查：`grep -rIln "from zoneinfo import\|^import zoneinfo" backend/app backend/tests --include=*.py | grep -v utils/time.py`（应零命中）
+
 ## 可调阈值（不得裸写数值）
 
 阈值一律走 `settings`（环境变量为大写形式）或构造参数，**常量只作默认值单一真源**。当前可调项：
