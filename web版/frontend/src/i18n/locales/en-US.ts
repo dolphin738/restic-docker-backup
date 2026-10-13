@@ -171,7 +171,7 @@ export default {
       paused: 'Paused',
       never_run: 'Never run',
     },
-    last_run: 'Last run',
+    last_run_label: 'Last run:',
     next_run: 'Next run',
     manual_only: 'Manual only',
     paused: 'Paused',

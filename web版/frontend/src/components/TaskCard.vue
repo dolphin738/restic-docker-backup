@@ -115,7 +115,7 @@ function openLogs(): void {
       <!-- 元信息行：上次/下次运行 -->
       <n-space :size="16" class="task-card__meta">
         <n-text depth="3" class="task-card__meta-item">
-          {{ t('task.last_run') }}：<n-text depth="2">{{ lastRunText }}</n-text>
+          {{ t('task.last_run_label') }}<n-text depth="2">{{ lastRunText }}</n-text>
         </n-text>
         <n-text depth="3" class="task-card__meta-item">
           {{ t('task.next_run') }}：<n-text depth="2">{{ nextRunText }}</n-text>
@@ -131,7 +131,7 @@ function openLogs(): void {
           :title="t('task.progress')"
         />
         <n-space v-else-if="lastResultText" align="center" :size="6">
-          <n-text depth="3">{{ t('task.last_run') }}：</n-text>
+          <n-text depth="3">{{ t('task.last_run_label') }}</n-text>
           <n-tag size="small" round :type="statusTagType">{{ lastResultText }}</n-tag>
         </n-space>
       </div>
