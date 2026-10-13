@@ -152,16 +152,6 @@ class SchedulerService:
             if trigger is None:
                 continue
             first_today = trigger.get_next_fire_time(None, today_start)
-            logger.warning(  # TODO(CI-DIAG): 临时诊断，定位后删
-                "DIAGC2 task=%s cmp_continue=%r first_today=%r now=%r tz=%r trigger_tz=%r cron=%r",
-                task.id,
-                (first_today is None or first_today > now),
-                first_today,
-                now,
-                self._tz,
-                trigger.timezone,
-                cron,
-            )
             if first_today is None or first_today > now:
                 continue  # 今天的应触发点未到（或当天不触发）
             last_success = await self._jobs.last_backup_success_finished_at(task.id)

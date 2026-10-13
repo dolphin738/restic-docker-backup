@@ -56,6 +56,11 @@ def parse_iso(value: str | None) -> datetime | None:
 def resolve_timezone(name: str | None) -> ZoneInfo | timezone:
     """解析时区名；无效或缺失时回退 UTC。
 
+    ``UTC``（含 ``Etc/UTC``）**不走 ZoneInfo 数据库**，直接返回内置固定偏移
+    :data:`UTC`——UTC 无夏令时/无历史偏移变化，查表只会引入环境依赖
+    （tzdata 数据异常的容器里 ``ZoneInfo("UTC")`` 的 utcoffset 可能非零，
+    使同刻的 aware datetime 比较结果随环境漂移；CI 复盘 cnb-opa-1k4qp8tdh）。
+
     Args:
         name: zoneinfo 时区名，如 ``Asia/Shanghai``。
 
@@ -63,6 +68,8 @@ def resolve_timezone(name: str | None) -> ZoneInfo | timezone:
         可传入 ``datetime.astimezone`` 的时区对象。
     """
     if not name:
+        return UTC
+    if name in ("UTC", "Etc/UTC"):
         return UTC
     try:
         return ZoneInfo(name)
