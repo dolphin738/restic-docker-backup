@@ -254,7 +254,10 @@ def _to_policy(row: Any) -> Policy:
         compression=str(row["compression"] or "auto"),
         check_sample_ratio=float(row["check_sample_ratio"] or 0.0),
         monthly_full_day=int(row["monthly_full_day"] or 1),
-        prune_interval_days=int(row["prune_interval_days"] or 7),
+        # 显式 is None 判断而非 `or 7`：Python 里 `0 or 7 == 7`，会把用户显式
+        # 保存的 0（语义=关闭 prune 到期提示）吞成 7（回归护栏见
+        # tests/test_repos.py）。DDL 为 NOT NULL DEFAULT 7，None 仅防御。
+        prune_interval_days=int(row["prune_interval_days"] if row["prune_interval_days"] is not None else 7),
         limit_up_kibps=int(row["limit_up_kibps"] or 0),
         limit_down_kibps=int(row["limit_down_kibps"] or 0),
         last_run_at=None if row["last_run_at"] is None else str(row["last_run_at"]),
