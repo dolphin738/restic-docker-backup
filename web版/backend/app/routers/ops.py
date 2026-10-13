@@ -1,14 +1,16 @@
-"""运维路由（架构 §2 P2 定档）：E21 forget 预览（R-016 预览-确认流的前半）。
+"""运维路由（架构 §2 P2 定档）：E21 forget 预览 / E23·E24 通知（R-016/R-018）。
 
-三条约定（承接快照路由 + G3 安全裁决）：
+四条约定（承接快照路由 + G3 安全裁决）：
 
-1. **只读**：本端点恒以 ``forget --dry-run`` 执行（:class:`WhitelistArgs.dry_run`
+1. **E21 只读**：恒以 ``forget --dry-run`` 执行（:class:`WhitelistArgs.dry_run`
    由本路由硬编码 ``True``，调用方无法覆盖），**绝不**落任何裁剪。实际执行必须经
    E12 ``{"type":"forget"}``（三重确认门在 UI，执行入审计 job.submit/finished）。
 2. **G3 服务端兜底**：无任何 ``keep_*`` 规则的 forget 会删除分组内**全部**快照——
    preview 与 E12 执行两侧同拒 422（见 :func:`require_keep_rule`）。
-3. **探测失败不静默**：restic 非 0 退出/超时 → 500 ``RESTIC_FAILED``，
-   ``data.reason`` 由 :func:`app.services.restic.failure_reason` 生成可操作文案。
+3. **探测/推送失败不静默**：restic 非 0 退出/超时 → 500 ``RESTIC_FAILED``；
+   E24 测试消息逐渠道回结果，失败必须带原因。
+4. **E23 脱敏**：healthchecks/webhook URL 内嵌令牌，只回 ``*_set`` 布尔不回明文
+   （与 E06 cred.* 同口径）；写入三态语义（None=不变 / ""=清除 / 非空=设置）。
 
 预览与执行的一致性（R-016 验收口径）：响应 ``params`` 回显请求参数，前端确认门
 提交 E12 时原样透传——执行侧 :meth:`JobRunner._build_args` forget 分支消费同一批
@@ -24,11 +26,40 @@ from fastapi import APIRouter, Depends, Request
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
-from app.constants import AUDIT_FORGET_PREVIEW, FORGET_PREVIEW_TIMEOUT_SECONDS
+from app.constants import (
+    AUDIT_FORGET_PREVIEW,
+    AUDIT_NOTIFY_TEST,
+    AUDIT_NOTIFY_UPDATE,
+    FORGET_PREVIEW_TIMEOUT_SECONDS,
+)
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import ResticFailedError, ValidationError
-from app.schemas.api_schemas import ForgetPreviewRequest, ForgetPreviewResponse, ForgetPreviewSnapshot
+from app.schemas.api_schemas import (
+    ForgetPreviewRequest,
+    ForgetPreviewResponse,
+    ForgetPreviewSnapshot,
+    NotifyConfigPatch,
+    NotifyConfigResponse,
+    NotifyTestChannel,
+    NotifyTestResponse,
+    OkResponse,
+)
 from app.services.env_sync import load_credentials
+from app.services.notifier import (
+    DEFAULT_MEOW_REDACT,
+    DEFAULT_WEBHOOK_REDACT,
+    KEY_HEALTHCHECKS_URL,
+    KEY_MEOW_NICKNAME,
+    KEY_MEOW_REDACT,
+    KEY_ON_SUCCESS,
+    KEY_SKIPPED_THRESHOLD,
+    KEY_WEBHOOK_REDACT,
+    KEY_WEBHOOK_TEMPLATE,
+    KEY_WEBHOOK_URL,
+    Notifier,
+    _parse_bool,
+    _parse_threshold,
+)
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
@@ -178,4 +209,106 @@ async def preview_forget(
         group_count=len(groups),
         params=echo_params,  # type: ignore[arg-type]
         truncated=probe.truncated,
+    )
+
+
+# ---------------------------------------------------------------- E23/E24 通知（R-018）
+
+def _bool_value(value: bool) -> str:
+    """布尔 → config 存储形态（"1"/"0"）。"""
+    return "1" if value else "0"
+
+
+@router.get(
+    "/notify",
+    response_model=NotifyConfigResponse,
+    summary="E23 通知配置读取",
+    dependencies=_PROTECTED,
+)
+async def get_notify(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> NotifyConfigResponse:
+    """通知配置：敏感 URL 只回 ``*_set`` 布尔（不回明文），其余回现值（未配置回缺省）。"""
+    del session
+    config: ConfigRepo = request.app.state.config_repo
+    return NotifyConfigResponse(
+        healthchecks_url_set=bool(((await config.get_value(KEY_HEALTHCHECKS_URL)) or "").strip()),
+        webhook_url_set=bool(((await config.get_value(KEY_WEBHOOK_URL)) or "").strip()),
+        webhook_template=(await config.get_value(KEY_WEBHOOK_TEMPLATE)) or "",
+        meow_nickname=(await config.get_value(KEY_MEOW_NICKNAME)) or "",
+        on_success=_parse_bool(await config.get_value(KEY_ON_SUCCESS), default=False),
+        skipped_threshold=_parse_threshold(await config.get_value(KEY_SKIPPED_THRESHOLD)),
+        webhook_redact=_parse_bool(await config.get_value(KEY_WEBHOOK_REDACT), default=DEFAULT_WEBHOOK_REDACT),
+        meow_redact=_parse_bool(await config.get_value(KEY_MEOW_REDACT), default=DEFAULT_MEOW_REDACT),
+    )
+
+
+@router.put(
+    "/notify",
+    response_model=OkResponse,
+    summary="E23 通知配置写入",
+    dependencies=_PROTECTED,
+)
+async def put_notify(
+    payload: NotifyConfigPatch,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """批量写入通知配置（三态语义见 :class:`NotifyConfigPatch`）；入审计 ``notify.update``。"""
+    del session
+    config: ConfigRepo = request.app.state.config_repo
+    patch: dict[str, str] = {}
+    if payload.healthchecks_url is not None:
+        patch[KEY_HEALTHCHECKS_URL] = payload.healthchecks_url.strip()
+    if payload.webhook_url is not None:
+        patch[KEY_WEBHOOK_URL] = payload.webhook_url.strip()
+    if payload.webhook_template is not None:
+        patch[KEY_WEBHOOK_TEMPLATE] = payload.webhook_template
+    if payload.meow_nickname is not None:
+        patch[KEY_MEOW_NICKNAME] = payload.meow_nickname.strip()
+    if payload.on_success is not None:
+        patch[KEY_ON_SUCCESS] = _bool_value(payload.on_success)
+    if payload.skipped_threshold is not None:
+        patch[KEY_SKIPPED_THRESHOLD] = str(int(payload.skipped_threshold))
+    if payload.webhook_redact is not None:
+        patch[KEY_WEBHOOK_REDACT] = _bool_value(payload.webhook_redact)
+    if payload.meow_redact is not None:
+        patch[KEY_MEOW_REDACT] = _bool_value(payload.meow_redact)
+    if not patch:
+        raise ValidationError("patch 不能为空（至少一个字段待更新）")
+
+    await config.set_many(patch)
+    keys = sorted(patch.keys())
+    await request.app.state.audit.record(
+        AUDIT_NOTIFY_UPDATE, target="notify", detail={"keys": keys, "count": len(keys)}, result="ok"
+    )
+    return OkResponse()
+
+
+@router.post(
+    "/notify/test",
+    response_model=NotifyTestResponse,
+    summary="E24 测试消息",
+    dependencies=_PROTECTED,
+)
+async def test_notify(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> NotifyTestResponse:
+    """向全部已配置渠道发测试消息，逐渠道回结果（失败必须带原因，禁止静默）。"""
+    del session
+    notifier: Notifier = request.app.state.notifier
+    ok, latency_ms, results, reason = await notifier.send_test()
+    await request.app.state.audit.record(
+        AUDIT_NOTIFY_TEST,
+        target="notify",
+        detail={"ok": ok, "channels": [item.channel for item in results]},
+        result="ok" if ok else "failed",
+    )
+    return NotifyTestResponse(
+        ok=ok,
+        latency_ms=latency_ms,
+        channels=[NotifyTestChannel(channel=item.channel, ok=item.ok, reason=item.reason) for item in results],
+        reason=reason,
     )

@@ -472,17 +472,18 @@ class ForgetPreviewRequest(_Base):
     """E21 forget 预览请求（R-016：策略参数 → forget --dry-run --json）。
 
     至少一个 ``keep_*`` 规则必须显式给出——无保留规则的 forget 会删除组内**全部**
-    快照（G3 服务端兜底：preview 与 E12 执行两侧同拒 422）。
+    快照（G3 服务端兜底：preview 与 E12 执行两侧同拒 422）。规则值域 ``≥1``：
+    0 = 不启用该维度（``--keep-last 0`` 的 restic 语义歧义，禁止显式传 0）。
     """
 
     tag: str | None = Field(default=None, description="按 tag 限定 forget 范围（如任务 tag task-1）；缺省作用于全仓库")
     group_by: str = Field(default="host,paths,tags", description="分组维度（restic --group-by）")
-    keep_last: int | None = Field(default=None, ge=0)
-    keep_hourly: int | None = Field(default=None, ge=0)
-    keep_daily: int | None = Field(default=None, ge=0)
-    keep_weekly: int | None = Field(default=None, ge=0)
-    keep_monthly: int | None = Field(default=None, ge=0)
-    keep_yearly: int | None = Field(default=None, ge=0)
+    keep_last: int | None = Field(default=None, ge=1)
+    keep_hourly: int | None = Field(default=None, ge=1)
+    keep_daily: int | None = Field(default=None, ge=1)
+    keep_weekly: int | None = Field(default=None, ge=1)
+    keep_monthly: int | None = Field(default=None, ge=1)
+    keep_yearly: int | None = Field(default=None, ge=1)
     prune: bool = Field(default=True, description="确认执行后是否随 forget --prune 回收数据（预览本身恒只读）")
 
 
@@ -509,6 +510,59 @@ class ForgetPreviewResponse(_Base):
     group_count: int = 0
     params: dict[str, Any] = Field(default_factory=dict)
     truncated: bool = False
+
+
+# ---------------------------------------------------------------- E23/E24 通知（R-018）
+
+class NotifyConfigResponse(_Base):
+    """E23 通知配置读取。
+
+    敏感 URL 字段（healthchecks/webhook，内嵌令牌）只回 ``*_set`` 布尔，不回明文
+    （与 E06 cred.* 同口径）；其余字段回现值（未配置回缺省）。
+    """
+
+    healthchecks_url_set: bool = False
+    webhook_url_set: bool = False
+    webhook_template: str = ""
+    meow_nickname: str = ""
+    on_success: bool = False
+    skipped_threshold: int = 100
+    webhook_redact: bool = False
+    meow_redact: bool = True
+
+
+class NotifyConfigPatch(_Base):
+    """E23 通知配置写入。
+
+    敏感 URL 字段三态：``None`` = 不变、``""`` = 清除、非空 = 设置；
+    其余字段 ``None`` = 不变。
+    """
+
+    healthchecks_url: str | None = Field(default=None, max_length=2048)
+    webhook_url: str | None = Field(default=None, max_length=2048)
+    webhook_template: str | None = Field(default=None, max_length=4000)
+    meow_nickname: str | None = Field(default=None, max_length=128)
+    on_success: bool | None = None
+    skipped_threshold: int | None = Field(default=None, ge=0, le=1_000_000)
+    webhook_redact: bool | None = None
+    meow_redact: bool | None = None
+
+
+class NotifyTestChannel(_Base):
+    """E24 单渠道测试结果（禁止静默：失败必须带原因）。"""
+
+    channel: str = Field(description="healthchecks | webhook | meow")
+    ok: bool
+    reason: str | None = None
+
+
+class NotifyTestResponse(_Base):
+    """E24 测试消息响应：整体 ok + 逐渠道结果；未配置任何渠道时 ok=False + reason。"""
+
+    ok: bool
+    latency_ms: int = 0
+    channels: list[NotifyTestChannel] = Field(default_factory=list)
+    reason: str | None = None
 
 
 # ---------------------------------------------------------------- E19 恢复
@@ -554,8 +608,13 @@ class RepoCapacity(_Base):
 
 
 class RepoStatusResponse(_Base):
-    """E30 仓库状态（仪表盘状态卡 + 锁残留醒目提示数据源）。"""
+    """E30 仓库状态（仪表盘状态卡 + 锁残留醒目提示数据源）。
 
+    ``configured=False`` 表示 ``repo.url`` 尚未填写——UI 方案 L3（QA 提出）：
+    「未配置」与「连接失败」分色（warning / error），二者不该同为一个红叉。
+    """
+
+    configured: bool = True
     connected: bool = False
     locked: bool = False
     capacity: RepoCapacity = Field(default_factory=RepoCapacity)

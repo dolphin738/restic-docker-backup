@@ -213,7 +213,7 @@ async def _probe_repo_status(request: Request) -> RepoStatusResponse:
     repo_url = (await config_repo.get_value("repo.url")) or ""
     if not repo_url:
         return RepoStatusResponse(
-            connected=False, locked=False, last_error="仓库地址未配置（请先填写 repo.url）"
+            configured=False, connected=False, locked=False, last_error="仓库地址未配置（请先填写 repo.url）"
         )
 
     env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
