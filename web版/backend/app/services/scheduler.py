@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import UTC, datetime, timedelta
+import re
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -45,6 +47,189 @@ SCHEDULE_JITTER_MAX_SECONDS = 3600      # 抖动上限防护（配置被写爆�
 
 # 调度 job id 前缀（reload 全量重建时据此识别「属于本调度器的触发器」）
 _JOB_ID_PREFIX = "backup-task-"
+
+# 标准 crontab 星期取值上限（0=周日 … 6=周六，7 与 0 同义）；超出即原样透传由 APScheduler 报错
+_CRON_WEEKDAY_MAX = 7
+# 标准 crontab 星期取值末位（``a/N`` 未写终点时的缺省终点）
+_CRON_WEEKDAY_LAST = 6
+
+# 星期字段内的数字
+_WEEKDAY_NUMBER_RE = re.compile(r"\d+")
+# 星期字段内的名称（mon/tue/…/sun 及其缩写）：含字母即按名称段处理
+_WEEKDAY_NAME_RE = re.compile(r"[A-Za-z]")
+
+
+def _expand_weekday_values(days: Iterable[int]) -> str:
+    """把标准 crontab 的星期集合逐个 ``(d + 6) % 7`` 换算后输出逗号列表。
+
+    区间与步长两条展开路径共用此收尾逻辑——**先取标准集合、再逐项换算**，绝不对
+    区间端点独立取模（``0-6`` 独立取模会变成 ``6-5``，首值大于末值直接撞
+    APScheduler 的 ``first > last`` 校验抛 ``ValueError``，任务退化「仅手动」＝
+    备份静默停止；见 :func:`_expand_weekday_range`）。
+    """
+    return ",".join(str((day + 6) % 7) for day in days)
+
+
+def _canonical_weekday_start(value: int) -> int:
+    """区间/步长**起点**归一化：标准 crontab 中 ``7`` 与 ``0`` 同为周日。
+
+    ``7-6`` 因此等价于 ``0-6``（周日至周六＝每天）；终点不归一化——``1-7`` 需保留
+    末位周日（``range(1, 8)`` 含 7）才是「周一至周日＝每天」。
+    """
+    return 0 if value == _CRON_WEEKDAY_MAX else value
+
+
+def _expand_weekday_range(start: int, end: int) -> str | None:
+    """把 ``a-b`` 数字区间展开为显式枚举；环绕（``a > b``）或越界返回 ``None``。
+
+    Returns:
+        展开后的 APScheduler 编号逗号列表；``None`` 表示**该区间非法**，调用方原样
+        透传交给 APScheduler 报错（标准 cron 同样不支持环绕区间，两边口径一致）。
+    """
+    start = _canonical_weekday_start(start)
+    if start > _CRON_WEEKDAY_MAX or end > _CRON_WEEKDAY_MAX or start > end:
+        return None
+    return _expand_weekday_values(range(start, end + 1))
+
+
+def _expand_weekday_step(start: int, end: int, step: int) -> str:
+    """把「区间 + 步长」的标准星期集合**展开**为 APScheduler 编号的逗号列表。
+
+    为什么必须展开而不是只换算数字：APScheduler 的 ``*/N`` 从它自己的 0（周一）起算，
+    标准 crontab 从 0（周日）起算——起点不同导致两组是**完全不同的星期集合**，而非
+    「平移一天」：``*/2`` 标准 = {周日,周二,周四,周六}，APScheduler 原生 =
+    {周一,周三,周五,周日}（两组只在周日相交）。而 APScheduler 3.x 不支持 ``6/2``
+    这类带起点的步长写法（实测报 "the step value (2) is higher than the total range"），
+    无法用 ``a/N`` 一步换算到位——故把标准集合逐个 ``(n + 6) % 7`` 后展开成显式枚举。
+    """
+    return _expand_weekday_values(range(start, end + 1, step))
+
+
+def _expand_weekday_step_expression(base: str, step_text: str) -> str | None:
+    """解析 ``*/N`` / ``a/N`` / ``a-b/N`` 并展开；无法识别（含越界）返回 ``None``。
+
+    P2 护栏：步长本身也须校验上界——``*/8``、``*/99`` 这类越界步长若照
+    ``range(0, 7, N)`` 展开会被静默变成「仅周日」的合法值，与越界数字（``8``、
+    ``10``）「原样透传 → 报错」的处置口径不一致，属本缺陷要杜绝的「静默把非法值
+    变合法值」，故一律返回 ``None`` 交 APScheduler 报错。
+
+    Returns:
+        展开后的 APScheduler 编号逗号列表；``None`` 表示**无法识别**，调用方原样
+        透传该段，交给 APScheduler 抛 ``ValueError``（非法值不得静默变合法）。
+    """
+    if not step_text.isdigit():
+        return None
+    step = int(step_text)
+    if step <= 0:
+        return None  # ``*/0`` → APScheduler 报 "Increment must be higher than 0"
+    if step > _CRON_WEEKDAY_MAX:
+        return None  # ``*/8`` 等越界步长 → APScheduler 报 "... higher than the total range"
+    if base == "*":
+        start, end = 0, _CRON_WEEKDAY_LAST
+    elif base.isdigit():
+        start, end = int(base), _CRON_WEEKDAY_LAST  # ``a/N``：从 a 到星期末位
+    elif "-" in base:
+        left, _, right = base.partition("-")
+        if not (left.isdigit() and right.isdigit()):
+            return None
+        start, end = int(left), int(right)
+    else:
+        return None
+    start = _canonical_weekday_start(start)
+    if start > _CRON_WEEKDAY_MAX or end > _CRON_WEEKDAY_MAX or start > end:
+        return None
+    return _expand_weekday_step(start, end, step)
+
+
+def _shift_weekday_number(match: re.Match[str]) -> str:
+    """单个星期数字换算（``(n + 6) % 7``）；越界值原样透传由 APScheduler 报错。"""
+    value = int(match.group())
+    if value > _CRON_WEEKDAY_MAX:
+        return match.group()
+    return str((value + 6) % 7)
+
+
+def _shift_weekday_segment(segment: str) -> str:
+    """换算星期字段的一段（``field.split(",")`` 的元素），无法识别的形态原样返回。
+
+    - ``*``：两边同为「全部」，原样保留；
+    - ``*/N`` / ``a/N`` / ``a-b/N``：展开为标准星期集合的显式枚举；
+    - ``a-b``（纯数字区间）：**先展开再逐项换算**（端点独立取模会撞 APScheduler
+      的 ``first > last`` 校验，见 :func:`_expand_weekday_values`）；非法区间原样透传；
+    - ``a``（纯数字单点）：``(n + 6) % 7`` 换算；
+    - 名称段（``mon`` / ``mon-fri`` / ``fri-mon``…）：两边语义一致，原样保留；
+    - 数字与名称混杂（``0-fri`` 等畸形）：原样透传，交给 APScheduler 报错。
+    """
+    if _WEEKDAY_NAME_RE.search(segment):
+        return segment
+    base, slash, step_text = segment.partition("/")
+    if slash:
+        expanded = _expand_weekday_step_expression(base, step_text)
+        return expanded if expanded is not None else segment
+    if "-" in base:
+        left, _, right = base.partition("-")
+        if left.isdigit() and right.isdigit():
+            expanded = _expand_weekday_range(int(left), int(right))
+            return expanded if expanded is not None else segment
+    return _WEEKDAY_NUMBER_RE.sub(_shift_weekday_number, base)
+
+
+def _shift_weekday_field(field: str) -> str:
+    """把星期字段从**标准 crontab 编号**换算为 APScheduler 3.x 编号。
+
+    标准 crontab：``0``=周日、``1``=周一 … ``6``=周六、``7``=周日（与 0 同义）；
+    APScheduler 3.x：``0``=周一 … ``6``=周日。两者正好差一天，故数字按
+    ``(n + 6) % 7`` 换算（0→6、1→0、6→5、7→6）；步长写法（``*/N`` 等）因起算点
+    不同而必须**展开为显式枚举**，逐段规则见 :func:`_shift_weekday_segment`。
+
+    换算**只对数字生效**：``*`` / ``,`` / ``-`` 结构与名称写法（``mon-fri``、``sun``，
+    两边语义一致）原样保留。越界数字（>7）与无法识别的形态一律原样透传，交给
+    APScheduler 抛 ``ValueError``——静默把非法值取模成合法星期是本缺陷的类型，不能重犯。
+    步长写法无法只换算数字（两边 ``*/N`` 起算点不同，集合而非平移的差异），故统一
+    展开为显式枚举（APScheduler 3.x 不支持带起点的步长），见 :func:`_expand_weekday_step`。
+    """
+    return ",".join(_shift_weekday_segment(segment) for segment in field.split(","))
+
+
+def _cron_trigger(cron: str, *, timezone: tzinfo) -> CronTrigger:
+    """按 5 字段 cron（分 时 日 月 周）构造触发器，**星期字段按标准 crontab 语义解释**。
+
+    为什么不直接用 ``CronTrigger.from_crontab``：APScheduler 3.x 的该方法有官方承认的
+    历史缺陷——其 docstring 的 warning 原文为「Due to a historical mistake, there is a
+    mismatch between weekday numbers, as APScheduler treats 0 as Monday while the
+    original crontab treats it as Sunday. This has been rectified in the v4.x series but
+    cannot be changed in the 3.x series due to backwards compatibility.」（上游 issue
+    #286）。调用它等于把管理员填写的 cron 整体平移一天。
+
+    本产品**必须**修正：cron 表达式直接暴露给管理员填写（E35 任务表单 / config
+    ``schedule.cron_default``），管理员按标准 crontab 语义理解「``0 3 * * 1`` =
+    每周一 03:00」；真机任务 #1 实测该表达式返回的下次运行落在**周二** 03:00（=
+    APScheduler 原生解释），即缺陷实证。故此处自行分字段校验后显式构造
+    ``CronTrigger``，仅对星期字段做 :func:`_shift_weekday_field` 换算，其余四个字段
+    （分/时/日/月）两边语义一致，直接透传。
+
+    Args:
+        cron: 5 字段 cron 表达式（分 时 日 月 周）。
+        timezone: 触发器时区（任务时区/config.timezone）。
+
+    Returns:
+        按标准 crontab 语义解释的 ``CronTrigger``。
+
+    Raises:
+        ValueError: 字段数非 5，或字段内容非法（由 ``CronTrigger`` 校验抛出）。
+    """
+    fields = cron.split()
+    if len(fields) != 5:
+        raise ValueError(f"cron 须为 5 字段（分 时 日 月 周），实得 {len(fields)} 字段：{cron!r}")
+    minute, hour, day, month, day_of_week = fields
+    return CronTrigger(
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=_shift_weekday_field(day_of_week),
+        timezone=timezone,
+    )
 
 
 class SchedulerService:
@@ -98,8 +283,8 @@ class SchedulerService:
     async def reload(self) -> None:
         """全量重建 backup 触发器（保存/删除后由路由调用，「保存即生效不重启容器」）。
 
-        ``enabled=1`` 且有效 cron 非空的任务各建一个 ``CronTrigger.from_crontab``
-        （``replace_existing``）；随后移除已不存在/已暂停/无有效 cron 任务的遗留 job。
+        ``enabled=1`` 且有效 cron 非空的任务各建一个 cron 触发器（:func:`_cron_trigger`，
+        ``replace_existing``）；随后移除已不存在/已暂停/无有效 cron 任务的遗留 job。
         """
         await self._refresh_config_snapshot()
         tasks = await self._tasks.list_all(DEFAULT_REPO_ID)
@@ -242,12 +427,15 @@ class SchedulerService:
         return self._cron_default
 
     def _build_trigger(self, task_id: int, cron: str) -> CronTrigger | None:
-        """按有效 cron 建触发器；无法解析（如 6 字段秒级表达式）时记 WARNING 并返回 None。"""
+        """按有效 cron 建触发器（星期字段走标准 crontab 语义，见 :func:`_cron_trigger`）。
+
+        无法解析（如 6 字段秒级表达式、星期越界）时记 WARNING 并返回 None（退化「仅手动」）。
+        """
         try:
-            return CronTrigger.from_crontab(cron, timezone=self._tz)
+            return _cron_trigger(cron, timezone=self._tz)
         except ValueError as exc:
             logger.warning(
-                "任务 %s 的 cron %r 无法解析（from_crontab 仅收 5 字段）：%s；该任务不建触发器（仅手动）",
+                "任务 %s 的 cron %r 无法解析（仅收 5 字段：分 时 日 月 周）：%s；该任务不建触发器（仅手动）",
                 task_id,
                 cron,
                 exc,

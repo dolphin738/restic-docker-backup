@@ -224,8 +224,10 @@ class PolicyService:
     def _normalize_cron(value: Any) -> str | None:
         """cron 校验：**只收 5 字段（分 时 日 月 周）**（X5 owner 裁决收紧）。
 
-        调度器 ``CronTrigger.from_crontab`` 的解析上限即 5 字段——放行 6 字段（秒级）
-        会导致保存成功但任务永不自动触发，故在写入侧直接 422 拒绝。
+        调度器建触发器的解析上限即 5 字段（``app.services.scheduler._cron_trigger``
+        自行分字段校验，星期字段按标准 crontab 语义换算后交给 APScheduler——
+        不直接用 ``from_crontab``，后者在 3.x 有星期偏移一天的历史缺陷，issue #286）。
+        放行 6 字段（秒级）会导致保存成功但任务永不自动触发，故在写入侧直接 422 拒绝。
         """
         if value is None or str(value).strip() == "":
             return None

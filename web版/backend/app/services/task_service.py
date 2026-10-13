@@ -1,7 +1,10 @@
 """任务服务（增量设计 §1.1/§2.1 E34–E36）：字段校验、归一与列↔API 字段换算。
 
 共享字段校验**委托既有 :class:`PolicyService`**（§1.1 选型表）：任务与策略字段同构，
-sources/excludes 三分类归一、cron 5 字段校验（X5 收紧，与调度器 from_crontab 对齐）、
+sources/excludes 三分类归一、cron 5 字段校验（X5 收紧，与调度器建触发器的解析上限对齐：
+``app.services.scheduler._cron_trigger`` 自行分字段校验，仅收 5 字段，星期字段按标准
+crontab 语义换算后交给 APScheduler——不直接用 ``from_crontab``，后者在 3.x 有星期偏移
+一天的历史缺陷，issue #286）、
 keep_* 非负、compression 白名单、one_file_system 模式缺省——全部复用策略域单一真源，
 **不复制第二套校验**。
 
