@@ -154,6 +154,28 @@ class JobRepo:
             return None
         return str(row["finished_at"])
 
+    async def latest_backup_success_by_tasks(self, task_ids: list[int]) -> dict[int, str]:
+        """每任务最近一次**成功** backup 的 ``finished_at``（E34 列表批量版）。
+
+        与 :meth:`last_backup_success_finished_at` 同语义的批量形态：一次查询替代
+        逐任务 N 次单查（E34 卡片列表 prune_due 聚合用）。空列表直接返回空字典
+        （不发 SQL）；无成功历史的任务不出现在字典中。
+        """
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" * len(task_ids))
+        rows = await self._db.fetch_all(
+            f"SELECT task_id, finished_at FROM jobs WHERE type = 'backup' AND task_id IN ({placeholders}) "
+            "AND status = 'success' AND finished_at IS NOT NULL ORDER BY finished_at DESC",
+            tuple(task_ids),
+        )
+        latest: dict[int, str] = {}
+        for row in rows:
+            task_id = int(row["task_id"])
+            if task_id not in latest:
+                latest[task_id] = str(row["finished_at"])
+        return latest
+
     # ---------------------------------------------------------------- 写
 
     async def create(

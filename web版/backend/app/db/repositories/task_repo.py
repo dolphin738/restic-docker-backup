@@ -173,6 +173,7 @@ class TaskRepo:
         """
         payload = dict(_SEED_DEFAULTS)
         payload.update(values)
+        _assert_columns(payload, allow_row_stamps=False)
         now = utc_iso()
         columns = list(payload.keys()) + ["created_at", "updated_at"]
         placeholders = ",".join("?" * len(columns))
@@ -204,6 +205,7 @@ class TaskRepo:
         payload = {key: value for key, value in values.items() if key not in ("id", "tag", "repo_id")}
         if not payload:
             return await self.get(task_id)
+        _assert_columns(payload, allow_row_stamps=False)
         assignments = []
         params: list[Any] = []
         for key, value in payload.items():
@@ -247,6 +249,20 @@ class TaskRepo:
     def generate_tag(task_id: int) -> str:
         """任务 tag 生成规则（单一实现点）：``task-<自增 id>``，只读。"""
         return f"task-{task_id}"
+
+
+def _assert_columns(values: dict[str, Any], *, allow_row_stamps: bool) -> None:
+    """列名白名单断言（防注入纵深）：INSERT/UPDATE 的列名拼进 SQL 前校验合法。
+
+    ``values`` 的 key 必须全部落在 ``_COLUMNS`` 内；``allow_row_stamps`` 允许
+    ``created_at``/``updated_at``（create 内部追加）。仓储层自身不信任调用方——
+    当前唯一调用方（TaskService.normalize）输出固定键集，此断言防的是未来新调用方
+    误传任意 key 成为 SQL 注入面。违规属编程错误，raise ``ValueError``（非用户 4xx）。
+    """
+    allowed = set(_COLUMNS) | ({"created_at", "updated_at"} if allow_row_stamps else set())
+    unknown = set(values) - allowed
+    if unknown:
+        raise ValueError(f"backup_tasks 非法列名：{sorted(unknown)}（不在 _COLUMNS 白名单内）")
 
 
 def _serialize(value: Any) -> Any:
