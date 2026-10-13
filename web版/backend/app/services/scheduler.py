@@ -8,7 +8,7 @@
 - jitter 在 fire 回调内 sleep（顺序：查 enabled → jitter → 记账 → submit），
   先记账后执行防崩溃重复触发（§6.4）；
 - 补跑（:meth:`catchup_on_startup`）：当天首个应触发点已过且无成功 backup → 补跑一次；
-- **prune 边界（N3 裁决）**：:meth:`_due_for_prune` 只判定并在 E34 卡片暴露
+- **prune 边界（N3 裁决）**：:meth:`due_for_prune_map` 只判定并在 E34 卡片暴露
   ``prune_due``，本批**不自动提交 forget**（R-016 预览-确认流不在本增量池内）。
 
 线程/并发模型：单进程单事件循环；提交仍全量走 :class:`JobRunner` 的仓库维度互斥
@@ -152,6 +152,16 @@ class SchedulerService:
             if trigger is None:
                 continue
             first_today = trigger.get_next_fire_time(None, today_start)
+            logger.warning(  # TODO(CI-DIAG): 临时诊断，定位后删
+                "DIAGC task=%s now=%r today_start=%r first_today=%r tz=%r trigger_tz=%r cron=%r",
+                task.id,
+                now,
+                today_start,
+                first_today,
+                self._tz,
+                trigger.timezone,
+                cron,
+            )
             if first_today is None or first_today > now:
                 continue  # 今天的应触发点未到（或当天不触发）
             last_success = await self._jobs.last_backup_success_finished_at(task.id)
@@ -179,21 +189,31 @@ class SchedulerService:
         nxt = trigger.get_next_fire_time(None, datetime.now(UTC))
         return utc_iso(nxt) if nxt is not None else None
 
-    async def _due_for_prune(self, task: Task) -> bool:
-        """prune 到期独立判定（§6.4 / N3）：距上次成功 backup 超 ``prune_interval_days``。
+    async def due_for_prune(self, task: Task) -> bool:
+        """prune 到期判定（单任务便捷形态，委托 :meth:`due_for_prune_map`）。"""
+        return (await self.due_for_prune_map([task]))[task.id]
+
+    async def due_for_prune_map(self, tasks: list[Task]) -> dict[int, bool]:
+        """批量 prune 到期判定（§6.4 / N3）：距上次成功 backup 超 ``prune_interval_days``。
 
         **只判定，不执行**——到期仅在 E34 卡片暴露 ``prune_due`` 提示；自动 forget
         留待 R-016 预览-确认流（G3：不发生未经确认门的裁剪事故）。
         ``prune_interval_days <= 0`` 视为不启用（与 ``limit_*=0`` 不限同口径）；
         从未成功备份 → 无可清理对象 → False。
+        批量形态：``latest_backup_success_by_tasks`` 一次查询替代逐任务 N 次单查
+        （E34 列表聚合；判定逻辑与单任务版共用本实现，无第二套）。
         """
-        if task.prune_interval_days <= 0:
-            return False
-        last_success = await self._jobs.last_backup_success_finished_at(task.id)
-        finished = parse_iso(last_success) if last_success else None
-        if finished is None:
-            return False
-        return datetime.now(UTC) - finished > timedelta(days=task.prune_interval_days)
+        result: dict[int, bool] = {t.id: False for t in tasks}
+        eligible = [t for t in tasks if t.prune_interval_days > 0]
+        last_success_map = await self._jobs.latest_backup_success_by_tasks([t.id for t in eligible])
+        now = datetime.now(UTC)
+        for t in eligible:
+            raw = last_success_map.get(t.id)
+            finished = parse_iso(raw) if raw else None
+            if finished is None:
+                continue
+            result[t.id] = now - finished > timedelta(days=t.prune_interval_days)
+        return result
 
     # ---------------------------------------------------------------- 触发链（§4.1）
 
