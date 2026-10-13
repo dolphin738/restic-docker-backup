@@ -199,8 +199,19 @@ async function onDeleteConfirmed(): Promise<void> {
 
           <n-space vertical :size="10">
             <n-space align="center" :size="8">
-              <n-tag size="small" round :type="repoStatus?.connected ? 'success' : 'error'">
-                {{ repoStatus?.connected ? t('dashboard.repoConnected') : t('dashboard.repoDisconnected') }}
+              <!-- L3（UI 方案）：未配置（warning）与连接失败（error）分色，不再同为一个红叉 -->
+              <n-tag
+                size="small"
+                round
+                :type="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
+              >
+                {{
+                  repoStatus?.connected
+                    ? t('dashboard.repoConnected')
+                    : repoStatus?.configured === false
+                      ? t('dashboard.repoNotConfigured')
+                      : t('dashboard.repoDisconnected')
+                }}
               </n-tag>
               <n-tag size="small" round :type="repoStatus?.locked ? 'warning' : 'default'">
                 {{ repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked') }}
@@ -212,7 +223,11 @@ async function onDeleteConfirmed(): Promise<void> {
               <n-statistic :label="t('dashboard.repoSnapshots')" :value="snapsText" />
             </n-space>
 
-            <n-alert v-if="repoStatus?.last_error" type="error" :show-icon="false">
+            <n-alert
+              v-if="repoStatus?.last_error"
+              :type="repoStatus.configured === false ? 'warning' : 'error'"
+              :show-icon="false"
+            >
               {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
             </n-alert>
 

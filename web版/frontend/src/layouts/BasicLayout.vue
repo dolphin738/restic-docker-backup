@@ -27,6 +27,7 @@ import { logout } from '@/api/auth'
 import { listActiveJobs } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import {
+  IconBell,
   IconDashboard,
   IconJobs,
   IconMenu,
@@ -72,6 +73,7 @@ const menuOptions = computed<MenuOption[]>(() => [
   { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
   { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
   { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
+  { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
 ])
 
 // 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。

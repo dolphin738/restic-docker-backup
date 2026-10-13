@@ -53,6 +53,13 @@ export const IconRestore: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M3 3v5h5' }),
   ])
 
+/** 通知设置：铃铛。 */
+export const IconBell: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8' }),
+    h('path', { d: 'M10.3 21a2 2 0 0 0 3.4 0' }),
+  ])
+
 /** 菜单按钮：汉堡（<960px 顶栏抽屉入口）。 */
 export const IconMenu: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [h('path', { d: 'M4 6.5h16M4 12h16M4 17.5h16' })])

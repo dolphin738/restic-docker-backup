@@ -73,6 +73,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/pages/restore/index.vue'),
         meta: { titleKey: 'nav.restore' },
       },
+      {
+        path: 'notifications',
+        name: 'notifications',
+        component: () => import('@/pages/notifications/index.vue'),
+        meta: { titleKey: 'nav.notifications' },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

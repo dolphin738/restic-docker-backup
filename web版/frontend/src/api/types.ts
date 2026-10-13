@@ -76,6 +76,8 @@ export interface RepoCapacity {
 }
 
 export interface RepoStatusResponse {
+  /** repo.url 是否已配置（L3：未配置与连接失败分色——warning / error）。 */
+  configured: boolean
   connected: boolean
   locked: boolean
   capacity: RepoCapacity
@@ -429,4 +431,43 @@ export interface ForgetPreviewRequest {
 export interface RestoreResponse {
   job_id: string
   restore_target: string
+}
+
+/** E23 通知配置（R-018）：敏感 URL 只回 *_set 布尔，不回明文（与 E06 cred.* 同口径）。 */
+export interface NotifyConfigResponse {
+  healthchecks_url_set: boolean
+  webhook_url_set: boolean
+  webhook_template: string
+  meow_nickname: string
+  on_success: boolean
+  skipped_threshold: number
+  webhook_redact: boolean
+  meow_redact: boolean
+}
+
+/** E23 写入：URL 字段三态（undefined=不变 / ''=清除 / 非空=设置），其余 undefined=不变。 */
+export interface NotifyConfigPatch {
+  healthchecks_url?: string
+  webhook_url?: string
+  webhook_template?: string
+  meow_nickname?: string
+  on_success?: boolean
+  skipped_threshold?: number
+  webhook_redact?: boolean
+  meow_redact?: boolean
+}
+
+/** E24 单渠道测试结果（失败必须带原因）。 */
+export interface NotifyTestChannel {
+  channel: 'healthchecks' | 'webhook' | 'meow'
+  ok: boolean
+  reason: string | null
+}
+
+/** E24 测试消息响应。 */
+export interface NotifyTestResponse {
+  ok: boolean
+  latency_ms: number
+  channels: NotifyTestChannel[]
+  reason: string | null
 }
