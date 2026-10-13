@@ -161,6 +161,86 @@ async def test_jobs_routes_require_session(app_client):
     assert resp.status_code == 401
 
 
+async def test_e12_unknown_task_id_returns_422_not_500(app_client):
+    """非法 ``task_id`` → 422 VALIDATION_ERROR（Q1：不得落到 500）。
+
+    缺陷背景：``task_id`` 原先只校验与 ``policy_id`` 互斥，不存在性校验；传入不存在
+    的 id 时 ``JobRunner`` 落库撞 ``jobs.task_id`` 外键抛 ``sqlite3.IntegrityError``，
+    未捕获即 HTTP 500。参数类错误统一走 422，``data.task_id`` 便于前端定位。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "task_id": 999999}, headers=ORIGIN
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["data"]["task_id"] == 999999
+
+
+async def test_e12_known_task_id_still_accepted(app_client):
+    """对照组：存在的 ``task_id`` 照常 202 受理（新校验不得误伤合法请求）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    task = await ns.app.state.task_repo.create(
+        {"name": "合法任务", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+    )
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "task_id": task.id}, headers=ORIGIN
+    )
+    assert resp.status_code == 202
+
+
+async def test_e12_task_id_and_policy_id_mutex_still_422(app_client):
+    """互斥校验优先：``task_id`` + ``policy_id`` 同传仍是既有的 422 互斥语义。
+
+    新加的存在性校验不得抢在互斥校验之前改变语义（互斥是入参组合错误，与 id 是否存在无关）。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    task = await ns.app.state.task_repo.create(
+        {"name": "互斥任务", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+    )
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "task_id": task.id, "policy_id": 1}, headers=ORIGIN
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "互斥" in body["message"]
+    assert body["data"]["task_id"] == task.id
+    assert body["data"]["policy_id"] == 1
+
+
+async def test_e12_unknown_policy_id_returns_422_not_500(app_client):
+    """非法 ``policy_id`` → 422 VALIDATION_ERROR（与 task_id 侧同口径，不得 500）。
+
+    同 Q1：``policy_id`` 原先也无存在性校验，不存在时落库撞 ``jobs.policy_id`` 外键
+    （``0001_init.sql:71``）抛 ``sqlite3.IntegrityError`` → 500。两条路径语义同为
+    「引用了不存在的实体」，错误语义必须一致（否则同一支 API 一会 422 一会 500）。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "policy_id": 999999}, headers=ORIGIN
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["data"]["policy_id"] == 999999
+
+
+async def test_e12_known_policy_id_still_accepted(app_client):
+    """对照组：存在的 ``policy_id``（缺省策略 id=1）照常 202 受理。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/jobs", json={"type": "backup", "policy_id": 1}, headers=ORIGIN
+    )
+    assert resp.status_code == 202
+
+
 async def test_e12_manual_backup_books_last_run_at(app_client):
     """手动「立即运行」backup → 记账 ``last_run_at``（与调度触发路径同口径）。
 

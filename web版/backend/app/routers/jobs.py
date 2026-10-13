@@ -70,11 +70,22 @@ async def create_job(
     """
     del session
     runner = request.app.state.job_runner
+    task_repo = request.app.state.task_repo
+    policy_repo = request.app.state.policy_repo
     if payload.task_id is not None and payload.policy_id is not None:
         raise ValidationError(
             "task_id 与 policy_id 互斥，只能指定其中一个",
             data={"task_id": payload.task_id, "policy_id": payload.policy_id},
         )
+    # 存在性前置校验（Q1）：非法 task_id 会在 JobRunner 落库时撞 jobs.task_id 外键
+    # 抛 sqlite3.IntegrityError → 未捕获即 500。此处提前 422 VALIDATION_ERROR
+    # （与其它参数类错误同口径），data 带 task_id 便于前端定位是哪条关联写错。
+    if payload.task_id is not None and await task_repo.get(payload.task_id) is None:
+        raise ValidationError("备份任务不存在", data={"task_id": payload.task_id})
+    # 同上：legacy policy_id 路径撞 jobs.policy_id 外键（0001_init.sql:71）同样 500，
+    # 一并前置为 422——两条路径语义同为「引用了不存在的实体」，错误语义必须一致。
+    if payload.policy_id is not None and await policy_repo.get(payload.policy_id) is None:
+        raise ValidationError("备份策略不存在", data={"policy_id": payload.policy_id})
     params = dict(payload.params)
     if params.get("excludes"):
         # 锚定路径白名单收紧为当前模式根（越界 → 422），见 exclusions.normalize_user_excludes
@@ -96,7 +107,7 @@ async def create_job(
     # 仅 backup 类型记账：restore/check/forget/unlock/init/dump 写入会把
     # 「上次备份时间」污染成「上次任何作业时间」，语义必须守住。
     if payload.task_id is not None and payload.type == JobType.BACKUP:
-        await request.app.state.task_repo.set_last_run_at(payload.task_id, utc_iso())
+        await task_repo.set_last_run_at(payload.task_id, utc_iso())
     return JobCreateResponse(id=job.id, status=JobStatus(job.status), type=payload.type)
 
 
