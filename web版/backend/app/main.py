@@ -202,6 +202,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_loader=task_repo.get_dict,
         # 任务终态（init/unlock 会改变仓库可连性）→ E30 状态缓存立即失效
         on_finish=invalidate_repo_status_cache,
+        # X6：backup success 终态且 task_id 非空 → 清 dry_run_pending（R-026-08 后半；
+        # 调仓储方法，A1 合规不在业务层写 SQL）
+        on_task_backup_success=task_repo.clear_dry_run_pending,
     )
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载

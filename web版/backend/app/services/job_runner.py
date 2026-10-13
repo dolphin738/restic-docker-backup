@@ -76,6 +76,7 @@ class JobRunner:
         policy_loader: PolicyLoader | None = None,
         task_loader: TaskLoader | None = None,
         on_finish: Callable[[], None] | None = None,
+        on_task_backup_success: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
         """构造执行器。
 
@@ -93,6 +94,10 @@ class JobRunner:
                 profile 解析时 task_id 优先于 policy_id（任务即策略，legacy 兼容）。
             on_finish: 任务到达终态后的外部回调（如 E30 仓库状态缓存失效）；
                 回调异常只记日志，不影响任务链路。
+            on_task_backup_success: backup 类型任务到达 **success** 终态且 ``task_id``
+                非空时以 task_id await 调用（X6：清 ``dry_run_pending``，由 main.py
+                注入 ``TaskRepo.clear_dry_run_pending``）；回调异常只记 WARNING，
+                不得影响 job 终态落库。
         """
         self._db = db
         self._restic = restic
@@ -105,6 +110,7 @@ class JobRunner:
         self._policy_loader = policy_loader
         self._task_loader = task_loader
         self._on_finish = on_finish
+        self._on_task_backup_success = on_task_backup_success
 
         self._jobs = JobRepo(db)
         self._config = ConfigRepo(db)
@@ -320,6 +326,10 @@ class JobRunner:
                     status=status,
                     detail={"job_id": job.id, "skipped_count": aggregate.skipped_count},
                 )
+                if status == "success" and job.type == "backup" and job.task_id is not None:
+                    # X6（owner 裁决）：「E36 预览成功**或首次成功备份**」清 dry_run_pending
+                    # 的后半——绕过 UI 直接成功备份同样解除 Start 拦截（R-026-08）
+                    await self._notify_task_backup_success(job.task_id)
             except asyncio.CancelledError:
                 logger.info("任务 %s 被取消，执行链路退出（终态由 cancel() 落库）", job.id)
                 raise
@@ -356,6 +366,23 @@ class JobRunner:
             self._on_finish()
         except Exception:  # noqa: BLE001 - 回调只做辅助通知，失败不能影响任务链路
             logger.exception("JobRunner on_finish 回调执行失败")
+
+    async def _notify_task_backup_success(self, task_id: int) -> None:
+        """backup 类型任务 success 终态后的任务级回调（X6：清 ``dry_run_pending``）。
+
+        沿 ``on_finish`` 回调先例（main.py 注入 ``TaskRepo.clear_dry_run_pending``，
+        A1 合规：业务层不写 SQL）。异常必须就地吞掉——本方法在 ``_run`` 的 try 块内
+        执行，回调若抛异常会被外层 ``except Exception`` 收敛为 failed 终态，篡改
+        已落库的 success。
+        """
+        if self._on_task_backup_success is None:
+            return
+        try:
+            await self._on_task_backup_success(task_id)
+        except Exception:  # noqa: BLE001 - 回调只做辅助状态推进，失败不能影响任务链路
+            logger.warning(
+                "JobRunner on_task_backup_success 回调执行失败（task=%s）", task_id, exc_info=True
+            )
 
     # ---------------------------------------------------------------- 启动恢复 / 关闭收尾
 

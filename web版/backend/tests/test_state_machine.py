@@ -112,8 +112,13 @@ async def make_runner(tmp_path, **fake_kwargs) -> tuple[Database, JobRunner, Job
     return db, runner, JobRepo(db)
 
 
-async def make_runner_with_tasks(tmp_path, **fake_kwargs) -> tuple[Database, JobRunner, JobRepo, TaskRepo]:
-    """带 task_loader 的 runner（选项②：profile 解析走 TaskRepo.get_dict 注入）。"""
+async def make_runner_with_tasks(
+    tmp_path, *, on_task_backup_success=None, **fake_kwargs
+) -> tuple[Database, JobRunner, JobRepo, TaskRepo]:
+    """带 task_loader 的 runner（选项②：profile 解析走 TaskRepo.get_dict 注入）。
+
+    ``on_task_backup_success``：X6 回调注入（缺省 None，与生产装配的可选语义一致）。
+    """
     db = Database(tmp_path / "jobs.db")
     await db.connect()
     settings = Settings(data_dir=str(tmp_path))
@@ -126,6 +131,7 @@ async def make_runner_with_tasks(tmp_path, **fake_kwargs) -> tuple[Database, Job
         AuditRepo(db),
         settings=settings,
         task_loader=task_repo.get_dict,
+        on_task_backup_success=on_task_backup_success,
     )
     return db, runner, JobRepo(db), task_repo
 
@@ -542,3 +548,127 @@ async def test_concurrent_task_submit_exactly_one_wins(tmp_path):
 
     await await_job(runner, wins[0].id)
     await db.close()
+
+
+# --------------------------------- X6：backup success 终态清 dry_run_pending（owner 裁决）
+
+async def test_backup_success_invokes_callback_and_clears_pending(tmp_path):
+    """X6：backup success 且 task_id 非空 → 回调以 task_id 调用、dry_run_pending 落库 0。
+
+    覆盖「首次成功备份」这条清除路径（与 E36 预览清除互补，R-026-08 全语义）——
+    绕过 UI 直接成功备份同样解除 Start 拦截。
+    """
+    db, runner, repo, task_repo = await make_runner_with_tasks(
+        tmp_path, lines=BACKUP_LINES
+    )
+    # 回调记录调用并清 dry_run_pending（与 main.py 注入 clear_dry_run_pending 同构）
+    calls: list[int] = []
+
+    async def callback(task_id: int) -> None:
+        calls.append(task_id)
+        await task_repo.clear_dry_run_pending(task_id)
+
+    runner._on_task_backup_success = callback  # noqa: SLF001 - 测试注入（构造期参数同款能力）
+
+    task = await task_repo.create({"name": "首跑任务", "sources": ["/host/srv"]})
+    assert task.dry_run_pending is True  # 创建即置 1
+
+    job = await runner.submit("backup", task_id=task.id)
+    await await_job(runner, job.id)
+
+    final = await repo.get(job.id)
+    assert final.status == "success"
+    assert calls == [task.id]
+    assert (await task_repo.get(task.id)).dry_run_pending is False
+    await db.close()
+
+
+
+async def test_backup_failure_does_not_invoke_callback(tmp_path):
+    """X6：failed 终态 → 不调用回调，dry_run_pending 保持 1（Start 拦截不解除）。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(
+        tmp_path, lines=BACKUP_LINES, exit_code=3
+    )
+    calls: list[int] = []
+
+    async def callback(task_id: int) -> None:
+        calls.append(task_id)
+
+    runner._on_task_backup_success = callback  # noqa: SLF001
+
+    task = await task_repo.create({"name": "失败任务", "sources": ["/host/srv"]})
+    job = await runner.submit("backup", task_id=task.id)
+    await await_job(runner, job.id)
+
+    final = await repo.get(job.id)
+    assert final.status == "failed"
+    assert calls == []
+    assert (await task_repo.get(task.id)).dry_run_pending is True
+    await db.close()
+
+
+async def test_cancelled_job_does_not_invoke_callback(tmp_path):
+    """X6：cancelled 终态 → 不调用回调（回调仅挂在 success 分支）。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(
+        tmp_path
+    )
+    calls: list[int] = []
+
+    async def callback(task_id: int) -> None:
+        calls.append(task_id)
+
+    runner._on_task_backup_success = callback  # noqa: SLF001
+
+    task = await task_repo.create({"name": "取消任务", "sources": ["/host/srv"]})
+    await insert_job(repo, "job-cancel-x6", "running", task_id=task.id)
+
+    cancelled = await runner.cancel("job-cancel-x6")
+    assert cancelled.status == "cancelled"
+    assert calls == []
+    assert (await task_repo.get(task.id)).dry_run_pending is True
+    await db.close()
+
+
+async def test_policy_path_success_does_not_invoke_callback(tmp_path):
+    """X6：legacy policy_id 路径（task_id=None）成功 → 不调用回调。"""
+    from app.db.repositories.policy_repo import PolicyRepo
+
+    db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
+    await PolicyRepo(db).ensure_default()  # jobs.policy_id 外键要求策略行存在
+    calls: list[int] = []
+
+    async def callback(task_id: int) -> None:
+        calls.append(task_id)
+
+    runner._on_task_backup_success = callback  # noqa: SLF001
+
+    job = await runner.submit("backup", policy_id=1, params={"sources": ["/host/etc"]})
+    await await_job(runner, job.id)
+
+    final = await repo.get(job.id)
+    assert final.status == "success"
+    assert final.task_id is None
+    assert calls == []
+    await db.close()
+
+
+async def test_callback_failure_does_not_break_success_terminal(tmp_path):
+    """X6：回调自身抛异常 → 吞掉并 WARNING，job 终态保持 success（不被改写为 failed）。"""
+    db, runner, repo, task_repo = await make_runner_with_tasks(
+        tmp_path, lines=BACKUP_LINES
+    )
+
+    async def broken_callback(task_id: int) -> None:
+        raise RuntimeError("callback exploded")
+
+    runner._on_task_backup_success = broken_callback  # noqa: SLF001
+
+    task = await task_repo.create({"name": "回调炸任务", "sources": ["/host/srv"]})
+    job = await runner.submit("backup", task_id=task.id)
+    await await_job(runner, job.id)
+
+    final = await repo.get(job.id)
+    assert final.status == "success"  # 终态未被回调异常篡改
+    assert final.exit_code == 0
+    await db.close()
+
