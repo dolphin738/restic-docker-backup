@@ -203,3 +203,10 @@ async def test_log_purge_unlinks_symlink_never_target(tmp_path, monkeypatch):
     assert target.read_bytes() == b"precious"  # 目标绝不跟随触达
     assert not dangling.exists()  # 悬空链接同样摘除、不抛异常
     assert report.log_files_deleted >= 2  # 计数进报告（0 字节，不影响 freed 统计）
+
+    # S-1（2026-10-15 审查）：缺此 close 曾致 aiosqlite worker 线程泄漏——用例正常
+    # 返回时 db 引用计数归零、被 GC 抢在 conftest 兜底 close 之前，兜底（WeakSet）
+    # 永远关不到它；非 daemon worker 线程带未处理项存活，在后续用例 loop 关闭后
+    # 爆 RuntimeError: Event loop is closed（挂到 test_scheduler 首用例的 warning）。
+    # 全仓唯一缺 close 的用例（本文件其余 6 例及各测试文件均已显式关闭）。
+    await db.close()
