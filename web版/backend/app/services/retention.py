@@ -162,6 +162,12 @@ def _purge_old_logs_sync(jobs_dir: Path, cutoff_epoch: float, protected: frozens
         if str(entry) in protected:
             continue
         try:
+            if entry.is_symlink():
+                # 符号链接只删链接本身、绝不跟随（S1：白名单外的目标不可被间接触达；
+                # 链接无保留价值，link 字节计 0）
+                entry.unlink()
+                deleted += 1
+                continue
             stat = entry.stat()
             if not entry.is_file() or stat.st_mtime >= cutoff_epoch:
                 continue

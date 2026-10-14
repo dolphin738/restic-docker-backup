@@ -167,3 +167,39 @@ async def test_log_purge_never_leaves_jobs_dir(tmp_path):
 
     assert outside.exists()  # jobs_dir 之外绝不触碰
     await db.close()
+
+
+async def test_log_purge_unlinks_symlink_never_target(tmp_path, monkeypatch):
+    """QA 补测（批次 B）：jobs_dir 内 ``.log`` 符号链接只删链接本身、绝不跟随触达目标。
+
+    攻击形态：jobs_dir 下 ``evil.log`` 指向白名单外的目标文件——若清理按
+    ``stat().st_mtime``（跟随链接）判定后 unlink，目标是否被删取决于平台语义；
+    显式 ``is_symlink`` 分支保证：链接被摘除（目录卫生、计 0 字节）、目标保留。
+
+    Windows（本仓库 CI/开发环境）无法稳定创建真实符号链接（无特权时行为各异），
+    故以 monkeypatch 将两个具名文件标记为「链接形态」做确定性分支测试；真实
+    链接路径在 POSIX CI 上由同分支原生覆盖。
+    """
+    db, service, _, _, _, settings = await make_service(tmp_path)
+    target = settings.jobs_dir.parent / "victim.txt"
+    target.write_bytes(b"precious")
+    link = settings.jobs_dir / "evil.log"
+    link.write_bytes(b"")  # 链接本体占位（真实环境下为符号链接）
+    dangling = settings.jobs_dir / "dangling.log"
+    dangling.write_bytes(b"")  # 悬空链接占位
+
+    real_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(self: Path) -> bool:
+        if self.name in {"evil.log", "dangling.log"}:
+            return True
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+    report = await service.cleanup_once(now=NOW)
+
+    assert not link.exists()  # 链接本体被摘除
+    assert target.read_bytes() == b"precious"  # 目标绝不跟随触达
+    assert not dangling.exists()  # 悬空链接同样摘除、不抛异常
+    assert report.log_files_deleted >= 2  # 计数进报告（0 字节，不影响 freed 统计）
