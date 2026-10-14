@@ -162,3 +162,76 @@ def test_forget_defaults_have_no_dry_run_or_prune():
     argv = cmd.build("forget", args=WhitelistArgs(keep_last=3))
     assert "--dry-run" not in argv
     assert "--prune" not in argv
+
+
+# ---------------------------------------------------------------- R-017 check --read-data / --read-data-subset
+
+def test_check_read_data_assembled():
+    """--read-data 具名字段拼装（既有行为，防回归）。"""
+    cmd = make_cmd()
+    argv = cmd.build("check", args=WhitelistArgs(read_data=True))
+    assert "--read-data" in argv
+    assert "--read-data-subset" not in argv
+
+
+def test_check_defaults_have_no_read_flags():
+    """缺省 check（纯元数据）不带任何读数据 flag。"""
+    cmd = make_cmd()
+    argv = cmd.build("check", args=WhitelistArgs())
+    assert "--read-data" not in argv
+    assert "--read-data-subset" not in argv
+
+
+@pytest.mark.parametrize(
+    "subset",
+    [
+        "1/4",  # 分数：n ≤ t
+        "256/256",  # 分数：t 上限（totalBucketsMax）
+        "50%",  # 比例
+        "2.5%",  # 比例（小数）
+        "100%",  # 比例上界
+        "1G",  # 字节大小
+        "100m",  # 字节大小（小写后缀）
+        "512K",  # 字节大小（大写后缀）
+        "1.5T",  # 字节大小（小数）
+    ],
+)
+def test_check_read_data_subset_valid_forms_assembled(subset):
+    """三形态合法值原样透传拼装（§7.1 V4 事实 3：校验在拼装层、形态不改动）。"""
+    cmd = make_cmd()
+    argv = cmd.build("check", args=WhitelistArgs(read_data_subset=subset))
+    idx = argv.index("--read-data-subset")
+    assert argv[idx + 1] == subset
+    assert "--read-data" not in argv
+
+
+@pytest.mark.parametrize(
+    "subset",
+    [
+        "abc",  # 三形态都不匹配
+        "1x",  # 未知后缀
+        "-5",  # 负数（会被解析为 flag，S2 注入面）
+        "0%",  # 比例必须 > 0
+        "100.1%",  # 比例必须 ≤ 100
+        "inf%",  # 非有限数
+        "0/4",  # 分子必须 > 0
+        "5/4",  # n > t
+        "1/257",  # t 超上限 256
+        "a/b",  # 分数非数字
+    ],
+)
+def test_check_read_data_subset_invalid_rejected(subset):
+    """非法形态 422（WhitelistArgs 层拒绝——restic 端 Fatal 无 JSON，无执行层兜底）。
+
+    空串与 ``None`` 同语义（不加 flag，由 JobRunner 归一为 None），不在非法矩阵内。
+    """
+    cmd = make_cmd()
+    with pytest.raises(ValidationError):
+        cmd.build("check", args=WhitelistArgs(read_data_subset=subset))
+
+
+def test_check_read_data_and_subset_mutually_exclusive():
+    """``--read-data`` 与 ``--read-data-subset`` 互斥（restic checkFlags 同口径）。"""
+    cmd = make_cmd()
+    with pytest.raises(ValidationError):
+        cmd.build("check", args=WhitelistArgs(read_data=True, read_data_subset="50%"))

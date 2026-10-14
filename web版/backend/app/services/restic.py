@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -36,6 +37,10 @@ OVERWRITE_MODES: tuple[str, ...] = ("if-changed", "always", "never")
 # stats --mode 白名单（只读探测，用于 E30 仓库容量）
 STATS_MODES: tuple[str, ...] = ("raw-data", "restore-size", "blobs-per-file", "files-per-contents")
 SNAPSHOT_ID_PATTERN = frozenset("0123456789abcdef")
+
+# --read-data-subset 取值域约束（restic 0.19.1 checkFlags 口径；§7.1 V4 事实 3）
+READ_DATA_SUBSET_MAX_BUCKETS = 256          # 分数形态 n/t 的 t 上限（totalBucketsMax）
+READ_DATA_SUBSET_SUFFIXES = frozenset("kmgt")  # 字节大小后缀（大小写不敏感）
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,10 @@ class WhitelistArgs:
     dry_run: bool = False
     verbose: bool = False
     read_data: bool = False
+    # R-017：check --read-data-subset（三形态：n/t 分数、x% 比例、字节大小）。
+    # 形态校验前移到本层（拼装侧）——非法值 restic 端直接 Fatal 且零 JSON 产出，
+    # 执行层没有任何兜底机会（§7.1 V4 事实 3）。
+    read_data_subset: str | None = None
     overwrite: str | None = None
     stats_mode: str | None = None
     # R-016 forget：--prune 随 forget 回收数据（预览恒 dry_run=True，不落 prune）
@@ -381,8 +390,17 @@ class ResticCmd:
             return flags
 
         if verb == "check":
+            if args.read_data and args.read_data_subset:
+                raise ValidationError(
+                    "--read-data 与 --read-data-subset 互斥（restic check 不允许同时给出）",
+                    data={"read_data": True, "read_data_subset": args.read_data_subset},
+                )
             if args.read_data:
                 flags.append("--read-data")
+            if args.read_data_subset:
+                flags.extend(
+                    ["--read-data-subset", _validate_read_data_subset(args.read_data_subset)]
+                )
             return flags
 
         if verb == "stats":
@@ -525,3 +543,65 @@ def _assert_snapshot_id(snapshot_id: str) -> str:
     if not (8 <= len(candidate) <= 64) or not set(candidate) <= SNAPSHOT_ID_PATTERN:
         raise ValidationError("快照 id 非法（须为 8~64 位小写十六进制）", data={"snapshot_id": snapshot_id})
     return candidate
+
+
+def _validate_read_data_subset(value: str) -> str:
+    """校验 ``--read-data-subset`` 取值为 restic 认可的三形态之一（R-017，S2）。
+
+    取值域（restic 0.19.1 ``checkFlags()``；非法即 Fatal、无 JSON 输出——校验必须
+    前移到拼装层，执行层没有兜底机会，§7.1 V4 事实 3）：
+
+    - ``n/t`` 分数：正整数，``n ≤ t``，``t ≤ 256``（totalBucketsMax）；
+    - ``x%`` / ``x.y%`` 比例：``0 < x ≤ 100.0``；
+    - 字节大小：数值 + ``k/K m/M g/G t/T`` 后缀，``> 0``。
+
+    Args:
+        value: 待校验取值。
+
+    Returns:
+        原值（去首尾空白后；形态合法时原样透传给 restic）。
+
+    Raises:
+        ValidationError: 空值或任一形态不合法。
+    """
+    text = (value or "").strip()
+    data = {"field": "read_data_subset", "value": value}
+    invalid = "read_data_subset 取值非法（支持 n/t 分数、x% 比例、字节大小如 1G）"
+    if not text:
+        raise ValidationError(invalid, data=data)
+
+    # 形态①：n/t 分数
+    if "/" in text:
+        left, _, right = text.partition("/")
+        if not (left.isdigit() and right.isdigit()):
+            raise ValidationError(invalid, data=data)
+        numerator, denominator = int(left), int(right)
+        if numerator <= 0 or denominator <= 0 or numerator > denominator:
+            raise ValidationError(invalid, data=data)
+        if denominator > READ_DATA_SUBSET_MAX_BUCKETS:
+            raise ValidationError(
+                f"read_data_subset 分母超出上限 {READ_DATA_SUBSET_MAX_BUCKETS}", data=data
+            )
+        return text
+
+    # 形态②：x% 比例（含小数）
+    if text.endswith("%"):
+        try:
+            ratio = float(text[:-1])
+        except ValueError as exc:
+            raise ValidationError(invalid, data=data) from exc
+        if not math.isfinite(ratio) or ratio <= 0 or ratio > 100:
+            raise ValidationError(invalid, data=data)
+        return text
+
+    # 形态③：字节大小（可选 k/m/g/t 后缀，大小写不敏感）
+    body = text
+    if len(text) > 1 and text[-1].lower() in READ_DATA_SUBSET_SUFFIXES:
+        body = text[:-1]
+    try:
+        size = float(body)
+    except ValueError as exc:
+        raise ValidationError(invalid, data=data) from exc
+    if not math.isfinite(size) or size <= 0:
+        raise ValidationError(invalid, data=data)
+    return text

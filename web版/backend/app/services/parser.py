@@ -13,7 +13,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Union
 
-ParsedLine = Union["ProgressEvent", "SnapshotRecord", "FileRecord", "LogLine"]
+# check 流的行类型（R-017）：error 行与 summary 行，与 backup 语义分流（§7.1 V4）
+ParsedLine = Union[
+    "ProgressEvent", "SnapshotRecord", "FileRecord", "LogLine", "CheckErrorLine", "CheckSummary"
+]
 
 
 @dataclass
@@ -76,6 +79,50 @@ class JobAggregate:
 
 
 @dataclass
+class CheckErrorLine:
+    """restic check 的 ``error`` 行（R-017，restic 0.19.1 形态）。
+
+    ``message`` **逐字保留**（含 Go 端格式化产生的换行与缩进）：tree 错误是
+    「头行 + 缩进子行」两条独立 JSON 行，index 损坏提示块自带前后空行——解析层
+    做二次排版加工会丢细节，check 结果视图（E22/T06）要靠原文呈现与折叠。
+    """
+
+    message: str = ""
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CheckSummary:
+    """restic check 的 ``summary`` 行（唯一、位于输出末尾；check 无任何进度消息）。
+
+    ``broken_packs`` 健康仓库为 Go nil 序列化出的 ``null``（不是 ``[]``）——
+    解析层统一归一为空列表，两种形态都容错（§7.1 V4 事实 2）。
+    """
+
+    num_errors: int = 0
+    broken_packs: list[str] = field(default_factory=list)
+    suggest_repair_index: bool = False
+    suggest_prune: bool = False
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CheckAggregate:
+    """check 任务累计聚合（§7.1 V4 定稿：由 summary + error 行驱动，无进度集）。
+
+    ``errors`` 为 error 行 ``message`` 的原文列表（逐字、保序）；summary 指标以
+    末尾唯一 summary 行为准——输出被截断导致 summary 缺失时指标归零（错误行
+    原文仍在，UI 以 ``errors`` 为准呈现）。
+    """
+
+    errors: list[str] = field(default_factory=list)
+    num_errors: int = 0
+    broken_packs: list[str] = field(default_factory=list)
+    suggest_repair_index: bool = False
+    suggest_prune: bool = False
+
+
+@dataclass
 class ForgetGroup:
     """``forget --json`` 单个分组（R-016 E21 预览解析产物）。
 
@@ -114,8 +161,17 @@ class OutputParser:
         if message_type == "status":
             return self._status_event(payload)
         if message_type == "error":
+            # backup 的 error 行带 during/item 字段（R-012 skipped 口径）；check 的
+            # error 行只有 message（restic 0.19.1 jsonErrorPrinter 形态）——按字段
+            # 形状分流，避免 check 行被误入 backup 的 skipped 计数（现状缺陷）。
+            if "message" in payload:
+                return self._check_error_line(payload)
             return self._error_event(payload)
         if message_type == "summary":
+            # backup summary 带 snapshot_id/total_bytes_processed；check summary 的
+            # 特征字段是 num_errors——按字段形状分流（§7.1 V4）。
+            if "num_errors" in payload:
+                return self._check_summary_record(payload)
             return self._summary_record(payload)
         if message_type == "verbose_status":
             return self._verbose_record(payload)
@@ -228,6 +284,42 @@ class OutputParser:
         except json.JSONDecodeError:
             return None
 
+    def parse_check(self, text: str) -> CheckAggregate:
+        """把 ``restic check --json`` 的整段输出解析为聚合结果（R-017，§7.1 V4）。
+
+        check 输出仅两类消息（error 行逐条 + 末尾唯一 summary），**没有任何进度
+        消息**——聚合由 summary 与 error 行驱动，不按进度事件建模。
+
+        Args:
+            text: 子进程输出的整段文本（可含多行；空文本返回零值聚合）。
+
+        Returns:
+            :class:`CheckAggregate`：errors 为 error 行 ``message`` 原文列表
+            （逐字、保序）；summary 指标取末尾唯一 summary 行，缺失（截断）时归零；
+            ``broken_packs`` 容错 ``null`` 与数组两形态，均归一为列表。
+        """
+        errors: list[str] = []
+        num_errors = 0
+        broken_packs: list[str] = []
+        suggest_index = False
+        suggest_prune = False
+        for line in (text or "").splitlines():
+            record = self.parse_line(line)
+            if isinstance(record, CheckErrorLine):
+                errors.append(record.message)
+            elif isinstance(record, CheckSummary):
+                num_errors = record.num_errors
+                broken_packs = list(record.broken_packs)
+                suggest_index = record.suggest_repair_index
+                suggest_prune = record.suggest_prune
+        return CheckAggregate(
+            errors=errors,
+            num_errors=num_errors,
+            broken_packs=broken_packs,
+            suggest_repair_index=suggest_index,
+            suggest_prune=suggest_prune,
+        )
+
     def aggregate(self, state: JobAggregate, ev: ProgressEvent) -> JobAggregate:
         """把进度事件累加进聚合状态（纯函数，返回新实例）。
 
@@ -276,6 +368,23 @@ class OutputParser:
         during = payload.get("during")
         return ProgressEvent(
             skipped_delta=1 if during == "archival" else 0,
+            raw=payload,
+        )
+
+    @staticmethod
+    def _check_error_line(payload: dict[str, Any]) -> CheckErrorLine:
+        """解析 check 的 ``message_type=error`` 行（message 逐字保留，不做 strip）。"""
+        return CheckErrorLine(message=_as_str(payload.get("message")) or "", raw=payload)
+
+    @staticmethod
+    def _check_summary_record(payload: dict[str, Any]) -> CheckSummary:
+        """解析 check 的 ``summary`` 行（broken_packs 容错 null 与 [] 两形态）。"""
+        broken = payload.get("broken_packs")
+        return CheckSummary(
+            num_errors=_as_int(payload.get("num_errors")),
+            broken_packs=[str(item) for item in broken] if isinstance(broken, list) else [],
+            suggest_repair_index=bool(payload.get("suggest_repair_index")),
+            suggest_prune=bool(payload.get("suggest_prune")),
             raw=payload,
         )
 

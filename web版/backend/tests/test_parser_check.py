@@ -1,16 +1,12 @@
-"""restic check ``--json`` 解析契约测试骨架（T04 fixture 先行，R-017）。
+"""restic check ``--json`` 解析契约测试（T04 R-017）。
 
-红线约定「改 parser 前必须先补真实形态 fixture」：本文件是 T04 主任务
-（check 解析 + ``CheckAggregate``）的**预期断言落点**。check 事件解析尚未实现
-（``OutputParser.parse_line`` 目前仅有 backup 语义分支，check 行会被误入 backup
-的 error/summary 分支），故文件分两组：
+红线约定「改 parser 前必须先补真实形态 fixture」：本文件是 check 解析 +
+``CheckAggregate`` 的**断言落点**，分两组：
 
-- **契约组**：``pytest.mark.xfail(strict=False, reason="check 解析未实现...")``
-  标注——T04 主任务实现后应转绿，届时并入/对齐 ``test_parser.py`` 正式回归并
-  移除标注；若 T04 采用不同 API 形态（如统一经 ``CheckAggregate`` 暴露字段），
-  同步调整本组断言即可（本骨架的职责是把 fixture 输入与预期语义钉住）；
-- **容错护栏组**：不断言具体类型，只断言逐行可解析、不抛异常——当前即应通过，
-  T04 主任务**不得破坏**本组（设计 §7 畸形行容错维度；A6：解析层纯函数零 IO）。
+- **契约组**：check 专用记录类型（``CheckErrorLine`` / ``CheckSummary``）的字段
+  语义——error 行 message 逐字保留、summary 指标、``broken_packs`` null/[] 容错；
+- **容错护栏组**：不断言具体类型，只断言逐行可解析、不抛异常——
+  任何 restic 输出行都不许让解析层抛异常（设计 §7 畸形行容错维度；A6：纯函数零 IO）。
 
 fixture 依据：restic 0.19.1 ``cmd/restic/cmd_check.go``——check --json 仅输出
 ``error`` 行与末尾一条 ``summary``，**无任何进度消息**；健康仓库 ``broken_packs``
@@ -41,7 +37,6 @@ def read_fixture(name: str) -> str:
 # ---------------------------------------------------------------- 契约组（T04 主任务实现后转绿）
 
 
-@pytest.mark.xfail(reason="check 解析未实现（T04 主任务 R-017）——fixture 已就绪", strict=False)
 def test_check_clean_summary_contract():
     """健康 check（纯元数据、无 --read-data）：唯一 summary 行 → check 专用摘要记录。
 
@@ -62,7 +57,6 @@ def test_check_clean_summary_contract():
     assert record.suggest_prune is False
 
 
-@pytest.mark.xfail(reason="check 解析未实现（T04 主任务 R-017）——fixture 已就绪", strict=False)
 def test_check_error_lines_preserve_message_verbatim():
     """error 行 → check 专用错误记录，message 文本**逐字保留**（含尾部/内嵌换行）。
 
@@ -88,7 +82,6 @@ def test_check_error_lines_preserve_message_verbatim():
     assert summary.suggest_prune is False
 
 
-@pytest.mark.xfail(reason="check 解析未实现（T04 主任务 R-017）——fixture 已就绪", strict=False)
 def test_check_read_data_damaged_contract():
     """--read-data 失败形态：pack 读错误逐行成记录；summary.broken_packs 填充 salvagePacks。
 
