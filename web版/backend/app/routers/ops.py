@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_CACHE_CLEAR,
     AUDIT_FORGET_PREVIEW,
     AUDIT_NOTIFY_TEST,
     AUDIT_NOTIFY_UPDATE,
@@ -35,10 +36,11 @@ from app.constants import (
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
-from app.errors import ResticFailedError, ValidationError
+from app.errors import JobConflictError, ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
     AuditOut,
     AuditPageResponse,
+    CacheUsageResponse,
     ForgetPreviewRequest,
     ForgetPreviewResponse,
     ForgetPreviewSnapshot,
@@ -344,7 +346,7 @@ async def query_audit(
     ``action`` 为**前缀**匹配：用户输入中的 ``%``/``_``/``\\`` 先转义再拼 LIKE
     （防通配注入越权），右锚定命中 ``idx_audit_action`` 索引；``since``/``until``
     经 :func:`parse_utc_bound` 归一 UTC（C8）；``result`` 走 AuditResult 白名单。
-    响应附 ``actions``（去重动作名枚举，repo 层去重查询，前端筛选下拉数据源）。
+    响应附 ``actions``（去重动作名枚举，repo 层 DISTINCT 查询，前端筛选下拉数据源）。
     """
     del session
     resolved_result: str | None = None
@@ -391,3 +393,55 @@ async def query_audit(
         offset=offset,
         actions=await repo.distinct_actions(),
     )
+
+
+# ---------------------------------------------------------------- E25 缓存维护（R-021，批次 A）
+
+
+@router.get(
+    "/cache",
+    response_model=CacheUsageResponse,
+    summary="E25 缓存占用查询",
+    dependencies=_PROTECTED,
+)
+async def cache_usage(request: Request) -> CacheUsageResponse:
+    """restic 缓存目录占用（du 在 to_thread，超时回 truncated 部分值，30s 结果缓存）。"""
+    usage = await request.app.state.cache_service.usage()
+    return CacheUsageResponse(
+        path=usage.path,
+        size_bytes=usage.size_bytes,
+        items_count=usage.items_count,
+        measured_at=usage.measured_at,
+        truncated=usage.truncated,
+    )
+
+
+@router.post(
+    "/cache/clear",
+    response_model=OkResponse,
+    summary="E25 清空 restic 缓存",
+    dependencies=_PROTECTED,
+)
+async def cache_clear(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """清空 restic 缓存目录内容（危险操作，S6 埋点 ``cache.clear``）。
+
+    护栏（Q15 基线）：存在 running/pending 任务时 409 ``JOB_CONFLICT``（data 带
+    ``running_job_id``）——restic 进程正持有缓存文件，此时清空会破坏进行中的任务。
+    清空仅触碰 ``settings.cache_dir`` 白名单内的一级子项（S1）。
+    """
+    del session
+    active = await request.app.state.job_repo.list_active()
+    if active:
+        raise JobConflictError(data={"running_job_id": active[0].id})
+    cache_dir = str(request.app.state.settings.cache_dir)
+    await request.app.state.cache_service.clear()
+    await request.app.state.audit.record(
+        AUDIT_CACHE_CLEAR,
+        target=cache_dir,
+        detail={"path": cache_dir},
+        result="ok",
+    )
+    return OkResponse()

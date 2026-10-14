@@ -194,6 +194,16 @@ class AuditPageResponse(Page[AuditOut]):
     actions: list[str] = Field(default_factory=list)
 
 
+class CacheUsageResponse(_Base):
+    """E25 缓存占用响应（Q14 基线：du 超时回部分值 + truncated，不 5xx）。"""
+
+    path: str
+    size_bytes: int
+    items_count: int
+    measured_at: str
+    truncated: bool = False
+
+
 # ---------------------------------------------------------------- E05 / E31 备份源
 
 class SourceItem(_Base):
