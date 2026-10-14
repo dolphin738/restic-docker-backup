@@ -1085,7 +1085,7 @@ function Show-HelpMenu {
     while ($true) {
         Show-Menu -Breadcrumb '主菜单 > 帮助与环境变量' -Items @(
             '环境变量说明与当前取值'
-            '设置会话级环境变量（CBM_CACHE_DIR / CBM_LOG_LEVEL）'
+            '设置 / 清除 CBM 环境变量（4 项，支持用户级持久化）'
             '常见问题速查'
             '高频踩坑提示'
             '推荐向 AI 提问的方式'
@@ -1121,21 +1121,73 @@ function Show-EnvInfo {
     Write-Host "`nWindows 设置示例：`$env:CBM_CACHE_DIR = 'D:\cbm-data'"
 }
 
-# 会话级设置环境变量
+# 设置 / 清除 CBM 环境变量（会话级立即生效，或用户级持久化到注册表）
 function Set-CbmEnvVars {
-    Write-Host "`n可设置项：1 = CBM_CACHE_DIR（缓存目录），2 = CBM_LOG_LEVEL（日志级别），0 = 返回"
-    switch (Read-Host '请选择') {
-        '1' {
-            $v = Read-NonEmpty '请输入缓存目录路径'
-            $env:CBM_CACHE_DIR = $v
-            Write-Host "已设置 CBM_CACHE_DIR = $v（仅对当前脚本会话内后续执行的命令生效）"
+    # 4 个变量的元数据：名称、说明、取值校验器（$null 表示不限）
+    $defs = @(
+        @{ Name = 'CBM_CACHE_DIR';   Desc = '索引数据库存储目录'; Validate = $null },
+        @{ Name = 'CBM_LOG_LEVEL';   Desc = '日志级别'; Validate = { param($v) $v -in @('debug', 'info', 'warn', 'error', 'none') } },
+        @{ Name = 'CBM_WORKERS';     Desc = '并行索引线程数'; Validate = { param($v) ($v -match '^\d+$') -and [int]$v -ge 1 -and [int]$v -le 256 } },
+        @{ Name = 'CBM_DIAGNOSTICS'; Desc = '诊断日志开关'; Validate = { param($v) $v -in @('0', '1', 'true', 'false') } }
+    )
+
+    while ($true) {
+        Write-Host "`n可设置项："
+        for ($i = 0; $i -lt $defs.Count; $i++) {
+            $cur = [Environment]::GetEnvironmentVariable($defs[$i].Name)
+            $usr = [Environment]::GetEnvironmentVariable($defs[$i].Name, 'User')
+            $curTxt = if ($cur) { $cur } else { '（未设置，用默认值）' }
+            $usrTxt = if ($usr) { "  [用户级 = $usr]" } else { '' }
+            Write-Host ("  [{0}] {1,-14} {2}   当前: {3}{4}" -f ($i + 1), $defs[$i].Name, $defs[$i].Desc, $curTxt, $usrTxt)
         }
-        '2' {
-            $v = Read-NonEmpty '请输入日志级别（debug/info/warn/error/none）'
-            $env:CBM_LOG_LEVEL = $v
-            Write-Host "已设置 CBM_LOG_LEVEL = $v（仅对当前脚本会话内后续执行的命令生效）"
+        Write-Host '  [C] 清除变量（恢复默认）    [0] 返回'
+        $sel = Read-Host '请选择'
+        if ($sel -eq '0') { return }
+        if ($sel -eq 'C' -or $sel -eq 'c') {
+            $idx = Read-Host '要清除的变量编号'
+            if ($idx -notmatch '^\d+$' -or [int]$idx -lt 1 -or [int]$idx -gt $defs.Count) {
+                Write-Host ' 编号无效。' -ForegroundColor Yellow
+                continue
+            }
+            $name = $defs[[int]$idx - 1].Name
+            $scope = Read-Host "清除 $name 的作用域（1=仅会话 2=仅用户级持久化，回车=两者都清）"
+            if ($scope -eq '1') {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+                Write-Host "已清除会话级 $name。"
+            } elseif ($scope -eq '2') {
+                [Environment]::SetEnvironmentVariable($name, $null, 'User')
+                Write-Host "已清除用户级 $name（本会话的值保留）。"
+            } else {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+                [Environment]::SetEnvironmentVariable($name, $null, 'User')
+                Write-Host "已清除 $name（会话级与用户级），恢复工具默认值。"
+            }
+            continue
         }
-        '0' { return }
+        if ($sel -notmatch '^\d+$' -or [int]$sel -lt 1 -or [int]$sel -gt $defs.Count) {
+            Write-Host ' 无效选择。' -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+            continue
+        }
+        $d = $defs[[int]$sel - 1]
+        $v = Read-Host "请输入 $($d.Name) 的值（$($d.Desc)）"
+        if (-not $v) { Write-Host ' 已取消。'; continue }
+        if ($d.Validate -and (-not (& $d.Validate $v))) {
+            Write-Host " 值不合法：$v（输入 0 返回查看说明）" -ForegroundColor Red
+            continue
+        }
+        if ($d.Name -eq 'CBM_CACHE_DIR' -and -not (Test-Path -LiteralPath $v)) {
+            Write-Host " [提示] 目录不存在，CBM 首次使用时会自动创建：$v" -ForegroundColor Yellow
+        }
+        $scope = Read-Host '作用域（1=仅当前会话 2=用户级持久化，回车=1）'
+        if ($scope -eq '2') {
+            [Environment]::SetEnvironmentVariable($d.Name, $v, 'User')
+            Set-Item -Path "Env:$($d.Name)" -Value $v
+            Write-Host "已设置 $($d.Name) = $v（用户级持久化：本会话立即生效，新开终端也生效）" -ForegroundColor Green
+        } else {
+            Set-Item -Path "Env:$($d.Name)" -Value $v
+            Write-Host "已设置 $($d.Name) = $v（仅当前脚本会话内生效）"
+        }
     }
 }
 
