@@ -214,6 +214,8 @@ async def preview_inplace_restore(
     return RestorePreviewResponse(
         overwrite_count=len(items),
         items=[_to_preview_item(item, mapper) for item in window],
+        # N-2 口径：total_bytes = 将写入磁盘的字节（快照侧 snapshot_size 求和，
+        # restic 缺失计 0），不是被覆盖文件的磁盘侧大小——字段 docstring 已点明
         total_bytes=sum(int(item.snapshot_size or 0) for item in items),
         next_cursor=encode_cursor(start + payload.limit) if has_more else None,
         truncated=scan.truncated,

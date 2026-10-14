@@ -686,7 +686,13 @@ class RestorePreviewItem(_Base):
 
 
 class RestorePreviewResponse(_Base):
-    """E20 响应：覆盖清单（游标分页）+ 覆盖总量（预览时点口径）。"""
+    """E20 响应：覆盖清单（游标分页）+ 覆盖总量（预览时点口径）。
+
+    ``total_bytes`` 语义（S-1 审查 N-2 点明）：**将写入磁盘的字节**——按快照侧
+    ``snapshot_size`` 求和（restic 缺失该字段的条目计 0），**不是**「被覆盖文件的
+    磁盘侧大小之和」（后者用 ``disk_size``，本响应不提供）。UI 呈现口径应为
+    「本次原位恢复将写入约 N 字节」。
+    """
 
     overwrite_count: int = 0
     items: list[RestorePreviewItem] = Field(default_factory=list)

@@ -454,6 +454,8 @@ export interface RestorePreviewItem {
  *
  * `next_cursor` 是服务端下发的不透明游标：前端只透传不自造、不解析（与 E18/E33 同纪律）。
  * `overwrite_count` / `total_bytes` 是**整次预览**的汇总值（非当前页），随每页一起回传。
+ * `total_bytes` 语义 = **将写入磁盘的字节**（快照侧 snapshot_size 求和，restic 缺失计 0），
+ * 不是被覆盖文件的磁盘侧大小之和；UI 口径「本次原位恢复将写入约 N 字节」。
  */
 export interface RestorePreviewResponse {
   overwrite_count: number
