@@ -64,6 +64,7 @@ from app.routers import sources as sources_router
 from app.routers.config import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
+from app.services.compare import CompareService
 from app.services.env_sync import sync_env_overrides
 from app.services.job_runner import JobRunner
 from app.services.notifier import Notifier
@@ -228,6 +229,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # cache_service 由 E25 路由经 app.state 消费
     retention = RetentionService(job_repo, config_repo, audit, settings)
     cache_service = CacheService(settings)
+    # 覆盖比对服务（R-015 E20 预览 + 原位恢复审计计数；stateless，只持有依赖）
+    compare_service = CompareService(restic_cmd, parser, config_repo)
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(
@@ -264,6 +267,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.retention = retention
     app.state.cache_service = cache_service
+    app.state.compare_service = compare_service
     app.state.notifier = notifier
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）

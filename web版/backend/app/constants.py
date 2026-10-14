@@ -21,6 +21,9 @@ TERMINAL_JOB_STATUSES: tuple[str, ...] = ("success", "failed", "interrupted", "c
 SOURCE_ALLOWED_PREFIXES: tuple[str, ...] = ("/host", "/sources")
 # 恢复目标白名单（P1 仅"恢复到时间戳子目录"，目标限定在可写挂载点）
 RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/restore",)
+# 原位恢复目标白名单（R-015 Q1 裁决）：= rw 档 settings.host_root 的容器前缀。
+# 与 RESTORE_ALLOWED_PREFIXES 分离——避免 /restore 的时间戳语义被覆盖语义污染。
+INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/host",)
 # 原位恢复**执行层**的 --target 固定值（S7 v1.3「执行层落点纪律」）：
 # restic 的落点是「--target + 快照内绝对路径」的拼接（非替换），而本项目快照存的是
 # 容器绝对路径（/host/etc/...），故只有 "/" 才是真原位（写回 /host/etc/...）；
@@ -99,6 +102,10 @@ AUDIT_BOOTSTRAP_SHOWN = "bootstrap.shown"
 AUDIT_BOOTSTRAP_REGENERATED = "bootstrap.regenerated"  # 未展示随机密码前重启 → 重新生成（安全敏感动作）
 AUDIT_CONFIG_UPDATE = "config.update"
 AUDIT_RESTORE_RUN = "restore.run"
+# R-015 E20 预览：只读留痕，**不入危险操作清单**（援 forget.preview 先例）
+AUDIT_RESTORE_PREVIEW = "restore.preview"
+# R-015 原位恢复：危险操作清单 9 项之一（S6 v1.3）
+AUDIT_RESTORE_INPLACE = "restore.inplace"
 AUDIT_FORGET_PREVIEW = "forget.preview"  # R-016 E21 预览请求（只读，但属敏感动作留痕）
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
 AUDIT_JOB_SUBMIT = "job.submit"

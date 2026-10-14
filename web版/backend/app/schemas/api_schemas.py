@@ -10,6 +10,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.constants import RESTORE_PREVIEW_DEFAULT_LIMIT, RESTORE_PREVIEW_MAX_LIMIT
 from app.schemas.enums import ConfigSource, HostMountMode, JobStatus, JobTrigger, JobType, RunMode
 
 T = TypeVar("T")
@@ -627,11 +628,16 @@ class NotifyTestResponse(_Base):
 # ---------------------------------------------------------------- E19 恢复
 
 class RestoreRequest(_Base):
-    """E19 恢复请求：目标只有时间戳子目录，不存在任何覆盖语义参数。
+    """E19 恢复请求：默认恢复到时间戳子目录（零覆盖语义），原位恢复为 R-015 扩展分支。
 
     ``paths`` 为 B1 文件级恢复入参（**展示形态**，如 ``/etc``、``/home/u/x``）；
     缺省/空数组 = 整快照恢复（兼容既有行为）。服务端逐条还原为容器形态并过
     :class:`PathMapper` 白名单校验（越界 400 ``PATH_OUT_OF_PREFIX``）。
+
+    R-015（红线 S7 v1.3）：``overwrite_mode`` / ``keyword`` **仅原位恢复分支可用**——
+    时间戳子目录路径出现二者之一即 422（该路径的 ``--overwrite=if-changed`` 由
+    JobRunner 固定注入，界面无入口）；原位分支下 ``overwrite_mode`` 必须为
+    ``always``、``keyword`` 必须等于快照短 id（三重确认门的后端校验）。
     """
 
     snapshot_id: str = Field(min_length=8, max_length=64)
@@ -640,13 +646,53 @@ class RestoreRequest(_Base):
         default_factory=list,
         description="要恢复的文件/目录（展示形态）；缺省或空 = 整快照恢复",
     )
+    overwrite_mode: str | None = Field(
+        default=None, description="原位恢复覆盖模式（仅接受 always；时间戳路径不得传）"
+    )
+    keyword: str | None = Field(
+        default=None, description="原位恢复确认关键字（快照短 id 前 8 位）"
+    )
 
 
 class RestoreResponse(_Base):
-    """E19 响应（202）：服务端计算的时间戳子目录。"""
+    """E19 响应（202）：服务端计算的时间戳子目录（原位分支为给定 target 本身）。"""
 
     job_id: str
     restore_target: str
+
+
+# ---------------------------------------------------------------- E20 原位恢复覆盖预览（R-015）
+
+class RestorePreviewRequest(_Base):
+    """E20 覆盖预览请求：比对快照内容与目标磁盘现状（只读）。"""
+
+    snapshot_id: str = Field(min_length=8, max_length=64)
+    target: str = Field(description="原位恢复目标（容器形态；须命中该快照的备份路径）")
+    limit: int = Field(
+        default=RESTORE_PREVIEW_DEFAULT_LIMIT, ge=1, le=RESTORE_PREVIEW_MAX_LIMIT
+    )
+    cursor: str | None = Field(default=None, description="上一页末条目的不透明游标")
+
+
+class RestorePreviewItem(_Base):
+    """E20 覆盖清单条目（``path`` 容器形态，``display_path`` 为原路径语义）。"""
+
+    path: str
+    display_path: str
+    snapshot_mtime: str | None = None
+    disk_mtime: str | None = None
+    snapshot_size: int | None = None
+    disk_size: int = 0
+
+
+class RestorePreviewResponse(_Base):
+    """E20 响应：覆盖清单（游标分页）+ 覆盖总量（预览时点口径）。"""
+
+    overwrite_count: int = 0
+    items: list[RestorePreviewItem] = Field(default_factory=list)
+    total_bytes: int = 0
+    next_cursor: str | None = None
+    truncated: bool = False
 
 
 # ---------------------------------------------------------------- E29/E30 仓库探测
