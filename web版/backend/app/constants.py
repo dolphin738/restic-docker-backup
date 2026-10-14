@@ -220,3 +220,13 @@ DUMP_PORT_DEFAULT = 5432
 DUMP_RETENTION_DAYS_DEFAULT = 7          # 产物保留天数缺省；<=0 = 不启用清理（fail-safe）
 DUMP_PROBE_TIMEOUT_SECONDS = 15          # pg 客户端/服务端版本探测超时
 DUMP_RUN_TIMEOUT_SECONDS = 1800          # 单库 dump 执行超时（30 分钟）
+
+# ---------------------------------------------------------------- P2 收尾批次 D：R-015 原位恢复（E19/E20）
+
+# E20 覆盖预览分页（游标分页，编码与 E18 同源：base64 偏移游标）
+RESTORE_PREVIEW_DEFAULT_LIMIT = 200
+RESTORE_PREVIEW_MAX_LIMIT = 1000
+# ls --json 扫描超时（比 E18 单子树略宽：预览要扫整个快照根）
+RESTORE_PREVIEW_TIMEOUT_SECONDS = 60
+# mtime 比对容差（秒）：restic 存纳秒、os.stat 回 float，等值判定需容忍浮点精度损失
+COMPARE_MTIME_TOLERANCE_SECONDS = 0.001

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import posixpath
 
@@ -39,6 +38,7 @@ from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser, SnapshotRecord
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.utils.cursor import decode_cursor, encode_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +141,14 @@ async def list_snapshot_files(
     records = await asyncio.to_thread(parser.parse_file_list, "\n".join(probe.lines))
     entries = _direct_children(records, container_path, mapper)
 
-    start = _cursor_offset(cursor)
+    start = decode_cursor(cursor, SNAPSHOT_FILES_MAX_OFFSET)
     window = entries[start : start + limit]
     has_more = start + limit < len(entries)
     return SnapshotFilesResponse(
         snapshot_id=snapshot_id,
         path=mapper.to_display(container_path),
         items=window,
-        next_cursor=_encode_cursor(start + limit) if has_more else None,
+        next_cursor=encode_cursor(start + limit) if has_more else None,
         truncated=probe.truncated,
     )
 
@@ -206,19 +206,3 @@ def _direct_children(
         )
     items.sort(key=lambda item: (0 if item.type == "dir" else 1, item.name))
     return items
-
-
-def _cursor_offset(cursor: str | None) -> int:
-    """把不透明游标换算为起始下标；不可解析或越界时回落 0 / 上限值。"""
-    if not cursor:
-        return 0
-    try:
-        decoded = int(base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8"))
-    except Exception:  # noqa: BLE001 - 游标损坏直接从头返回，不报错
-        return 0
-    return max(0, min(decoded, SNAPSHOT_FILES_MAX_OFFSET))
-
-
-def _encode_cursor(offset: int) -> str:
-    """把下页起始下标编码为不透明游标。"""
-    return base64.urlsafe_b64encode(str(offset).encode("utf-8")).decode("utf-8")
