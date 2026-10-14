@@ -53,8 +53,6 @@ DUMP_FAILED = "DUMP_FAILED"         # dump 阶段失败（R-019：探活/执行/
 # 端点级扩展码（§5.0 注）
 PATH_OUT_OF_PREFIX = "PATH_OUT_OF_PREFIX"          # 400 E05/E19
 ENV_OVERRIDDEN = "ENV_OVERRIDDEN"                  # 409 E07
-DEFAULT_POLICY_IMMUTABLE = "DEFAULT_POLICY_IMMUTABLE"  # 409 E11
-POLICY_WRITE_CLOSED = "POLICY_WRITE_CLOSED"            # 409 E09/E10/E11：P1 多策略写未开放
 READONLY_KEY = "READONLY_KEY"                          # 409 E07：只读派生键（repo.type）不可直接写
 NOT_CANCELLABLE = "NOT_CANCELLABLE"                # 409 E16
 RESTORE_FORBIDDEN = "RESTORE_FORBIDDEN"            # 403 E19
@@ -79,8 +77,6 @@ ERROR_STATUS: dict[str, int] = {
     DUMP_FAILED: 500,
     PATH_OUT_OF_PREFIX: 400,
     ENV_OVERRIDDEN: 409,
-    DEFAULT_POLICY_IMMUTABLE: 409,
-    POLICY_WRITE_CLOSED: 409,
     READONLY_KEY: 409,
     NOT_CANCELLABLE: 409,
     RESTORE_FORBIDDEN: 403,
@@ -115,9 +111,6 @@ AUDIT_JOB_RECOVERED = "job.recovered"
 AUDIT_CACHE_CLEAR = "cache.clear"
 AUDIT_ENV_SYNC = "config.env_sync"
 AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
-AUDIT_POLICY_CREATE = "policy.create"
-AUDIT_POLICY_UPDATE = "policy.update"
-AUDIT_POLICY_DELETE = "policy.delete"
 AUDIT_REPO_TEST = "repo.test"
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送

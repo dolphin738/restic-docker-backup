@@ -45,7 +45,6 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
-from app.db.repositories.policy_repo import PolicyRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
@@ -57,7 +56,6 @@ from app.routers import fs as fs_router
 from app.routers import health as health_router
 from app.routers import jobs as jobs_router
 from app.routers import ops as ops_router
-from app.routers import policies as policies_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
@@ -70,7 +68,6 @@ from app.services.job_runner import JobRunner
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
-from app.services.policy_service import PolicyService
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
 from app.services.scheduler import SchedulerService
@@ -181,16 +178,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     auth_service = AuthService(audit, sessions, admin, settings)
     bootstrap = BootstrapService(admin, audit, settings)
 
-    # 策略链路（§4.4）：
-    # policy_repo.get_dict 的签名 (int) -> Awaitable[dict | None] 与 JobRunner 的
-    # PolicyLoader 契约一致，故直接作为回调注入，无需包一层 lambda。
-    policy_repo = PolicyRepo(db)
-    policy_service = PolicyService(policy_repo, settings)
-    await policy_repo.ensure_default(one_file_system=policy_service.default_one_file_system())
-
-    # 任务链路（增量设计 §1.1：任务即策略；共享字段校验委托 PolicyService，不复制第二套）
+    # 任务链路（增量设计 §1.1：任务即策略；2026-10-15 Q1「选删」后共享字段校验
+    # 由 TaskService 自持——原 PolicyService 随 policies 遗留面一并移除）
     task_repo = TaskRepo(db)
-    task_service = TaskService(task_repo, policy_service)
+    task_service = TaskService(task_repo, settings)
 
     # 调度器晚于 JobRunner 构造，而自动 forget（N3 裁决 2026-10-14 开放）要在
     # backup 成功回调里调 scheduler——用 late-binding 引用解装配顺序环。
@@ -215,7 +206,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         parser,
         audit,
         settings=settings,
-        policy_loader=policy_repo.get_dict,
         task_loader=task_repo.get_dict,
         # 任务终态（init/unlock 会改变仓库可连性）→ E30 状态缓存立即失效
         on_finish=invalidate_repo_status_cache,
@@ -253,8 +243,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.admin = admin
     app.state.auth_service = auth_service
     app.state.bootstrap = bootstrap
-    app.state.policy_repo = policy_repo
-    app.state.policy_service = policy_service
     app.state.task_repo = task_repo
     app.state.task_service = task_service
     app.state.exclusions = ExclusionRules(settings)
@@ -318,7 +306,6 @@ def create_app() -> FastAPI:
     app.include_router(fs_router.router, dependencies=protected)         # E33 容器文件系统浏览
     app.include_router(config_router.router, dependencies=protected)     # E06/E07 + E29/E30
     app.include_router(jobs_router.router, dependencies=protected)       # E12–E16/E27
-    app.include_router(policies_router.router, dependencies=protected)   # E08–E11
     app.include_router(backup_tasks_router.router, dependencies=protected)  # E34–E36（选项② R-026）
     app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18
     app.include_router(ops_router.router, dependencies=protected)        # E21 forget 预览（R-016）

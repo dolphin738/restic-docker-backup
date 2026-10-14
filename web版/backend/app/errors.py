@@ -16,7 +16,6 @@ from app.constants import (
     BOOTSTRAP_REQUIRED,
     BOOTSTRAP_SHOWN,
     CSRF_ORIGIN,
-    DEFAULT_POLICY_IMMUTABLE,
     ENV_OVERRIDDEN,
     ERROR_STATUS,
     FORBIDDEN,
@@ -26,7 +25,6 @@ from app.constants import (
     NOT_FOUND,
     PASSWORD_WRONG,
     PATH_OUT_OF_PREFIX,
-    POLICY_WRITE_CLOSED,
     RATE_LIMITED,
     READONLY_KEY,
     REPO_NOT_FOUND,
@@ -159,22 +157,6 @@ class EnvOverriddenError(AppError):
     code = ENV_OVERRIDDEN
     status = ERROR_STATUS[ENV_OVERRIDDEN]
     message = "该配置项由环境变量覆盖，不可在界面修改"
-
-
-class DefaultPolicyImmutableError(AppError):
-    """409 默认策略不可删除。"""
-
-    code = DEFAULT_POLICY_IMMUTABLE
-    status = ERROR_STATUS[DEFAULT_POLICY_IMMUTABLE]
-    message = "默认策略不可删除"
-
-
-class PolicyWriteClosedError(AppError):
-    """409 P1 多策略写未开放（E09/E10/E11：仅单条默认策略可写）。"""
-
-    code = POLICY_WRITE_CLOSED
-    status = ERROR_STATUS[POLICY_WRITE_CLOSED]
-    message = "P1 仅支持单条默认策略，多策略写开放于 P2"
 
 
 class ReadonlyKeyError(AppError):

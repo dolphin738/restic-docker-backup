@@ -623,8 +623,6 @@ export default {
     RESTIC_FAILED: 'restic execution failed',
     PATH_OUT_OF_PREFIX: 'Path is outside the allowed prefixes',
     ENV_OVERRIDDEN: 'This setting is overridden by an environment variable and cannot be edited in the UI',
-    DEFAULT_POLICY_IMMUTABLE: 'The default policy cannot be deleted',
-    POLICY_WRITE_CLOSED: 'P1 supports a single default policy only; multi-policy writes land in P2',
     NOT_CANCELLABLE: 'This job cannot be cancelled in its current state',
     RESTORE_FORBIDDEN: 'Restore target is not in the allow-list',
     BOOTSTRAP_SHOWN: 'The first-boot password was already revealed and cannot be shown again',

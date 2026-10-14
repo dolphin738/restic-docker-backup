@@ -9,7 +9,6 @@ Python 里 ``0 or 7 == 7``，用户经 API 显式保存 0（语义=关闭 prune 
 from __future__ import annotations
 
 from app.db.database import Database
-from app.db.repositories.policy_repo import PolicyRepo
 from app.db.repositories.task_repo import TaskRepo
 
 
@@ -47,33 +46,5 @@ async def test_task_prune_interval_update_to_zero(tmp_path):
     fetched = await repo.get(task.id)
     assert fetched is not None
     assert fetched.prune_interval_days == 0
-
-    await db.close()
-
-
-async def test_policy_prune_interval_zero_roundtrips(tmp_path):
-    """PolicyRepo（既有 P1 代码，同源修复）：create 写 0 → 读回 0。"""
-    db = Database(tmp_path / "policy-zero.db")
-    await db.connect()
-    repo = PolicyRepo(db)
-
-    policy = await repo.create({"prune_interval_days": 0})
-    assert policy.prune_interval_days == 0
-
-    fetched = await repo.get(policy.id)
-    assert fetched is not None
-    assert fetched.prune_interval_days == 0
-
-    await db.close()
-
-
-async def test_policy_prune_interval_default_seven(tmp_path):
-    """PolicyRepo：缺省读回 7（DDL DEFAULT，修复不得破坏缺省路径）。"""
-    db = Database(tmp_path / "policy-default.db")
-    await db.connect()
-    repo = PolicyRepo(db)
-
-    policy = await repo.create({})
-    assert policy.prune_interval_days == 7
 
     await db.close()

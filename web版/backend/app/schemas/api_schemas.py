@@ -126,8 +126,8 @@ class ConfigPatchRequest(_Base):
 class JobOut(_Base):
     """E14 任务详情（§4.5 字段全集）。
 
-    ``task_id`` 语义（选项② §1.2 决策二）：该 job 由哪个备份任务产生；legacy 行
-    仅 ``policy_id``；删除任务后 ``task_id`` 经外键置空（行与日志保留）。
+    ``task_id`` 语义（选项② §1.2 决策二）：该 job 由哪个备份任务产生；删除任务后
+    ``task_id`` 经外键置空（行与日志保留）。
     """
 
     id: str
@@ -153,8 +153,7 @@ class JobCreateRequest(_Base):
     """E12 触发任务请求。"""
 
     type: JobType = Field(description="任务类型白名单：backup/restore/forget/check/unlock/init/dump")
-    policy_id: int | None = Field(default=None, description="关联策略 id（legacy；与 task_id 互斥）")
-    task_id: int | None = Field(default=None, description="关联备份任务 id（与 policy_id 互斥，同供 422）")
+    task_id: int | None = Field(default=None, description="关联备份任务 id")
     snapshot_id: str | None = Field(default=None, description="restore/forget 关联快照")
     params: dict[str, Any] = Field(default_factory=dict, description="补充参数（sources/excludes/target…）")
 
@@ -333,76 +332,13 @@ class ExclusionsResponse(_Base):
     total: int = 0
 
 
-# ---------------------------------------------------------------- E08–E11 策略
-
-class PolicyOut(_Base):
-    """E08 策略输出（API 字段名与 DDL 列名不同者见 PolicyService 换算）。"""
-
-    id: int
-    name: str
-    is_default: bool = False
-    enabled: bool = True
-    tag: str | None = None
-    sources: list[str] = Field(default_factory=list)
-    display_sources: list[str] = Field(
-        default_factory=list, description="sources 的展示形态（剥前缀，原路径语义；UI 直消费）"
-    )
-    excludes: list[str] = Field(default_factory=list)
-    display_excludes: list[str] = Field(
-        default_factory=list, description="excludes 的展示形态（剥前缀，原路径语义；UI 直消费）"
-    )
-    keep_last: int = 0
-    keep_hourly: int = 0
-    keep_daily: int = 0
-    keep_weekly: int = 0
-    keep_monthly: int = 0
-    keep_yearly: int = 0
-    group_by: str = "host,paths,tags"
-    cron: str | None = None
-    one_file_system: bool = False
-    compression: str = "auto"
-    check_sample_ratio: float = 0.02
-    monthly_full_day: int = 1
-    prune_interval_days: int = 7
-    limit_up: int = 0      # KiB/s，0=不限（DDL 列 limit_up_kibps）
-    limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
-    last_run_at: str | None = None
-    created_at: str
-    updated_at: str
-
-
-class PolicyUpsertRequest(_Base):
-    """E09 POST / E10 PUT 请求体（``is_default`` 由服务端控制，不接受客户端指定）。"""
-
-    name: str = "default"
-    enabled: bool = True
-    tag: str | None = None
-    sources: list[str] = Field(default_factory=list)
-    excludes: list[str] = Field(default_factory=list)
-    keep_last: int = 0
-    keep_hourly: int = 0
-    keep_daily: int = 0
-    keep_weekly: int = 0
-    keep_monthly: int = 0
-    keep_yearly: int = 0
-    group_by: str = "host,paths,tags"
-    cron: str | None = None
-    one_file_system: bool | None = None   # None=按模式取缺省（sources 模式缺省 true）
-    compression: str = "auto"
-    check_sample_ratio: float = 0.02
-    monthly_full_day: int = 1
-    prune_interval_days: int = 7
-    limit_up: int = 0
-    limit_down: int = 0
-
-
 # ---------------------------------------------------------------- E34–E36 备份任务（选项② R-026）
 
 class TaskOut(_Base):
     """E34' 任务详情/编辑预填（全字段 + display 派生，tag 只读露出）。
 
-    与 :class:`PolicyOut` 的差异：``repo_id`` 作用域外键（E7）、``dry_run_pending``
-    首跑门标记；``legacy_policy_id`` 恒为 None（greenfield 无存量策略可继承，
+    ``repo_id`` 作用域外键（E7）、``dry_run_pending`` 首跑门标记；
+    ``legacy_policy_id`` 恒为 None（greenfield 无存量策略可继承，
     DDL 无此列——字段仅为 wire 兼容占位）。
     """
 

@@ -623,8 +623,6 @@ export default {
     RESTIC_FAILED: 'restic 执行失败',
     PATH_OUT_OF_PREFIX: '路径不在允许的前缀范围内',
     ENV_OVERRIDDEN: '该配置项由环境变量覆盖，不可在界面修改',
-    DEFAULT_POLICY_IMMUTABLE: '默认策略不可删除',
-    POLICY_WRITE_CLOSED: 'P1 仅支持单条默认策略，多策略写开放于 P2',
     NOT_CANCELLABLE: '该任务当前状态不可取消',
     RESTORE_FORBIDDEN: '恢复目标不在允许的白名单内',
     BOOTSTRAP_SHOWN: '首启随机密码已展示过一次，无法再次查看',

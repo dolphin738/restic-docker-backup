@@ -60,8 +60,7 @@ async def create_job(
 ) -> JobCreateResponse:
     """触发一个任务（manual）；同仓库已有 running/pending 时返回 409 JOB_CONFLICT。
 
-    ``task_id`` 与 ``policy_id`` 互斥（同供 422 ``VALIDATION_ERROR``）：任务域 job
-    落 ``task_id``（profile 经 ``task_loader`` 加载），legacy 策略 job 落 ``policy_id``。
+    任务域 job 落 ``task_id``（profile 经 ``task_loader`` 加载）。
     ``params.excludes`` 为用户追加的排除规则（展示形态或纯 glob 模式），在**提交前**
     经 :func:`normalize_user_excludes` 三分类归一为容器形态——放在路由层而非 JobRunner，
     越界锚定路径才能以 422 ``VALIDATION_ERROR`` 同步回给前端，而不是把任务打进 failed。
@@ -73,21 +72,11 @@ async def create_job(
     del session
     runner = request.app.state.job_runner
     task_repo = request.app.state.task_repo
-    policy_repo = request.app.state.policy_repo
-    if payload.task_id is not None and payload.policy_id is not None:
-        raise ValidationError(
-            "task_id 与 policy_id 互斥，只能指定其中一个",
-            data={"task_id": payload.task_id, "policy_id": payload.policy_id},
-        )
     # 存在性前置校验（Q1）：非法 task_id 会在 JobRunner 落库时撞 jobs.task_id 外键
     # 抛 sqlite3.IntegrityError → 未捕获即 500。此处提前 422 VALIDATION_ERROR
     # （与其它参数类错误同口径），data 带 task_id 便于前端定位是哪条关联写错。
     if payload.task_id is not None and await task_repo.get(payload.task_id) is None:
         raise ValidationError("备份任务不存在", data={"task_id": payload.task_id})
-    # 同上：legacy policy_id 路径撞 jobs.policy_id 外键（0001_init.sql:71）同样 500，
-    # 一并前置为 422——两条路径语义同为「引用了不存在的实体」，错误语义必须一致。
-    if payload.policy_id is not None and await policy_repo.get(payload.policy_id) is None:
-        raise ValidationError("备份策略不存在", data={"policy_id": payload.policy_id})
     params = dict(payload.params)
     if params.get("excludes"):
         # 锚定路径白名单收紧为当前模式根（越界 → 422），见 exclusions.normalize_user_excludes
@@ -98,7 +87,6 @@ async def create_job(
         )
     job = await runner.submit(
         str(payload.type),
-        policy_id=payload.policy_id,
         task_id=payload.task_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,

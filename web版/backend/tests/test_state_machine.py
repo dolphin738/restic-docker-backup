@@ -755,29 +755,6 @@ async def test_cancelled_job_does_not_invoke_callback(tmp_path):
     await db.close()
 
 
-async def test_policy_path_success_does_not_invoke_callback(tmp_path):
-    """X6：legacy policy_id 路径（task_id=None）成功 → 不调用回调。"""
-    from app.db.repositories.policy_repo import PolicyRepo
-
-    db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
-    await PolicyRepo(db).ensure_default()  # jobs.policy_id 外键要求策略行存在
-    calls: list[int] = []
-
-    async def callback(task_id: int) -> None:
-        calls.append(task_id)
-
-    runner._on_task_backup_success = callback  # noqa: SLF001
-
-    job = await runner.submit("backup", policy_id=1, params={"sources": ["/host/etc"]})
-    await await_job(runner, job.id)
-
-    final = await repo.get(job.id)
-    assert final.status == "success"
-    assert final.task_id is None
-    assert calls == []
-    await db.close()
-
-
 async def test_callback_failure_does_not_break_success_terminal(tmp_path):
     """X6：回调自身抛异常 → 吞掉并 WARNING，job 终态保持 success（不被改写为 failed）。"""
     db, runner, repo, task_repo = await make_runner_with_tasks(

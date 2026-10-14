@@ -643,7 +643,7 @@ async def test_invalid_task_cron_degrades_to_manual_only(tmp_path, caplog):
 
 
 async def test_broken_config_cron_default_degrades_all_to_manual_only(tmp_path, caplog):
-    """config schedule.cron_default 被运维直写坏（不经 PolicyService 校验）→ 兜底降级。
+    """config schedule.cron_default 被运维直写坏（不经服务端校验）→ 兜底降级。
 
     该值是绕过 API 的运维直写值，此兜底是最后防线：坏掉时任务退化为仅手动、
     记 WARNING、**不崩溃**。
