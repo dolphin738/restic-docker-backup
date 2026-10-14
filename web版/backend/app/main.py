@@ -69,6 +69,7 @@ from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.policy_service import PolicyService
 from app.services.restic import ResticCmd
+from app.services.retention import RetentionService
 from app.services.scheduler import SchedulerService
 from app.services.sse import SseChannel
 from app.services.task_service import TaskService
@@ -221,13 +222,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         notifier=notifier,
     )
 
-    # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载
+    # 保留服务（R-020）：retention 挂调度器每日维护任务
+    retention = RetentionService(job_repo, config_repo, audit, settings)
+
+    # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(
         task_repo,
         job_runner,
         config_repo,
         settings=settings,
         jobs=job_repo,
+        retention=retention,
     )
     scheduler_ref.append(scheduler)
 
@@ -251,6 +256,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sse_channel = sse_channel
     app.state.job_runner = job_runner
     app.state.scheduler = scheduler
+    app.state.retention = retention
     app.state.notifier = notifier
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）

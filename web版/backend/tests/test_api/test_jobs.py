@@ -75,8 +75,8 @@ async def test_e14_job_detail_and_404(app_client):
     assert resp.json()["code"] == "NOT_FOUND"
 
 
-async def test_e13_lists_active_only(app_client):
-    """P1 最小版：仅返回 running/pending；终态任务不出现；status=success → 422。"""
+async def test_e13_explicit_active_filter(app_client):
+    """显式 ``status=running,pending`` 仅返回进行中（前端 ``listActiveJobs`` 的既有语义）。"""
     ns = app_client
     await finish_bootstrap(ns)
     running_id = await _make_running_job(ns)
@@ -88,15 +88,125 @@ async def test_e13_lists_active_only(app_client):
         status="success",
     )
 
-    resp = await ns.client.get("/api/jobs")
+    resp = await ns.client.get("/api/jobs", params={"status": "running,pending"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
     assert [item["id"] for item in body["items"]] == [running_id]
 
     resp = await ns.client.get("/api/jobs", params={"status": "success"})
+    assert resp.status_code == 200  # P2 起全状态合法（原 P1 门禁 422 已放开）
+
+
+async def test_e13_default_returns_full_history(app_client):
+    """缺省（不传 status）＝全量历史（P2 语义；前端活跃列表已显式传参，无隐式依赖）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _make_running_job(ns)
+    await ns.app.state.job_repo.create(
+        job_id="job-done",
+        job_type="check",
+        trigger="manual",
+        log_path="/tmp/job-done.log",
+        status="success",
+    )
+
+    resp = await ns.client.get("/api/jobs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2  # running + success（终态不再被门禁挡掉）
+    assert {item["status"] for item in body["items"]} == {"running", "success"}
+
+
+async def test_e13_status_whitelist_still_enforced(app_client):
+    """非法状态值仍 422（白名单放开至全状态，不是取消校验）。"""
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.get("/api/jobs", params={"status": "success,bogus"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["data"]["illegal"] == ["bogus"]
+
+
+async def test_e13_type_filter(app_client):
+    """``type`` 维度（Q13）：按任务类型筛选，白名单外 422。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _make_running_job(ns)  # backup
+    await ns.app.state.job_repo.create(
+        job_id="job-check-1",
+        job_type="check",
+        trigger="manual",
+        log_path="/tmp/job-check-1.log",
+        status="success",
+    )
+
+    resp = await ns.client.get("/api/jobs", params={"type": "check"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["type"] == "check"
+
+    resp = await ns.client.get("/api/jobs", params={"type": "bogus"})
     assert resp.status_code == 422
     assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+async def test_e13_started_range_filter_normalized_to_utc(app_client):
+    """``started_from``/``started_to`` 时间范围（Q13）：无时区按 UTC，带时区归一（C8）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.job_repo.create(
+        job_id="job-early",
+        job_type="backup",
+        trigger="manual",
+        log_path="/tmp/job-early.log",
+        status="success",
+    )
+    await ns.app.state.job_repo.update_status(
+        "job-early", "success", started_at="2026-10-01T00:00:00Z"
+    )
+    await ns.app.state.job_repo.create(
+        job_id="job-late",
+        job_type="backup",
+        trigger="manual",
+        log_path="/tmp/job-late.log",
+        status="success",
+    )
+    await ns.app.state.job_repo.update_status(
+        "job-late", "success", started_at="2026-10-10T00:00:00Z"
+    )
+
+    # 下界：只命中 job-late（无时区按 UTC）
+    resp = await ns.client.get("/api/jobs", params={"started_from": "2026-10-05T00:00:00"})
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()["items"]] == ["job-late"]
+
+    # 带时区下界（+08:00 等价 2026-10-05T00:00Z）→ 同一结果（C8 归一）
+    resp = await ns.client.get(
+        "/api/jobs", params={"started_from": "2026-10-05T08:00:00+08:00"}
+    )
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()["items"]] == ["job-late"]
+
+    # 上界：只命中 job-early
+    resp = await ns.client.get("/api/jobs", params={"started_to": "2026-10-05T00:00:00Z"})
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()["items"]] == ["job-early"]
+
+    # 非法时间 → 422
+    resp = await ns.client.get("/api/jobs", params={"started_from": "not-a-time"})
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+async def test_e13_limit_upper_bound_500(app_client):
+    """``limit`` 上限对齐 E26 的 500（Q13 基线）；501 → 422。"""
+    await finish_bootstrap(app_client)
+    resp = await app_client.client.get("/api/jobs", params={"limit": 500})
+    assert resp.status_code == 200
+    resp = await app_client.client.get("/api/jobs", params={"limit": 501})
+    assert resp.status_code == 422
 
 
 async def test_e16_cancel_running_then_409_again(app_client):

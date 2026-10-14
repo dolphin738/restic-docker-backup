@@ -1,4 +1,4 @@
-"""任务路由：E12 触发 / E13 列表（P1 最小版）/ E14 详情 / E15 SSE 流 / E16 取消 / E27 日志尾部。
+"""任务路由：E12 触发 / E13 列表（P2 全量版）/ E14 详情 / E15 SSE 流 / E16 取消 / E27 日志尾部。
 
 鉴权：全部经 ``require_session`` + ``require_bootstrap_done``；SSE 走同一 cookie session
 （§8：不使用 query token，避免进反代访问日志）。
@@ -15,7 +15,9 @@ from fastapi.responses import StreamingResponse
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
-    ACTIVE_JOB_STATUSES,
+    HISTORY_QUERY_MAX_LIMIT,
+    JOB_STATUSES,
+    JOB_TYPES,
     LOG_TAIL_DEFAULT_BYTES,
     LOG_TAIL_MAX_BYTES,
 )
@@ -30,7 +32,7 @@ from app.schemas.api_schemas import (
     Page,
 )
 from app.schemas.enums import JobStatus, JobType
-from app.utils.time import utc_iso
+from app.utils.time import parse_utc_bound, utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -111,23 +113,43 @@ async def create_job(
     return JobCreateResponse(id=job.id, status=JobStatus(job.status), type=payload.type)
 
 
-@router.get("/jobs", response_model=Page[JobOut], summary="E13 任务列表（P1 最小版）", dependencies=_PROTECTED)
+@router.get("/jobs", response_model=Page[JobOut], summary="E13 任务列表（P2 全量版）", dependencies=_PROTECTED)
 async def list_jobs(
     request: Request,
-    status: str | None = Query(default=None, description="仅支持 running/pending（逗号分隔）"),
-    task_id: int | None = Query(default=None, description="按备份任务筛选（N7：本批仅放开该维度）"),
-    limit: int = Query(default=50, ge=1, le=200),
+    job_type: str | None = Query(default=None, alias="type", description="任务类型筛选（JOB_TYPES 白名单单值）"),
+    status: str | None = Query(default=None, description="状态筛选（逗号分隔，全状态白名单；缺省不过滤）"),
+    task_id: int | None = Query(default=None, description="按备份任务筛选（N7）"),
+    started_from: str | None = Query(default=None, description="started_at 下界（ISO 8601，含时区归一 UTC）"),
+    started_to: str | None = Query(default=None, description="started_at 上界（ISO 8601，含时区归一 UTC）"),
+    limit: int = Query(default=50, ge=1, le=HISTORY_QUERY_MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(require_session),
 ) -> Page[JobOut]:
-    """P1 最小版：只提供"进行中"列表（running/pending），P2 再开放全量分页/筛选/retention。
+    """E13 完整版（US-P2-01，Q13 基线）：全状态筛选 + type/task_id/时间范围维度。
 
-    ``task_id`` 过滤维度供任务卡片「日志」入口与任务历史（N7：status 门禁语义不变）。
+    ``status`` 缺省＝不过滤（P1 语义「仅活跃」由前端显式传 ``running,pending`` 保持，
+    ``listActiveJobs`` 已显式传参，无隐式依赖）；时间参数经 :func:`parse_utc_bound`
+    归一为 UTC 后进 SQL 比较（C8：无时区后缀按 UTC 解释）。
     """
     del session
-    statuses = _parse_active_statuses(status)
+    statuses = _parse_statuses(status)
+    resolved_type = _parse_job_type(job_type)
+    from_bound = parse_utc_bound(started_from)
+    if started_from and from_bound is None:
+        raise ValidationError("started_from 须为 ISO 8601 时间", data={"field": "started_from", "value": started_from})
+    to_bound = parse_utc_bound(started_to)
+    if started_to and to_bound is None:
+        raise ValidationError("started_to 须为 ISO 8601 时间", data={"field": "started_to", "value": started_to})
     repo = request.app.state.job_repo
-    jobs, total = await repo.list_page(statuses=statuses, task_id=task_id, limit=limit, offset=offset)
+    jobs, total = await repo.list_page(
+        statuses=statuses,
+        job_type=resolved_type,
+        task_id=task_id,
+        started_from=from_bound,
+        started_to=to_bound,
+        limit=limit,
+        offset=offset,
+    )
     return Page(items=[_to_out(job) for job in jobs], total=total, limit=limit, offset=offset)
 
 
@@ -239,15 +261,31 @@ async def _read_tail(path: Path, start: int, length: int) -> str:
     return await asyncio.to_thread(_read)
 
 
-def _parse_active_statuses(status: str | None) -> tuple[str, ...]:
-    """解析并校验 E13 的 status 过滤参数（P1 仅允许 running/pending）。"""
+def _parse_statuses(status: str | None) -> tuple[str, ...] | None:
+    """解析并校验 E13 的 status 过滤参数（P2 全状态；缺省＝不过滤，返回 None）。
+
+    P1 语义「仅活跃」不再由缺省承载——前端 ``listActiveJobs`` 显式传
+    ``running,pending``（api/jobs.ts），行为无隐式依赖。
+    """
     if status is None or not status.strip():
-        return ACTIVE_JOB_STATUSES
+        return None
     requested = tuple(item.strip() for item in status.split(",") if item.strip())
-    illegal = [item for item in requested if item not in ACTIVE_JOB_STATUSES]
+    illegal = [item for item in requested if item not in JOB_STATUSES]
     if illegal:
         raise ValidationError(
-            "P1 最小版仅支持 status=running/pending 的任务列表",
-            data={"illegal": illegal, "allowed": list(ACTIVE_JOB_STATUSES)},
+            "status 仅支持 " + "/".join(JOB_STATUSES),
+            data={"illegal": illegal, "allowed": list(JOB_STATUSES)},
         )
     return requested
+
+
+def _parse_job_type(job_type: str | None) -> str | None:
+    """解析并校验 E13 的 type 过滤参数（JOB_TYPES 白名单单值；缺省＝不过滤）。"""
+    if job_type is None or not job_type.strip():
+        return None
+    candidate = job_type.strip()
+    if candidate not in JOB_TYPES:
+        raise ValidationError(
+            f"不支持的任务类型：{candidate}", data={"type": candidate, "allowed": list(JOB_TYPES)}
+        )
+    return candidate

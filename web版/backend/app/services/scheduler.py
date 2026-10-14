@@ -34,6 +34,7 @@ from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.task_repo import DEFAULT_REPO_ID, Task, TaskRepo
 from app.services.job_runner import JobRunner
+from app.services.retention import RetentionService
 from app.settings import Settings, get_settings
 from app.utils.time import parse_iso, resolve_timezone, utc_iso
 
@@ -50,6 +51,13 @@ SCHEDULE_JITTER_MAX_SECONDS = 3600      # 抖动上限防护（配置被写爆�
 
 # 调度 job id 前缀（reload 全量重建时据此识别「属于本调度器的触发器」）
 _JOB_ID_PREFIX = "backup-task-"
+
+# 维护任务域前缀（设计 §3.5）：reload() 的 keep 集合只识别 backup-task- 前缀，
+# maintenance-* 触发器不会被动态重载误删——两域按前缀分域、互不清理（F10 结构不变量）
+_MAINTENANCE_PREFIX = "maintenance-"
+
+# 每日维护固定时刻（模块级常量单一真源，设计 §3.5；时区取 config.timezone → settings.tz）
+MAINTENANCE_RETENTION_CRON = "40 3 * * *"  # 每日 retention（R-020；check/dump 随批次 B 追加）
 
 # 标准 crontab 星期取值上限（0=周日 … 6=周六，7 与 0 同义）；超出即原样透传由 APScheduler 报错
 _CRON_WEEKDAY_MAX = 7
@@ -246,6 +254,7 @@ class SchedulerService:
         settings: Settings | None = None,
         *,
         jobs: JobRepo,
+        retention: RetentionService,
     ) -> None:
         """构造调度器。
 
@@ -257,12 +266,15 @@ class SchedulerService:
             jobs: jobs 表仓储（补跑/prune 判定需要读 backup 历史）。
                 设计 §4.1 构造签名未列此项，但 catchup/prune 判定必须读 jobs 表，
                 且 A1 要求 DB 访问只经仓储——JobRunner 未暴露该查询，故显式注入。
+            retention: 保留服务（每日维护任务 ``maintenance-retention`` 的执行体，
+                设计 §3.4/§3.5）。
         """
         self._tasks = tasks
         self._runner = runner
         self._config = config
         self._settings = settings or get_settings()
         self._jobs = jobs
+        self._retention = retention
         self._scheduler = AsyncIOScheduler()
         # config 快照（next_fire_time 为同步签名，无法直接 await config 读取；
         # 由 reload()/catchup_on_startup() 入口刷新——cron_default/timezone 本批无 UI）
@@ -272,10 +284,11 @@ class SchedulerService:
     # ---------------------------------------------------------------- 生命周期（§4.3 接线点）
 
     async def start(self) -> None:
-        """``AsyncIOScheduler.start()`` → :meth:`reload` → :meth:`catchup_on_startup`（lifespan 接线）。"""
+        """``start()`` → :meth:`reload` → :meth:`catchup_on_startup` → :meth:`mount_maintenance_jobs`。"""
         self._scheduler.start()
         await self.reload()
         await self.catchup_on_startup()
+        await self.mount_maintenance_jobs()
 
     async def shutdown(self) -> None:
         """``scheduler.shutdown(wait=True)``——与 ``JobRunner.on_shutdown`` 顺序：先停调度再收尾进程。"""
@@ -315,6 +328,44 @@ class SchedulerService:
             if job.id.startswith(_JOB_ID_PREFIX) and job.id not in keep:
                 logger.info("调度器移除遗留触发器：%s", job.id)
                 self._scheduler.remove_job(job.id)
+
+    # ---------------------------------------------------------------- 维护任务域（设计 §3.5，本批新增）
+
+    async def mount_maintenance_jobs(self) -> None:
+        """挂载每日维护任务（``maintenance-*`` 前缀分域，``replace_existing`` 幂等）。
+
+        本批（T01）仅挂 retention；check/dump 触发器随批次 B 按同一前缀追加。
+        与 backup 动态重载互不干扰的关键不变量：:meth:`reload` 的 keep 集合只识别
+        ``backup-task-`` 前缀，``maintenance-*`` 触发器不会被误删；本方法自身按
+        ``maintenance-`` 前缀移除失效遗留（未来开关关闭时同一机制摘除）。
+        """
+        await self._refresh_config_snapshot()
+        retention_id = f"{_MAINTENANCE_PREFIX}retention"
+        self._scheduler.add_job(
+            self._fire_retention,
+            trigger=_cron_trigger(MAINTENANCE_RETENTION_CRON, timezone=self._tz),
+            args=(),
+            id=retention_id,
+            replace_existing=True,
+        )
+        keep = {retention_id}
+        for job in self._scheduler.get_jobs():
+            if job.id.startswith(_MAINTENANCE_PREFIX) and job.id not in keep:
+                logger.info("调度器移除遗留维护任务：%s", job.id)
+                self._scheduler.remove_job(job.id)
+
+    async def _fire_retention(self) -> None:
+        """每日维护回调：执行 retention 清理；异常隔离记日志，不中断调度循环。"""
+        try:
+            report = await self._retention.cleanup_once()
+            logger.info(
+                "每日维护 retention 已执行：jobs=%s log_files=%s freed_bytes=%s",
+                report.jobs_deleted,
+                report.log_files_deleted,
+                report.log_bytes_freed,
+            )
+        except Exception:  # noqa: BLE001 - 维护失败不应拖垮调度器（援 _submit 单任务隔离口径）
+            logger.exception("每日维护 retention 清理失败")
 
     # ---------------------------------------------------------------- 启动补跑（US-026-07 AC3）
 

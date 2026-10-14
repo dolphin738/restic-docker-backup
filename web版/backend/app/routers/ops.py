@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
@@ -31,10 +31,14 @@ from app.constants import (
     AUDIT_NOTIFY_TEST,
     AUDIT_NOTIFY_UPDATE,
     FORGET_PREVIEW_TIMEOUT_SECONDS,
+    HISTORY_QUERY_MAX_LIMIT,
 )
+from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
+    AuditOut,
+    AuditPageResponse,
     ForgetPreviewRequest,
     ForgetPreviewResponse,
     ForgetPreviewSnapshot,
@@ -44,6 +48,7 @@ from app.schemas.api_schemas import (
     NotifyTestResponse,
     OkResponse,
 )
+from app.schemas.enums import AuditResult
 from app.services.env_sync import load_credentials
 from app.services.notifier import (
     DEFAULT_MEOW_REDACT,
@@ -62,6 +67,7 @@ from app.services.notifier import (
 )
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.utils.time import parse_utc_bound
 
 logger = logging.getLogger(__name__)
 
@@ -311,4 +317,77 @@ async def test_notify(
         latency_ms=latency_ms,
         channels=[NotifyTestChannel(channel=item.channel, ok=item.ok, reason=item.reason) for item in results],
         reason=reason,
+    )
+
+
+# ---------------------------------------------------------------- E26 审计日志查询（R-020，批次 A）
+
+
+@router.get(
+    "/audit",
+    response_model=AuditPageResponse,
+    summary="E26 审计日志查询（只读，append-only）",
+    dependencies=_PROTECTED,
+)
+async def query_audit(
+    request: Request,
+    action: str | None = Query(default=None, description="动作名前缀匹配（如 restore.；通配符自动转义）"),
+    result: str | None = Query(default=None, description="结果过滤：ok/denied/failed"),
+    since: str | None = Query(default=None, description="ts 下界（ISO 8601，含时区归一 UTC）"),
+    until: str | None = Query(default=None, description="ts 上界（ISO 8601，含时区归一 UTC）"),
+    limit: int = Query(default=50, ge=1, le=HISTORY_QUERY_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: SessionContext = Depends(require_session),
+) -> AuditPageResponse:
+    """审计日志分页查询（S6：只读端点，无 PUT/DELETE；查询本身不留痕）。
+
+    ``action`` 为**前缀**匹配：用户输入中的 ``%``/``_``/``\\`` 先转义再拼 LIKE
+    （防通配注入越权），右锚定命中 ``idx_audit_action`` 索引；``since``/``until``
+    经 :func:`parse_utc_bound` 归一 UTC（C8）；``result`` 走 AuditResult 白名单。
+    响应附 ``actions``（去重动作名枚举，repo 层去重查询，前端筛选下拉数据源）。
+    """
+    del session
+    resolved_result: str | None = None
+    if result:
+        try:
+            resolved_result = AuditResult(result).value
+        except ValueError as exc:
+            allowed = [item.value for item in AuditResult]
+            raise ValidationError(
+                "result 仅支持 " + "/".join(allowed),
+                data={"result": result, "allowed": allowed},
+            ) from exc
+    since_bound = parse_utc_bound(since)
+    if since and since_bound is None:
+        raise ValidationError("since 须为 ISO 8601 时间", data={"field": "since", "value": since})
+    until_bound = parse_utc_bound(until)
+    if until and until_bound is None:
+        raise ValidationError("until 须为 ISO 8601 时间", data={"field": "until", "value": until})
+
+    repo: AuditRepo = request.app.state.audit
+    rows, total = await repo.query(
+        action_prefix=action.strip() if action else None,
+        result=resolved_result,
+        since=since_bound,
+        until=until_bound,
+        limit=limit,
+        offset=offset,
+    )
+    return AuditPageResponse(
+        items=[
+            AuditOut(
+                id=row.id,
+                ts=row.ts,
+                action=row.action,
+                target=row.target,
+                detail=row.detail,
+                result=row.result,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+        actions=await repo.distinct_actions(),
     )

@@ -73,13 +73,23 @@ class AuditRepo:
         self,
         *,
         action: str | None = None,
+        action_prefix: str | None = None,
+        result: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> tuple[list[AuditRow], int]:
-        """分页查询审计日志（E26，倒序返回）。
+        """分页查询审计日志（E26，倒序返回；Q11 基线：target 搜索不做——无索引）。
 
         Args:
-            action: 按动作名过滤；None 表示不过滤。
+            action: 按**精确**动作名过滤；None 表示不过滤。
+            action_prefix: 按动作名**前缀**过滤（如 ``restore.``）；用户输入中的
+                ``%``/``_``/``\\`` 会先转义再拼 LIKE（防通配注入），右锚定可命中
+                ``idx_audit_action`` 索引（F3）。
+            result: 结果过滤（``ok``/``denied``/``failed``；白名单由路由层校验）。
+            since: ``ts >= `` 下界（UTC ISO 文本，与时间列同构）；None 不设界。
+            until: ``ts <= `` 上界；None 不设界。
             limit: 每页条数（上限 500）。
             offset: 偏移量。
 
@@ -88,18 +98,42 @@ class AuditRepo:
         """
         safe_limit = max(1, min(limit, MAX_LIMIT))
         safe_offset = max(0, offset)
-        where, params = ("", ())
+        clauses: list[str] = []
+        params: list[str] = []
         if action:
-            where = "WHERE action = ?"
-            params = (action,)
-        total_row = await self._db.fetch_one(f"SELECT COUNT(*) AS total FROM audit_logs {where}", params)
+            clauses.append("action = ?")
+            params.append(action)
+        if action_prefix:
+            clauses.append("action LIKE ? ESCAPE '\\'")
+            params.append(f"{_escape_like(action_prefix)}%")
+        if result:
+            clauses.append("result = ?")
+            params.append(result)
+        if since:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until:
+            clauses.append("ts <= ?")
+            params.append(until)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        total_row = await self._db.fetch_one(f"SELECT COUNT(*) AS total FROM audit_logs {where}", tuple(params))
         total = int(total_row["total"]) if total_row else 0
         rows = await self._db.fetch_all(
             f"SELECT id, ts, action, target, detail, result, created_at FROM audit_logs {where} "
             "ORDER BY id DESC LIMIT ? OFFSET ?",
-            params + (safe_limit, safe_offset),
+            tuple(params) + (safe_limit, safe_offset),
         )
         return [_to_row(row) for row in rows], total
+
+    async def distinct_actions(self) -> list[str]:
+        """返回审计日志中出现过的全部动作名（字典序去重，E26 筛选下拉数据源）。"""
+        rows = await self._db.fetch_all("SELECT DISTINCT action FROM audit_logs ORDER BY action ASC")
+        return [str(row["action"]) for row in rows]
+
+
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符（``%``/``_``/``\\``），配合 ``ESCAPE '\\'`` 使用（防通配注入）。"""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _to_row(row: Any) -> AuditRow:

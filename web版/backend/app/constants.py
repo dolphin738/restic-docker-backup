@@ -109,6 +109,7 @@ AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_TASK_CREATE = "task.create"
 AUDIT_TASK_UPDATE = "task.update"
 AUDIT_TASK_DELETE = "task.delete"
+AUDIT_RETENTION_CLEANUP = "retention.cleanup"  # R-020 每日维护：任务历史/日志清理（调度器触发）
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 
@@ -171,3 +172,11 @@ REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
 REPO_STATUS_CACHE_SECONDS = 30.0
 # 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）
 SNAPSHOT_FILES_MAX_OFFSET = 1_000_000
+
+# ---------------------------------------------------------------- P2 收尾批次 A（E13 全量化 / E26 / retention）
+
+# 任务历史/审计查询分页上限（Q13 基线：E13 对齐 E26 的既有上限，避免两套口径）
+HISTORY_QUERY_MAX_LIMIT = 500
+
+# retention（R-020）：jobs 行与任务日志的保留天数缺省（retention.jobs_days 可经 E07 调整）
+RETENTION_JOBS_DAYS_DEFAULT = 90

@@ -176,6 +176,24 @@ class JobLogResponse(_Base):
     truncated: bool = False
 
 
+class AuditOut(_Base):
+    """E26 审计日志行（§4.6 字段全集；detail 为 JSON 文本原文）。"""
+
+    id: int
+    ts: str
+    action: str
+    target: str | None = None
+    detail: str | None = None
+    result: str
+    created_at: str
+
+
+class AuditPageResponse(Page[AuditOut]):
+    """E26 响应：分页壳 + ``actions`` 动作名枚举（前端筛选下拉数据源，repo 层去重查询）。"""
+
+    actions: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- E05 / E31 备份源
 
 class SourceItem(_Base):

@@ -92,6 +92,23 @@ def add_seconds(moment: datetime, seconds: int) -> datetime:
     return moment + timedelta(seconds=seconds)
 
 
+def parse_utc_bound(value: str | None) -> str | None:
+    """把列表查询的时间范围参数归一为落库口径的 UTC ISO 文本（E13/E26 共用）。
+
+    Args:
+        value: ISO 8601 字符串（兼容 ``Z`` 后缀与无时区后缀——无时区按 UTC 解释）；
+            None/空白表示「不设边界」。
+
+    Returns:
+        UTC ISO 文本（与时间列同构，可直接进 SQL 比较）；无法解析或空白返回 None，
+        由调用方区分「未传」与「非法」并决定报错形态（本函数不抛错，保持纯函数）。
+    """
+    if value is None or not value.strip():
+        return None
+    moment = parse_iso(value)
+    return None if moment is None else utc_iso(moment)
+
+
 def tz_env(tz_name: str | None) -> dict[str, str]:
     """构造注入 restic 子进程的 TZ 环境变量（方案 §4.1：容器系统时区仅作回退）。"""
     if not tz_name:

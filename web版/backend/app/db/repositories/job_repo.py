@@ -76,15 +76,23 @@ class JobRepo:
         self,
         *,
         statuses: tuple[str, ...] | None = None,
+        job_type: str | None = None,
         task_id: int | None = None,
+        started_from: str | None = None,
+        started_to: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Job], int]:
-        """分页查询任务（P2 完整列表用；P1 亦可复用于进行中列表）。
+        """分页查询任务（E13 完整版，Q13 维度；P1 进行中列表亦复用）。
 
         Args:
-            statuses: 状态过滤；None 表示不过滤。
+            statuses: 状态过滤；None 表示不过滤（P2 起缺省即全量）。
+            job_type: 任务类型过滤（E13 ``type`` 维度，取值须在 JOB_TYPES 白名单内，
+                由路由层校验后传入）；None 表示不过滤。
             task_id: 备份任务过滤（E13 任务历史按任务筛选，N7）；None 表示不过滤。
+            started_from: ``started_at >= `` 下界（UTC ISO 文本，与时间列同构）；
+                None 表示不设下界（started_at 为 NULL 的行在任何范围条件下都不命中）。
+            started_to: ``started_at <= `` 上界；None 表示不设上界。
             limit: 每页条数。
             offset: 偏移量。
 
@@ -97,9 +105,18 @@ class JobRepo:
             placeholders = ",".join("?" * len(statuses))
             clauses.append(f"status IN ({placeholders})")
             params.extend(statuses)
+        if job_type is not None:
+            clauses.append("type = ?")
+            params.append(job_type)
         if task_id is not None:
             clauses.append("task_id = ?")
             params.append(task_id)
+        if started_from is not None:
+            clauses.append("started_at >= ?")
+            params.append(started_from)
+        if started_to is not None:
+            clauses.append("started_at <= ?")
+            params.append(started_to)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total_row = await self._db.fetch_one(f"SELECT COUNT(*) AS total FROM jobs {where}", tuple(params))
         total = int(total_row["total"]) if total_row else 0
@@ -108,6 +125,32 @@ class JobRepo:
             tuple(params) + (max(1, limit), max(0, offset)),
         )
         return [_to_job(row) for row in rows], total
+
+    async def purge_older_than(self, cutoff_ts: str) -> list[str]:
+        """删除 ``created_at < cutoff`` 的**终态**任务行（retention，R-020）。
+
+        只删终态（success/failed/interrupted/cancelled）——running/pending 是活跃
+        状态机的一部分，retention 绝不触碰（哪怕 created_at 已过界，属病态数据）。
+
+        Args:
+            cutoff_ts: UTC ISO 文本下界（严格小于）。
+
+        Returns:
+            被删行的 ``log_path`` 列表（调用方据此清理孤儿日志文件；
+            设计 §3.4 的 ``int`` 返回值由此列表 len 派生，显式返回路径是为
+            避免二次查询，偏差已在任务报告登记）。
+        """
+        terminal_placeholders = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT id, log_path FROM jobs WHERE created_at < ? AND status IN ({terminal_placeholders})",
+            (cutoff_ts, *TERMINAL_JOB_STATUSES),
+        )
+        if not rows:
+            return []
+        ids = [str(row["id"]) for row in rows]
+        placeholders = ",".join("?" * len(ids))
+        await self._db.write(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(ids))
+        return [str(row["log_path"]) for row in rows]
 
     async def latest_backup_by_tasks(self, task_ids: list[int]) -> dict[int, str]:
         """每任务最近一次 **terminal** backup 任务的状态（E34 卡片 ``last_result`` 数据源）。

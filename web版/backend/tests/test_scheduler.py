@@ -41,6 +41,7 @@ from app.db.repositories.task_repo import TaskRepo
 from app.services import scheduler as scheduler_module
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser
+from app.services.retention import RetentionService
 from app.services.scheduler import (
     SCHEDULE_CRON_DEFAULT_KEY,
     SCHEDULE_JITTER_DEFAULT_SECONDS,
@@ -87,15 +88,19 @@ async def make_scheduler(
     task_repo = TaskRepo(db)
     job_repo = JobRepo(db)
     config_repo = ConfigRepo(db)
+    audit_repo = AuditRepo(db)
     runner = JobRunner(
         db,
         FakeRestic(lines=lines, exit_code=exit_code),  # type: ignore[arg-type]
         OutputParser(),
-        AuditRepo(db),
+        audit_repo,
         settings=settings,
         task_loader=task_repo.get_dict,
     )
-    scheduler = SchedulerService(task_repo, runner, config_repo, settings=settings, jobs=job_repo)
+    retention = RetentionService(job_repo, config_repo, audit_repo, settings)
+    scheduler = SchedulerService(
+        task_repo, runner, config_repo, settings=settings, jobs=job_repo, retention=retention
+    )
     return db, scheduler, task_repo, job_repo, config_repo, runner
 
 
@@ -124,6 +129,11 @@ async def insert_success_job(
 def _job_ids(scheduler: SchedulerService) -> set[str]:
     """当前调度器内的触发器 id 集合（``backup-task-<id>``）。"""
     return {str(job.id) for job in scheduler._scheduler.get_jobs()}  # noqa: SLF001
+
+
+def _backup_jobs(scheduler: SchedulerService) -> list[object]:
+    """当前调度器内 ``backup-task-`` 域的触发器（start 后另有 maintenance-* 域，需分域断言）。"""
+    return [job for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("backup-task-")]  # noqa: SLF001
 
 
 # ---------------------------------------------------------------- 1. reload 触发器重建
@@ -159,13 +169,15 @@ async def test_reload_rebuilds_trigger_when_cron_changes(tmp_path, monkeypatch):
     await scheduler.start()  # RUNNING；18:00 未到点，catchup 不提交
 
     reference = FIXED_NOW
-    first_next = scheduler._scheduler.get_jobs()[0].trigger.get_next_fire_time(None, reference)  # noqa: SLF001
+    backup_jobs = _backup_jobs(scheduler)  # noqa: SLF001
+    assert len(backup_jobs) == 1
+    first_next = backup_jobs[0].trigger.get_next_fire_time(None, reference)
     assert first_next.hour == 18
 
     await task_repo.update(task.id, {"cron": "0 19 * * *"})
     await scheduler.reload()
 
-    jobs = scheduler._scheduler.get_jobs()  # noqa: SLF001
+    jobs = _backup_jobs(scheduler)  # noqa: SLF001
     assert len(jobs) == 1  # replace_existing：不重复堆积
     second_next = jobs[0].trigger.get_next_fire_time(None, reference)
     assert second_next.hour == 19
@@ -932,7 +944,7 @@ async def test_cron_trigger_rejects_non_five_field_expression():
 
 
 async def test_start_ordering_scheduler_start_then_reload_then_catchup(tmp_path):
-    """start 时序不变量：AsyncIOScheduler.start() → reload() → catchup_on_startup()。"""
+    """start 时序不变量：start() → reload() → catchup_on_startup() → mount_maintenance_jobs()。"""
     db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
     order: list[str] = []
 
@@ -950,12 +962,16 @@ async def test_start_ordering_scheduler_start_then_reload_then_catchup(tmp_path)
     async def fake_catchup():
         order.append("catchup")
 
+    async def fake_mount():
+        order.append("mount_maintenance")
+
     scheduler.reload = fake_reload  # type: ignore[method-assign]
     scheduler.catchup_on_startup = fake_catchup  # type: ignore[method-assign]
+    scheduler.mount_maintenance_jobs = fake_mount  # type: ignore[method-assign]
 
     await scheduler.start()
 
-    assert order == ["aps_start", "reload", "catchup"]
+    assert order == ["aps_start", "reload", "catchup", "mount_maintenance"]
     assert scheduler._scheduler.running is True  # noqa: SLF001
 
     # 收尾：停掉真实启动的调度器（shutdown 经 call_soon_threadsafe 派发，需让出一轮）
@@ -1004,3 +1020,83 @@ def _make_fixed_datetime(moment: datetime) -> type[datetime]:
             return moment.astimezone(tz) if tz else moment
 
     return _FixedDatetime
+
+
+# ---------------------------------------------------------------- 8. 维护任务域（T01 R-020，maintenance-* 分域）
+
+
+async def test_start_mounts_maintenance_retention_and_reload_preserves_it(tmp_path, monkeypatch):
+    """start 挂载 maintenance-retention；reload 动态重载**不得**误删 maintenance-* 触发器。
+
+    结构不变量（F10/设计 §3.5）：reload 的 keep 集合只识别 backup-task- 前缀，
+    两域按前缀分域互不清理——这是维护任务挂载点的前置安全条件。
+    """
+    db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path)
+    # 冻结 now + 当日点未到的 cron，避免 start 的 catchup 分支提交 backup 干扰断言
+    task = await create_task(task_repo, "维护共存", cron="59 23 * * *")
+    monkeypatch.setattr(scheduler_module, "datetime", _make_fixed_datetime(FIXED_NOW))
+
+    await scheduler.start()
+
+    assert "maintenance-retention" in _job_ids(scheduler)
+    assert f"backup-task-{task.id}" in _job_ids(scheduler)
+
+    await scheduler.reload()  # 动态重载（保存任务后由路由调用）
+    assert "maintenance-retention" in _job_ids(scheduler)
+    assert f"backup-task-{task.id}" in _job_ids(scheduler)
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_mount_maintenance_jobs_is_idempotent(tmp_path):
+    """重复挂载（start + 显式再调）→ replace_existing 去重，不堆积。"""
+    db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
+    await scheduler.start()
+    await scheduler.mount_maintenance_jobs()
+
+    maintenance = [
+        job for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("maintenance-")
+    ]
+    assert [str(job.id) for job in maintenance] == ["maintenance-retention"]
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_fire_retention_invokes_retention_service(tmp_path):
+    """维护回调触发 retention 清理（每天到点执行一次 cleanup_once）。"""
+    db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
+    calls: list[int] = []
+
+    async def recording_cleanup(*, now=None):  # noqa: ANN001, ANN202
+        calls.append(1)
+        from app.services.retention import RetentionReport
+
+        return RetentionReport(jobs_deleted=0, log_files_deleted=0, log_bytes_freed=0,
+                               jobs_days=90, logs_days=90)
+
+    scheduler._retention.cleanup_once = recording_cleanup  # noqa: SLF001 - 实例级替身
+
+    await scheduler._fire_retention()  # noqa: SLF001
+
+    assert len(calls) == 1
+    await db.close()
+
+
+async def test_fire_retention_isolates_exceptions(tmp_path, caplog):
+    """清理异常被隔离记日志，不向调度循环上抛（援 _submit 单任务隔离口径）。"""
+    db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
+
+    async def failing_cleanup(*, now=None):  # noqa: ANN001, ANN202
+        raise RuntimeError("cleanup boom")
+
+    scheduler._retention.cleanup_once = failing_cleanup  # noqa: SLF001 - 实例级替身
+
+    with caplog.at_level(logging.ERROR, logger="app.services.scheduler"):
+        await scheduler._fire_retention()  # 不得抛异常  # noqa: SLF001
+
+    assert "retention 清理失败" in caplog.text
+    await db.close()
