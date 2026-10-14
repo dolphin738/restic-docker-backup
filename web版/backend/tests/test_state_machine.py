@@ -13,11 +13,14 @@ import pytest
 
 from app.constants import (
     ACTIVE_JOB_STATUSES,
+    BEHAVIOR_AUTO_INIT_KEY,
+    BEHAVIOR_AUTO_UNLOCK_KEY,
     JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
+from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import (
@@ -343,6 +346,129 @@ async def test_recover_writes_audit(tmp_path):
     audit = AuditRepo(db)
     rows, total = await audit.query(action="job.recovered")
     assert total == 1
+    await db.close()
+
+
+# --------------------------------- 启动恢复 AUTO 分支（Q8 基线，批次 B：AUTO_UNLOCK / AUTO_INIT）
+
+class FakeResticWithProbe(FakeRestic):
+    """带 run_json 的替身：AUTO_INIT 的仓库初始化探测（cat config）落定结果。"""
+
+    def __init__(self, *, probe_exit: int = 0, probe_lines: list[str] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.probe_exit = probe_exit
+        self.probe_lines = list(probe_lines or [])
+        self.probe_calls = 0
+
+    async def run_json(self, argv, *, env, timeout_seconds, max_lines=200_000):  # noqa: ANN001, ANN202
+        self.probe_calls += 1
+        from types import SimpleNamespace
+
+        return SimpleNamespace(exit_code=self.probe_exit, lines=list(self.probe_lines), truncated=False)
+
+
+async def _make_auto_runner(tmp_path, fake: FakeRestic):
+    """带 config 仓储的 runner（AUTO 分支：behavior.* 开关与 repo.url 经 config 落库）。"""
+    db = Database(tmp_path / "auto.db")
+    await db.connect()
+    settings = Settings(data_dir=str(tmp_path))
+    settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    runner = JobRunner(
+        db,
+        fake,  # type: ignore[arg-type]
+        OutputParser(),
+        AuditRepo(db),
+        settings=settings,
+    )
+    return db, runner, JobRepo(db), ConfigRepo(db)
+
+
+async def _submitted_types(repo: JobRepo) -> list[str]:
+    jobs, _ = await repo.list_page()
+    return [job.type for job in jobs]
+
+
+async def test_auto_flags_off_keeps_behavior_identical(tmp_path):
+    """开关缺省 off（回归保护）：recover 不产生任何 unlock/init 任务，行为与旧实现一致。"""
+    fake = FakeResticWithProbe()
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set("repo.url", "/repo")
+    await insert_job(repo, "j-run", "running")
+
+    await runner.recover_on_startup()
+
+    assert await _submitted_types(repo) == ["backup"]  # 仅遗留 interrupted 标记，无新任务
+    assert fake.probe_calls == 0  # off 时连探测都不发生
+    await db.close()
+
+
+async def test_auto_unlock_submits_unlock_job(tmp_path):
+    """AUTO_UNLOCK=1：提交 scheduled unlock 清理锁残留（审计沿用 job.submit/finished 埋点）。"""
+    fake = FakeResticWithProbe(lines=[])
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set("repo.url", "/repo")
+    await config.set(BEHAVIOR_AUTO_UNLOCK_KEY, "1")
+
+    await runner.recover_on_startup()
+
+    assert "unlock" in await _submitted_types(repo)
+    await db.close()
+
+
+async def test_auto_unlock_skips_when_repo_unconfigured(tmp_path):
+    """仓库未配置：开关开着也不提交（避免无谓 failed 任务）。"""
+    fake = FakeResticWithProbe()
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set(BEHAVIOR_AUTO_UNLOCK_KEY, "1")
+
+    await runner.recover_on_startup()
+
+    assert await _submitted_types(repo) == []
+    await db.close()
+
+
+async def test_auto_init_runs_when_repo_uninitialized(tmp_path):
+    """AUTO_INIT=1 且探测命中「未初始化」→ 提交 init。"""
+    fake = FakeResticWithProbe(
+        probe_exit=1,
+        probe_lines=['{"error":"unable to open config file"}'],
+    )
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set("repo.url", "/repo")
+    await config.set(BEHAVIOR_AUTO_INIT_KEY, "1")
+
+    await runner.recover_on_startup()
+
+    assert "init" in await _submitted_types(repo)
+    await db.close()
+
+
+async def test_auto_init_skips_when_initialized(tmp_path):
+    """AUTO_INIT=1 但探测成功（已初始化）→ 不 init。"""
+    fake = FakeResticWithProbe(probe_exit=0)
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set("repo.url", "/repo")
+    await config.set(BEHAVIOR_AUTO_INIT_KEY, "1")
+
+    await runner.recover_on_startup()
+
+    assert await _submitted_types(repo) == []
+    await db.close()
+
+
+async def test_auto_init_skips_when_probe_inconclusive(tmp_path):
+    """探测失败但非「未初始化」（如锁残留）→ 不动（fail-safe，绝不误 init）。"""
+    fake = FakeResticWithProbe(
+        probe_exit=1,
+        probe_lines=["repository is already locked"],
+    )
+    db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
+    await config.set("repo.url", "/repo")
+    await config.set(BEHAVIOR_AUTO_INIT_KEY, "1")
+
+    await runner.recover_on_startup()
+
+    assert await _submitted_types(repo) == []
     await db.close()
 
 
@@ -713,3 +839,4 @@ async def test_forget_with_keep_rule_and_prune_passes_flags(tmp_path):
     assert args.prune is True
     assert args.dry_run is False  # 执行路径绝不带 --dry-run
     assert args.tags == ("task-1",)
+    await db.close()

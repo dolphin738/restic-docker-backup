@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,10 @@ from app.constants import (
     AUDIT_JOB_RECOVERED,
     AUDIT_JOB_SKIPPED_CONFLICT,
     AUDIT_JOB_SUBMIT,
+    BEHAVIOR_AUTO_INIT_KEY,
+    BEHAVIOR_AUTO_UNLOCK_KEY,
     JOB_TYPES,
+    REPO_PROBE_TIMEOUT_SECONDS,
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
@@ -46,6 +50,10 @@ PolicyLoader = Callable[[int], Awaitable[dict[str, Any] | None]]
 # task_loader 与 policy_loader 同构契约（(int) -> Awaitable[dict | None]）：
 # TaskRepo.get_dict / PolicyRepo.get_dict 均按此签名注入（增量设计 §1.1 仿先例）。
 TaskLoader = PolicyLoader
+
+# E22 read_data 展示用的 check 提交参数内存保留条数上限（jobs 表无参数列、本批零 DDL；
+# 进程重启后回落 False——错误列表与 summary 指标仍从日志完整还原）
+CHECK_PARAMS_MEMORY_MAX = 200
 
 
 class NoopNotifier:
@@ -132,6 +140,8 @@ class JobRunner:
         self._processes: dict[str, ResticProcess] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._params: dict[str, dict[str, Any]] = {}
+        # check 任务提交参数的内存保留（E22 ``read_data`` 展示；有界，见 CHECK_PARAMS_MEMORY_MAX）
+        self._check_params: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     # ---------------------------------------------------------------- 互斥锁（§7.1）
 
@@ -142,6 +152,25 @@ class JobRunner:
             lock = asyncio.Lock()
             self._locks[repo_url] = lock
         return lock
+
+    # ---------------------------------------------------------------- check 提交参数（E22）
+
+    def check_params(self, job_id: str) -> dict[str, Any]:
+        """读取 check 任务的提交参数（E22 ``read_data`` 展示数据源）。
+
+        jobs 表无参数列（本批零 DDL，F17），故在内存保留最近
+        ``CHECK_PARAMS_MEMORY_MAX`` 条 check 提交参数；进程重启或条目被挤出后
+        返回空字典（``read_data`` 回落 False——错误列表与 summary 指标仍可从
+        任务日志完整还原，不受影响）。
+        """
+        return dict(self._check_params.get(job_id, {}))
+
+    def _remember_check_params(self, job_id: str, params: dict[str, Any]) -> None:
+        """记录 check 提交参数（有界 FIFO：超上限淘汰最旧条目，防无界增长）。"""
+        self._check_params.pop(job_id, None)
+        self._check_params[job_id] = dict(params)
+        while len(self._check_params) > CHECK_PARAMS_MEMORY_MAX:
+            self._check_params.popitem(last=False)
 
     # ---------------------------------------------------------------- 提交与取消
 
@@ -223,6 +252,8 @@ class JobRunner:
             )
 
         self._params[job_id] = dict(params or {})
+        if job_type == "check":
+            self._remember_check_params(job_id, self._params[job_id])
         await self._audit.record(
             AUDIT_JOB_SUBMIT,
             target=job_id,
@@ -454,8 +485,67 @@ class JobRunner:
                 detail={"count": affected},
                 result="ok",
             )
-        # TODO(P2): 按策略补跑（调度器就绪后）+ AUTO_UNLOCK 语义处理仓库锁残留（§6.5）
+        # AUTO_INIT/AUTO_UNLOCK（Q8 基线，§6.5）：开关默认 off——off 时本分支
+        # 不产生任何 restic 调用，行为与旧实现逐字节一致（回归保护）。
+        await self._auto_recover_repo()
         return affected
+
+    async def _auto_recover_repo(self) -> None:
+        """AUTO_UNLOCK / AUTO_INIT 分支（Q8 基线）：锁残留自动清锁、未初始化仓库自动 init。
+
+        - ``behavior.auto_unlock=1``：提交一次 unlock 任务清理锁残留（unlock 幂等，
+          无锁时无害）；审计沿用 job.submit/job.finished 既有埋点；
+        - ``behavior.auto_init=1``：探测仓库未初始化（``cat config`` 报「仓库不存在/
+          未初始化」关键词）时提交一次 init 任务；已初始化或因锁/网络探测失败时
+          **不动**（fail-safe：误 init 已初始化仓库会报错并污染任务历史）。
+
+        补跑本身由 ``SchedulerService.catchup_on_startup`` 承担（启动时序晚于本方法）。
+        """
+        repo_url = await self._repo_url()
+        if not repo_url:
+            return  # 仓库未配置：unlock/init 都无从谈起（避免无谓 failed 任务）
+
+        if await self._behavior_flag(BEHAVIOR_AUTO_UNLOCK_KEY):
+            logger.warning("AUTO_UNLOCK 开启：提交 unlock 清理仓库锁残留")
+            await self._submit_auto("unlock")
+
+        if await self._behavior_flag(BEHAVIOR_AUTO_INIT_KEY) and not await self._repo_initialized(repo_url):
+            logger.warning("AUTO_INIT 开启且仓库未初始化：提交 init")
+            await self._submit_auto("init")
+
+    async def _behavior_flag(self, key: str) -> bool:
+        """读取 behavior.* 开关（仅 ``"1"`` 为开；缺省/其他值一律 off，fail-safe）。"""
+        return ((await self._config.get_value(key)) or "").strip() == "1"
+
+    async def _submit_auto(self, job_type: str) -> None:
+        """提交启动期自动任务（unlock/init）；失败只记日志，不阻断启动流程。"""
+        try:
+            await self.submit(job_type, trigger="scheduled")
+        except Exception:  # noqa: BLE001 - 自动恢复失败不应拖垮应用启动
+            logger.exception("启动期自动任务提交失败：%s", job_type)
+
+    async def _repo_initialized(self, repo_url: str) -> bool:
+        """探测仓库是否已初始化（``cat config``；未初始化关键词命中即 False）。
+
+        探测失败但非「未初始化」（锁残留/网络不可达）时返回 True——交给 AUTO_UNLOCK
+        或人工处理，绝不在此路径误触发 init。
+        """
+        argv = self._restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
+        env = self._restic.build_env(repo_url=repo_url, env_extras=await self._load_credentials())
+        probe = await self._restic.run_json(
+            argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS
+        )
+        if probe.exit_code == 0:
+            return True
+        joined = "\n".join(probe.lines).lower()
+        not_initialized = any(
+            keyword in joined
+            for keyword in ("unable to open config file", "not initialized", "does not exist")
+        )
+        if not_initialized:
+            return False
+        logger.warning("仓库初始化探测未定性（退出码 %s），跳过 AUTO_INIT", probe.exit_code)
+        return True
 
     async def on_shutdown(self) -> None:
         """容器 stop 收尾：向 restic 子进程转发 SIGTERM，宽限后 SIGKILL（§6.5）。
@@ -556,7 +646,13 @@ class JobRunner:
             )
 
         if job_type == "check":
-            return WhitelistArgs(read_data=bool(params.get("read_data", False)))
+            # R-017：read_data（全量读数据）与 read_data_subset（抽样读数据）二选一，
+            # 互斥与形态校验由 ResticCmd 白名单层兜底（WhitelistArgs 前移 422）。
+            subset = params.get("read_data_subset")
+            return WhitelistArgs(
+                read_data=bool(params.get("read_data", False)),
+                read_data_subset=str(subset).strip() if subset else None,
+            )
 
         if job_type == "forget":
             # R-016：执行参数与 E21 预览同源（params 优先，回退 profile 字段）；

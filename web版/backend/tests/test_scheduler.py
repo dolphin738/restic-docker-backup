@@ -28,11 +28,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from test_state_machine import BACKUP_LINES, FakeRestic, await_job, insert_job
 
+from app.constants import (
+    BEHAVIOR_CHECK_ENABLED_KEY,
+    BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+)
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
@@ -136,6 +143,11 @@ def _backup_jobs(scheduler: SchedulerService) -> list[object]:
     return [job for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("backup-task-")]  # noqa: SLF001
 
 
+def _backup_job_ids(scheduler: SchedulerService) -> set[str]:
+    """``backup-task-`` 域触发器 id 集合（reload 现在会补挂 maintenance-* 域，断言须分域）。"""
+    return {str(job.id) for job in _backup_jobs(scheduler)}
+
+
 # ---------------------------------------------------------------- 1. reload 触发器重建
 
 
@@ -148,8 +160,8 @@ async def test_reload_creates_trigger_per_enabled_task(tmp_path):
 
     await scheduler.reload()
 
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}"}
-    job = scheduler._scheduler.get_jobs()[0]  # noqa: SLF001
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}"}
+    job = _backup_jobs(scheduler)[0]  # noqa: SLF001
     assert job.args == (task_a.id,)
     assert job.func == scheduler._fire_backup
     await db.close()
@@ -193,23 +205,23 @@ async def test_reload_syncs_job_set_on_create_and_delete(tmp_path):
     db, scheduler, task_repo, _, _, _ = await make_scheduler(tmp_path)
     task_a = await create_task(task_repo, "A", cron="0 3 * * *")
     await scheduler.reload()
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}"}
 
     task_b = await create_task(task_repo, "B", cron="0 4 * * *")
     await scheduler.reload()
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}", f"backup-task-{task_b.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}", f"backup-task-{task_b.id}"}
 
     await task_repo.update(task_b.id, {"enabled": 0})
     await scheduler.reload()
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}"}
 
     await task_repo.update(task_b.id, {"enabled": 1})
     await scheduler.reload()
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}", f"backup-task-{task_b.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}", f"backup-task-{task_b.id}"}
 
     await task_repo.delete(task_b.id)
     await scheduler.reload()
-    assert _job_ids(scheduler) == {f"backup-task-{task_a.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task_a.id}"}
     await db.close()
 
 
@@ -624,7 +636,7 @@ async def test_invalid_task_cron_degrades_to_manual_only(tmp_path, caplog):
         nxt = scheduler.next_fire_time(task)
 
     assert nxt is None  # 退化「仅手动」
-    assert _job_ids(scheduler) == set()
+    assert _backup_job_ids(scheduler) == set()
     assert "无法解析" in caplog.text
     await db.close()
 
@@ -644,7 +656,7 @@ async def test_broken_config_cron_default_degrades_all_to_manual_only(tmp_path, 
         nxt = scheduler.next_fire_time(task)
 
     assert nxt is None
-    assert _job_ids(scheduler) == set()
+    assert _backup_job_ids(scheduler) == set()
     assert "无法解析" in caplog.text
     await db.close()
 
@@ -657,7 +669,7 @@ async def test_valid_config_cron_default_still_builds_trigger(tmp_path):
 
     await scheduler.reload()
 
-    assert _job_ids(scheduler) == {f"backup-task-{task.id}"}
+    assert _backup_job_ids(scheduler) == {f"backup-task-{task.id}"}
     await db.close()
 
 
@@ -927,7 +939,7 @@ async def test_cron_weekday_out_of_range_degrades_to_manual_only(tmp_path, caplo
         nxt = scheduler.next_fire_time(task)
 
     assert nxt is None
-    assert _job_ids(scheduler) == set()
+    assert _backup_job_ids(scheduler) == set()
     assert "无法解析" in caplog.text
     await db.close()
 
@@ -1051,7 +1063,11 @@ async def test_start_mounts_maintenance_retention_and_reload_preserves_it(tmp_pa
 
 
 async def test_mount_maintenance_jobs_is_idempotent(tmp_path):
-    """重复挂载（start + 显式再调）→ replace_existing 去重，不堆积。"""
+    """重复挂载（start + 显式再调）→ replace_existing 去重，不堆积。
+
+    批次 B 面：retention（R-020）恒挂载；check 域（behavior.check_enabled
+    缺省 off）不挂载——挂载/摘除的开关矩阵见本节后续用例。
+    """
     db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
     await scheduler.start()
     await scheduler.mount_maintenance_jobs()
@@ -1099,4 +1115,132 @@ async def test_fire_retention_isolates_exceptions(tmp_path, caplog):
         await scheduler._fire_retention()  # 不得抛异常  # noqa: SLF001
 
     assert "retention 清理失败" in caplog.text
+    await db.close()
+
+
+# ---------------------------------------------------------------- 9. check 维护域（T04 R-017，批次 B）
+
+# 维护域 job id（与实现同源；挂载/摘除断言的口径）
+CHECK_SAMPLE_ID = "maintenance-check-sample"
+CHECK_FULL_ID = "maintenance-check-full"
+
+
+def _maintenance_job_ids(scheduler: SchedulerService) -> set[str]:
+    """当前调度器内 ``maintenance-`` 域触发器 id 集合。"""
+    return {  # noqa: SLF001
+        str(job.id) for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("maintenance-")
+    }
+
+
+async def test_check_jobs_mounted_when_enabled(tmp_path):
+    """check_enabled=1 → 每日抽样（ratio>0）与月度全量都挂载；reload 摘/挂同步。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    await scheduler.start()
+    assert CHECK_SAMPLE_ID not in _maintenance_job_ids(scheduler)  # 缺省 off
+
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0.02")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_DAY_KEY, "15")
+    await scheduler.reload()  # 保存即生效（reload 末尾补挂维护域）
+
+    assert {CHECK_SAMPLE_ID, CHECK_FULL_ID} <= _maintenance_job_ids(scheduler)
+    # 月度全量的触发日 = monthly_full_day（当月 15 日 04:00）
+    full = next(j for j in scheduler._scheduler.get_jobs() if str(j.id) == CHECK_FULL_ID)  # noqa: SLF001
+    nxt = full.trigger.get_next_fire_time(None, datetime.now(UTC))
+    assert nxt is not None and nxt.day == 15 and nxt.hour == 4
+
+    # 开关关闭 → 触发器摘除（同一前缀分域机制）
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "0")
+    await scheduler.reload()
+    assert CHECK_SAMPLE_ID not in _maintenance_job_ids(scheduler)
+    assert CHECK_FULL_ID not in _maintenance_job_ids(scheduler)
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_check_sample_not_mounted_when_ratio_zero(tmp_path):
+    """check_sample_ratio=0 → 不抽样（只月度全量），sample 触发器不挂载。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0")
+
+    await scheduler.start()
+
+    assert CHECK_SAMPLE_ID not in _maintenance_job_ids(scheduler)
+    assert CHECK_FULL_ID in _maintenance_job_ids(scheduler)
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_monthly_full_day_invalid_skips_full_job(tmp_path):
+    """monthly_full_day 越界（31 > 28）→ 月度全量不挂载（WARNING），抽样照常，不崩溃。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_DAY_KEY, "31")
+
+    await scheduler.start()  # 不得抛异常
+
+    assert CHECK_SAMPLE_ID in _maintenance_job_ids(scheduler)
+    assert CHECK_FULL_ID not in _maintenance_job_ids(scheduler)
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_fire_check_sample_submits_with_subset(tmp_path):
+    """抽样回调：提交 scheduled check，params 带 read_data=False + 百分比 subset（0.02 → 2%）。"""
+    db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0.02")
+
+    await scheduler._fire_check("sample")  # noqa: SLF001
+
+    jobs, total = await runner._jobs.list_page(job_type="check")  # noqa: SLF001
+    assert total == 1
+    assert jobs[0].trigger == "scheduled"
+    assert runner._params[jobs[0].id] == {"read_data": False, "read_data_subset": "2%"}  # noqa: SLF001
+
+
+async def test_fire_check_full_submits_read_data(tmp_path):
+    """全量回调：params 带 read_data=True、无 subset（互斥语义由白名单层兜底）。"""
+    db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+
+    await scheduler._fire_check("full")  # noqa: SLF001
+
+    jobs, total = await runner._jobs.list_page(job_type="check")  # noqa: SLF001
+    assert total == 1
+    assert runner._params[jobs[0].id] == {"read_data": True}  # noqa: SLF001
+
+
+async def test_fire_check_skips_when_disabled_or_ratio_zero(tmp_path):
+    """开关关闭 / ratio=0 的抽样 → 不提交任何任务（fire 复核，覆盖 reload 摘除前的窗口）。"""
+    db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0")
+
+    await scheduler._fire_check("sample")  # noqa: SLF001
+    await scheduler._fire_check("full")  # noqa: SLF001
+
+    assert (await runner._jobs.list_page(job_type="check"))[1] == 0  # noqa: SLF001
+    await db.close()
+
+
+async def test_fire_check_isolates_exceptions(tmp_path, caplog):
+    """提交异常被隔离记日志，不向调度循环上抛（援 _submit/_fire_retention 口径）。"""
+    db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+
+    async def failing_submit(*args, **kwargs):  # noqa: ANN001, ANN002, ANN202
+        raise RuntimeError("submit boom")
+
+    runner.submit = failing_submit  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="app.services.scheduler"):
+        await scheduler._fire_check("sample")  # 不得抛异常  # noqa: SLF001
+
+    assert "调度提交 check 失败" in caplog.text
     await db.close()

@@ -176,6 +176,37 @@ class JobLogResponse(_Base):
     truncated: bool = False
 
 
+# ---------------------------------------------------------------- E22 check 结果视图（R-017，批次 B）
+
+class CheckErrorOut(_Base):
+    """E22 单条 check 错误（message 为 restic 输出原文，逐字保留、含换行）。"""
+
+    message: str
+
+
+class CheckView(_Base):
+    """E22 check 结果视图（§2.4：由 summary + error 行驱动，**无进度集**）。
+
+    ``broken_packs`` 为损坏 pack id 的保序列表（健康仓库为空列表——解析层已把
+    Go nil 的 ``null`` 归一）；``num_errors`` 取 restic summary 原值（与
+    ``error_count`` 独立：截断场景下 error 行可能少于 summary 计数）。
+    """
+
+    errors: list[CheckErrorOut] = Field(default_factory=list, description="error 行原文列表（保序）")
+    error_count: int = 0
+    num_errors: int = 0
+    broken_packs: list[str] = Field(default_factory=list, description="损坏 pack id（修复动作数据源）")
+    suggest_repair_index: bool = False
+    suggest_prune: bool = False
+    read_data: bool = Field(default=False, description="是否为 --read-data（全量读数据）形态")
+
+
+class CheckDetailResponse(JobOut):
+    """E22 响应：``JobOut`` 全字段 + ``check_view``（不建新表，Q9 基线）。"""
+
+    check_view: CheckView
+
+
 class AuditOut(_Base):
     """E26 审计日志行（§4.6 字段全集；detail 为 JSON 文本原文）。"""
 

@@ -184,3 +184,19 @@ RETENTION_JOBS_DAYS_DEFAULT = 90
 # 缓存占用统计（E25，Q14 基线）：du 超时 + 30s 进程内结果缓存（援 E30 REPO_STATUS_CACHE_SECONDS 先例）
 CACHE_USAGE_TIMEOUT_SECONDS = 30.0
 CACHE_STATUS_CACHE_SECONDS = 30.0
+
+# ---------------------------------------------------------------- P2 收尾批次 B：R-017 行为开关（behavior.*，E07 可调）
+
+# 键名单一真源（config KV；JobRunner AUTO 分支与调度器 check 触发共用，默认全 off）
+BEHAVIOR_AUTO_INIT_KEY = "behavior.auto_init"
+BEHAVIOR_AUTO_UNLOCK_KEY = "behavior.auto_unlock"
+BEHAVIOR_CHECK_ENABLED_KEY = "behavior.check_enabled"
+BEHAVIOR_CHECK_SAMPLE_RATIO_KEY = "behavior.check_sample_ratio"
+BEHAVIOR_MONTHLY_FULL_DAY_KEY = "behavior.monthly_full_day"
+
+# 每日抽样 check 的缺省比例（0=不抽样、只月度全量；与 backup_tasks.check_sample_ratio 列缺省一致）
+CHECK_SAMPLE_RATIO_DEFAULT = 0.02
+# 月度全量 check 的「当月第 N 天」缺省与值域（[1, 28]，规避月末不存在日）
+MONTHLY_FULL_DAY_DEFAULT = 1
+MONTHLY_FULL_DAY_MIN = 1
+MONTHLY_FULL_DAY_MAX = 28

@@ -51,6 +51,7 @@ from app.errors import AppError
 from app.exclusions import ExclusionRules
 from app.routers import auth as auth_router
 from app.routers import backup_tasks as backup_tasks_router
+from app.routers import checks as checks_router
 from app.routers import config as config_router
 from app.routers import fs as fs_router
 from app.routers import health as health_router
@@ -315,6 +316,7 @@ def create_app() -> FastAPI:
     app.include_router(backup_tasks_router.router, dependencies=protected)  # E34–E36（选项② R-026）
     app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18
     app.include_router(ops_router.router, dependencies=protected)        # E21 forget 预览（R-016）
+    app.include_router(checks_router.router, dependencies=protected)     # E22 check 结果（R-017，批次 B）
     app.include_router(restore_router.router, dependencies=protected)    # E19
     # 后续批次（dump/notify/cache/audit…）在此按同样方式挂载：
     #   app.include_router(x_router.router, dependencies=protected)

@@ -30,6 +30,15 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.constants import (
+    BEHAVIOR_CHECK_ENABLED_KEY,
+    BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    CHECK_SAMPLE_RATIO_DEFAULT,
+    MONTHLY_FULL_DAY_DEFAULT,
+    MONTHLY_FULL_DAY_MAX,
+    MONTHLY_FULL_DAY_MIN,
+)
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.task_repo import DEFAULT_REPO_ID, Task, TaskRepo
@@ -57,7 +66,10 @@ _JOB_ID_PREFIX = "backup-task-"
 _MAINTENANCE_PREFIX = "maintenance-"
 
 # 每日维护固定时刻（模块级常量单一真源，设计 §3.5；时区取 config.timezone → settings.tz）
-MAINTENANCE_RETENTION_CRON = "40 3 * * *"  # 每日 retention（R-020；check/dump 随批次 B 追加）
+MAINTENANCE_RETENTION_CRON = "40 3 * * *"    # 每日 retention（R-020）
+MAINTENANCE_CHECK_DAILY_CRON = "30 4 * * *"  # 每日抽样 check（R-017，check_enabled=1 才挂载）
+# 月度全量 check：``0 4 <monthly_full_day> * *``（behavior.monthly_full_day 当日 04:00；
+# check_enabled=1 才挂载，构造见 :meth:`mount_maintenance_jobs`）
 
 # 标准 crontab 星期取值上限（0=周日 … 6=周六，7 与 0 同义）；超出即原样透传由 APScheduler 报错
 _CRON_WEEKDAY_MAX = 7
@@ -261,7 +273,7 @@ class SchedulerService:
         Args:
             tasks: 任务仓储（触发器列举与任务复核）。
             runner: 任务执行器（submit 走仓库维度互斥，E1）。
-            config: 配置仓储（cron_default/jitter/timezone 全局缺省）。
+            config: 配置仓储（cron_default/jitter/timezone 全局缺省 + behavior.* 键）。
             settings: 运行期配置；缺省取进程单例（时区回退源）。
             jobs: jobs 表仓储（补跑/prune 判定需要读 backup 历史）。
                 设计 §4.1 构造签名未列此项，但 catchup/prune 判定必须读 jobs 表，
@@ -300,7 +312,9 @@ class SchedulerService:
         """全量重建 backup 触发器（保存/删除后由路由调用，「保存即生效不重启容器」）。
 
         ``enabled=1`` 且有效 cron 非空的任务各建一个 cron 触发器（:func:`_cron_trigger`，
-        ``replace_existing``）；随后移除已不存在/已暂停/无有效 cron 任务的遗留 job。
+        ``replace_existing``）；随后移除已不存在/已暂停/无有效 cron 任务的遗留 job；
+        末尾补挂维护任务域（设计 §3.5：``reload()`` 与 ``start()`` 末尾调用）——
+        behavior.* 配置经 E07 变更后同样「保存即生效」。
         """
         await self._refresh_config_snapshot()
         tasks = await self._tasks.list_all(DEFAULT_REPO_ID)
@@ -329,30 +343,90 @@ class SchedulerService:
                 logger.info("调度器移除遗留触发器：%s", job.id)
                 self._scheduler.remove_job(job.id)
 
-    # ---------------------------------------------------------------- 维护任务域（设计 §3.5，本批新增）
+        await self.mount_maintenance_jobs()
+
+    # ---------------------------------------------------------------- 维护任务域（设计 §3.5）
 
     async def mount_maintenance_jobs(self) -> None:
         """挂载每日维护任务（``maintenance-*`` 前缀分域，``replace_existing`` 幂等）。
 
-        本批（T01）仅挂 retention；check/dump 触发器随批次 B 按同一前缀追加。
+        本批（批次 B）挂载三类：
+        - ``maintenance-retention``（R-020，恒挂载）；
+        - ``maintenance-check-sample``（R-017 每日抽样，``check_enabled=1`` 且
+          ``check_sample_ratio > 0`` 才挂载——ratio=0 = 不抽样、只月度全量）；
+        - ``maintenance-check-full``（R-017 月度全量，``check_enabled=1`` 才挂载，
+          当月 ``monthly_full_day`` 日 04:00）。
+
         与 backup 动态重载互不干扰的关键不变量：:meth:`reload` 的 keep 集合只识别
         ``backup-task-`` 前缀，``maintenance-*`` 触发器不会被误删；本方法自身按
-        ``maintenance-`` 前缀移除失效遗留（未来开关关闭时同一机制摘除）。
+        ``maintenance-`` 前缀移除失效遗留（开关关闭时同一机制摘除）。
         """
         await self._refresh_config_snapshot()
-        retention_id = f"{_MAINTENANCE_PREFIX}retention"
+        keep: set[str] = set()
+
+        keep.add(f"{_MAINTENANCE_PREFIX}retention")
         self._scheduler.add_job(
             self._fire_retention,
             trigger=_cron_trigger(MAINTENANCE_RETENTION_CRON, timezone=self._tz),
             args=(),
-            id=retention_id,
+            id=f"{_MAINTENANCE_PREFIX}retention",
             replace_existing=True,
         )
-        keep = {retention_id}
+
+        if ((await self._config.get_value(BEHAVIOR_CHECK_ENABLED_KEY)) or "").strip() == "1":
+            ratio = self._parse_check_sample_ratio(
+                await self._config.get_value(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY)
+            )
+            if ratio > 0:
+                keep.add(f"{_MAINTENANCE_PREFIX}check-sample")
+                self._scheduler.add_job(
+                    self._fire_check,
+                    trigger=_cron_trigger(MAINTENANCE_CHECK_DAILY_CRON, timezone=self._tz),
+                    args=("sample",),
+                    id=f"{_MAINTENANCE_PREFIX}check-sample",
+                    replace_existing=True,
+                )
+            day = self._parse_monthly_full_day(
+                await self._config.get_value(BEHAVIOR_MONTHLY_FULL_DAY_KEY)
+            )
+            if day is not None:
+                keep.add(f"{_MAINTENANCE_PREFIX}check-full")
+                self._scheduler.add_job(
+                    self._fire_check,
+                    trigger=_cron_trigger(f"0 4 {day} * *", timezone=self._tz),
+                    args=("full",),
+                    id=f"{_MAINTENANCE_PREFIX}check-full",
+                    replace_existing=True,
+                )
+
         for job in self._scheduler.get_jobs():
             if job.id.startswith(_MAINTENANCE_PREFIX) and job.id not in keep:
                 logger.info("调度器移除遗留维护任务：%s", job.id)
                 self._scheduler.remove_job(job.id)
+
+    async def _fire_check(self, kind: str) -> None:
+        """check 维护回调（``kind``：``sample`` 每日抽样 / ``full`` 月度全量）。
+
+        抽样按 ``behavior.check_sample_ratio`` 换算为 ``--read-data-subset`` 的百分比
+        形态（如 0.02 → ``2%``）；全量带 ``read_data=True``。与 backup 同仓库互斥
+        （E1）：调度冲突落 cancelled + ``job.skipped_conflict`` 审计后跳过，下个周期
+        自然再试。fire 时复核开关（配置关闭后、下轮 reload 摘除触发器前的窗口内
+        静默跳过）。异常隔离记日志，不中断调度循环。
+        """
+        try:
+            if ((await self._config.get_value(BEHAVIOR_CHECK_ENABLED_KEY)) or "").strip() != "1":
+                return
+            params: dict[str, object] = {"read_data": kind == "full"}
+            if kind == "sample":
+                ratio = self._parse_check_sample_ratio(
+                    await self._config.get_value(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY)
+                )
+                if ratio <= 0:
+                    return  # ratio=0 = 不抽样（触发器待下轮 reload 摘除）
+                params["read_data_subset"] = f"{ratio * 100:g}%"
+            await self._runner.submit("check", trigger="scheduled", params=params)
+        except Exception:  # noqa: BLE001 - 单次维护失败不应拖垮调度器（援 _submit 口径）
+            logger.exception("调度提交 check 失败：kind=%s", kind)
 
     async def _fire_retention(self) -> None:
         """每日维护回调：执行 retention 清理；异常隔离记日志，不中断调度循环。"""
@@ -556,6 +630,48 @@ class SchedulerService:
             )
             return SCHEDULE_JITTER_DEFAULT_SECONDS
         return max(0, min(value, SCHEDULE_JITTER_MAX_SECONDS))
+
+    def _parse_check_sample_ratio(self, raw: str | None) -> float:
+        """解析 ``behavior.check_sample_ratio``（[0,1]；缺省/非法/越界回退并告警）。
+
+        缺省取 :data:`CHECK_SAMPLE_RATIO_DEFAULT`；负值钳 0（=不抽样）、大于 1 钳 1
+        （全量抽样），非数字回退缺省——运维直写坏值时 fail-safe，不让 check 域整体失效。
+        """
+        if raw is None or str(raw).strip() == "":
+            return CHECK_SAMPLE_RATIO_DEFAULT
+        try:
+            value = float(str(raw).strip())
+        except ValueError:
+            logger.warning(
+                "behavior.check_sample_ratio 配置非法：%r，回退缺省 %s", raw, CHECK_SAMPLE_RATIO_DEFAULT
+            )
+            return CHECK_SAMPLE_RATIO_DEFAULT
+        return max(0.0, min(value, 1.0))
+
+    def _parse_monthly_full_day(self, raw: str | None) -> int | None:
+        """解析 ``behavior.monthly_full_day``（[1,28]；非法返回 None = 不挂月度全量）。
+
+        值域上限 28 规避「月末不存在日」：按日号构造 cron 在短月会静默跳过，
+        与「每月一次全量」语义不符，故越界值不静默修正、直接不挂载（WARNING 提示）。
+        """
+        if raw is None or str(raw).strip() == "":
+            return MONTHLY_FULL_DAY_DEFAULT
+        try:
+            value = int(str(raw).strip())
+        except ValueError:
+            logger.warning(
+                "behavior.monthly_full_day 配置非法：%r，月度全量 check 不挂载", raw
+            )
+            return None
+        if not (MONTHLY_FULL_DAY_MIN <= value <= MONTHLY_FULL_DAY_MAX):
+            logger.warning(
+                "behavior.monthly_full_day=%s 超出 [%s, %s]，月度全量 check 不挂载",
+                value,
+                MONTHLY_FULL_DAY_MIN,
+                MONTHLY_FULL_DAY_MAX,
+            )
+            return None
+        return value
 
     @staticmethod
     def _job_id(task_id: int) -> str:
