@@ -140,17 +140,45 @@ fi
 
 # ---------------------------------------------------------------- 覆盖语义
 
-section 'S7 禁止覆盖语义'
+section 'S7 覆盖语义仅限原位恢复路径'
 
-# --overwrite 仅限时间戳子目录场景由 JobRunner 固定注入（架构 §6.3），
-# 经 restic.py 的 OVERWRITE_MODES 白名单校验、界面无入口——属合规。
-out=$(grep -rIn 'overwrite' backend/app frontend/src 2>/dev/null \
-      | grep -v 'restic.py' | grep -v 'job_runner.py' | grep -v 'locales' | grep -v 'restore.py')
+# v1.3（owner 2026-10-15 签署）：覆盖语义只允许出现在两类合法调用点——
+#   ① 时间戳子目录：--overwrite=if-changed 由 JobRunner 固定注入
+#      （restic.py 拼装 + job_runner.py 注入，界面无入口）；
+#   ② 原位恢复（R-015）：restore 路由门禁（routers/restore.py）+ CompareService
+#      （services/compare.py）+ 白名单常量（constants.py）+ 前端原位确认流
+#      （frontend/src/pages/restore/index.vue）。
+# 其余任何出现 = 越界引入覆盖能力（Blocker）。i18n locales 是文案，一并排除。
+#
+# 最后三道是**收窄豁免**（2026-10-15 owner 裁决）：请求/响应模型
+# （schemas/api_schemas.py）与前端请求出口（api/restore.ts、api/types.ts）必然出现
+# `overwrite_mode` / `overwrite_count` 这两个**线上契约字段名**，docstring 里也必然
+# 引用 `--overwrite=if-changed` 的既有写法——它们都不是覆盖能力入口。**排除整文件会
+# 让真正的越界（如在 schema 里新增第二个覆盖字段）一起被放过**，故只豁免这三个字面：
+# 任何**其他形态**的 overwrite 命中仍然违规——比整文件排除更严。真正拦住「新增第三类
+# 调用点」的还有下面两条反向锚点。
+out=$(grep -rIn 'overwrite' backend/app frontend/src \
+           --include=*.py --include=*.ts --include=*.vue 2>/dev/null \
+      | grep -v 'restic.py' | grep -v 'job_runner.py' | grep -v 'routers/restore.py' \
+      | grep -v 'services/compare.py' | grep -v 'constants.py' \
+      | grep -v 'locales' | grep -v 'pages/restore/index.vue' \
+      | grep -v 'overwrite_mode' | grep -v 'overwrite_count' | grep -v 'overwrite=')
 if [ -n "$out" ]; then
-  violation 'S7 overwrite 出现在预期之外的路径'
+  violation 'S7 overwrite 出现在两类合法调用点之外'
   detail "$out"
 else
   ok 'S7 无越界的覆盖语义入口'
+fi
+
+# 反向锚点 1：OVERWRITE_MODES 是模式枚举唯一出处，不能是空悬引用
+if ! grep -q 'OVERWRITE_MODES' backend/app/services/restic.py 2>/dev/null; then
+  violation 'S7 restic.py 缺少 OVERWRITE_MODES（覆盖模式白名单悬空）'
+fi
+
+# 反向锚点 2：JobRunner 的 overwrite 透传点 ≤2（时间戳固定注入 + 原位 params 透传）
+jr_cnt=$(grep -c 'overwrite' backend/app/services/job_runner.py 2>/dev/null)
+if [ "${jr_cnt:-0}" -gt 2 ]; then
+  violation "S7 job_runner.py overwrite 透传点 ${jr_cnt} 处 > 2（应仅：时间戳固定注入 + 原位 params 透传）"
 fi
 
 # ---------------------------------------------------------------- DB 唯一实现点

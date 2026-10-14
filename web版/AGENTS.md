@@ -46,12 +46,13 @@ bash scripts/verify_redlines.sh
 4. **[S4/S5/S8] 鉴权与首启门（三条合一）**——① 新增端点必须挂 `require_session`（免鉴权仅限 `routers/health.py` 与 auth/bootstrap）；② 写方法（POST/PUT/DELETE）必须过 Origin 同源校验，SSE 与普通 API 同一 cookie 鉴权、**禁止 query token 鉴权**；③ bootstrap 未完成时的全站压制逻辑不得被新路由或中间件顺序破坏，**随机密码明文只能一次性返回，不得进日志**。
    自查：`grep -rn "token=\|token=" backend/app/routers | grep -vi "current_token\|next_token"` ｜ 新增 router 后确认其 `dependencies` 含 `require_session`
 
-5. **[S6] 审计只增不改**——`audit_logs` 代码面只允许 INSERT 与 SELECT（出现 UPDATE/DELETE = Blocker）；**危险操作共 7 项必须埋点**：`forget --prune` / `unlock` / 原位恢复 / **`cache.clear`** / `config.update` / **`login.failed`** / `restore.run`（动作名一律取 `app/constants.py` 的 `AUDIT_*` 常量）。
+5. **[S6] 审计只增不改**——`audit_logs` 代码面只允许 INSERT 与 SELECT（出现 UPDATE/DELETE = Blocker）；**危险操作共 9 项必须埋点**：`forget --prune` / `unlock` / **`cache.clear`** / `config.update` / **`login.failed`** / `restore.run` / **`restore.inplace`（原位恢复）** / **`retention.cleanup`** / **`dump.cleanup`**（动作名一律取 `app/constants.py` 的 `AUDIT_*` 常量）。*`restore.preview` / `forget.preview` 是只读留痕，**不属**危险清单。*
    自查：`grep -rn "UPDATE audit_logs\|DELETE FROM audit" backend/app`
 
-6. **[S7] P1 禁止任何覆盖语义**——恢复只有「时间戳子目录」一条路径；`--overwrite` 仅限时间戳子目录场景按架构 §6.3 使用；原位恢复在 CompareService（P2）落地前**不得接任何路由**。
-   *`--overwrite` 仅限时间戳子目录场景按架构 §6.3 由 `JobRunner` 固定注入（默认 `if-changed`，经 `OVERWRITE_MODES` 白名单校验，界面无入口）；P1 无任何用户可触达的覆盖路径。*
-   自查：`grep -rn "overwrite" backend/app frontend/src | grep -vi "restic.py\|job_runner.py\|locales\|restore.py:12"`
+6. **[S7] 覆盖语义仅限「原位恢复（in-place）」路径**（v1.3 修订，owner 2026-10-15 签署）——引入覆盖语义须**四要件齐备**：① 目标经**双重锁**（rw 档 `host_root` 白名单 + 快照 `paths` 交集收紧，实现于 restore 路由）；② 先经 E20 预览 + **三重确认门**（keyword = 快照短 id）；③ `--overwrite` 固定 `always`（`OVERWRITE_MODES` 白名单校验，界面无模式选择项）；④ 执行写审计 `restore.inplace`。**时间戳子目录路径（E19 默认）继续零覆盖语义**：`--overwrite=if-changed` 仅由 `JobRunner` 固定注入、界面无入口，E19 请求体在该路径出现 `overwrite_mode` 即 **422**。除上述两类调用点外，任何覆盖语义参数**不得接任何路由**。
+   自查（区分两类合法调用点，避免误伤时间戳路径既有注入点）：
+   `grep -rn "overwrite" backend/app frontend/src --include=*.py --include=*.ts --include=*.vue | grep -v "restic.py\|job_runner.py\|routers/restore.py\|services/compare.py\|constants.py\|locales\|pages/restore/index.vue\|overwrite_mode\|overwrite_count\|overwrite="` —— 应零命中。**末三项是收窄豁免**：请求/响应模型与前端请求出口必然出现 `overwrite_mode` / `overwrite_count` 这两个契约字段名、docstring 必然引用 `--overwrite=if-changed` 写法（均非覆盖能力入口），故只豁免这三个字面——**其他形态的 overwrite 命中仍属违规**（不整文件排除，避免放过真正的越界）；
+   辅助断言：`OVERWRITE_MODES` 是模式枚举唯一出处（`restic.py`）；`job_runner.py` 的 overwrite 透传点 ≤2（时间戳固定注入 + 原位 params 透传）。
 
 7. **[A1] DB 访问只在 `app/db/repositories/`**——路由层与服务层不得直接 import aiosqlite 或拼 SQL。**豁免仅限已合入的 `app/auth/`（独立 auth 模块，自成表边界）与 `routers/health.py` 探针；新增代码不得援引此豁免**。
    自查：`bash scripts/verify_redlines.sh`（A1 段应零命中）｜ 或 `grep -rn "SELECT \|INSERT INTO\|UPDATE \|DELETE FROM" backend/app --include=*.py | grep -v "app/db/" | grep -v "app/auth/" | grep -v constants.py | grep -v "health.py"`
