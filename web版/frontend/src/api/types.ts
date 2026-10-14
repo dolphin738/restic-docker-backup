@@ -433,6 +433,36 @@ export interface RestoreResponse {
   restore_target: string
 }
 
+// ---------------------------------------------------------------- 批次 D（R-015 原位恢复）
+
+/** E20 覆盖预览条目：同一路径在快照侧与磁盘侧的 mtime / size 双侧对照。
+ *
+ * `path` 是容器形态（如 /host/etc/nginx），`display_path` 才是原路径语义（如 /etc/nginx）——
+ * 前端一律只用 `display_path`（S1：容器形态路径不直接面向用户）。
+ * 时间串为后端直出的 ISO-8601 原文；`snapshot_size` 为 null 表示快照侧未给出大小。
+ */
+export interface RestorePreviewItem {
+  path: string
+  display_path: string
+  snapshot_mtime: string | null
+  disk_mtime: string | null
+  snapshot_size: number | null
+  disk_size: number
+}
+
+/** E20 覆盖预览响应（游标分页）。
+ *
+ * `next_cursor` 是服务端下发的不透明游标：前端只透传不自造、不解析（与 E18/E33 同纪律）。
+ * `overwrite_count` / `total_bytes` 是**整次预览**的汇总值（非当前页），随每页一起回传。
+ */
+export interface RestorePreviewResponse {
+  overwrite_count: number
+  items: RestorePreviewItem[]
+  total_bytes: number
+  next_cursor: string | null
+  truncated: boolean
+}
+
 /** E23 通知配置（R-018）：敏感 URL 只回 *_set 布尔，不回明文（与 E06 cred.* 同口径）。 */
 export interface NotifyConfigResponse {
   healthchecks_url_set: boolean

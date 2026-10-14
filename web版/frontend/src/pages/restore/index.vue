@@ -4,6 +4,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NDataTable,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -13,18 +14,29 @@ import {
   NTag,
   NText,
   useMessage,
+  type DataTableColumns,
 } from 'naive-ui'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
-import { RESTORE_TARGET_ROOT, restoreSnapshot } from '@/api/restore'
-import type { JobDonePayload } from '@/api/types'
+import {
+  INPLACE_TARGET_ROOT,
+  RESTORE_TARGET_ROOT,
+  previewRestore,
+  restoreSnapshot,
+} from '@/api/restore'
+import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { useUiStore } from '@/stores/ui'
+
+/** E20 覆盖预览单页条数（游标分页，配合「加载更多」续拉）。 */
+const PREVIEW_PAGE_SIZE = 200
+/** 确认门预览区最多列出的路径条数（完整清单在步骤 2 的虚拟滚动表里）。 */
+const GATE_PREVIEW_LIMIT = 20
 
 const { t } = useI18n()
 const router = useRouter()
@@ -45,17 +57,25 @@ const requestedSnapshotId = ref<string | null>(
 )
 const gateShow = ref(false)
 const restoring = ref(false)
-const result = ref<{ jobId: string; restoreTarget: string; filesDone: number | null } | null>(null)
+const result = ref<{
+  jobId: string
+  restoreTarget: string
+  filesDone: number | null
+  summary: string | null
+} | null>(null)
+/** 任务是否已到达终态（用于区分「还没回报」与「回报了但没有计数」）。 */
+const jobFinished = ref(false)
 
 /** B1 文件级恢复：已选文件/目录（展示形态，如 /etc、/home/u/x）；
  *  空集合 = 整快照恢复（E19 缺省行为，回归零影响）。 */
 const selectedFiles = ref<Set<string>>(new Set())
 
+/** 恢复目标模式：timestamp = 时间戳子目录（E19 传统流）；inplace = 原位恢复（R-015）。 */
+const targetMode = ref<'timestamp' | 'inplace'>('timestamp')
+const isInPlace = computed(() => targetMode.value === 'inplace')
+
 // 与 TierCard（运行模式卡）同源：/api/auth/me 的 host_mount / user
 const isReadOnlyMount = computed(() => ui.me?.host_mount === 'ro')
-const inPlaceReason = computed(() =>
-  isReadOnlyMount.value ? t('restore.inPlaceRoReason') : t('restore.inPlaceP2Reason'),
-)
 
 const snapshotsQuery = useQuery({ queryKey: ['snapshots', 'restore-picker'], queryFn: () => listSnapshots(50) })
 
@@ -73,6 +93,62 @@ const snapshotOptions = computed(() =>
 )
 
 const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => snapshot.id === snapshotId.value) ?? null)
+
+/** 原位恢复不可用的原因（空串 = 可用）：ro 档 / 非 host 运行模式 / 快照无原目录。
+ *  后端有双重锁兜底，这里只是提示性限制——原因逐条对应，便于用户知道该改什么。 */
+const inPlaceBlockReason = computed(() => {
+  // ro 档原因沿用 P1 既有占位键，不另造同义键
+  if (isReadOnlyMount.value) {
+    return t('restore.inPlaceRoReason')
+  }
+  if (ui.me !== null && ui.me.mode !== 'host') {
+    return t('restore.inplace.modeHint')
+  }
+  if ((selectedSnapshot.value?.paths.length ?? 0) === 0) {
+    return t('restore.inplace.noPathHint')
+  }
+  return ''
+})
+const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
+
+/** 入口被置灰时把模式回落到时间戳流：否则用户会停在必然 403 的非法态，
+ *  而提示链路要绕到后端报错才看得到原因（radio 置灰本身不可点）。 */
+watch(inPlaceDisabled, (disabled) => {
+  if (disabled) {
+    targetMode.value = 'timestamp'
+  }
+})
+
+// ---------------------------------------------------------------- 原位目标（限快照 paths 命中的目录）
+
+/** 已选原位目标（展示形态，如 /etc/nginx）；null = 未选。 */
+const inplaceTarget = ref<string | null>(null)
+
+/** 候选目标 = 该快照的 paths（E17 已映射为展示形态），即「快照 paths 命中的目录」。 */
+const inplaceTargetOptions = computed(() =>
+  (selectedSnapshot.value?.paths ?? []).map((path) => ({ label: path, value: path })),
+)
+
+/** 提交给后端的容器形态目标：`/host` + 展示路径（双重锁白名单根，后端再校验一次）。 */
+const inplaceTargetFull = computed(() => {
+  const display = inplaceTarget.value
+  if (!display) {
+    return null
+  }
+  return `${INPLACE_TARGET_ROOT}${display.startsWith('/') ? '' : '/'}${display}`
+})
+
+/** 换快照后把原位目标收敛到该快照的 paths 内（跨快照的原目录不一定命中）。 */
+watch(
+  () => selectedSnapshot.value?.paths ?? [],
+  (paths) => {
+    if (inplaceTarget.value && paths.includes(inplaceTarget.value)) {
+      return
+    }
+    inplaceTarget.value = paths[0] ?? null
+  },
+  { immediate: true },
+)
 
 /** 默认选中：列表就绪后，?snapshot= 预选命中则用之，否则取最新版本；
  *  当前选择仍有效（含用户改选）时不打扰；预选 id 不存在时忽略并回落默认最新。 */
@@ -121,36 +197,228 @@ function onFileSelect(item: TreeItem): void {
 const selectedFileList = computed(() => [...selectedFiles.value])
 const selectedFileCount = computed(() => selectedFiles.value.size)
 
+// ---------------------------------------------------------------- E20 覆盖预览（原位流专用）
+
+/** 字节数展示（与仪表盘/仓库页同口径的 1024 进制单位）。
+ *  缺值回落 `common.none`——不复用 DATETIME_FALLBACK，避免「字节数缺值」与「时间缺值」共用同一占位符。 */
+const SIZE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return t('common.none')
+  }
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < SIZE_UNITS.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${unitIndex === 0 ? String(size) : size.toFixed(1)} ${SIZE_UNITS[unitIndex]}`
+}
+
+const previewItems = ref<RestorePreviewItem[]>([])
+const previewCursor = ref<string | null>(null)
+const previewLoading = ref(false)
+const previewLoadingMore = ref(false)
+const previewError = ref('')
+/** 整次预览的汇总值（非当前页）：overwrite_count / total_bytes / truncated。 */
+const previewStats = ref<{ overwriteCount: number; totalBytes: number; truncated: boolean } | null>(null)
+
+/** 快照、目标或模式一变，已加载的清单即刻失效（避免拿旧清单去确认覆盖）。 */
+watch([snapshotId, inplaceTarget, targetMode], () => {
+  previewItems.value = []
+  previewCursor.value = null
+  previewStats.value = null
+  previewError.value = ''
+})
+
+/** reset=true 拉首页并清空；false 用 next_cursor 续拉追加。 */
+async function loadPreview(reset: boolean): Promise<void> {
+  const id = snapshotId.value
+  const target = inplaceTargetFull.value
+  if (!id || !target) {
+    return
+  }
+  if (reset) {
+    previewItems.value = []
+    previewCursor.value = null
+    previewStats.value = null
+    previewError.value = ''
+    previewLoading.value = true
+  } else {
+    if (previewLoadingMore.value || previewCursor.value === null) {
+      return
+    }
+    previewLoadingMore.value = true
+  }
+  try {
+    const data = await previewRestore(id, target, {
+      limit: PREVIEW_PAGE_SIZE,
+      cursor: reset ? null : previewCursor.value,
+    })
+    previewItems.value = previewItems.value.concat(data.items)
+    previewCursor.value = data.next_cursor
+    previewStats.value = {
+      overwriteCount: data.overwrite_count,
+      totalBytes: data.total_bytes,
+      truncated: data.truncated,
+    }
+  } catch (error) {
+    previewError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    previewLoading.value = false
+    previewLoadingMore.value = false
+  }
+}
+
+const previewSizeText = computed(() =>
+  previewStats.value === null ? '' : formatBytes(previewStats.value.totalBytes),
+)
+
+const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
+  {
+    title: t('restore.preview.colPath'),
+    key: 'display_path',
+    // 虚拟滚动下必须定宽：否则列宽随内容抖动、横向滚动条宽度算不准
+    width: 300,
+    ellipsis: { tooltip: true },
+    // S1：只展示原路径语义，容器形态 path 不面向用户
+    render: (row) => row.display_path,
+  },
+  {
+    title: t('restore.preview.colSnapshotMtime'),
+    key: 'snapshot_mtime',
+    width: 170,
+    render: (row) => formatDateTimeOr(row.snapshot_mtime, DATETIME_FALLBACK),
+  },
+  {
+    title: t('restore.preview.colDiskMtime'),
+    key: 'disk_mtime',
+    width: 170,
+    render: (row) => formatDateTimeOr(row.disk_mtime, DATETIME_FALLBACK),
+  },
+  {
+    title: t('restore.preview.colSnapshotSize'),
+    key: 'snapshot_size',
+    width: 110,
+    render: (row) => formatBytes(row.snapshot_size),
+  },
+  {
+    title: t('restore.preview.colDiskSize'),
+    key: 'disk_size',
+    width: 110,
+    render: (row) => formatBytes(row.disk_size),
+  },
+])
+
+/** 原位流必须先有预览结果才允许开门（传统流无此约束，保持既有行为）。 */
+const canOpenGate = computed(() => (isInPlace.value ? previewStats.value !== null : true))
+
+const gateKeyword = computed(() =>
+  isInPlace.value ? (snapshotId.value ?? '').slice(0, 8) : 'RESTORE',
+)
+const gateTitle = computed(() =>
+  isInPlace.value ? t('restore.confirm.title') : t('restore.gateTitle'),
+)
+const gateDesc = computed(() => (isInPlace.value ? t('restore.confirm.desc') : t('restore.gateDesc')))
+
 function goConfirm(): void {
   if (!snapshotId.value) {
     message.warning(t('restore.needSnapshot'))
     return
   }
+  if (isInPlace.value && !inplaceTarget.value) {
+    message.warning(t('restore.preview.needTarget'))
+    return
+  }
   step.value = 2
+  if (isInPlace.value) {
+    // 原位流：先在步骤 2 摊开覆盖清单，用户复核后再自己开门
+    void loadPreview(true)
+    return
+  }
   gateShow.value = true
 }
 
-/** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。 */
+/** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。
+ *  时间戳流请求体与 P1 逐字一致（无任何覆盖语义字段，零回归）；
+ *  原位流额外带 overwrite_mode=always 与 keyword（快照短 id 前 8 位）。 */
 async function onConfirmed(): Promise<void> {
-  if (!snapshotId.value) {
+  const id = snapshotId.value
+  if (!id) {
+    return
+  }
+  const target = isInPlace.value ? inplaceTargetFull.value : RESTORE_TARGET_ROOT
+  if (!target) {
     return
   }
   restoring.value = true
   try {
-    const data = await restoreSnapshot(snapshotId.value, RESTORE_TARGET_ROOT, selectedFileList.value)
-    result.value = { jobId: data.job_id, restoreTarget: data.restore_target, filesDone: null }
+    const data = await restoreSnapshot(
+      id,
+      target,
+      selectedFileList.value,
+      isInPlace.value ? { overwrite_mode: 'always', keyword: id.slice(0, 8) } : {},
+    )
+    result.value = { jobId: data.job_id, restoreTarget: data.restore_target, filesDone: null, summary: null }
+    jobFinished.value = false
     step.value = 3
   } finally {
     restoring.value = false
   }
 }
 
-/** SSE 终态帧带回 files_done：结果区展示本次恢复的文件数。 */
+/** SSE 终态帧带回 files_done / summary：结果区展示本次恢复的文件数与（原位流）计数回报。 */
 function onJobDone(payload: JobDonePayload): void {
   if (result.value) {
     result.value.filesDone = payload.files_done
+    result.value.summary = payload.summary
   }
+  jobFinished.value = true
 }
+
+function onJobFailed(payload: JobDonePayload): void {
+  if (result.value) {
+    result.value.summary = payload.summary
+  }
+  jobFinished.value = true
+}
+
+/** jobs.summary 的实际覆盖/失败计数（Q4 口径：TOCTOU 窗口内以执行后实际值为准）。
+ *
+ * 后端 T08 尚未冻结 summary 的落盘形态，这里做「有则显示、无则不显示」的容错：
+ * 只有 summary 是可解析的 JSON 对象且含数值型 overwritten/failed 时才取用，
+ * 其余形态（纯文本、缺字段）一律返回 null —— 前端不展示任何数字，绝不编造。 */
+const summaryCounts = computed<{ overwritten: number | null; failed: number | null } | null>(() => {
+  const raw = result.value?.summary
+  if (!raw) {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null
+  }
+  const record = parsed as Record<string, unknown>
+  const overwritten = readCount(record['overwritten'])
+  const failed = readCount(record['failed'])
+  return overwritten === null && failed === null ? null : { overwritten, failed }
+})
+
+function readCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+const overwrittenCount = computed(() => summaryCounts.value?.overwritten ?? null)
+const failedCount = computed(() => summaryCounts.value?.failed ?? null)
+/** 终态已到但后端没回计数：明确说没回报，不猜数字。 */
+const summaryPending = computed(
+  () => isInPlace.value && jobFinished.value && summaryCounts.value === null,
+)
 
 function goJobs(): void {
   void router.push({ name: 'jobs' })
@@ -184,20 +452,32 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
 
           <n-space vertical :size="6">
             <n-text strong>{{ t('restore.targetTitle') }}</n-text>
-            <n-radio-group :value="'timestamp'" size="small">
+            <n-radio-group v-model:value="targetMode" size="small">
               <n-radio-button value="timestamp">{{ t('restore.targetTimestamp') }}</n-radio-button>
-              <n-radio-button value="inplace" disabled>{{ t('restore.targetInPlace') }}</n-radio-button>
+              <n-radio-button value="inplace" :disabled="inPlaceDisabled">
+                {{ t('restore.targetInPlace') }}
+              </n-radio-button>
             </n-radio-group>
             <n-text depth="3">{{ t('restore.targetTimestampNote') }}</n-text>
-            <!-- 原位恢复：P1 不开放。ro 档给挂载原因，rw 档给 P2 原因；来源与四象限卡同源 -->
-            <n-alert type="warning" :show-icon="false">
+            <!-- 原位恢复不可用时置灰 + 原因（ro 档复用 P1 既有占位键；来源与四象限卡同源） -->
+            <n-alert v-if="inPlaceDisabled" type="warning" :show-icon="false">
               <n-space :size="6" align="center">
                 <n-tag size="tiny" round :type="isReadOnlyMount ? 'warning' : 'default'">
                   {{ ui.me?.host_mount ?? 'ro' }}
                 </n-tag>
-                <n-text depth="3">{{ inPlaceReason }}</n-text>
+                <n-text depth="3">{{ inPlaceBlockReason }}</n-text>
               </n-space>
             </n-alert>
+            <!-- 原位目标：限该快照 paths 命中的目录（后端双重锁兜底，前端只做提示性限制） -->
+            <template v-if="isInPlace">
+              <n-text strong>{{ t('restore.inplace.targetTitle') }}</n-text>
+              <n-select
+                v-model:value="inplaceTarget"
+                :options="inplaceTargetOptions"
+                :placeholder="t('restore.inplace.targetPlaceholder')"
+              />
+              <n-text depth="3">{{ t('restore.inplace.targetHint') }}</n-text>
+            </template>
           </n-space>
 
           <!-- B1：文件级多选（可选）；不选 = 整快照 -->
@@ -227,12 +507,55 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
           </n-space>
         </template>
 
-        <!-- 步骤 2 的入口是 ConfirmGate 弹窗；弹窗被关闭后可重新打开 -->
+        <!-- 步骤 2：原位流先摊开 E20 覆盖清单（确认门第①步），复核后再开门 -->
         <template v-else-if="step === 2">
-          <n-text depth="3">{{ t('restore.stepConfirm') }}</n-text>
+          <template v-if="isInPlace">
+            <n-space vertical :size="8">
+              <n-space align="center" :size="10">
+                <n-text strong>{{ t('restore.preview.title') }}</n-text>
+                <n-button size="tiny" quaternary :loading="previewLoading" @click="loadPreview(true)">
+                  {{ t('restore.preview.reload') }}
+                </n-button>
+              </n-space>
+              <n-text v-if="previewStats" depth="2">
+                {{ t('restore.preview.overwriteCount', { n: previewStats.overwriteCount }) }}
+                · {{ t('restore.preview.totalBytes', { size: previewSizeText }) }}
+              </n-text>
+              <n-alert v-if="previewStats?.truncated" type="warning" :show-icon="false">
+                {{ t('restore.preview.truncated') }}
+              </n-alert>
+              <n-alert v-if="previewError" type="error" :show-icon="false">{{ previewError }}</n-alert>
+              <!-- 大列表纪律：虚拟滚动 + 固定行高；游标分页靠下方「加载更多」续拉 -->
+              <n-data-table
+                v-if="previewItems.length > 0"
+                size="small"
+                :columns="previewColumns"
+                :data="previewItems"
+                :max-height="320"
+                :loading="previewLoading"
+                virtual-scroll
+                :row-key="(row: RestorePreviewItem) => row.path"
+              />
+              <n-text v-else-if="!previewLoading && !previewError" depth="3">
+                {{ t('restore.preview.empty') }}
+              </n-text>
+              <n-button
+                v-if="previewCursor"
+                size="tiny"
+                quaternary
+                :loading="previewLoadingMore"
+                @click="loadPreview(false)"
+              >
+                {{ t('restore.preview.loadMore') }}
+              </n-button>
+            </n-space>
+          </template>
+          <n-text v-else depth="3">{{ t('restore.stepConfirm') }}</n-text>
           <n-space justify="end">
             <n-button quaternary @click="step = 1">{{ t('confirm.back') }}</n-button>
-            <n-button type="primary" @click="gateShow = true">{{ t('confirm.next') }}</n-button>
+            <n-button type="primary" :disabled="!canOpenGate" @click="gateShow = true">
+              {{ t('confirm.next') }}
+            </n-button>
           </n-space>
         </template>
 
@@ -246,9 +569,27 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
             <n-text v-if="result?.filesDone !== null && result?.filesDone !== undefined" depth="3">
               {{ t('job.filesOnly', { done: result.filesDone }) }}
             </n-text>
-            <n-text depth="3">{{ t('restore.targetNote') }}</n-text>
+            <!-- 原位流：任务回报的实际覆盖/失败计数（后端未回填则不显示，不编造数字） -->
+            <template v-if="isInPlace">
+              <n-text v-if="overwrittenCount !== null" depth="2">
+                {{ t('restore.summary.overwritten', { n: overwrittenCount }) }}
+              </n-text>
+              <n-text v-if="failedCount !== null" depth="2">
+                {{ t('restore.summary.failed', { n: failedCount }) }}
+              </n-text>
+              <n-text v-if="summaryPending" depth="3">{{ t('restore.summary.pending') }}</n-text>
+            </template>
+            <n-text depth="3">
+              {{ isInPlace ? t('restore.inplace.runNote') : t('restore.targetNote') }}
+            </n-text>
           </n-space>
-          <JobProgress v-if="result" :job-id="result.jobId" :title="result.jobId" @done="onJobDone" />
+          <JobProgress
+            v-if="result"
+            :job-id="result.jobId"
+            :title="result.jobId"
+            @done="onJobDone"
+            @failed="onJobFailed"
+          />
           <n-space justify="end">
             <n-button secondary @click="goJobs">{{ t('restore.goJobs') }}</n-button>
           </n-space>
@@ -256,12 +597,13 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
       </n-space>
     </n-card>
 
-    <!-- 三步确认门：预览 → 输入 RESTORE → 二次确认 -->
+    <!-- 三步确认门：预览 → 输入关键词（原位流 = 快照短 id 前 8 位）→ 红色二次确认 -->
     <ConfirmGate
       v-model:show="gateShow"
-      :title="t('restore.gateTitle')"
-      :keyword="'RESTORE'"
-      :description="t('restore.gateDesc')"
+      :title="gateTitle"
+      :keyword="gateKeyword"
+      :description="gateDesc"
+      :confirm-label="isInPlace ? t('restore.confirm.confirmLabel') : undefined"
       :loading="restoring"
       @confirm="onConfirmed"
     >
@@ -270,12 +612,37 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
           <!-- 缺陷 C：确认门快照时间同样收口；无 time 时回落快照 id（保持原兜底语义） -->
           <n-text>{{ t('restore.gateSnapshot') }}：{{ formatDateTimeOr(selectedSnapshot?.time, selectedSnapshot ? DATETIME_FALLBACK : (snapshotId ?? DATETIME_FALLBACK)) }}</n-text>
           <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
-          <n-text>{{ t('restore.gateTarget') }}：{{ RESTORE_TARGET_ROOT }}</n-text>
+          <n-text>{{ t('restore.gateTarget') }}：{{ isInPlace ? inplaceTargetFull : RESTORE_TARGET_ROOT }}</n-text>
+          <!-- 原位流：停止服务提示 + 覆盖汇总 + 清单摘要（完整清单在步骤 2） -->
+          <template v-if="isInPlace">
+            <n-alert type="error" :show-icon="false">{{ t('restore.stop_services') }}</n-alert>
+            <template v-if="previewStats">
+              <n-text strong>
+                {{ t('restore.confirm.overwriteCount', { n: previewStats.overwriteCount }) }}
+              </n-text>
+              <n-text depth="3">
+                {{ t('restore.confirm.totalBytes', { size: previewSizeText }) }}
+              </n-text>
+            </template>
+            <template v-if="previewItems.length > 0">
+              <n-text strong>
+                {{ t('restore.confirm.previewList', { n: GATE_PREVIEW_LIMIT, m: previewStats?.overwriteCount ?? previewItems.length }) }}
+              </n-text>
+              <n-text
+                v-for="item in previewItems.slice(0, GATE_PREVIEW_LIMIT)"
+                :key="item.path"
+                depth="3"
+                class="restore__gate-file"
+              >
+                {{ item.display_path }}
+              </n-text>
+            </template>
+          </template>
           <!-- B1：已选文件清单（前 N 条 + 共 M 条）；空 = 整快照 -->
           <template v-if="selectedFileCount > 0">
-            <n-text strong>{{ t('restore.gateFiles', { n: 20, m: selectedFileCount }) }}</n-text>
+            <n-text strong>{{ t('restore.gateFiles', { n: GATE_PREVIEW_LIMIT, m: selectedFileCount }) }}</n-text>
             <n-text
-              v-for="path in selectedFileList.slice(0, 20)"
+              v-for="path in selectedFileList.slice(0, GATE_PREVIEW_LIMIT)"
               :key="path"
               depth="3"
               class="restore__gate-file"
