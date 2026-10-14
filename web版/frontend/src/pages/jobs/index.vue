@@ -1,9 +1,10 @@
 <script setup lang="ts">
-/** 任务历史页（页面 7）：进行中视图（P1 既有，E13 显式 running/pending）+ 全量历史视图（P2 批次 A）。
+/** 任务历史页（页面 7）：进行中视图（P1 既有，E13 显式 running/pending）+ 全量历史视图（P2 批次 A）
+ *  + check 校验结果视图（批次 B：E22 = 错误列表 + summary 指标，V4 无进度集）。
  *
  * E13 完整版缺省语义=不过滤，故历史视图与「进行中」卡片视图分开：
  * 历史视图提供 type / status（含终态）/ task_id / 开始时间范围筛选 + 分页表格（50/页，上限 500）。
- * 日志抽屉（E27 尾部逐级放大 + skipped 明细）两视图共用。
+ * 日志抽屉（E27 尾部逐级放大 + skipped 明细）两视图共用；check 行进 E22 详情抽屉。
  */
 
 import { useQuery } from '@tanstack/vue-query'
@@ -13,6 +14,8 @@ import {
   NCard,
   NDataTable,
   NDatePicker,
+  NDescriptions,
+  NDescriptionsItem,
   NDrawer,
   NDrawerContent,
   NEmpty,
@@ -32,8 +35,8 @@ import {
 import { computed, h, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listBackupTasks } from '@/api/backupTasks'
-import { cancelJob, getJobLog, listActiveJobs, listJobsHistory } from '@/api/jobs'
-import type { JobOut, JobStatus, JobType } from '@/api/types'
+import { cancelJob, getCheckDetail, getJobLog, listActiveJobs, listJobsHistory } from '@/api/jobs'
+import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
 import JobProgress from '@/components/JobProgress.vue'
 import { formatDateTime } from '@/utils/datetime'
@@ -119,7 +122,8 @@ const tasksQuery = useQuery({
 })
 const taskOptions = computed(() =>
   (tasksQuery.data.value?.items ?? []).map((task) => ({
-    label: `${task.name}（${task.tag}）`,
+    // 括号走 i18n 词条（en 界面不露全角标点）
+    label: t('jobs.taskOptionLabel', { name: task.name, tag: task.tag }),
     value: task.id,
   })),
 )
@@ -219,15 +223,70 @@ const historyColumns = computed<DataTableColumns<JobOut>>(() => [
   {
     title: t('jobs.colActions'),
     key: 'actions',
-    width: 100,
+    width: 150,
     render: (row) =>
-      h(
-        NButton,
-        { size: 'tiny', secondary: true, onClick: () => openLog(row) },
-        () => t('job.viewLog'),
-      ),
+      h(NSpace, { size: 4, wrap: false }, () => {
+        const buttons = [
+          h(
+            NButton,
+            { size: 'tiny', secondary: true, onClick: () => openLog(row) },
+            () => t('job.viewLog'),
+          ),
+        ]
+        // check 任务行进 E22 详情视图（错误列表 + summary 指标，V4 无进度集）
+        if (row.type === 'check') {
+          buttons.unshift(
+            h(
+              NButton,
+              { size: 'tiny', secondary: true, type: 'primary', onClick: () => openCheckDetail(row) },
+              () => t('jobs.check.resultButton'),
+            ),
+          )
+        }
+        return buttons
+      }),
   },
 ])
+
+// ================================================================ check 校验结果视图（E22，批次 B）
+
+const checkShow = ref(false)
+const checkLoading = ref(false)
+const checkError = ref('')
+const checkDetail = ref<CheckDetailResponse | null>(null)
+
+/** E22 silent 请求：错误内联展示在抽屉中（避免全局 toast 与内联双重提示）。 */
+function openCheckDetail(job: JobOut): void {
+  checkShow.value = true
+  checkLoading.value = true
+  checkError.value = ''
+  checkDetail.value = null
+  getCheckDetail(job.id)
+    .then((data) => {
+      checkDetail.value = data
+    })
+    .catch((error: unknown) => {
+      checkError.value = error instanceof Error ? error.message : String(error)
+    })
+    .finally(() => {
+      checkLoading.value = false
+    })
+}
+
+const checkView = computed(() => checkDetail.value?.check_view ?? null)
+/** 告警口径用 error_count（错误行数）：截断场景可能少于 summary 的 num_errors（后端契约注）。 */
+const checkHasErrors = computed(() => (checkView.value?.error_count ?? 0) > 0)
+/** broken_packs 为保序 pack id 列表（健康为空列表，后端已归一 null）。 */
+const brokenPacks = computed(() => checkView.value?.broken_packs ?? [])
+const brokenPacksCount = computed(() => brokenPacks.value.length)
+/** 仅当损坏 pack 存在且无其他动作建议时，追加「检查仓库完整性」提示（契约对齐口径）。 */
+const brokenPacksOnlyHint = computed(
+  () => brokenPacksCount.value > 0 && !checkView.value?.suggest_repair_index && !checkView.value?.suggest_prune,
+)
+
+function checkBoolText(value: boolean): string {
+  return value ? t('jobs.check.yes') : t('jobs.check.no')
+}
 
 // ================================================================ 日志抽屉（E27，两视图共用）
 
@@ -379,7 +438,8 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
                   </n-popconfirm>
                 </n-space>
               </n-space>
-              <JobProgress :job-id="job.id" :title="`${job.type} · ${job.status}`" />
+              <!-- V4：check --json 无进度事件，check 任务不建进度条，仅运行状态 + 日志 -->
+              <JobProgress :job-id="job.id" :title="`${job.type} · ${job.status}`" :hide-progress-bar="job.type === 'check'" />
               <!-- 备份类任务：首次最慢属预期，小字提示不抢焦点 -->
               <n-text v-if="job.type === 'backup'" depth="3">{{ t('jobs.firstBackupSlowNote') }}</n-text>
             </n-space>
@@ -457,6 +517,78 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
       </n-tab-pane>
     </n-tabs>
 
+    <!-- check 校验结果抽屉（E22）：错误列表 + summary 指标；不做进度条（V4 定稿） -->
+    <n-drawer v-model:show="checkShow" :width="680" placement="right">
+      <n-drawer-content :title="t('jobs.check.detailTitle')" closable>
+        <n-space vertical :size="12">
+          <n-alert v-if="checkError" type="error" :show-icon="false">{{ checkError }}</n-alert>
+          <n-alert v-else-if="checkHasErrors" type="error" :show-icon="false">
+            {{ t('jobs.check.failed', { n: checkView?.error_count ?? 0 }) }}
+          </n-alert>
+          <n-alert v-else-if="checkView && !checkLoading && checkDetail?.status === 'success'" type="success" :show-icon="false">
+            {{ t('jobs.check.healthy') }}
+          </n-alert>
+          <!-- 任务取消/失败但无错误行：不得显示绿色「校验通过」（QA 复验 P2），降级为中性提示 -->
+          <n-alert v-else-if="checkView && !checkLoading" type="warning" :show-icon="false">
+            {{ t('jobs.check.notSuccess', { status: checkDetail?.status ?? '' }) }}
+          </n-alert>
+
+          <!-- 下一步动作建议（验收要点：check 失败醒目提示 + 下一步动作）；损坏 pack 独存时补完整性提示 -->
+          <n-space v-if="checkView && (checkHasErrors || brokenPacksCount > 0)" vertical :size="4">
+            <n-text strong>{{ t('jobs.check.nextSteps') }}</n-text>
+            <n-text v-if="checkView.suggest_repair_index" depth="2">
+              · {{ t('jobs.check.suggestRepairIndex') }}
+            </n-text>
+            <n-text v-if="checkView.suggest_prune" depth="2">
+              · {{ t('jobs.check.suggestPrune') }}
+            </n-text>
+            <n-text v-if="brokenPacksOnlyHint" depth="2">
+              · {{ t('jobs.check.brokenPacksHint') }}
+            </n-text>
+          </n-space>
+
+          <n-descriptions v-if="checkView" :column="2" size="small" bordered>
+            <n-descriptions-item :label="t('jobs.check.errorCount')">
+              <n-tag size="small" round :type="checkHasErrors ? 'error' : 'success'">
+                {{ checkView.error_count }}
+              </n-tag>
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('jobs.check.summaryNumErrors')">
+              {{ checkView.num_errors }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('jobs.check.readData')">
+              {{ checkBoolText(checkView.read_data) }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('jobs.check.suggestRepairIndexShort')">
+              {{ checkBoolText(checkView.suggest_repair_index) }}
+            </n-descriptions-item>
+          </n-descriptions>
+
+          <!-- broken_packs：保序 pack id 列表（64hex）；计数进 summary 口径，id 清单等宽限高展开 -->
+          <template v-if="brokenPacksCount > 0">
+            <n-text strong>{{ t('jobs.check.brokenPacksCount', { n: brokenPacksCount }) }}</n-text>
+            <n-text depth="3">{{ t('jobs.check.brokenPacksList', { n: brokenPacksCount }) }}</n-text>
+            <div class="jobs__check-packs">
+              <div v-for="packId in brokenPacks" :key="packId" class="jobs__check-pack">{{ packId }}</div>
+            </div>
+          </template>
+
+          <template v-if="checkView">
+            <n-text strong>{{ t('jobs.check.errorList', { n: checkView.errors.length }) }}</n-text>
+            <n-space v-if="checkView.errors.length > 0" vertical :size="4" class="jobs__check-errors">
+              <div v-for="(item, index) in checkView.errors" :key="`${item.message}-${index}`" class="jobs__check-error">
+                <n-text depth="2">{{ item.message }}</n-text>
+              </div>
+            </n-space>
+          </template>
+
+          <n-space v-if="checkDetail">
+            <n-button size="small" secondary @click="openLog(checkDetail)">{{ t('job.viewLog') }}</n-button>
+          </n-space>
+        </n-space>
+      </n-drawer-content>
+    </n-drawer>
+
     <!-- 日志抽屉（两视图共用）：首次默认 64 KiB，按需逐级放大到 1 MiB -->
     <n-drawer v-model:show="logShow" :width="760" placement="right">
       <n-drawer-content :title="t('jobs.logTitle')" closable>
@@ -508,6 +640,31 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
   padding: 4px 8px;
   border-left: 2px solid rgba(250, 208, 44, 0.6);
   font-size: 12px;
+}
+
+.jobs__check-errors {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.jobs__check-error {
+  padding: 4px 8px;
+  border-left: 2px solid rgba(192, 54, 54, 0.6);
+  font-size: 12px;
+}
+
+.jobs__check-packs {
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px 12px;
+  font-family: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.jobs__check-pack {
+  white-space: pre;
 }
 
 .jobs__filters {

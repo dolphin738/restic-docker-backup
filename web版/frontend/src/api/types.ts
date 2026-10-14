@@ -501,3 +501,33 @@ export interface CacheUsageResponse {
   measured_at: string
   truncated: boolean
 }
+
+// ---------------------------------------------------------------- 批次 B（R-017 check 视图）
+
+/** E22 check 错误行（parser 从 `check --json` 逐行 error 提取）。 */
+export interface CheckErrorItem {
+  message: string
+}
+
+/** E22 check 视图（V4 定稿：summary + error 行驱动，无进度集）。
+ *
+ * 计数语义（后端 T04 实际契约，2026-10-14 对齐）：
+ * - `error_count` = 错误行数（截断场景可能少于 summary 计数）——UI 告警口径用它；
+ * - `num_errors` = restic summary 原值（与 error_count 独立，仅展示）；
+ * - `broken_packs` = 损坏 pack id 的**保序列表**（64hex，修复动作数据源）；
+ *   健康仓库为空列表（后端解析层已把 Go nil 的 null 归一，前端不需容错 null）。
+ */
+export interface CheckView {
+  errors: CheckErrorItem[]
+  error_count: number
+  num_errors: number
+  broken_packs: string[]
+  suggest_repair_index: boolean
+  suggest_prune: boolean
+  read_data: boolean
+}
+
+/** E22 响应 = E14 JobOut + check 专属解析视图（不建新表，Q9 基线）。 */
+export interface CheckDetailResponse extends JobOut {
+  check_view: CheckView
+}

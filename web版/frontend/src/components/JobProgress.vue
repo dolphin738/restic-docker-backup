@@ -20,6 +20,8 @@ const props = defineProps<{
   jobId: string
   /** 卡片标题；缺省直接展示 jobId。 */
   title?: string
+  /** 隐藏进度条与百分比行（V4：check --json 无进度事件，check 任务不建进度条）。 */
+  hideProgressBar?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -151,6 +153,7 @@ defineExpose({
     </n-space>
 
     <n-progress
+      v-if="!hideProgressBar"
       class="job-progress__bar"
       :percentage="percent"
       :status="progressStatus"
@@ -159,7 +162,7 @@ defineExpose({
       :show-indicator="false"
     />
 
-    <n-space align="center" :size="12">
+    <n-space v-if="!hideProgressBar" align="center" :size="12">
       <n-text depth="3">{{ percent }}%</n-text>
       <n-text depth="3">{{ filesText }}</n-text>
       <n-text depth="3">{{ t('job.rate', { n: rateKib }) }}</n-text>

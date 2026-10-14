@@ -3,7 +3,16 @@
  */
 
 import { request } from './http'
-import type { JobCreateResponse, JobLogResponse, JobOut, JobStatus, JobType, OkResponse, Page } from './types'
+import type {
+  CheckDetailResponse,
+  JobCreateResponse,
+  JobLogResponse,
+  JobOut,
+  JobStatus,
+  JobType,
+  OkResponse,
+  Page,
+} from './types'
 
 /** P1 最小版：后端只开放 running/pending 过滤，逗号分隔。
  * 注意：E13 P2 完整版（listJobsHistory）缺省=不过滤，两者语义不同，勿混用。 */
@@ -48,6 +57,12 @@ export function listJobsHistory(params: JobHistoryQuery = {}): Promise<Page<JobO
 
 export function getJob(jobId: string): Promise<JobOut> {
   return request<JobOut>(`/api/jobs/${encodeURIComponent(jobId)}`)
+}
+
+/** E22 check 任务详情（批次 B，R-017）：= E14 + check_view（errors 列表 + summary 指标，
+ *  V4 定稿无进度集）；job 非 check 类型 → 404/422。silent：详情抽屉内联展示错误，避免双重提示。 */
+export function getCheckDetail(jobId: string): Promise<CheckDetailResponse> {
+  return request<CheckDetailResponse>(`/api/checks/${encodeURIComponent(jobId)}`, { silent: true })
 }
 
 /** 触发任务（manual）；同仓库已有 running/pending → 409 JOB_CONFLICT，不排队。
