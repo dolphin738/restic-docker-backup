@@ -1,14 +1,48 @@
-/** 任务端点：E12 触发 / E13 列表 / E14 详情 / E16 取消 / E27 日志尾部。
+/** 任务端点：E12 触发 / E13 列表（P1 活跃 + P2 全量历史）/ E14 详情 / E16 取消 / E27 日志尾部。
  * SSE 不走 fetch，见 composables/useJobStream.ts。
  */
 
 import { request } from './http'
-import type { JobCreateResponse, JobLogResponse, JobOut, JobType, OkResponse, Page } from './types'
+import type { JobCreateResponse, JobLogResponse, JobOut, JobStatus, JobType, OkResponse, Page } from './types'
 
-/** P1 最小版：后端只开放 running/pending 过滤，逗号分隔。 */
+/** P1 最小版：后端只开放 running/pending 过滤，逗号分隔。
+ * 注意：E13 P2 完整版（listJobsHistory）缺省=不过滤，两者语义不同，勿混用。 */
 export function listActiveJobs(limit = 20, offset = 0): Promise<Page<JobOut>> {
   return request<Page<JobOut>>('/api/jobs', {
     query: { status: 'running,pending', limit, offset },
+  })
+}
+
+/** E13 完整版查询参数（P2 批次 A）：缺省语义=不过滤（后端 _parse_statuses 缺省返回 None）。 */
+export interface JobHistoryQuery {
+  /** 任务类型（JOB_TYPES 白名单单值）；undefined = 不过滤。 */
+  type?: JobType
+  /** 状态白名单（全状态含终态），逗号拼接为 status 参数；空数组 = 不过滤。 */
+  statuses?: JobStatus[]
+  /** 按备份任务筛选；undefined = 不过滤。 */
+  taskId?: number
+  /** started_at 下界（ISO 8601，含时区；服务端归一 UTC 比较）。 */
+  startedFrom?: string
+  /** started_at 上界（ISO 8601）。 */
+  startedTo?: string
+  /** 单页条数，上限 500（后端 HISTORY_QUERY_MAX_LIMIT）。 */
+  limit?: number
+  offset?: number
+}
+
+/** E13 完整版：全状态/类型/任务/时间范围筛选，历史视图专用。
+ * 与 listActiveJobs（显式 status=running,pending）分开使用，避免缺省语义混淆。 */
+export function listJobsHistory(params: JobHistoryQuery = {}): Promise<Page<JobOut>> {
+  return request<Page<JobOut>>('/api/jobs', {
+    query: {
+      type: params.type,
+      status: params.statuses && params.statuses.length > 0 ? params.statuses.join(',') : undefined,
+      task_id: params.taskId,
+      started_from: params.startedFrom,
+      started_to: params.startedTo,
+      limit: params.limit ?? 50,
+      offset: params.offset ?? 0,
+    },
   })
 }
 

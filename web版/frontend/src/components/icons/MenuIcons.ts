@@ -60,6 +60,33 @@ export const IconBell: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M10.3 21a2 2 0 0 0 3.4 0' }),
   ])
 
+/** 系统设置：齿轮（feather settings 线稿）。 */
+export const IconSettings: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 12, cy: 12, r: 3 }),
+    h('path', {
+      d:
+        'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06' +
+        'a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09' +
+        'a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83' +
+        'l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09' +
+        'a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83' +
+        'l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09' +
+        'a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83' +
+        'l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09' +
+        'a1.65 1.65 0 0 0-1.51 1z',
+    }),
+  ])
+
+/** 审计日志：文档 + 行（append-only 台账意象）。 */
+export const IconAudit: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z' }),
+    h('path', { d: 'M14 2v6h6' }),
+    h('path', { d: 'M16 13H8' }),
+    h('path', { d: 'M16 17H8' }),
+  ])
+
 /** 菜单按钮：汉堡（<960px 顶栏抽屉入口）。 */
 export const IconMenu: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [h('path', { d: 'M4 6.5h16M4 12h16M4 17.5h16' })])

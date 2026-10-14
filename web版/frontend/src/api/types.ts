@@ -471,3 +471,33 @@ export interface NotifyTestResponse {
   channels: NotifyTestChannel[]
   reason: string | null
 }
+
+// ---------------------------------------------------------------- P2 收尾批次 A（R-020 / R-021）
+
+/** 审计结果枚举（与后端 AuditResult 白名单一一对应）。 */
+export type AuditResult = 'ok' | 'denied' | 'failed'
+
+/** E26 审计日志行（§4.6 字段全集；detail 为 JSON 文本原文，前端只展示不改写）。 */
+export interface AuditOut {
+  id: number
+  ts: string
+  action: string
+  target: string | null
+  detail: string | null
+  result: AuditResult
+  created_at: string
+}
+
+/** E26 响应：分页壳 + actions 动作名枚举（SELECT DISTINCT，前端筛选下拉数据源）。 */
+export interface AuditPageResponse extends Page<AuditOut> {
+  actions: string[]
+}
+
+/** E25 缓存占用响应（Q14 基线：du 超时回部分值 + truncated，不 5xx）。 */
+export interface CacheUsageResponse {
+  path: string
+  size_bytes: number
+  items_count: number
+  measured_at: string
+  truncated: boolean
+}

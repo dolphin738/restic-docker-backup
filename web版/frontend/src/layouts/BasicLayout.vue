@@ -27,12 +27,14 @@ import { logout } from '@/api/auth'
 import { listActiveJobs } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import {
+  IconAudit,
   IconBell,
   IconDashboard,
   IconJobs,
   IconMenu,
   IconRepo,
   IconRestore,
+  IconSettings,
   IconSnapshots,
 } from '@/components/icons/MenuIcons'
 import logoSrc from '@/assets/restic-logo.png'
@@ -65,8 +67,7 @@ function withNIcon(icon: Component): () => VNodeChild {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
-/** 菜单 7→5 项（R-026/Q2：备份源页与策略页退役，源选择与调度随任务向导走；
- *  「新建备份任务」入口在仪表盘任务卡列表内）。 */
+/** 菜单项（R-026/Q2 退役备份源/策略页；P2 批次 A 增设系统设置 + 审计日志，共 8 项）。 */
 const menuOptions = computed<MenuOption[]>(() => [
   { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
   { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
@@ -74,6 +75,8 @@ const menuOptions = computed<MenuOption[]>(() => [
   { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
   { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
   { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
+  { label: t('nav.settings'), key: 'settings', icon: withNIcon(IconSettings) },
+  { label: t('nav.audit'), key: 'audit', icon: withNIcon(IconAudit) },
 ])
 
 // 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。
