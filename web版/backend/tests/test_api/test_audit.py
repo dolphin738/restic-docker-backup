@@ -137,6 +137,45 @@ async def test_e26_limit_upper_bound_500(app_client):
     assert resp.status_code == 422
 
 
+async def test_e26_offset_beyond_total_returns_empty_page(app_client):
+    """QA 补测（批次 B）：offset 越过总数 → 200 + 空 items（不 5xx、total 不变）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    total = await _audit_total(ns)
+    assert total > 0  # bootstrap 审计行已存在，越界偏移才有意义
+
+    resp = await ns.client.get("/api/audit", params={"offset": total + 100_000})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"] == []
+    assert body["total"] == total
+    assert body["offset"] == total + 100_000
+
+
+async def test_e26_action_prefix_escapes_underscore_and_backslash(app_client):
+    """QA 补测（批次 B）：``_`` 与 ``\\`` 同属 LIKE 通配/转义字符，必须转义防越权。
+
+    - ``log_in``（未转义时 ``_`` 通配单字符会命中 ``login.ok``）→ 0 命中；
+    - ``login.ok\\``（尾部反斜杠字面量）→ 0 命中（转义后仍按字面前缀匹配）；
+    - 对照组：字面前缀 ``login.ok`` 正常命中。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed(ns)
+
+    resp = await ns.client.get("/api/audit", params={"action": "log_in"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0  # ``_`` 是字面下划线，不匹配 ``login.ok``
+
+    resp = await ns.client.get("/api/audit", params={"action": "login.ok\\"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0  # 尾部反斜杠不改变匹配语义、也不得 500
+
+    resp = await ns.client.get("/api/audit", params={"action": "login.ok"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] >= 1  # 对照组：合法前缀正常命中
+
+
 async def test_e26_readonly_no_write_methods(app_client):
     """S6 只读面：E26 不提供任何写方法（PUT/POST/DELETE → 405/404）。"""
     ns = app_client

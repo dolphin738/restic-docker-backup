@@ -96,6 +96,27 @@ async def test_e25_clear_conflicts_with_active_job(app_client):
     assert body["data"]["running_job_id"] == "job-cache-running"
 
 
+async def test_e25_clear_conflicts_with_pending_job(app_client):
+    """QA 补测（批次 B）：pending 同属活跃态 → 同样 409（restic 进程可能即将持缓存）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    settings = ns.app.state.settings
+    settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    await ns.app.state.job_repo.create(
+        job_id="job-cache-pending",
+        job_type="backup",
+        trigger="manual",
+        log_path=str(settings.jobs_dir / "job-cache-pending.log"),
+        status="pending",
+    )
+
+    resp = await ns.client.post("/api/cache/clear", headers=ORIGIN)
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "JOB_CONFLICT"
+    assert body["data"]["running_job_id"] == "job-cache-pending"
+
+
 async def test_e25_clear_empties_dir_records_audit(app_client):
     """清空：cache_dir 内容被删、审计 ``cache.clear`` 首次落库、占用缓存立即失效。"""
     ns = app_client
