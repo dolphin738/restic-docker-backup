@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.constants import INPLACE_RESTORE_TARGET_ROOT
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs
@@ -235,3 +236,50 @@ def test_check_read_data_and_subset_mutually_exclusive():
     cmd = make_cmd()
     with pytest.raises(ValidationError):
         cmd.build("check", args=WhitelistArgs(read_data=True, read_data_subset="50%"))
+
+
+# ---------------------------------------------------------------- R-015 原位恢复落点（S7 v1.3）
+
+def test_restore_inplace_target_is_root_constant():
+    """原位开关打开且 target 取 INPLACE_RESTORE_TARGET_ROOT → argv 拼出 ``--target /``。
+
+    restic 落点 = ``--target`` + 快照内绝对路径，快照存容器路径 ``/host/etc/...``，
+    故只有 ``/`` 是真原位（写到 ``/host/etc/...``）。
+    """
+    cmd = make_cmd()
+    argv = cmd.build(
+        "restore",
+        args=WhitelistArgs(
+            snapshot_id=SNAPSHOT_ID,
+            target_dir=INPLACE_RESTORE_TARGET_ROOT,
+            inplace_target=True,
+            include=("/host/etc",),
+            overwrite="always",
+        ),
+    )
+    assert argv[argv.index("--target") + 1] == INPLACE_RESTORE_TARGET_ROOT
+    assert INPLACE_RESTORE_TARGET_ROOT == "/"
+
+
+def test_restore_inplace_switch_cannot_smuggle_other_target():
+    """放行开关只能放行常量本身：夹带别的值 → 422（防"借布尔开关传任意路径"）。"""
+    cmd = make_cmd()
+    with pytest.raises(ValidationError):
+        cmd.build(
+            "restore",
+            args=WhitelistArgs(
+                snapshot_id=SNAPSHOT_ID, target_dir="/host/etc", inplace_target=True
+            ),
+        )
+
+
+def test_restore_regular_target_still_validated_by_path_mapper():
+    """常规恢复（时间戳子目录）的 --target 仍走 PathMapper 白名单（越界 400）。"""
+    cmd = make_cmd()
+    argv = cmd.build(
+        "restore", args=WhitelistArgs(snapshot_id=SNAPSHOT_ID, target_dir="/restore/x")
+    )
+    assert argv[argv.index("--target") + 1] == "/restore/x"
+
+    with pytest.raises(PathOutOfPrefixError):
+        cmd.build("restore", args=WhitelistArgs(snapshot_id=SNAPSHOT_ID, target_dir="/etc"))

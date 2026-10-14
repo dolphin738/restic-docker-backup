@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from app.constants import INPLACE_RESTORE_TARGET_ROOT
 from app.errors import ValidationError
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
@@ -90,6 +91,9 @@ class WhitelistArgs:
     read_data_subset: str | None = None
     overwrite: str | None = None
     stats_mode: str | None = None
+    # R-015 原位恢复：--target 取 INPLACE_RESTORE_TARGET_ROOT（"/"）的**显式放行开关**。
+    # 调用方只能给布尔值，取什么值由 ResticCmd 决定——不是自由字符串通道（S2）。
+    inplace_target: bool = False
     # R-016 forget：--prune 随 forget 回收数据（预览恒 dry_run=True，不落 prune）
     prune: bool = False
     extra_positionals: tuple[str, ...] = field(default_factory=tuple)
@@ -345,7 +349,7 @@ class ResticCmd:
 
         if verb == "restore":
             if args.target_dir:
-                flags.extend(["--target", self._path_mapper.validate(args.target_dir)])
+                flags.extend(["--target", self._restore_target(args)])
             # B1 --include（R-027）：目录含子树、文件精确匹配；白名单前缀取当前模式根
             # （host=/host、sources=/sources——与 sources 归一口径一致，
             # exclusions.py normalize_user_excludes 先例）。S1 校验点②（纵深防御）：
@@ -416,6 +420,35 @@ class ResticCmd:
         if verb == "ls" or verb == "cat":
             return flags
         return flags
+
+    def _restore_target(self, args: WhitelistArgs) -> str:
+        """拼装 restore 的 ``--target``（原位恢复走常量的显式放行分支）。
+
+        常规恢复（时间戳子目录）的目标照旧过 :meth:`PathMapper.validate`
+        （``/host`` / ``/sources`` / ``/restore`` 白名单，S1）。
+
+        原位恢复（``inplace_target=True``）**只能**取
+        :data:`INPLACE_RESTORE_TARGET_ROOT`——restic 落点 = ``--target`` + 快照内
+        绝对路径，快照存的是容器绝对路径（``/host/etc/...``），故只有 ``/`` 是真原位
+        （规范 §3.1 S7「执行层落点纪律」）。为什么这不破坏 S1/S2：
+
+        - 取值来自 constants 单一真源，调用方传的是**布尔开关**而非路径字符串，
+          不存在"借该字段塞任意路径"的自由通道（S2）；
+        - 值不是用户输入，是执行层落点常量；真正的用户可控范围由**双重锁**
+          （rw 档白名单 + 快照 paths 交集）与强制非空 ``--include`` 共同限定（S1）；
+        - 开关打开但值不等于该常量时直接 422，杜绝"借布尔开关夹带别的值"。
+
+        Raises:
+            ValidationError: 开关打开但 ``target_dir`` 不是该常量（422）。
+        """
+        if args.inplace_target:
+            if args.target_dir != INPLACE_RESTORE_TARGET_ROOT:
+                raise ValidationError(
+                    "原位恢复的 --target 只能取 INPLACE_RESTORE_TARGET_ROOT",
+                    data={"target_dir": args.target_dir},
+                )
+            return INPLACE_RESTORE_TARGET_ROOT
+        return self._path_mapper.validate(args.target_dir)
 
     def _positionals(self, verb: str, args: WhitelistArgs) -> list[str]:
         """拼装位置参数（快照 id / 备份源路径），全部经路径白名单或 id 格式校验。"""

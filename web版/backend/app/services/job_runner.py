@@ -723,6 +723,9 @@ class JobRunner:
             return WhitelistArgs(
                 snapshot_id=snapshot_id or params.get("snapshot_id"),
                 target_dir=str(target),
+                # R-015 原位恢复：目标为 INPLACE_RESTORE_TARGET_ROOT（"/"）时的显式放行
+                # 开关（取值仍由 ResticCmd 决定，此处不透传路径字符串——S2）
+                inplace_target=bool(params.get("inplace", False)),
                 overwrite=str(params.get("overwrite") or "if-changed"),
                 # B1 文件级恢复：容器形态的 include 清单（路由层已 display→container 归一，
                 # 此处再过 ResticCmd 白名单校验——S1 双重校验点②）
