@@ -39,6 +39,7 @@ ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 RATE_LIMITED = "RATE_LIMITED"
 INTERNAL = "INTERNAL"
 RESTIC_FAILED = "RESTIC_FAILED"     # restic 子进程失败（E17/E18/E19/E29 探测类端点）
+DUMP_FAILED = "DUMP_FAILED"         # dump 阶段失败（R-019：探活/执行/产物校验，原因明示）
 
 # 端点级扩展码（§5.0 注）
 PATH_OUT_OF_PREFIX = "PATH_OUT_OF_PREFIX"          # 400 E05/E19
@@ -66,6 +67,7 @@ ERROR_STATUS: dict[str, int] = {
     RATE_LIMITED: 429,
     INTERNAL: 500,
     RESTIC_FAILED: 500,
+    DUMP_FAILED: 500,
     PATH_OUT_OF_PREFIX: 400,
     ENV_OVERRIDDEN: 409,
     DEFAULT_POLICY_IMMUTABLE: 409,
@@ -110,6 +112,7 @@ AUDIT_TASK_CREATE = "task.create"
 AUDIT_TASK_UPDATE = "task.update"
 AUDIT_TASK_DELETE = "task.delete"
 AUDIT_RETENTION_CLEANUP = "retention.cleanup"  # R-020 每日维护：任务历史/日志清理（调度器触发）
+AUDIT_DUMP_CLEANUP = "dump.cleanup"  # R-019 每日维护兜底：dump 产物清理（调度器触发）
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 
@@ -200,3 +203,20 @@ CHECK_SAMPLE_RATIO_DEFAULT = 0.02
 MONTHLY_FULL_DAY_DEFAULT = 1
 MONTHLY_FULL_DAY_MIN = 1
 MONTHLY_FULL_DAY_MAX = 28
+
+# ---------------------------------------------------------------- P2 收尾批次 B：R-019 dump（dump.* 键与缺省）
+
+DUMP_ENABLED_KEY = "dump.enabled"        # 0/1，缺省 0（off，保持既有语义）
+DUMP_TYPE_KEY = "dump.type"              # pg | mysql | sqlite
+DUMP_HOST_KEY = "dump.host"
+DUMP_PORT_KEY = "dump.port"
+DUMP_USER_KEY = "dump.user"
+DUMP_DATABASES_KEY = "dump.databases"    # JSON 数组（pg/mysql 为库名、sqlite 为库文件路径）
+DUMP_PASSWORD_KEY = "dump.password"      # 敏感键（config_repo.SENSITIVE_EXACT_KEYS 已含）
+DUMP_RETENTION_DAYS_KEY = "dump.retention_days"
+
+DUMP_ENGINES: tuple[str, ...] = ("pg", "mysql", "sqlite")
+DUMP_PORT_DEFAULT = 5432
+DUMP_RETENTION_DAYS_DEFAULT = 7          # 产物保留天数缺省；<=0 = 不启用清理（fail-safe）
+DUMP_PROBE_TIMEOUT_SECONDS = 15          # pg 客户端/服务端版本探测超时
+DUMP_RUN_TIMEOUT_SECONDS = 1800          # 单库 dump 执行超时（30 分钟）

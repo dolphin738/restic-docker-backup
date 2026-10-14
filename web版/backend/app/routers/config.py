@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -22,6 +23,19 @@ from app.auth.session import SessionContext
 from app.constants import (
     AUDIT_CONFIG_UPDATE,
     AUDIT_REPO_TEST,
+    BEHAVIOR_AUTO_INIT_KEY,
+    BEHAVIOR_AUTO_UNLOCK_KEY,
+    BEHAVIOR_CHECK_ENABLED_KEY,
+    BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    DUMP_DATABASES_KEY,
+    DUMP_ENABLED_KEY,
+    DUMP_ENGINES,
+    DUMP_PORT_KEY,
+    DUMP_RETENTION_DAYS_KEY,
+    DUMP_TYPE_KEY,
+    MONTHLY_FULL_DAY_MAX,
+    MONTHLY_FULL_DAY_MIN,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
     REPO_STATUS_CACHE_SECONDS,
@@ -55,6 +69,16 @@ _status_lock = asyncio.Lock()
 
 # 锁残留关键词（从 cat config 的失败输出里识别，零额外 restic 调用）
 _LOCK_KEYWORDS: tuple[str, ...] = ("already locked", "unable to create lock", "remove stale locks")
+
+# 0/1 开关键（批次 B 批次面：behavior.* 三开关 + dump.enabled）
+_BOOL_KEYS: frozenset[str] = frozenset(
+    {
+        BEHAVIOR_AUTO_INIT_KEY,
+        BEHAVIOR_AUTO_UNLOCK_KEY,
+        BEHAVIOR_CHECK_ENABLED_KEY,
+        DUMP_ENABLED_KEY,
+    }
+)
 
 
 @router.get(
@@ -96,6 +120,11 @@ async def put_config(
     if illegal:
         raise ValidationError("配置键名非法", data={"illegal": illegal})
 
+    # 键级校验钩子（批次 B）：behavior.*/dump.* 值域前置 422——坏值落库会让
+    # check 域/ dump 域在运行期静默降级，必须在写入侧拒绝（与 repo.type 只读键
+    # 同一机制位；值域单一真源为 config 运行期读取方：scheduler / dump / job_runner）。
+    _validate_patch_values(payload.patch)
+
     repo = request.app.state.config_repo
     await repo.set_many(payload.patch)
     # E30 有 30s 进程内 TTL 缓存：配置刚保存（尤其 repo.url/凭据）时必须失效，
@@ -121,6 +150,58 @@ def invalidate_repo_status_cache() -> None:
     """
     global _status_cache
     _status_cache = None
+
+
+def _validate_patch_values(patch: dict[str, str | None]) -> None:
+    """E07 键级校验钩子（批次 B）：behavior.* / dump.* 的值域前置校验。
+
+    值为 ``None``（清除语义）一律放行；``dump.password`` 为三态写口径
+    （None=不变 / ""=清除 / 非空=设置，读侧经 SENSITIVE_EXACT_KEYS 只回 has_value），
+    明文不校验格式、原样存储（S3：仅经环境通道消费，argv/日志/审计零出现）。
+
+    Raises:
+        ValidationError: 任一受控键的值越出值域（422，整体拒绝不产生部分写入）。
+    """
+    for key, raw in patch.items():
+        if raw is None:
+            continue
+        value = raw.strip()
+        if key in _BOOL_KEYS:
+            if value not in ("0", "1"):
+                raise ValidationError(f"{key} 仅接受 0/1", data={"key": key, "value": raw})
+        elif key == BEHAVIOR_CHECK_SAMPLE_RATIO_KEY:
+            try:
+                ratio = float(value)
+            except ValueError as exc:
+                raise ValidationError(
+                    f"{key} 须为 [0,1] 内的数字", data={"key": key, "value": raw}
+                ) from exc
+            if not 0.0 <= ratio <= 1.0:
+                raise ValidationError(f"{key} 须在 [0,1] 内（0=不抽样）", data={"key": key, "value": raw})
+        elif key == BEHAVIOR_MONTHLY_FULL_DAY_KEY:
+            if not value.isdigit() or not (MONTHLY_FULL_DAY_MIN <= int(value) <= MONTHLY_FULL_DAY_MAX):
+                raise ValidationError(
+                    f"{key} 须为 {MONTHLY_FULL_DAY_MIN}~{MONTHLY_FULL_DAY_MAX} 的整数（规避月末不存在日）",
+                    data={"key": key, "value": raw},
+                )
+        elif key == DUMP_TYPE_KEY:
+            if value not in DUMP_ENGINES:
+                raise ValidationError(
+                    f"{key} 仅支持 " + "/".join(DUMP_ENGINES),
+                    data={"key": key, "value": raw, "allowed": list(DUMP_ENGINES)},
+                )
+        elif key == DUMP_PORT_KEY:
+            if not value.isdigit() or not (1 <= int(value) <= 65535):
+                raise ValidationError(f"{key} 须为 1~65535 的整数", data={"key": key, "value": raw})
+        elif key == DUMP_RETENTION_DAYS_KEY:
+            if not value.isdigit():
+                raise ValidationError(f"{key} 须为非负整数（0=不启用清理）", data={"key": key, "value": raw})
+        elif key == DUMP_DATABASES_KEY:
+            databases = _parse_databases_for_validation(value)
+            if databases is None:
+                raise ValidationError(
+                    f"{key} 须为非空 JSON 字符串数组", data={"key": key, "value": raw[:200]}
+                )
 
 
 @router.post(
@@ -253,6 +334,18 @@ def _looks_locked(lines: list[str]) -> bool:
     """从探测失败输出里识别锁残留（避免为锁状态再打一次仓库）。"""
     joined = "\n".join(lines).lower()
     return any(keyword in joined for keyword in _LOCK_KEYWORDS)
+
+
+def _parse_databases_for_validation(raw: str) -> list[str] | None:
+    """校验用：解析 ``dump.databases`` JSON 字符串数组；非法/为空返回 None。"""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    items = [str(item).strip() for item in payload if isinstance(item, str) and str(item).strip()]
+    return items or None
 
 
 def _as_optional_int(value: Any) -> int | None:

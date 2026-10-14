@@ -89,6 +89,11 @@ class Settings(BaseSettings):
         return Path(self.data_dir) / "jobs"
 
     @property
+    def dump_dir(self) -> Path:
+        """数据库 dump 产物目录（/data/dump，R-019；S1：路径字面量唯一出处）。"""
+        return Path(self.data_dir) / "dump"
+
+    @property
     def mode_root(self) -> str:
         """当前模式下备份源的根前缀：host → /host，sources → /sources。"""
         return self.host_root if self.restic_web_mode == "host" else self.sources_root

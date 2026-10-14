@@ -37,6 +37,7 @@ from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
 from app.errors import JobConflictError, NotCancellableError, NotFoundError, ValidationError
 from app.exclusions import ExclusionRules
+from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
 from app.services.restic import ResticCmd, ResticProcess, WhitelistArgs
@@ -54,6 +55,12 @@ TaskLoader = PolicyLoader
 # E22 read_data 展示用的 check 提交参数内存保留条数上限（jobs 表无参数列、本批零 DDL；
 # 进程重启后回落 False——错误列表与 summary 指标仍从日志完整还原）
 CHECK_PARAMS_MEMORY_MAX = 200
+
+# dump 阶段的适用任务类型（D2 收窄，QA 复验 2026-10-15）：仅 backup 任务链前缀
+# 与独立 type=dump 任务——check/restore/forget/unlock/init **零 dump 介入**，
+# 否则 dump.enabled=1 且 DB 配置故障时会阻断 AUTO_UNLOCK 等启动恢复链，
+# 仓库锁残留无法自愈（设计 §3.2/§5 的「backup 任务链」意图）。
+DUMP_PHASE_JOB_TYPES: tuple[str, ...] = ("backup", "dump")
 
 
 class NoopNotifier:
@@ -314,6 +321,21 @@ class JobRunner:
                 await self._jobs.update_status(job.id, "running", started_at=utc_iso())
                 # R-018：healthchecks /start ping（真实 Notifier）；空实现零副作用。
                 await self._safe_notify_start(job)
+
+                # dump 阶段（R-019，US-P2-09）：**仅** backup 任务链前缀（含独立
+                # type=dump）执行——失败 → failed 终态 + 告警，**阻断** backup 阶段
+                # （同锁内，E1 不回归）；其余类型零 dump 介入（D2 收窄，见
+                # DUMP_PHASE_JOB_TYPES 注释），dump 故障绝不阻断 unlock 等恢复链。
+                if job.type in DUMP_PHASE_JOB_TYPES:
+                    dump_ok, dump_reason = await self._run_dump_phase(job)
+                    if not dump_ok:
+                        await self._fail_in_phase(job, f"dump 阶段失败：{dump_reason}", phase="dump")
+                        return
+                    if job.type == "dump":
+                        # 独立 type=dump 任务（E12 触发，测试用途）：无 restic 阶段，dump 即终态
+                        await self._finish_dump_only(job)
+                        return
+
                 argv, env = await self._prepare(job, repo_url)
                 log_path = Path(job.log_path)
                 proc = await self._restic.spawn(argv, log_path, env=env)
@@ -467,6 +489,63 @@ class JobRunner:
                 "JobRunner on_task_backup_success 回调执行失败（task=%s）", task_id, exc_info=True
             )
 
+    # ---------------------------------------------------------------- dump 阶段（R-019）
+
+    async def _run_dump_phase(self, job: Job) -> tuple[bool, str]:
+        """执行 dump 阶段（仅 :data:`DUMP_PHASE_JOB_TYPES` 生效；US-P2-09）。
+
+        成功后随即按 ``dump.retention_days`` 清理一轮产物（Q10 基线：每次成功 dump
+        后执行一次；``<=0`` 由 :meth:`DumpService.cleanup` 内部跳过）。
+
+        Returns:
+            ``(成功与否, 失败原因)``；未启用时返回 ``(True, "")``——与 dump 关闭时
+            行为逐字节一致（回归保护）。
+        """
+        try:
+            cfg = await load_dump_config(self._config)
+        except Exception as exc:  # noqa: BLE001 - 配置非法也要收敛为阶段失败（不 5xx）
+            logger.warning("dump 配置装配失败：job=%s %s", job.id, exc)
+            return False, str(exc)
+        if cfg is None:
+            return True, ""
+        service = DumpService(self._config, self._settings)
+        try:
+            if cfg.engine == "pg":
+                await service.probe_pg(cfg)
+            await service.run(cfg, tag=f"job-{job.id}")
+            await asyncio.to_thread(service.cleanup, cfg.retention_days)
+        except Exception as exc:  # noqa: BLE001 - dump 失败阻断 backup，原因进 summary
+            logger.exception("dump 阶段失败：job=%s", job.id)
+            return False, str(exc)
+        return True, ""
+
+    async def _fail_in_phase(self, job: Job, summary: str, *, phase: str) -> None:
+        """阶段失败收敛：failed 终态 + 审计 + 告警（与 _run 异常路径同口径，不 5xx）。"""
+        await self._jobs.finalize(
+            job.id, "failed", exit_code=-1, summary=summary, last_event_id=0
+        )
+        await self._audit.record(
+            AUDIT_JOB_FINISHED,
+            target=job.id,
+            detail={"type": job.type, "status": "failed", "phase": phase},
+            result="failed",
+        )
+        # R-018：dump 失败必须告警（外壳吞异常，不影响已落库终态）
+        await self._safe_notify_finish(job, status="failed")
+
+    async def _finish_dump_only(self, job: Job) -> None:
+        """独立 type=dump 任务的终态收尾（dump 即终态，无 restic 阶段）。"""
+        await self._jobs.finalize(
+            job.id, "success", exit_code=0, summary="dump 阶段完成", last_event_id=0
+        )
+        await self._audit.record(
+            AUDIT_JOB_FINISHED,
+            target=job.id,
+            detail={"type": job.type, "status": "success", "phase": "dump"},
+            result="ok",
+        )
+        await self._safe_notify_finish(job, status="success")
+
     # ---------------------------------------------------------------- 启动恢复 / 关闭收尾
 
     async def recover_on_startup(self) -> int:
@@ -605,9 +684,14 @@ class JobRunner:
         params: dict[str, Any],
         policy: dict[str, Any],
     ) -> WhitelistArgs:
-        """按任务类型构造白名单参数（方案 §6：无自由字符串）。"""
+        """按任务类型构造白名单参数（方案 §6：无自由字符串）。
+
+        注：``type=dump`` 任务在 :meth:`_run` 中于 restic 阶段之前终结
+        （dump 即终态，见 :meth:`_finish_dump_only`），理论不会走到本方法；
+        分支保留缺省白名单仅作完整性兜底（替换 R-019 之前的占位报错）。
+        """
         if job_type == "dump":
-            raise ValidationError("dump 任务随 P2 Dump 模块生效，当前不可用", data={"type": job_type})
+            return WhitelistArgs()
 
         builtin = self._exclusions.built_in()
         user_excludes = list(policy.get("excludes") or []) + list(params.get("excludes") or [])

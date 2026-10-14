@@ -39,6 +39,7 @@ from app.constants import (
     BEHAVIOR_CHECK_ENABLED_KEY,
     BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    DUMP_RETENTION_DAYS_KEY,
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
@@ -1065,8 +1066,8 @@ async def test_start_mounts_maintenance_retention_and_reload_preserves_it(tmp_pa
 async def test_mount_maintenance_jobs_is_idempotent(tmp_path):
     """重复挂载（start + 显式再调）→ replace_existing 去重，不堆积。
 
-    批次 B 面：retention（R-020）恒挂载；check 域（behavior.check_enabled
-    缺省 off）不挂载——挂载/摘除的开关矩阵见本节后续用例。
+    批次 B 面：retention（R-020）与 dump-cleanup（R-019）恒挂载；check 域
+    （behavior.check_enabled 缺省 off）不挂载——挂载/摘除的开关矩阵见本节后续用例。
     """
     db, scheduler, _, _, _, _ = await make_scheduler(tmp_path)
     await scheduler.start()
@@ -1075,7 +1076,7 @@ async def test_mount_maintenance_jobs_is_idempotent(tmp_path):
     maintenance = [
         job for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("maintenance-")
     ]
-    assert [str(job.id) for job in maintenance] == ["maintenance-retention"]
+    assert [str(job.id) for job in maintenance] == ["maintenance-retention", "maintenance-dump-cleanup"]
 
     await scheduler.shutdown()
     await asyncio.sleep(0)
@@ -1123,6 +1124,7 @@ async def test_fire_retention_isolates_exceptions(tmp_path, caplog):
 # 维护域 job id（与实现同源；挂载/摘除断言的口径）
 CHECK_SAMPLE_ID = "maintenance-check-sample"
 CHECK_FULL_ID = "maintenance-check-full"
+DUMP_CLEANUP_ID = "maintenance-dump-cleanup"
 
 
 def _maintenance_job_ids(scheduler: SchedulerService) -> set[str]:
@@ -1243,4 +1245,43 @@ async def test_fire_check_isolates_exceptions(tmp_path, caplog):
         await scheduler._fire_check("sample")  # 不得抛异常  # noqa: SLF001
 
     assert "调度提交 check 失败" in caplog.text
+    await db.close()
+
+
+# ---------------------------------------------------------------- 10. dump 产物清理维护域（T05 R-019，批次 B）
+
+
+async def test_fire_dump_cleanup_purges_expired_files(tmp_path):
+    """清理兜底：dump_dir 内超期产物删除、保留期内文件与目录外的文件原样保留。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    dump_dir = scheduler._settings.dump_dir  # noqa: SLF001
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    stale = dump_dir / "appdb-job-old-20260101T000000Z.sql"
+    stale.write_bytes(b"stale")
+    fresh = dump_dir / "appdb-job-new-20990101T000000Z.sql"
+    fresh.write_bytes(b"fresh")
+    os.utime(stale, (1_000_000_000, 1_000_000_000))  # 2001 年 → 远超 7 天保留
+    outside = scheduler._settings.data_dir + "/outside.sql"  # noqa: SLF001
+    Path(outside).write_bytes(b"keep")
+
+    await scheduler._fire_dump_cleanup()  # noqa: SLF001
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert Path(outside).exists()
+    await db.close()
+
+
+async def test_fire_dump_cleanup_noop_when_retention_zero(tmp_path):
+    """retention_days=0 = 不启用（fail-safe）：文件原样保留。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    await config_repo.set(DUMP_RETENTION_DAYS_KEY, "0")
+    dump_dir = scheduler._settings.dump_dir  # noqa: SLF001
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    keep = dump_dir / "old.sql"
+    keep.write_bytes(b"keep")
+
+    await scheduler._fire_dump_cleanup()  # noqa: SLF001
+
+    assert keep.exists()
     await db.close()

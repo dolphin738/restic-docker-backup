@@ -31,17 +31,22 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.constants import (
+    AUDIT_DUMP_CLEANUP,
     BEHAVIOR_CHECK_ENABLED_KEY,
     BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
     CHECK_SAMPLE_RATIO_DEFAULT,
+    DUMP_RETENTION_DAYS_DEFAULT,
+    DUMP_RETENTION_DAYS_KEY,
     MONTHLY_FULL_DAY_DEFAULT,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
 )
+from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.task_repo import DEFAULT_REPO_ID, Task, TaskRepo
+from app.services.dump import DumpService
 from app.services.job_runner import JobRunner
 from app.services.retention import RetentionService
 from app.settings import Settings, get_settings
@@ -68,6 +73,7 @@ _MAINTENANCE_PREFIX = "maintenance-"
 # 每日维护固定时刻（模块级常量单一真源，设计 §3.5；时区取 config.timezone → settings.tz）
 MAINTENANCE_RETENTION_CRON = "40 3 * * *"    # 每日 retention（R-020）
 MAINTENANCE_CHECK_DAILY_CRON = "30 4 * * *"  # 每日抽样 check（R-017，check_enabled=1 才挂载）
+MAINTENANCE_DUMP_CLEANUP_CRON = "50 3 * * *"  # 每日 dump 产物清理兜底（R-019）
 # 月度全量 check：``0 4 <monthly_full_day> * *``（behavior.monthly_full_day 当日 04:00；
 # check_enabled=1 才挂载，构造见 :meth:`mount_maintenance_jobs`）
 
@@ -267,19 +273,22 @@ class SchedulerService:
         *,
         jobs: JobRepo,
         retention: RetentionService,
+        audit: AuditRepo | None = None,
     ) -> None:
         """构造调度器。
 
         Args:
             tasks: 任务仓储（触发器列举与任务复核）。
             runner: 任务执行器（submit 走仓库维度互斥，E1）。
-            config: 配置仓储（cron_default/jitter/timezone 全局缺省 + behavior.* 键）。
+            config: 配置仓储（cron_default/jitter/timezone 全局缺省 + behavior.*/dump.* 键）。
             settings: 运行期配置；缺省取进程单例（时区回退源）。
             jobs: jobs 表仓储（补跑/prune 判定需要读 backup 历史）。
                 设计 §4.1 构造签名未列此项，但 catchup/prune 判定必须读 jobs 表，
                 且 A1 要求 DB 访问只经仓储——JobRunner 未暴露该查询，故显式注入。
             retention: 保留服务（每日维护任务 ``maintenance-retention`` 的执行体，
                 设计 §3.4/§3.5）。
+            audit: 审计仓储（``dump.cleanup`` 埋点用；缺省 None 时埋点跳过——
+                测试基座可不注入，行为差异仅少一条审计行）。
         """
         self._tasks = tasks
         self._runner = runner
@@ -287,6 +296,7 @@ class SchedulerService:
         self._settings = settings or get_settings()
         self._jobs = jobs
         self._retention = retention
+        self._audit = audit
         self._scheduler = AsyncIOScheduler()
         # config 快照（next_fire_time 为同步签名，无法直接 await config 读取；
         # 由 reload()/catchup_on_startup() 入口刷新——cron_default/timezone 本批无 UI）
@@ -314,7 +324,7 @@ class SchedulerService:
         ``enabled=1`` 且有效 cron 非空的任务各建一个 cron 触发器（:func:`_cron_trigger`，
         ``replace_existing``）；随后移除已不存在/已暂停/无有效 cron 任务的遗留 job；
         末尾补挂维护任务域（设计 §3.5：``reload()`` 与 ``start()`` 末尾调用）——
-        behavior.* 配置经 E07 变更后同样「保存即生效」。
+        behavior.*/dump.* 配置经 E07 变更后同样「保存即生效」。
         """
         await self._refresh_config_snapshot()
         tasks = await self._tasks.list_all(DEFAULT_REPO_ID)
@@ -350,8 +360,10 @@ class SchedulerService:
     async def mount_maintenance_jobs(self) -> None:
         """挂载每日维护任务（``maintenance-*`` 前缀分域，``replace_existing`` 幂等）。
 
-        本批（批次 B）挂载三类：
+        本批（批次 B）挂载四类：
         - ``maintenance-retention``（R-020，恒挂载）；
+        - ``maintenance-dump-cleanup``（R-019 产物清理兜底，恒挂载——dump 未启用时
+          ``dump_dir`` 为空，清理为无害 no-op）；
         - ``maintenance-check-sample``（R-017 每日抽样，``check_enabled=1`` 且
           ``check_sample_ratio > 0`` 才挂载——ratio=0 = 不抽样、只月度全量）；
         - ``maintenance-check-full``（R-017 月度全量，``check_enabled=1`` 才挂载，
@@ -370,6 +382,15 @@ class SchedulerService:
             trigger=_cron_trigger(MAINTENANCE_RETENTION_CRON, timezone=self._tz),
             args=(),
             id=f"{_MAINTENANCE_PREFIX}retention",
+            replace_existing=True,
+        )
+
+        keep.add(f"{_MAINTENANCE_PREFIX}dump-cleanup")
+        self._scheduler.add_job(
+            self._fire_dump_cleanup,
+            trigger=_cron_trigger(MAINTENANCE_DUMP_CLEANUP_CRON, timezone=self._tz),
+            args=(),
+            id=f"{_MAINTENANCE_PREFIX}dump-cleanup",
             replace_existing=True,
         )
 
@@ -427,6 +448,37 @@ class SchedulerService:
             await self._runner.submit("check", trigger="scheduled", params=params)
         except Exception:  # noqa: BLE001 - 单次维护失败不应拖垮调度器（援 _submit 口径）
             logger.exception("调度提交 check 失败：kind=%s", kind)
+
+    async def _fire_dump_cleanup(self) -> None:
+        """每日 dump 产物清理兜底（R-019）：按 ``dump.retention_days`` 清一轮并记审计。"""
+        try:
+            service = DumpService(self._config, self._settings)
+            days = await self._dump_retention_days()
+            deleted, freed = await asyncio.to_thread(service.cleanup, days)
+            if deleted:
+                logger.info("每日维护 dump 产物清理：deleted=%s freed_bytes=%s", deleted, freed)
+            if self._audit is not None and (deleted or freed):
+                await self._audit.record(
+                    AUDIT_DUMP_CLEANUP,
+                    target=str(self._settings.dump_dir),
+                    detail={"deleted": deleted, "freed_bytes": freed, "keep_days": days},
+                    result="ok",
+                )
+        except Exception:  # noqa: BLE001 - 维护失败不应拖垮调度器（援 _fire_retention 口径）
+            logger.exception("每日维护 dump 产物清理失败")
+
+    async def _dump_retention_days(self) -> int:
+        """读取 ``dump.retention_days``（非法值 WARNING 回退缺省；<=0 = 不启用）。"""
+        raw = await self._config.get_value(DUMP_RETENTION_DAYS_KEY)
+        if raw is None or str(raw).strip() == "":
+            return DUMP_RETENTION_DAYS_DEFAULT
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            logger.warning(
+                "dump.retention_days 配置非法：%r，回退缺省 %s", raw, DUMP_RETENTION_DAYS_DEFAULT
+            )
+            return DUMP_RETENTION_DAYS_DEFAULT
 
     async def _fire_retention(self) -> None:
         """每日维护回调：执行 retention 清理；异常隔离记日志，不中断调度循环。"""

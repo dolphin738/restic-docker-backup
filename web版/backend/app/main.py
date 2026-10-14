@@ -237,6 +237,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings=settings,
         jobs=job_repo,
         retention=retention,
+        # dump.cleanup 每日维护兜底的审计埋点（缺省 None 时埋点跳过）
+        audit=audit,
     )
     scheduler_ref.append(scheduler)
 
