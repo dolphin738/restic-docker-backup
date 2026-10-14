@@ -1,0 +1,3 @@
+{"message_type":"error","message":"error for pack 8c0a3b6f1e2d4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a: unexpected EOF\n"}
+{"message_type":"error","message":"error for pack 3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e: data blob 4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6 incomplete\n"}
+{"message_type":"summary","num_errors":2,"broken_packs":["8c0a3b6f1e2d4c5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a","3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e"],"suggest_repair_index":false,"suggest_prune":false}
