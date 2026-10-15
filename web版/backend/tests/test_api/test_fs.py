@@ -16,6 +16,67 @@ async def test_fs_browse_requires_session(make_app):
     assert resp.status_code in (401, 403)
 
 
+def test_reject_passfile_root_boundaries():
+    """密码文件根目录整棵子树被拒；同前缀但非子树（/data/repos2）不误伤。"""
+    from app.errors import ValidationError
+    from app.routers.fs import _reject_passfile_root
+
+    for blocked in ("/data/repos", "/data/repos/default", "/data/repos/default/password"):
+        try:
+            _reject_passfile_root(blocked, "/data/repos")
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"应被拒绝：{blocked}")
+
+    for allowed in ("/data", "/data/repos2", "/data/repo", "/", "/repo"):
+        _reject_passfile_root(allowed, "/data/repos")  # 不抛即通过
+
+
+async def test_fs_browse_denies_passfile_root(monkeypatch, make_app):
+    """路径层护栏：?path=<passfile_root>/... → 422，其它路径不受影响（仍走既有 404）。"""
+    from app.settings import get_settings
+
+    monkeypatch.setenv("PASSFILE_ROOT", "/data/repos")
+    get_settings.cache_clear()  # 让新 env 生效（Settings 为进程内单例 + lru_cache）
+
+    ns = await make_app()
+    await finish_bootstrap(ns)
+
+    resp = await ns.client.get("/api/fs/browse", params={"path": "/data/repos/default"})
+    assert resp.status_code == 422, resp.text
+
+    other = await ns.client.get("/api/fs/browse", params={"path": "/definitely/not/exists-xyz"})
+    assert other.status_code == 404, other.text  # 未被门禁误伤
+
+
+async def test_mount_quick_jump_denies_data_volume(monkeypatch, tmp_path):
+    """E5 后 /data 存仓库密码文件：快跳入口不得列出它（黑名单回归护栏）。"""
+    from app.routers import fs as fs_module
+
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text(
+        "\n".join(
+            [
+                "/dev/sda1 / ext4 rw 0 0",
+                "/dev/sdb1 /repo ext4 rw 0 0",
+                "/dev/sdc1 /data ext4 rw 0 0",
+                "/dev/sdd1 /run/secrets ext4 ro 0 0",
+                "proc /proc proc rw 0 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    payload = mounts_file.read_text(encoding="utf-8")  # 先取内容，避免补丁递归（同属 Path 类）
+    monkeypatch.setattr(fs_module.Path, "read_text", lambda *a, **k: payload)
+
+    mounts = fs_module._mount_points()
+    assert "/repo" in mounts
+    assert "/data" not in mounts
+    assert not any(m.startswith("/run") for m in mounts)
+    assert "/proc" not in mounts
+
+
 async def test_fs_browse_root_lists_entries(make_app):
     """默认根目录：200 + path=/ + 条目字段齐全。"""
     ns = await make_app()

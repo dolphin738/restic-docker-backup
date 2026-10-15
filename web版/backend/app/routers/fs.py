@@ -40,8 +40,10 @@ _PSEUDO_FS_TYPES = frozenset(
         "fusectl", "autofs", "hugetlbfs", "overlay", "squashfs",
     }
 )
-# 挂载点前缀黑名单：系统伪目录（/run/secrets 等敏感位置也不做快跳入口）
-_MOUNT_PREFIX_DENY = ("/proc", "/sys", "/dev", "/run")
+# 挂载点前缀黑名单：系统伪目录 + 应用数据卷
+# /data 自 E5（2026-10-16）起存放仓库密码文件（/data/repos/<repo_id>/password），
+# 虽只列目录名不回内容，仍不为其提供快跳入口（owner 裁决）。
+_MOUNT_PREFIX_DENY = ("/proc", "/sys", "/dev", "/run", "/data")
 
 
 @router.get(
@@ -59,10 +61,12 @@ async def browse_fs(
 ) -> FsBrowseResponse:
     """单层浏览容器文件系统，标注挂载点；仅根目录请求回 ``mounts`` 快跳列表。
 
-    错误：422 VALIDATION_ERROR（相对路径）/ 404（不存在）/ 422（不是目录）/ 403（无权限）。
+    错误：422 VALIDATION_ERROR（相对路径 / **落在密码文件目录内**，见
+    :func:`_reject_passfile_root`）/ 404（不存在）/ 422（不是目录）/ 403（无权限）。
     """
     del session
     container = _normalize(path)
+    _reject_passfile_root(container, request.app.state.settings.passfile_root)
     entries = await scan_dir_async(container)
     mounts = await asyncio.to_thread(_mount_points)
 
@@ -86,6 +90,30 @@ async def browse_fs(
         mounts=sorted(mounts) if container == "/" else [],
         next_cursor=next_cursor,
     )
+
+
+def _reject_passfile_root(container: str, passfile_root: str) -> None:
+    """拒绝浏览**仓库密码文件目录**及其子目录（E5，owner 2026-10-16 裁决 A）。
+
+    全文件系统浏览是本端点的既定语义（见模块 docstring），故只在**密码文件根目录这一棵
+    子树**上开洞——判定跟随 ``settings.passfile_root``（唯一出处，env ``PASSFILE_ROOT``
+    可覆盖），不在本文件硬编码路径前缀；这样改了根目录也不会漏挡。
+
+    Args:
+        container: 已规范化的容器内绝对路径。
+        passfile_root: 密码文件根目录（``settings.passfile_root``）。
+
+    Raises:
+        ValidationError: 路径落在该根目录内（422；不回任何目录条目）。
+    """
+    root = (passfile_root or "").strip().rstrip("/")
+    if not root:
+        return
+    if container == root or container.startswith(root + "/"):
+        raise ValidationError(
+            f"该路径位于仓库密码文件目录内，不可浏览或选作仓库路径：{container}",
+            data={"path": container, "denied_root": root},
+        )
 
 
 def _normalize(raw: str) -> str:
