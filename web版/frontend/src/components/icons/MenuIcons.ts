@@ -1,5 +1,5 @@
 /** 菜单图标：零依赖内联 SVG（24×24 线性图标，stroke=currentColor）。
- * 裁决依据：docs/UI视觉对齐Duplicati设计方案.md §4.2-2 —— Naive UI 无内置图标集，不新增 @vicons 依赖。
+ * 裁决依据：docs/archive/UI视觉对齐Duplicati设计方案.md §4.2-2 —— Naive UI 无内置图标集，不新增 @vicons 依赖。
  * 前 5 个对应导航项（R-026/Q2 退役备份源/策略后 7→5），IconMenu（汉堡）供 <960px 顶栏菜单按钮使用。
  */
 

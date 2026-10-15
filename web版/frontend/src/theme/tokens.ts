@@ -1,4 +1,4 @@
-/** 设计令牌：全项目唯一色值来源（对齐 Duplicati 视觉，docs/UI视觉对齐Duplicati设计方案.md §4.1）。
+/** 设计令牌：全项目唯一色值来源（对齐 Duplicati 视觉，规范原文已归档 docs/archive/UI视觉对齐Duplicati设计方案.md §4.1）。
  *
  * 纪律：
  * - 其他文件不得硬编码此处色值（单一事实来源）；

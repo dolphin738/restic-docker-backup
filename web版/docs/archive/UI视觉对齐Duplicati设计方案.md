@@ -1,5 +1,7 @@
 # UI 视觉对齐 Duplicati 设计方案
 
+> **已归档（2026-10-15）**：T1 令牌层/T2 布局层与 A 档小项已交付并通过 QA 独立复验（PASS，原 §8 记录）；T3 页面结构规范随选项②（R-026/R-027）交付并归入《Web版PRD.md》v1.4 §3 旅程 I；视觉令牌唯一源为 `frontend/src/theme/tokens.ts`（代码），PRD/架构文档权威指针已随之迁移。遗留项随文归档：L1/L2（已知限制，裁决不修）、L4（Clear Sans 授权待核实，非阻塞单行切换）。本文仅供追溯，不再更新。
+
 > 版本：v1.0（2026-10-13）
 > 性质：**纯视觉与布局改版**——不改任何功能、API、路由语义与交互逻辑；所有既有组件（ConfirmGate / JobProgress / VirtualTree / useJobStream）保留复用。
 > 证据来源：Duplicati 官方社区 UI 手册（docs.duplicati.com/community-docs）+ Duplicati 源码设计令牌（github.com/duplicati/duplicati `Duplicati/Server/webroot/ngax/less` 与 `styles/{default,dark}.css`，抓取于 2026-10-13）。
