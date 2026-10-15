@@ -237,9 +237,8 @@ services:
       - /:/host:rw                 # 默认 rw；安全档改 :ro（原位恢复禁用，其余功能不变）
       - /restore:/restore          # 恢复目标
       - /mnt/backup/restic-repo:/repo   # 仅本地路径仓库需要；对象存储后端可省
-      - ./data:/data               # SQLite + 任务日志 + dump（含状态持久化）
+      - ./data:/data               # SQLite + 任务日志 + dump + 仓库密码文件（E5：/data/repos/default/password）
       - ./cache:/cache/restic      # restic 缓存，务必持久化
-      - ./secrets/restic-pass:/run/secrets/restic-pass:ro   # 仓库密码
     restart: unless-stopped
 ```
 
@@ -259,9 +258,10 @@ services:
   mysql-client（MariaDB 系）无此严格校验；
 - 镜像层 `USER backup` 仅在 compose **未指定** `user` 时生效（作为兜底安全默认）；本项目 compose  
   显式指定 `user: 0:0`（默认 root 档），**实际运行用户以 compose user 为准**；
-- **bind-mount 属主要求（非 root 档，v2.3）**：`/data`、`/cache`、`./secrets` 均为 bind-mount，  
-  宿主机目录属主若为 root，非 root（1000:1000）容器内将无法写入——SQLite 建库失败，  
-  **容器直接起不来**。部署文档写明 `chown -R 1000:1000 ./data ./cache ./secrets`，或由 entrypoint  
+- **bind-mount 属主要求（非 root 档，v2.3；2026-10-16 同步 E5 布局）**：`/data`、`/cache` 均为
+  bind-mount（密码文件随 E5 落在 `/data/repos/default/password`，不再有独立 `./secrets` 挂载），
+  宿主机目录属主若为 root，非 root（1000:1000）容器内将无法写入——SQLite 建库失败、密码文件不可读，
+  **容器直接起不来**。部署文档写明 `chown -R 1000:1000 ./data ./cache`，或由 entrypoint
   首启处理（root 档下自动 chown，非 root 档只能明确报错提示）；
 - **仓库类型范围（v2.3）**：镜像内无 openssh-client / rclone，sftp 的 known_hosts 托管亦未设计——  
   **P1 仓库类型仅支持 s3 / b2 / 本地路径**；rclone 移 P2（Q6 裁决优先）、sftp 移 P3，列为**待设计项**  

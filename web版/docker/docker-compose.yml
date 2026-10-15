@@ -23,7 +23,7 @@ services:
     image: dolphin738/restic-web:1.0.0-restic0.19.1
     container_name: restic-web
     # 默认 root 档：保证原位恢复完整还原属主/权限；安全敏感场景改 "1000:1000"
-    # 改非 root 档前须在宿主机执行：chown -R 1000:1000 ./data ./cache ./secrets
+    # 改非 root 档前须在宿主机执行：chown -R 1000:1000 ./data ./cache
     user: "0:0"
     environment:
       TZ: Asia/Shanghai
@@ -64,12 +64,12 @@ services:
       # 注意：restic 跑在容器内，只认容器路径——UI 里填宿主机真实路径会报"仓库不存在或未初始化"
       # - /mnt/backup/restic-repo:/repo
 
-      # SQLite + 任务日志 + dump（属主要求见方案 §4：非 root 档须 chown 1000:1000）
+      # SQLite + 任务日志 + dump + **仓库密码文件**（属主要求见方案 §4：非 root 档须 chown 1000:1000）
+      # 密码文件按 E5 per-repo 布局放在数据卷内：./data/repos/default/password
+      # （对应容器路径 /data/repos/default/password，由 PASSFILE_ROOT 决定根目录）
       - ./data:/data
       # restic 缓存，务必持久化（否则每次全量重扫）
       - ./cache:/cache/restic
-      # 仓库密码文件：永不入库、永不出 API（方案 §6）
-      - ./secrets/restic-pass:/run/secrets/restic-pass:ro
     ports:
       - "8000:8000"
     restart: unless-stopped
