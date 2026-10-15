@@ -38,7 +38,9 @@ class Settings(BaseSettings):
     sources_root: str = "/sources"
     restore_root: str = "/restore"
     repo_root: str = "/repo"
-    passfile: str = "/run/secrets/restic-pass"
+    # 仓库密码文件**根目录**（E5 per-repo 布局）：实际路径 = <passfile_root>/<repo_id>/password。
+    # 当前仅 `default` 一行 → /data/repos/default/password；R-023 多仓库时按 repo_id 派生。
+    passfile_root: str = "/data/repos"
     # 前端 SPA 静态产物目录（单容器方案 §2：同一端口提供 API 与页面）。
     # 目录不存在时后端不挂载静态路由，`/` 仍返回统一 JSON 404（本地开发由 Vite dev server 提供页面）。
     static_dir: str = "/app/webroot"
@@ -108,6 +110,20 @@ class Settings(BaseSettings):
             except KeyError:
                 return str(uid)
         return str(uid)
+
+    def passfile_path(self, repo_id: str = "default") -> Path:
+        """仓库密码文件路径（E5 per-repo 布局的唯一实现点）。
+
+        布局：``<passfile_root>/<repo_id>/password``（当前仅 ``default`` 一行）。
+        ``RESTIC_PASSWORD_FILE`` 显式设置时**优先**（运维逃生舱，覆盖 per-repo 布局）。
+
+        Args:
+            repo_id: 仓库标识；R-023 多仓库落地后由调用方按仓库传入。
+        """
+        override = os.environ.get("RESTIC_PASSWORD_FILE", "").strip()
+        if override:
+            return Path(override)
+        return Path(self.passfile_root) / repo_id / "password"
 
 
 @lru_cache(maxsize=1)

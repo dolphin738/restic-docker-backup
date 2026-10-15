@@ -64,12 +64,15 @@ async def close_leaked_databases(db_registry):
 def api_env(tmp_path, monkeypatch):
     """为每个测试准备隔离的 DATA_DIR/密码文件，并清空可能污染的仓库凭据环境变量。"""
     data_dir = tmp_path / "data"
-    passfile = tmp_path / "restic-pass"
+    # E5 per-repo 布局：<PASSFILE_ROOT>/<repo_id>/password，当前仅 default 一行
+    passfile_root = tmp_path / "repos"
+    passfile = passfile_root / "default" / "password"
+    passfile.parent.mkdir(parents=True, exist_ok=True)
     passfile.write_text("repo-password", encoding="utf-8")
 
     monkeypatch.setenv("DATA_DIR", str(data_dir))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("PASSFILE", str(passfile))
+    monkeypatch.setenv("PASSFILE_ROOT", str(passfile_root))
     # 登录锁定测试需要连续多次请求，把进程内限流阈值放大避免 429 RATE_LIMITED 干扰
     monkeypatch.setenv("LOGIN_RATE_LIMIT", "100")
     monkeypatch.setenv("RESTIC_BINARY", "restic-not-invoked-in-api-tests")

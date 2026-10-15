@@ -39,16 +39,20 @@ ENV_KEY_MAP: dict[str, str] = {
 }
 
 
-def passfile_path(settings: Settings | None = None) -> Path:
-    """解析仓库密码文件路径（优先 ``RESTIC_PASSWORD_FILE``，回退配置值）。"""
+def passfile_path(settings: Settings | None = None, repo_id: str = "default") -> Path:
+    """解析仓库密码文件路径（E5 per-repo 布局；委托 :meth:`Settings.passfile_path`）。
+
+    Args:
+        settings: 运行期配置；省略时取进程内单例。
+        repo_id: 仓库标识（当前仅 ``default``）。
+    """
     resolved = settings or get_settings()
-    override = os.environ.get("RESTIC_PASSWORD_FILE", "").strip()
-    return Path(override or resolved.passfile)
+    return resolved.passfile_path(repo_id)
 
 
-def passfile_status(settings: Settings | None = None) -> str:
+def passfile_status(settings: Settings | None = None, repo_id: str = "default") -> str:
     """派生密码文件挂载状态：``configured`` 或 ``missing``（只读、不落库）。"""
-    return "configured" if passfile_path(settings).is_file() else "missing"
+    return "configured" if passfile_path(settings, repo_id).is_file() else "missing"
 
 
 async def load_credentials(config_repo: ConfigRepo) -> dict[str, str]:

@@ -224,7 +224,8 @@ class ResticCmd:
         """
         env = dict(os.environ)
         env["RESTIC_REPOSITORY"] = repo_url
-        env["RESTIC_PASSWORD_FILE"] = self._settings.passfile
+        # E5 per-repo 布局（唯一实现点 Settings.passfile_path）；RESTIC_PASSWORD_FILE 覆盖优先
+        env["RESTIC_PASSWORD_FILE"] = str(self._settings.passfile_path())
         env["RESTIC_CACHE_DIR"] = self._settings.cache_dir
         if self._settings.tz:
             env["TZ"] = self._settings.tz
