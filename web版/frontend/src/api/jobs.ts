@@ -65,17 +65,19 @@ export function getCheckDetail(jobId: string): Promise<CheckDetailResponse> {
   return request<CheckDetailResponse>(`/api/checks/${encodeURIComponent(jobId)}`, { silent: true })
 }
 
-/** 触发任务（manual）；同仓库已有 running/pending → 409 JOB_CONFLICT，不排队。
- * R-026：taskId 与 policyId 互斥，同供 409 JOB_CONFLICT 的 data 带 running_task_name。 */
+/** 触发任务（manual）；同仓库已有 running/pending → 409 JOB_CONFLICT，不排队，
+ * 409 data 带 running_task_name（US-026-04）。
+ * Q1 选删（2026-10-15）：E12 请求契约已无 policy_id——后端 `_Base` extra=forbid，
+ * 传 policy_id 即 422 VALIDATION_ERROR（test_e12_policy_id_entry_closed_422 锁死
+ * 入口永不重开），故此处不提供该选项。 */
 export function createJob(
   type: JobType,
-  options: { policyId?: number; taskId?: number; snapshotId?: string; params?: Record<string, unknown> } = {},
+  options: { taskId?: number; snapshotId?: string; params?: Record<string, unknown> } = {},
 ): Promise<JobCreateResponse> {
   return request<JobCreateResponse>('/api/jobs', {
     method: 'POST',
     body: {
       type,
-      ...(options.policyId === undefined ? {} : { policy_id: options.policyId }),
       ...(options.taskId === undefined ? {} : { task_id: options.taskId }),
       ...(options.snapshotId === undefined ? {} : { snapshot_id: options.snapshotId }),
       ...(options.params === undefined ? {} : { params: options.params }),
