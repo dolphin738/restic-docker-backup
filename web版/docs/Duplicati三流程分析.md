@@ -3,7 +3,7 @@
 > 依据：Duplicati 官方文档（docs.duplicati.com）三个 Getting Started 页面，抓取于 2026-10-12。
 > 页面：① Set up a backup in the UI ② Running a backup ③ Restoring files。
 > 用途：评估其「配置 → 运行 → 恢复」三段式流程能否作为本项目 Web 版界面操作流程的对齐模板。
-> 配套方案文档：《对齐Duplicati的改造方案.md》（同目录）。
+> 配套方案文档：《对齐Duplicati的改造方案.md》（已归档 `docs/archive/`，2026-10-15；结论见 Web版PRD.md v1.4 与架构设计文档 §13）。
 
 ---
 
@@ -117,4 +117,4 @@
 2. **覆盖语义**：Duplicati 允许恢复到原始位置/任意目标；本项目 P1 仅时间戳子目录（红线 S7），Duplicati 的 restore timestamp 与本项目时间戳子目录语义同源，可在 UI 文案上对齐「永不覆盖」表述；原位恢复留待 P2 覆盖比对确认流（R-015）；
 3. **多备份 vs 单仓库**：Duplicati 支持多备份任务列表；本项目为单仓库单备份集，Duplicati 的「备份列表 + 每项 Start」收敛为「仪表盘/仓库页的立即备份 + 任务历史」。
 
-详见《对齐Duplicati的改造方案.md》。
+详见《对齐Duplicati的改造方案.md》（已归档 `docs/archive/`）。
