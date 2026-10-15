@@ -209,6 +209,12 @@ class DumpService:
             server_argv.extend(["--port", str(cfg.port)])
         if user:
             server_argv.extend(["--username", user])
+        if cfg.databases:
+            # 连第一个配置库探测版本——psql 缺 --dbname 时默认连**与用户同名**的库，
+            # 用户无同名库时 probe 必然失败（2026-10-15 真机实证：连接/认证均通，
+            # 仅因库不存在被拒）。库名经 assert_component 与 build_pg 同一注入面
+            # 校验（D1：组件不得以 '-' 开头或含换行）。
+            server_argv.extend(["--dbname", assert_component(cfg.databases[0], "databases")])
         server_argv.extend(_PSQL_SERVER_VERSION_ARGS)
         server_exit, server_text = await self._capture(server_argv, self._cmd.env_for(cfg))
         if server_exit != 0:

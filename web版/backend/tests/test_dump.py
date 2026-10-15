@@ -183,6 +183,24 @@ async def test_load_dump_config_invalid_engine_or_empty_databases(tmp_path):
 
 # ---------------------------------------------------------------- DumpService.probe_pg
 
+async def test_probe_pg_passes_dbname_of_first_database(tmp_path):
+    """psql 版本探测必须带 --dbname=<databases[0]>：缺省时 psql 连与用户同名库，
+    用户无同名库即 probe 必败（2026-10-15 真机实证），即使配置库完全正常。"""
+    service = DumpService(Settings(data_dir=str(tmp_path)))
+    captured: list[list[str]] = []
+
+    async def fake_capture(argv, env_extras):  # noqa: ANN001, ANN202
+        captured.append(list(argv))
+        if "pg_dump" in argv[0]:
+            return 0, "pg_dump (PostgreSQL) 16.4"
+        return 0, "16.4"
+
+    service._capture = fake_capture  # type: ignore[method-assign]  # noqa: SLF001
+    await service.probe_pg(make_cfg())
+    psql_argv = next(a for a in captured if a[0] == "psql")
+    assert "--dbname" in psql_argv and "appdb" in psql_argv
+
+
 async def test_probe_pg_mismatch_raises_with_guidance(tmp_path):
     """client < server → PgVersionMismatchError，文案含两版本与自建镜像提示（§7.5）。"""
     service = DumpService(Settings(data_dir=str(tmp_path)))
