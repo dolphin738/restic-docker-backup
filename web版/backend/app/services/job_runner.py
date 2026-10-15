@@ -351,8 +351,21 @@ class JobRunner:
                     if isinstance(event, ProgressEvent):
                         event.event_id = line_no
                         aggregate = self._parser.aggregate(aggregate, event)
-                    elif isinstance(event, SnapshotRecord) and event.snapshot_id:
-                        snapshot_id = event.snapshot_id
+                    elif isinstance(event, SnapshotRecord):
+                        if event.snapshot_id:
+                            snapshot_id = event.snapshot_id
+                        # X12：restore 的 summary 用 files_skipped 记录因权限等原因
+                        # 未被恢复的文件数（--overwrite=always 下仍写不进去即计入；
+                        # 该行不产生 ProgressEvent，此前被整体丢弃 → skipped_count
+                        # 恒 0、任务静默报 success，见架构文档 §12 V7 / 缺陷 X12）。
+                        # 此处把 files_skipped 折入聚合，让 skipped_count / 审计 /
+                        # SSE / UI 反映真实的部分失败。restic summary 每任务唯一一行
+                        # （输出末尾），折一次即正确、不重复累加；backup summary 无
+                        # 该字段（None）→ 不进本分支，行为逐字节不变。
+                        if event.files_skipped is not None:
+                            aggregate = self._parser.aggregate(
+                                aggregate, ProgressEvent(skipped_delta=event.files_skipped)
+                            )
                     if time.monotonic() - last_flush >= self._db_flush_interval:
                         await self._jobs.update_progress(
                             job.id,

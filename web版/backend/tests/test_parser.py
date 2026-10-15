@@ -75,6 +75,54 @@ def test_summary_yields_snapshot_record():
     assert record.size == 2048  # total_bytes_processed
 
 
+def test_restore_summary_carries_files_skipped():
+    """restore 的 --json summary 提取 files_skipped（X12：此前被整体丢弃）。
+
+    真机取证形态（架构文档 §12 V7）：``--overwrite=always`` 下仍写不进去的文件
+    计入 ``files_skipped``——曾因被丢弃导致 ``skipped_count`` 恒 0、任务静默报
+    success。此处断言解析层把该字段提取到 ``SnapshotRecord.files_skipped``。
+    """
+    parser = OutputParser()
+    line = '{"message_type":"summary","total_files":2,"files_restored":3,"files_skipped":3,"bytes_skipped":20}'
+
+    record = parser.parse_line(line)
+    assert isinstance(record, SnapshotRecord)
+    assert record.files_skipped == 3
+    assert record.snapshot_id is None  # restore summary 无快照 id
+
+
+def test_backup_summary_has_no_files_skipped():
+    """backup summary 无 files_skipped 字段 → None（X12 零副作用回归）。
+
+    backup 的 summary 不带 files_skipped；fold 分支只在非 None 时触发，
+    故 backup 行为逐字节不变（既不入聚合、也不影响 snapshot_id 捕获）。
+    """
+    parser = OutputParser()
+    line = read_fixture("backup_status.ndjson").splitlines()[3]
+
+    record = parser.parse_line(line)
+    assert isinstance(record, SnapshotRecord)
+    assert record.snapshot_id  # backup 仍照旧捕获快照 id
+    assert record.files_skipped is None
+
+
+def test_restore_summary_skipped_folds_into_aggregate():
+    """restore summary 的 files_skipped 折入 skipped_count（X12：复刻 JobRunner 路径）。
+
+    JobRunner 对 restore summary 行以 ``ProgressEvent(skipped_delta=files_skipped)``
+    走 ``aggregate``——此处断言该折入真实生效（此前零覆盖：字段被丢弃）。
+    """
+    parser = OutputParser()
+    line = '{"message_type":"summary","total_files":2,"files_restored":3,"files_skipped":3,"bytes_skipped":20}'
+
+    state = JobAggregate()
+    record = parser.parse_line(line)
+    assert isinstance(record, SnapshotRecord)
+    if record.files_skipped is not None:
+        state = parser.aggregate(state, ProgressEvent(skipped_delta=record.files_skipped))
+    assert state.skipped_count == 3
+
+
 def test_verbose_status_yields_file_record():
     parser = OutputParser()
     lines = read_fixture("backup_verbose.ndjson").splitlines()

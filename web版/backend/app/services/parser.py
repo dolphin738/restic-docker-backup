@@ -43,6 +43,12 @@ class SnapshotRecord:
     tags: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     size: int | None = None
+    # X12：restic **restore** 的 ``--json`` summary 用 ``files_skipped`` 表达因权限
+    # 等原因未被恢复的文件数（``--overwrite=always`` 下仍写不进去即计入）。此前该
+    # 字段被整体丢弃，导致 ``skipped_count`` 对恢复场景恒为 0、任务静默报 success
+    # （V7/X12 静默部分失败）。此处提取出来，由 JobRunner 折入
+    # ``JobAggregate.skipped_count``。backup / check 的 summary 无此字段 → ``None``。
+    files_skipped: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -390,7 +396,14 @@ class OutputParser:
 
     @staticmethod
     def _summary_record(payload: dict[str, Any]) -> SnapshotRecord:
-        """解析 ``message_type=summary``（backup 完成摘要）。"""
+        """解析 ``message_type=summary``（backup / restore 完成摘要）。
+
+        X12：restore 的 summary 用 ``files_skipped`` 记录因权限等原因未被恢复的
+        文件数——此前被整体丢弃，导致 ``skipped_count`` 对恢复场景恒为 0（任务照报
+        success，静默部分失败，见架构文档 §12 V7 / 缺陷 X12）。此处提取该字段，
+        由 JobRunner 折入 ``JobAggregate.skipped_count``。backup summary 无
+        ``files_skipped`` → ``None``（零副作用）。
+        """
         return SnapshotRecord(
             snapshot_id=_as_str(payload.get("snapshot_id")),
             time=_as_str(payload.get("snapshot_time")),
@@ -398,6 +411,7 @@ class OutputParser:
             tags=list(payload.get("tags") or []),
             paths=list(payload.get("paths") or []),
             size=_as_optional_int(payload.get("total_bytes_processed")),
+            files_skipped=_as_optional_int(payload.get("files_skipped")),
             raw=payload,
         )
 

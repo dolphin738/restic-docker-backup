@@ -42,6 +42,14 @@ BACKUP_LINES = [
     '"snapshot_time":"2026-10-10T01:38:00Z"}',
 ]
 
+# X12：restic restore 的 --json 完成摘要（真机取证形态，架构文档 §12 V7）——
+# --overwrite=always 下仍有 3 个文件因权限写不进去 → files_skipped:3。旧实现丢弃
+# 该字段导致 job.skipped_count 恒 0、任务静默报 success。
+RESTORE_LINES = [
+    '{"message_type":"status","percent_done":1.0,"total_files":3,"files_done":3,"total_bytes":20,"bytes_done":0}',
+    '{"message_type":"summary","total_files":2,"files_restored":3,"files_skipped":3,"bytes_skipped":20}',
+]
+
 
 @dataclass
 class FakeProcess:
@@ -194,6 +202,32 @@ async def test_pending_running_success(tmp_path):
     assert final.skipped_count == 1  # archival error
     assert final.last_event_id == 4  # 日志行号推进到最后一行
     assert final.snapshot_id == "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+    await db.close()
+
+
+async def test_restore_summary_files_skipped_folds_into_job(tmp_path):
+    """X12 回归：restore summary 的 files_skipped 折入 job.skipped_count（此前恒 0）。
+
+    真机取证形态（架构文档 §12 V7）：非 root 容器原位恢复，``--overwrite=always``
+    下仍有 3 个文件因权限写不进去，restic 摘要 ``files_skipped:3``；旧实现丢弃该
+    字段 → ``skipped_count=0``、任务静默报 success（静默部分失败）。本测试锁定
+    修复：``skipped_count`` 反映真实跳过数，且终态仍为 ``success``（匹配 restic
+    exit_code=0；不引入第七状态值，遵守六态词表）。
+    """
+    db, runner, repo = await make_runner(tmp_path, lines=RESTORE_LINES)
+
+    job = await runner.submit(
+        "restore",
+        snapshot_id="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+        params={"target": "/", "inplace": True, "overwrite": "always", "include": ["/host/perm2"]},
+    )
+
+    await await_job(runner, job.id)
+    final = await repo.get(job.id)
+    assert final is not None
+    assert final.status == "success"
+    assert final.exit_code == 0
+    assert final.skipped_count == 3  # X12：restore summary files_skipped 不再被丢弃
     await db.close()
 
 
