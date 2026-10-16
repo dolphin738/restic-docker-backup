@@ -10,7 +10,12 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.constants import RESTORE_PREVIEW_DEFAULT_LIMIT, RESTORE_PREVIEW_MAX_LIMIT
+from app.constants import (
+    REPO_ID_MAX_LENGTH,
+    REPO_ID_PATTERN,
+    RESTORE_PREVIEW_DEFAULT_LIMIT,
+    RESTORE_PREVIEW_MAX_LIMIT,
+)
 from app.schemas.enums import ConfigSource, HostMountMode, JobStatus, JobTrigger, JobType, RunMode
 
 T = TypeVar("T")
@@ -23,6 +28,7 @@ class _Base(BaseModel):
 
 
 # ---------------------------------------------------------------- 统一响应壳（§5.0）
+
 
 class ErrorResponse(_Base):
     """统一错误响应体（所有非 2xx）。"""
@@ -55,6 +61,7 @@ class CursorPage(_Base, Generic[T]):
 
 
 # ---------------------------------------------------------------- E01 登录 / E02 登出 / E03 me
+
 
 class LoginRequest(_Base):
     """E01 登录请求。"""
@@ -89,6 +96,7 @@ class ChangePasswordRequest(_Base):
 
 # ---------------------------------------------------------------- E04 health
 
+
 class HealthResponse(_Base):
     """E04 健康检查（HEALTHCHECK 用，不校验仓库连通）。"""
 
@@ -97,6 +105,7 @@ class HealthResponse(_Base):
 
 
 # ---------------------------------------------------------------- config 键值输出（§4.3）
+
 
 class ConfigItem(_Base):
     """单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。"""
@@ -122,6 +131,7 @@ class ConfigPatchRequest(_Base):
 
 
 # ---------------------------------------------------------------- E12–E16 / E27 任务
+
 
 class JobOut(_Base):
     """E14 任务详情（§4.5 字段全集）。
@@ -178,6 +188,7 @@ class JobLogResponse(_Base):
 
 
 # ---------------------------------------------------------------- E22 check 结果视图（R-017，批次 B）
+
 
 class CheckErrorOut(_Base):
     """E22 单条 check 错误（message 为 restic 输出原文，逐字保留、含换行）。"""
@@ -238,6 +249,7 @@ class CacheUsageResponse(_Base):
 
 # ---------------------------------------------------------------- E05 / E31 备份源
 
+
 class SourceItem(_Base):
     """E05 目录浏览条目。"""
 
@@ -289,6 +301,7 @@ class DryRunWarning(_Base):
 
 # ---------------------------------------------------------------- E33 容器文件系统浏览
 
+
 class FsItem(_Base):
     """E33 文件系统条目（容器内绝对路径，无展示形态换算）。"""
 
@@ -318,6 +331,7 @@ class DryRunResponse(_Base):
 
 # ---------------------------------------------------------------- E32 内置排除集（只读暴露）
 
+
 class ExclusionsResponse(_Base):
     """E32 内置排除集的**只读**暴露（D8：单一事实来源，前端不得自行复制一份规则）。
 
@@ -334,6 +348,7 @@ class ExclusionsResponse(_Base):
 
 
 # ---------------------------------------------------------------- E34–E36 备份任务（选项② R-026）
+
 
 class TaskOut(_Base):
     """E34' 任务详情/编辑预填（全字段 + display 派生，tag 只读露出）。
@@ -431,6 +446,7 @@ class TaskUpsertRequest(_Base):
 
 # ---------------------------------------------------------------- E17/E18 快照
 
+
 class SnapshotOut(_Base):
     """E17 快照条目（paths 已映射为原路径语义）。"""
 
@@ -464,6 +480,7 @@ class SnapshotFilesResponse(_Base):
 
 
 # ---------------------------------------------------------------- E21 forget 预览（R-016）
+
 
 class ForgetPreviewRequest(_Base):
     """E21 forget 预览请求（R-016：策略参数 → forget --dry-run --json）。
@@ -510,6 +527,7 @@ class ForgetPreviewResponse(_Base):
 
 
 # ---------------------------------------------------------------- E23/E24 通知（R-018）
+
 
 class NotifyConfigResponse(_Base):
     """E23 通知配置读取。
@@ -564,6 +582,7 @@ class NotifyTestResponse(_Base):
 
 # ---------------------------------------------------------------- E19 恢复
 
+
 class RestoreRequest(_Base):
     """E19 恢复请求：默认恢复到时间戳子目录（零覆盖语义），原位恢复为 R-015 扩展分支。
 
@@ -599,6 +618,7 @@ class RestoreResponse(_Base):
 
 
 # ---------------------------------------------------------------- E20 原位恢复覆盖预览（R-015）
+
 
 class RestorePreviewRequest(_Base):
     """E20 覆盖预览请求：比对快照内容与目标磁盘现状（只读）。"""
@@ -639,6 +659,7 @@ class RestorePreviewResponse(_Base):
 
 
 # ---------------------------------------------------------------- E29/E30 仓库探测
+
 
 class RepoTestResponse(_Base):
     """E29 仓库连通性测试（失败必须给出可操作原因，禁止静默）。"""
@@ -708,12 +729,43 @@ class RepoOut(_Base):
 
 
 class RepoCreateRequest(_Base):
-    """R-023 新建仓库请求（url/host_tag 可空，日后再补）。"""
+    """R-023 新建仓库请求（url/host_tag 可空，日后再补）。
 
-    id: str
+    ``id`` 会被拼进密码文件路径 ``<passfile_root>/<id>/password``，故**必须**过
+    :data:`REPO_ID_PATTERN`（不含 `.` 与 `/`，杜绝 `..` 路径穿越 → 任意文件读写）。
+    """
+
+    id: str = Field(
+        max_length=REPO_ID_MAX_LENGTH,
+        pattern=REPO_ID_PATTERN,
+        description="仓库标识：字母/数字开头，仅允许字母数字与 _ -",
+    )
     name: str
     url: str | None = None
     host_tag: str | None = None
+
+
+class RepoPasswordRequest(_Base):
+    """R-023 设置仓库密码（**仅在密码文件不存在时允许**）。
+
+    - ``password`` 为空/None：后端生成强随机密码，明文**一次性回显**（不落库、不落日志）；
+    - ``password`` 非空：用户自填（明文只经本次请求体，响应不回显）。
+    """
+
+    password: str | None = Field(default=None, max_length=512)
+
+
+class RepoPasswordResponse(_Base):
+    """R-023 设置仓库密码结果。
+
+    ``password`` 仅在 ``generated=True`` 时回显一次；自填场景恒为 None（用户已知）。
+    ``path`` 为容器内路径，供运维在宿主机挂载点定位该文件（与 config 报错口径一致）。
+    """
+
+    ok: bool
+    generated: bool
+    password: str | None = None
+    path: str
 
 
 class RepoUpdateRequest(_Base):

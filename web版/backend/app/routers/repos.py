@@ -13,7 +13,11 @@ E30 探测成本三招（沿用既有设计）：TTL 缓存（per-repo）/ 锁�
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import secrets
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -21,24 +25,29 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_REPO_PASSWORD_SET,
     AUDIT_REPO_TEST,
+    REPO_ID_MAX_LENGTH,
+    REPO_ID_PATTERN,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
     REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
-from app.errors import RepoNotFoundError
+from app.errors import RepoNotFoundError, ValidationError
 from app.schemas.api_schemas import (
     OkResponse,
     RepoCapacity,
     RepoCreateRequest,
     RepoOut,
+    RepoPasswordRequest,
+    RepoPasswordResponse,
     RepoStatusResponse,
     RepoTestResponse,
     RepoUpdateRequest,
 )
-from app.services.env_sync import load_credentials, passfile_status
+from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
 router = APIRouter(prefix="/api", tags=["repos"])
@@ -51,6 +60,18 @@ _status_lock = asyncio.Lock()
 
 # 锁残留关键词（从 cat config 的失败输出里识别，零额外 restic 调用）
 _LOCK_KEYWORDS: tuple[str, ...] = ("already locked", "unable to create lock", "remove stale locks")
+
+# 仓库标识白名单（与 RepoCreateRequest.id 同源；路径参数侧再校验一次，防 `..` 穿越）
+_REPO_ID_RE = re.compile(REPO_ID_PATTERN)
+
+
+def _validate_repo_id(repo_id: str) -> str:
+    """校验路径参数中的仓库标识（非法即 422，杜绝拼进密码文件路径时发生穿越）。"""
+    if len(repo_id) > REPO_ID_MAX_LENGTH or _REPO_ID_RE.match(repo_id) is None:
+        raise ValidationError(
+            f"仓库标识非法：仅允许字母、数字、下划线与连字符（1-{REPO_ID_MAX_LENGTH} 字符，且以字母或数字开头）"
+        )
+    return repo_id
 
 
 def _to_out(repo: Repo, passfile: str) -> RepoOut:
@@ -213,6 +234,79 @@ async def test_repo(
         AUDIT_REPO_TEST, target=repo_id, detail={"ok": True, "latency_ms": latency_ms}, result="ok"
     )
     return RepoTestResponse(ok=True, latency_ms=latency_ms)
+
+
+@router.post(
+    "/repos/{repo_id}/password",
+    response_model=RepoPasswordResponse,
+    summary="R-023 设置仓库密码（仅密码文件缺失时）",
+    dependencies=_PROTECTED,
+)
+async def set_repo_password(
+    repo_id: str,
+    payload: RepoPasswordRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RepoPasswordResponse:
+    """首次写入仓库密码文件（``<passfile_root>/<repo_id>/password``，0600 原子写）。
+
+    - ``password`` 为空 → 后端生成强随机密码并**一次性回显**（不落库、不落日志、不进审计）；
+    - ``password`` 非空 → 按用户自填写入（响应不回显，用户已知）。
+
+    **只在文件不存在时允许**：该密码既是 restic 仓库密钥，也是 R-025 凭据加密的密钥源
+    （HKDF info 混入 repo_id）——覆盖已存在的文件会让仓库不可读、已加密凭据全部失效。
+    """
+    del session
+    _validate_repo_id(repo_id)
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    if repo is None:
+        raise RepoNotFoundError(repo_id)
+
+    path = passfile_path(request.app.state.settings, repo_id)
+    if path.exists():
+        raise ValidationError(
+            f"仓库密码文件已存在（{path}）——密码既是仓库密钥也是凭据加密密钥源，"
+            "覆盖会使仓库不可读且已加密凭据失效；如确需更换，请在宿主机挂载点手动操作"
+        )
+
+    generated = not (payload.password or "").strip()
+    plain = secrets.token_urlsafe(32) if generated else (payload.password or "")
+
+    try:
+        _write_passfile(path, plain)
+    except OSError as exc:
+        raise ValidationError(
+            f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
+        ) from exc
+
+    # 审计只记动作与是否生成，明文绝不入审计/日志（红线 S3）
+    await request.app.state.audit.record(
+        AUDIT_REPO_PASSWORD_SET, target=repo_id, detail={"generated": generated}, result="ok"
+    )
+    invalidate_repo_status_cache()
+    return RepoPasswordResponse(
+        ok=True,
+        generated=generated,
+        password=plain if generated else None,
+        path=str(path),
+    )
+
+
+def _write_passfile(path: Path, secret: str) -> None:
+    """原子写密码文件（同目录临时文件 + rename；权限 0600）。
+
+    不追加尾随换行：restic 读取时会 TrimSpace，原样落盘可保证「写入即所用」。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(secret, encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @router.get(

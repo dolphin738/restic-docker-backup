@@ -15,6 +15,14 @@ JOB_TRIGGERS: tuple[str, ...] = ("manual", "scheduled")
 ACTIVE_JOB_STATUSES: tuple[str, ...] = ("running", "pending")
 TERMINAL_JOB_STATUSES: tuple[str, ...] = ("success", "failed", "interrupted", "cancelled")
 
+# ---------------------------------------------------------------- R-023 仓库标识（repos 表主键）
+
+# repo_id 会被拼进密码文件路径 ``<passfile_root>/<repo_id>/password``：
+# 不含 `.` 与 `/`（故 `..` 与子目录写法均不可能），从源头杜绝路径穿越 → 任意文件读写。
+# 建仓（POST /api/repos）与路径参数（/api/repos/{repo_id}/*）两侧共用同一规则。
+REPO_ID_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
+REPO_ID_MAX_LENGTH: int = 64
+
 # ---------------------------------------------------------------- 路径白名单（§7.3 PathMapper）
 
 # 可被选为备份源的根前缀（按 RESTIC_WEB_MODE 二选一）
@@ -114,6 +122,8 @@ AUDIT_CACHE_CLEAR = "cache.clear"
 AUDIT_ENV_SYNC = "config.env_sync"
 AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
 AUDIT_REPO_TEST = "repo.test"
+# R-023 仓库密码文件首次写入（生成或自填）——安全敏感动作，留痕但**不记录明文**
+AUDIT_REPO_PASSWORD_SET = "repo.password_set"
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_TASK_CREATE = "task.create"
