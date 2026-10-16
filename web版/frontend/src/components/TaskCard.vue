@@ -6,7 +6,7 @@
  * 状态徽章色用 Naive 语义色；卡片高度由调用方（仪表盘虚拟列表）固定，内容超高地截断。
  */
 
-import { NDropdown, NTag, NText, NTooltip } from 'naive-ui'
+import { NButton, NCard, NDropdown, NSpace, NTag, NText, NTooltip } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'

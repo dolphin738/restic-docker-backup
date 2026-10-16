@@ -21,6 +21,7 @@ import {
   NSwitch,
   NTag,
   NText,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'

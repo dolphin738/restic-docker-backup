@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NTag, NText } from 'naive-ui'
+import { NCard, NSpace, NTag, NText } from 'naive-ui'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { HostMountMode } from '@/api/types'

@@ -13,6 +13,7 @@ import {
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
+  NSelect,
   NSpace,
   NTag,
   NText,
