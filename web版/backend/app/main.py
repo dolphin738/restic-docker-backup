@@ -46,7 +46,7 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
-from app.db.repositories.repo_repo import ReposRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
@@ -179,8 +179,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db = await init_database(settings.db_path)
     audit = AuditRepo(db)
     # R-025 凭据加密（P3-A，owner 2026-10-16 裁决默认开）：密钥源自仓库密码文件
-    # （E5 per-repo 布局）经 HKDF-SHA256 派生；缺省 enabled=True，随后按持久化键校准
-    credential_crypto = CredentialCrypto(settings)
+    # （E5 per-repo 布局）经 HKDF-SHA256 派生；缺省 enabled=True，随后按持久化键校准。
+    # repo_id 显式传入并混入 HKDF info（enc:v2:，审计 2026-10-16 🟡-1：跨仓库密钥
+    # 隔离）——当前单实例即 default；多仓库各自凭据加密时按仓库各建实例。
+    credential_crypto = CredentialCrypto(settings, repo_id=DEFAULT_REPO_ID)
     encryption = EncryptionState(credential_crypto)
     config_repo = ConfigRepo(db, encryption=encryption)
     # R-023 多仓库（P3-C）：repos 表为仓库事实源（0003 扩列）；TaskRepo 经它取 host_tag

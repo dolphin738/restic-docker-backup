@@ -7,7 +7,7 @@
   永不入库」——数据库文件单独泄露不再等于凭据泄露；代价是密码文件成为单点
   （丢失/被换 ⇒ 凭据全部解不开，与 restic 仓库本身同源）。
 - **AES-256-GCM 认证加密**（pyca/cryptography）：篡改、错钥可检测，绝不静默通过。
-- **存储格式** ``enc:v1:<base64(nonce‖ciphertext‖tag)>``：读侧**恒按前缀判定**，
+- **存储格式** ``enc:v2:<base64(nonce‖ciphertext‖tag)>``（现行；legacy ``enc:v1:`` 只读兼容）：读侧**恒按前缀判定**，
   与运行期开关无关——开关只决定写侧是否加密。故启用/关闭/迁移中途崩溃，
   混合形态存储一律可读（崩溃安全），重跑迁移即收敛。
 - **密钥缓存**按密码文件 ``(mtime_ns, size)`` 失效：运维轮换密码文件后无需重启，
@@ -33,19 +33,36 @@ from app.errors import CredentialDecryptError, CredentialKeyUnavailableError
 from app.settings import Settings, get_settings
 
 # 密文格式前缀（版本化：未来换算法/参数只增前缀，旧前缀只读兼容）
-PREFIX = "enc:v1:"
+# - ``enc:v1:`` legacy：HKDF info 未混入仓库标识（跨仓库密钥隔离缺口，审计
+#   2026-10-16 🟡-1）——只读兼容，迁移重加密收敛到 v2；
+# - ``enc:v2:`` 现行：HKDF info 混入 repo_id（同密码文件内容的不同仓库派生出
+#   不同密钥，杜绝跨仓库解密）。
+PREFIX_V1 = "enc:v1:"
+PREFIX_V2 = "enc:v2:"
+PREFIX = PREFIX_V2  # 写侧现行前缀（encrypt 输出）
+_PREFIXES = (PREFIX_V1, PREFIX_V2)
 
 _NONCE_BYTES = 12          # AES-GCM 标准 nonce 长度（96 bit）
 _KEY_BYTES = 32            # AES-256
 _HKDF_SALT = b"restic-web/credential-encryption/v1"
-_HKDF_INFO = b"config-credential-encryption-key"
+_HKDF_INFO_V1 = b"config-credential-encryption-key"
 
 
-def _hkdf_sha256(secret: bytes, *, length: int = _KEY_BYTES) -> bytes:
+def _hkdf_info(repo_id: str) -> bytes:
+    """v2 HKDF info：仓库标识混入派生输入（跨仓库密钥隔离，审计 2026-10-16 🟡-1）。
+
+    同一密码文件内容 + 不同 repo_id ⇒ 不同密钥——运维在两个仓库复用同一密码时，
+    一库的密文无法被另一库的密钥解开。
+    """
+    return _HKDF_INFO_V1 + b"\x00" + repo_id.encode("utf-8")
+
+
+def _hkdf_sha256(secret: bytes, *, info: bytes, length: int = _KEY_BYTES) -> bytes:
     """RFC 5869 HKDF-SHA256（hmac 实现）。
 
     Args:
         secret: 输入密钥材料（仓库密码文件原始字节）。
+        info: 上下文与应用信息（v1=固定值；v2=混入 repo_id）。
         length: 派生长度（字节）。
 
     Returns:
@@ -56,7 +73,7 @@ def _hkdf_sha256(secret: bytes, *, length: int = _KEY_BYTES) -> bytes:
     block = b""
     counter = 1
     while len(okm) < length:
-        block = hmac.new(prk, block + _HKDF_INFO + bytes([counter]), hashlib.sha256).digest()
+        block = hmac.new(prk, block + info + bytes([counter]), hashlib.sha256).digest()
         okm += block
         counter += 1
     return okm[:length]
@@ -86,7 +103,8 @@ class CredentialCrypto:
         """
         self._settings = settings or get_settings()
         self._repo_id = repo_id
-        self._cache: _KeyCache | None = None
+        # 按 HKDF info 分桶缓存（v2 现行密钥 / v1 legacy 密钥各自独立，互不污染）
+        self._cache: dict[bytes, _KeyCache] = {}
 
     # ----------------------------------------------------------- 密钥
 
@@ -103,7 +121,22 @@ class CredentialCrypto:
             return False
 
     def _derive_key(self) -> bytes:
-        """派生密钥（带 (mtime_ns, size) 缓存；文件被换立即失效）。
+        """派生现行 v2 密钥（HKDF info 混入 repo_id；带 (mtime_ns, size) 缓存）。
+
+        Raises:
+            CredentialKeyUnavailableError: 密码文件缺失/不可读/为空。
+        """
+        return self._derive_key_for_info(_hkdf_info(self._repo_id))
+
+    def _derive_key_legacy_v1(self) -> bytes:
+        """派生 legacy ``enc:v1:`` 密钥（固定 info，无仓库隔离——只读兼容路径）。
+
+        与 v2 密钥各自缓存（info 作键），互不污染；仅 decrypt 的 v1 分支使用。
+        """
+        return self._derive_key_for_info(_HKDF_INFO_V1)
+
+    def _derive_key_for_info(self, info: bytes) -> bytes:
+        """按给定 HKDF info 派生密钥（共享 stat 缓存；文件被换立即失效）。
 
         Raises:
             CredentialKeyUnavailableError: 密码文件缺失/不可读/为空。
@@ -116,22 +149,30 @@ class CredentialCrypto:
             raise CredentialKeyUnavailableError(str(path)) from exc
         if not secret:
             raise CredentialKeyUnavailableError(str(path))
-        cached = self._cache
+        cached = self._cache.get(info)
         if cached is not None and cached.stat == (stat.st_mtime_ns, stat.st_size):
             return cached.key
-        key = _hkdf_sha256(secret)
-        self._cache = _KeyCache(stat=(stat.st_mtime_ns, stat.st_size), key=key)
+        key = _hkdf_sha256(secret, info=info)
+        self._cache[info] = _KeyCache(stat=(stat.st_mtime_ns, stat.st_size), key=key)
         return key
 
     # ----------------------------------------------------------- 编解码
 
     @staticmethod
     def is_encrypted(value: str | None) -> bool:
-        """判断存储值是否为密文形态（``enc:v1:`` 前缀）。"""
-        return bool(value) and value.startswith(PREFIX)
+        """判断存储值是否为密文形态（``enc:v1:`` / ``enc:v2:`` 任一前缀）。
+
+        读侧与运行期开关无关（崩溃安全）：迁移中途崩溃的 v1/v2 混合形态一律可读。
+        """
+        return bool(value) and value.startswith(_PREFIXES)
+
+    @staticmethod
+    def needs_reencrypt(value: str | None) -> bool:
+        """是否为 legacy ``enc:v1:`` 密文（需迁移重加密收敛到 v2）。"""
+        return bool(value) and value.startswith(PREFIX_V1)
 
     def encrypt(self, plaintext: str) -> str:
-        """加密明文，返回 ``enc:v1:<base64>`` 形态密文。
+        """加密明文，返回 ``enc:v2:<base64>`` 形态密文（HKDF info 混入 repo_id）。
 
         Raises:
             CredentialKeyUnavailableError: 密码文件缺失/不可读/为空。
@@ -139,10 +180,23 @@ class CredentialCrypto:
         key = self._derive_key()
         nonce = os.urandom(_NONCE_BYTES)
         sealed = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
-        return PREFIX + base64.b64encode(nonce + sealed).decode("ascii")
+        return PREFIX_V2 + base64.b64encode(nonce + sealed).decode("ascii")
+
+    def reencrypt(self, stored: str) -> str:
+        """legacy ``enc:v1:`` 密文 → 现行 ``enc:v2:``（迁移用；明文不过任何边界）。
+
+        Raises:
+            CredentialDecryptError: v1 密文无法解密（密码文件被更换）——调用方
+                跳过并告警，不中断整批（与既有迁移语义一致）。
+            CredentialKeyUnavailableError: 密码文件缺失/不可读/为空。
+        """
+        return self.encrypt(self.decrypt(stored))
 
     def decrypt(self, stored: str) -> str:
         """解密密文（非密文形态原样返回——调用方已按前缀过滤，双保险）。
+
+        按前缀选择 HKDF info：``enc:v1:`` 用 legacy 固定 info（只读兼容），
+        ``enc:v2:`` 用混入 repo_id 的 info。
 
         Raises:
             CredentialDecryptError: 密文损坏、被篡改或密钥不匹配（密码文件被更换）。
@@ -150,10 +204,14 @@ class CredentialCrypto:
         """
         if not self.is_encrypted(stored):
             return stored
+        if stored.startswith(PREFIX_V1):
+            prefix, key = PREFIX_V1, self._derive_key_legacy_v1()
+        else:
+            prefix, key = PREFIX_V2, self._derive_key()
         try:
-            blob = base64.b64decode(stored[len(PREFIX) :], validate=True)
+            blob = base64.b64decode(stored[len(prefix) :], validate=True)
             nonce, sealed = blob[:_NONCE_BYTES], blob[_NONCE_BYTES:]
-            plaintext = AESGCM(self._derive_key()).decrypt(nonce, sealed, None)
+            plaintext = AESGCM(key).decrypt(nonce, sealed, None)
             return plaintext.decode("utf-8")
         except (InvalidTag, ValueError, UnicodeDecodeError) as exc:
             # binascii.Error 是 ValueError 子类；InvalidTag 覆盖篡改/错钥
@@ -163,7 +221,7 @@ class CredentialCrypto:
 class EncryptionState:
     """凭据加密运行期开关（进程内单一事实源；持久化于 config 键 ``security.cred_encryption``）。
 
-    - ``enabled`` 只决定**写侧**是否加密；读侧恒按 ``enc:v1:`` 前缀判定（崩溃安全）；
+    - ``enabled`` 只决定**写侧**是否加密；读侧恒按 ``enc:v1:``/``enc:v2:`` 前缀判定（崩溃安全）；
     - 缺省（键不存在）= ``True``——owner 2026-10-16 裁决「默认开」；
     - 单进程 asyncio 模型下内存态即运行真相；E07 写开关与启动期迁移同点维护。
     """

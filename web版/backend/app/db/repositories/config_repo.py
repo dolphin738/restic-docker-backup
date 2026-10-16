@@ -6,7 +6,7 @@
 
 R-025 凭据加密（P3-A，owner 2026-10-16 裁决默认开）：注入 :class:`EncryptionState` 后，
 敏感键（``cred.*`` / ``dump.password`` / ``notify.*``）写入即加密、读取透明解密——
-**读侧恒按 ``enc:v1:`` 前缀判定，与开关无关**（崩溃安全，见 services/crypto.py）。
+**读侧恒按 ``enc:v1:``/``enc:v2:`` 前缀判定，与开关无关**（崩溃安全，见 services/crypto.py）。
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class ConfigRepo:
     # ---------------------------------------------------------------- 读
 
     def _maybe_decrypt(self, value: str | None) -> str | None:
-        """读侧透明解密：非 ``enc:v1:`` 前缀原样返回（与开关无关，崩溃安全）。"""
+        """读侧透明解密：非密文前缀（v1/v2）原样返回（与开关无关，崩溃安全）。"""
         if value is None or not CredentialCrypto.is_encrypted(value):
             return value
         if self._encryption is None:
@@ -183,11 +183,10 @@ class ConfigRepo:
         for row in await self.list_all_raw():
             if not row.value or not self.is_sensitive(row.key):
                 continue
-            encrypted = crypto.is_encrypted(row.value)
-            if encrypt and not encrypted:
-                await self._upsert(row.key, crypto.encrypt(row.value), row.source, now)
-                changed += 1
-            elif not encrypt and encrypted:
+            if not encrypt:
+                # 关闭迁移：密文 → 明文（v1/v2 都可解——读侧按前缀选 info）
+                if not crypto.is_encrypted(row.value):
+                    continue
                 try:
                     plaintext = crypto.decrypt(row.value)
                 except CredentialDecryptError:
@@ -197,6 +196,23 @@ class ConfigRepo:
                     continue
                 await self._upsert(row.key, plaintext, row.source, now)
                 changed += 1
+                continue
+            # 启用迁移（encrypt=True）：三形态收敛——
+            #   ① 明文 → 加密（v2）；
+            #   ② legacy enc:v1:（HKDF info 未混仓库标识，审计 2026-10-16 🟡-1）
+            #      → 重加密为 enc:v2:（跨仓库密钥隔离）；
+            #   ③ enc:v2: 已就位 → 跳过。幂等：重跑零改动。
+            if not crypto.is_encrypted(row.value):
+                await self._upsert(row.key, crypto.encrypt(row.value), row.source, now)
+                changed += 1
+            elif crypto.needs_reencrypt(row.value):
+                try:
+                    await self._upsert(row.key, crypto.reencrypt(row.value), row.source, now)
+                    changed += 1
+                except CredentialDecryptError:
+                    # v1 密文不可解（密码文件被更换）：跳过并告警，恢复手段同上
+                    logger.warning("凭据 v1→v2 重加密跳过 %s：旧密文无法解密（密码文件可能已被更换）", row.key)
+                    continue
         return changed
 
     async def set_many(self, patch: Mapping[str, str | None]) -> list[ConfigRow]:

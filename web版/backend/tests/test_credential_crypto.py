@@ -1,7 +1,8 @@
 """R-025 凭据加密存储（P3-A）——crypto 单测 + ConfigRepo 透明集成 + E07 开关链路。
 
 锁死的不变量：
-① 存储形态：敏感键落库为 ``enc:v1:`` 前缀密文、非敏感键明文（列不变、无 schema 迁移）；
+① 存储形态：敏感键落库为 ``enc:v2:`` 前缀密文（HKDF info 混入 repo_id）、非敏感键明文
+（列不变、无 schema 迁移）；legacy ``enc:v1:`` 只读兼容，迁移重加密收敛 v2；
 ② 读侧透明：get / list_all / load_credentials 一律返回明文，**与开关无关**（崩溃安全）；
 ③ 开关崩溃安全序：启用=先落开关后迁移，关闭=先迁移后落开关，任一中断点混合形态可读；
 ④ 失败不静默：密码文件缺失 → 422 前置（且不产生部分写入）；密文损坏/错钥 → 500，
@@ -19,7 +20,14 @@ from conftest import ORIGIN, finish_bootstrap
 from app.db.database import Database
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import CredentialDecryptError, CredentialKeyUnavailableError
-from app.services.crypto import PREFIX, CredentialCrypto, EncryptionState
+from app.services.crypto import (
+    _HKDF_INFO_V1,
+    PREFIX,
+    PREFIX_V1,
+    CredentialCrypto,
+    EncryptionState,
+    _hkdf_sha256,
+)
 from app.services.env_sync import load_credentials
 from app.settings import Settings
 
@@ -39,7 +47,7 @@ def _make_crypto(tmp_path, monkeypatch, content: str = "repo-password") -> Crede
 
 
 async def test_roundtrip_and_prefix(tmp_path, monkeypatch) -> None:
-    """往返：加密产物带 enc:v1: 前缀，解密还原（含中文/长文边界）。"""
+    """往返：加密产物带 enc:v2: 前缀，解密还原（含中文/长文边界）。"""
     crypto = _make_crypto(tmp_path, monkeypatch)
     for plain in (SECRET, "x", "中文凭据値", "z" * 4096):
         stored = crypto.encrypt(plain)
@@ -402,3 +410,92 @@ async def test_startup_migrates_legacy_plaintext(make_app) -> None:
     )
     assert raw["value"].startswith(PREFIX)
     assert await ns2.app.state.config_repo.get_value("cred.aws_secret_access_key") == "legacy-plain"
+
+
+# ---------------------------------------------------------------- v2 隔离与 v1 兼容（审计 2026-10-16 🟡-1）
+
+
+def _make_v1_ciphertext(crypto: CredentialCrypto, plaintext: str) -> str:
+    """按 legacy v1 口径（固定 info、无仓库隔离）构造密文（模拟 R-025 首版产物）。"""
+    secret = crypto.passfile().read_bytes()
+    key = _hkdf_sha256(secret, info=_HKDF_INFO_V1)
+    import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = os.urandom(12)
+    sealed = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return PREFIX_V1 + base64.b64encode(nonce + sealed).decode("ascii")
+
+
+def test_v2_cross_repo_isolation(tmp_path, monkeypatch) -> None:
+    """同密码文件内容 + 不同 repo_id ⇒ 不同密钥：跨仓库密文互不可解（enc:v2: 隔离）。"""
+    monkeypatch.delenv("RESTIC_PASSWORD_FILE", raising=False)
+    root = tmp_path / "repos"
+    # 两个仓库的密码文件内容完全相同——隔离性正是要防「运维复用密码」的形态
+    for repo_id in ("repo-a", "repo-b"):
+        (root / repo_id).mkdir(parents=True, exist_ok=True)
+        (root / repo_id / "password").write_text("same-password", encoding="utf-8")
+    settings = Settings(passfile_root=str(root))
+
+    crypto_a = CredentialCrypto(settings, repo_id="repo-a")
+    crypto_b = CredentialCrypto(settings, repo_id="repo-b")
+
+    stored = crypto_a.encrypt("cross-repo-secret")
+    assert stored.startswith("enc:v2:")
+    with pytest.raises(CredentialDecryptError):
+        crypto_b.decrypt(stored)  # repo-b 的密钥解不开 repo-a 的密文
+    assert crypto_a.decrypt(stored) == "cross-repo-secret"  # 本仓库自解正常
+
+
+def test_v1_legacy_decrypt_and_reencrypt(tmp_path, monkeypatch) -> None:
+    """v1 密文只读兼容：legacy info 解密成功；reencrypt 收敛 v2 且明文不变。"""
+    crypto = _make_crypto(tmp_path, monkeypatch)
+    legacy = _make_v1_ciphertext(crypto, SECRET)
+    assert legacy.startswith(PREFIX_V1)
+    assert crypto.is_encrypted(legacy)
+    assert crypto.needs_reencrypt(legacy)
+
+    assert crypto.decrypt(legacy) == SECRET  # v1 只读兼容路径
+
+    upgraded = crypto.reencrypt(legacy)
+    assert upgraded.startswith("enc:v2:")
+    assert crypto.decrypt(upgraded) == SECRET
+    assert not crypto.needs_reencrypt(upgraded)
+
+
+async def test_migrate_reencrypts_v1_to_v2(tmp_path, monkeypatch) -> None:
+    """启用迁移三形态收敛：明文→v2、legacy v1→v2、v2 保持；读侧明文恒正确。"""
+    db = Database(tmp_path / "reencrypt.db")
+    await db.connect()
+    crypto = _make_crypto(tmp_path, monkeypatch)
+    repo = ConfigRepo(db, encryption=EncryptionState(crypto, enabled=True))
+
+    plaintext_key = "cred.default.aws_secret_access_key"
+    await repo._upsert(plaintext_key, "plain-value", "user", "2026-01-01T00:00:00Z")
+    v1_value = _make_v1_ciphertext(crypto, "legacy-value")
+    await repo._upsert("cred.default.b2_account_key", v1_value, "user", "2026-01-01T00:00:00Z")
+    v2_value = crypto.encrypt("already-v2")
+    await repo._upsert("cred.default.aws_access_key_id", v2_value, "user", "2026-01-01T00:00:00Z")
+
+    changed = await repo.migrate_encryption(encrypt=True)
+    assert changed == 2  # 明文与 v1 各 +1；v2 已就位不计
+
+    # 落库形态（raw）：明文键与 v1 键都已收敛为 enc:v2: 密文
+    raw = {r.key: r.value for r in await repo.list_all_raw()}
+    assert raw[plaintext_key].startswith("enc:v2:")
+    assert crypto.decrypt(raw[plaintext_key]) == "plain-value"
+    assert raw["cred.default.b2_account_key"].startswith("enc:v2:")
+    assert crypto.decrypt(raw["cred.default.b2_account_key"]) == "legacy-value"
+    assert raw["cred.default.aws_access_key_id"].startswith("enc:v2:")
+    assert crypto.decrypt(raw["cred.default.aws_access_key_id"]) == "already-v2"
+
+    # 读侧透明：get 返回明文，与开关无关
+    row_v2 = await repo.get(plaintext_key)
+    assert row_v2 is not None and row_v2.value == "plain-value"
+    row_up = await repo.get("cred.default.b2_account_key")
+    assert row_up is not None and row_up.value == "legacy-value"
+
+    # 幂等：重跑零改动
+    assert await repo.migrate_encryption(encrypt=True) == 0
+    await db.close()
