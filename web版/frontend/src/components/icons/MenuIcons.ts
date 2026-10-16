@@ -90,3 +90,11 @@ export const IconAudit: FunctionalComponent<SVGAttributes> = () =>
 /** 菜单按钮：汉堡（<960px 顶栏抽屉入口）。 */
 export const IconMenu: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [h('path', { d: 'M4 6.5h16M4 12h16M4 17.5h16' })])
+
+/** 报表：柱状图（feather bar-chart 线稿；R-024 成功率报表入口）。 */
+export const IconReports: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M6 20V10' }),
+    h('path', { d: 'M12 20V4' }),
+    h('path', { d: 'M18 20v-6' }),
+  ])

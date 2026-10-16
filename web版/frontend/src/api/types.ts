@@ -563,3 +563,25 @@ export interface CheckView {
 export interface CheckDetailResponse extends JobOut {
   check_view: CheckView
 }
+
+/** E38 报表单日桶（R-024；无运行日 total=0、ratio=null）。 */
+export interface ReportBucket {
+  date: string
+  total: number
+  success: number
+  failed: number
+  ratio: number | null
+}
+
+/** E38 备份成功率报表（按配置时区分桶，零运行日补齐）。 */
+export interface BackupSuccessReport {
+  days: number
+  timezone: string
+  from_date: string
+  to_date: string
+  buckets: ReportBucket[]
+  total: number
+  success: number
+  failed: number
+  ratio: number | null
+}

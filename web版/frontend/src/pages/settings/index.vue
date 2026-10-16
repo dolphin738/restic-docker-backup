@@ -12,6 +12,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NDescriptions,
   NDescriptionsItem,
   NDynamicTags,
@@ -226,6 +227,49 @@ async function onToggleCredEncryption(value: boolean): Promise<void> {
     credEncryption.value = !value
   } finally {
     savingCredEncryption.value = false
+  }
+}
+
+// ---------------------------------------------------------------- Prometheus 指标（R-024 / P3-B）
+
+/** 令牌三态（同 dump.password 先例）：读取回 *_set 布尔；清除提交空串、输入新值提交原文。
+ * 后端只存 SHA-256 硬哈希——设置后不可读，遗失需重新生成。 */
+const metricsTokenSet = ref(false)
+const metricsTokenInput = ref('')
+const metricsTokenClear = ref(false)
+const savingMetrics = ref(false)
+
+watch(configQuery.data, (data) => {
+  if (!data) {
+    return
+  }
+  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
+  metricsTokenSet.value = item('metrics.token')?.has_value ?? false
+}, { immediate: true })
+
+const metricsTokenDirty = computed(() => metricsTokenClear.value || metricsTokenInput.value !== '')
+
+async function onSaveMetricsToken(): Promise<void> {
+  if (savingMetrics.value || !metricsTokenDirty.value) {
+    return
+  }
+  const patch: Record<string, string | null> = {}
+  if (metricsTokenClear.value) {
+    patch['metrics.token'] = ''
+  } else if (metricsTokenInput.value !== '') {
+    patch['metrics.token'] = metricsTokenInput.value
+  }
+  savingMetrics.value = true
+  try {
+    await saveDumpBehaviorConfig(patch)
+    message.success(t('settings.metrics.saved'))
+    metricsTokenInput.value = ''
+    metricsTokenClear.value = false
+    await configQuery.refetch()
+  } catch {
+    // 错误（422 校验等）由 http 层全局提示
+  } finally {
+    savingMetrics.value = false
   }
 }
 
@@ -496,6 +540,43 @@ async function onChangePassword(): Promise<void> {
           <n-text>{{ t('settings.credential.enabled') }}</n-text>
         </n-space>
         <n-text depth="3" class="settings__hint">{{ t('settings.credential.hint') }}</n-text>
+      </n-space>
+    </n-card>
+
+    <!-- Prometheus 指标（R-024 / P3-B：抓取令牌三态 + 端点提示） -->
+    <n-card :title="t('settings.metrics.title')" size="small">
+      <n-space vertical :size="10">
+        <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
+        <n-form label-placement="top" class="settings__form">
+          <n-space align="center" :size="8">
+            <n-text>{{ t('settings.metrics.token') }}</n-text>
+            <n-tag v-if="metricsTokenSet" size="small" type="success">{{ t('settings.metrics.tokenSet') }}</n-tag>
+            <n-tag v-else size="small">{{ t('settings.metrics.tokenUnset') }}</n-tag>
+          </n-space>
+          <n-form-item :label="t('settings.metrics.newToken')">
+            <n-input
+              v-model:value="metricsTokenInput"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('settings.metrics.newTokenPlaceholder')"
+            />
+          </n-form-item>
+          <n-space align="center" :size="8">
+            <n-checkbox v-model:checked="metricsTokenClear" :disabled="!metricsTokenSet">
+              {{ t('settings.metrics.clear') }}
+            </n-checkbox>
+            <n-button
+              size="small"
+              type="primary"
+              :loading="savingMetrics"
+              :disabled="!metricsTokenDirty"
+              @click="onSaveMetricsToken"
+            >
+              {{ t('settings.metrics.save') }}
+            </n-button>
+          </n-space>
+        </n-form>
+        <n-text depth="3" class="settings__hint">{{ t('settings.metrics.hint') }}</n-text>
       </n-space>
     </n-card>
 

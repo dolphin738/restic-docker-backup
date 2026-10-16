@@ -62,6 +62,12 @@ const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'nav.jobs' },
       },
       {
+        path: 'reports',
+        name: 'reports',
+        component: () => import('@/pages/reports/index.vue'),
+        meta: { titleKey: 'nav.reports' },
+      },
+      {
         path: 'snapshots',
         name: 'snapshots',
         component: () => import('@/pages/snapshots/index.vue'),
