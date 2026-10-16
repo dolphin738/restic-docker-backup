@@ -84,6 +84,34 @@ export interface RepoStatusResponse {
   last_error: string | null
 }
 
+/** R-023 仓库输出（repos 表事实源；type 派生不落库，passfile_status 只读派生）。 */
+export interface RepoOut {
+  id: string
+  name: string
+  type: string
+  url: string | null
+  host_tag: string | null
+  url_source: string
+  host_tag_source: string
+  passfile_status: string
+  created_at: string
+}
+
+/** R-023 新建仓库请求（url/host_tag 可空，日后再补）。 */
+export interface RepoCreateRequest {
+  id: string
+  name: string
+  url?: string | null
+  host_tag?: string | null
+}
+
+/** R-023 更新仓库请求（三态：null=不变 / ""=清除 / 非空=设置）。 */
+export interface RepoUpdateRequest {
+  name?: string | null
+  url?: string | null
+  host_tag?: string | null
+}
+
 /** SSE 事件负载：event: progress */
 export interface JobProgressPayload {
   event_id?: number

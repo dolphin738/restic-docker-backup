@@ -13,6 +13,8 @@ import { currentLocale, i18n, setLocale, type AppLocale } from '@/i18n'
 export type ThemePreference = 'dark' | 'light' | 'auto'
 
 const THEME_KEY = 'rw.theme'
+/** R-023：当前选中的仓库 id（多仓库视图）；缺省 default（后端自动播种的默认仓库）。 */
+const CURRENT_REPO_KEY = 'rw.currentRepo'
 
 function readThemePreference(): ThemePreference {
   try {
@@ -26,12 +28,26 @@ function readThemePreference(): ThemePreference {
   return 'dark' // 深色为默认
 }
 
+function readCurrentRepoId(): string {
+  try {
+    const stored = localStorage.getItem(CURRENT_REPO_KEY)
+    if (stored) {
+      return stored
+    }
+  } catch {
+    // 忽略存储不可用
+  }
+  return 'default'
+}
+
 export const useUiStore = defineStore('ui', () => {
   const me = ref<MeResponse | null>(null)
   const bootstrapSteps = ref<string[]>([])
   const messageApi = ref<MessageApi | null>(null)
   const themePreference = ref<ThemePreference>(readThemePreference())
   const locale = ref<AppLocale>(currentLocale())
+  /** R-023：当前仓库 id，驱动所有读写请求经 http 层注入的 X-Repo-Id 头。 */
+  const currentRepoId = ref<string>(readCurrentRepoId())
 
   const systemPrefersDark = usePreferredDark()
   const isDark = computed(() =>
@@ -65,6 +81,16 @@ export const useUiStore = defineStore('ui', () => {
     setLocale(value)
   }
 
+  /** R-023：切换当前仓库（持久化 + 供 http 层注入 X-Repo-Id）。 */
+  function setCurrentRepoId(id: string): void {
+    currentRepoId.value = id
+    try {
+      localStorage.setItem(CURRENT_REPO_KEY, id)
+    } catch {
+      // 忽略持久化失败
+    }
+  }
+
   /** 由 App.vue 树内的页面（layout / login / bootstrap）注册，卸载时置空。 */
   function setMessageApi(api: MessageApi | null): void {
     messageApi.value = api
@@ -92,11 +118,13 @@ export const useUiStore = defineStore('ui', () => {
     isDark,
     themePreference,
     locale,
+    currentRepoId,
     setMe,
     clearMe,
     setBootstrapSteps,
     setThemePreference,
     setLocalePreference,
+    setCurrentRepoId,
     setMessageApi,
     notify,
     notifyError,

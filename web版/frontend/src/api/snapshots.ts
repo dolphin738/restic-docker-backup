@@ -4,9 +4,10 @@
 import { passCursor, request } from './http'
 import type { ForgetPreviewRequest, ForgetPreviewResponse, Page, SnapshotFilesResponse, SnapshotOut } from './types'
 
-/** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。 */
-export function listSnapshots(limit = 50, offset = 0, tag?: string): Promise<Page<SnapshotOut>> {
-  return request<Page<SnapshotOut>>('/api/snapshots', { query: { limit, offset, tag } })
+/** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。
+ * host 为空串/undefined = 不过滤（R-023 多主机视图：按快照主机标识过滤，与当前 X-Repo-Id 仓库叠加生效）。 */
+export function listSnapshots(limit = 50, offset = 0, tag?: string, host?: string): Promise<Page<SnapshotOut>> {
+  return request<Page<SnapshotOut>>('/api/snapshots', { query: { limit, offset, tag, host } })
 }
 
 /** path 为展示形态（如 /etc），服务端负责还原为快照内路径；cursor 原样透传。 */

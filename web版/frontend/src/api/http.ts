@@ -1,6 +1,7 @@
 /** 统一请求出口：cookie 鉴权、错误码 → AppError、401/403 分流（§5.0 / §8）。 */
 
 import { i18n } from '@/i18n'
+import { getActivePinia } from 'pinia'
 import { useUiStore } from '@/stores/ui'
 import type { ErrorBody } from './types'
 
@@ -65,6 +66,12 @@ export interface RequestOptions extends Omit<RequestInit, 'body'> {
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, query, silent, headers, ...rest } = options
+  // R-023：当前仓库 id 经 X-Repo-Id 头注入，服务端据此路由多仓库读写；
+  // 无激活 Pinia（极端初始化态）时回落 default，避免崩溃。
+  let repoId = 'default'
+  if (getActivePinia()) {
+    repoId = useUiStore().currentRepoId || 'default'
+  }
   const init: RequestInit = {
     // cookie session（HttpOnly + SameSite=Strict）；SSE 与写请求同源策略都依赖它
     credentials: 'include',
@@ -72,6 +79,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...(headers as Record<string, string> | undefined),
+      'X-Repo-Id': repoId,
     },
   }
   if (body !== undefined) {

@@ -13,7 +13,9 @@
  * （E31 定位收窄为「向导内无实体预览」，见设计 §2.2）。
  */
 
+import { getActivePinia } from 'pinia'
 import { passCursor, request } from './http'
+import { useUiStore } from '@/stores/ui'
 import type {
   BackupTask,
   DryRunResponse,
@@ -25,11 +27,16 @@ import type {
   TaskUpsertRequest,
 } from './types'
 
-/** repo 作用域（E6）：本批仅 default 一个仓库，其余值后端 404 REPO_NOT_FOUND。 */
-export const REPO_ID = 'default'
+/** R-023：备份任务归属当前仓库，路径仓库 id 取自 UI 当前仓库（X-Repo-Id 头同源）。 */
+function currentRepoId(): string {
+  if (getActivePinia()) {
+    return useUiStore().currentRepoId || 'default'
+  }
+  return 'default'
+}
 
 function taskPath(suffix = ''): string {
-  return `/api/repos/${REPO_ID}/backup-tasks${suffix}`
+  return `/api/repos/${encodeURIComponent(currentRepoId())}/backup-tasks${suffix}`
 }
 
 /** E34：任务卡片列表（含派生状态/下次运行/运行中 job）。 */

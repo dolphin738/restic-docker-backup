@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMediaQuery } from '@vueuse/core'
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import {
   NButton,
   NDrawer,
@@ -25,7 +25,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { logout } from '@/api/auth'
 import { listActiveJobs } from '@/api/jobs'
-import { getRepoStatus } from '@/api/repo'
+import { getRepoStatus, listRepos } from '@/api/repo'
 import {
   IconAudit,
   IconBell,
@@ -45,6 +45,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const ui = useUiStore()
+const queryClient = useQueryClient()
 
 // 注册全局 message 出口（http 层错误提示经 ui store 转到这里）
 const message = useMessage()
@@ -82,14 +83,25 @@ const menuOptions = computed<MenuOption[]>(() => [
 ])
 
 // 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。
-// 查询键带 header 后缀，与页面级查询（['repo','status'] / ['jobs','active']）隔离，
+// 查询键带 header 后缀 + 当前仓库 id，与页面级查询（['repo','status'] / ['jobs','active']）隔离，
 // 避免顶栏轮询改变仪表盘/仓库页既有的 60s 轮询节奏。
 const repoStatusQuery = useQuery({
-  queryKey: ['repo', 'status', 'header'],
-  queryFn: getRepoStatus,
+  queryKey: ['repo', 'status', 'header', ui.currentRepoId],
+  queryFn: () => getRepoStatus(ui.currentRepoId),
   refetchInterval: 15_000,
   retry: 1,
 })
+
+// R-023：仓库切换器数据源（顶栏下拉）。
+const reposQuery = useQuery({ queryKey: ['repos'], queryFn: listRepos })
+const repoOptions = computed(() =>
+  (reposQuery.data.value ?? []).map((repo) => ({ label: repo.name, value: repo.id })),
+)
+function onRepoSwitch(value: string | number): void {
+  ui.setCurrentRepoId(String(value))
+  // 切换仓库：所有仓库域查询（快照/任务/状态/仪表盘）带新 X-Repo-Id 重取
+  void queryClient.invalidateQueries()
+}
 const activeJobsQuery = useQuery({
   queryKey: ['jobs', 'active', 'header'],
   queryFn: () => listActiveJobs(20),
@@ -207,6 +219,14 @@ async function onLogout(): Promise<void> {
           <n-text strong class="header__title">
             {{ t(route.meta.titleKey ?? 'common.appName') }}
           </n-text>
+          <n-select
+            :value="ui.currentRepoId"
+            :options="repoOptions"
+            size="small"
+            class="header__repo-select"
+            :placeholder="t('repo.switchPlaceholder')"
+            @update:value="onRepoSwitch"
+          />
           <n-tag size="small" round type="info">{{ currentUser }}</n-tag>
           <n-tag size="small" round>{{ currentMode }}</n-tag>
           <n-tag size="small" round :type="currentMount === 'rw' ? 'success' : 'warning'">
@@ -309,5 +329,10 @@ async function onLogout(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.header__repo-select {
+  flex: 0 0 auto;
+  max-width: 200px;
 }
 </style>

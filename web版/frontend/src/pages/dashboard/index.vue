@@ -42,8 +42,8 @@ onUnmounted(() => ui.setMessageApi(null))
 
 // E30 服务端 30s 缓存：这里按 60s 轮询 + 手动刷新，禁止秒级轮询
 const repoQuery = useQuery({
-  queryKey: ['repo', 'status'],
-  queryFn: getRepoStatus,
+  queryKey: ['repo', 'status', ui.currentRepoId],
+  queryFn: () => getRepoStatus(ui.currentRepoId),
   refetchInterval: 60_000,
 })
 

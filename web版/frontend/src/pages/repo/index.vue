@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import {
   NAlert,
   NButton,
   NCard,
+  NDataTable,
   NForm,
   NFormItem,
   NGrid,
   NGi,
   NInput,
+  NModal,
   NSpace,
   NStatistic,
   NTabPane,
@@ -17,15 +19,16 @@ import {
   NText,
   NTooltip,
   useMessage,
+  type DataTableColumns,
 } from 'naive-ui'
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, h, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { browseFs } from '@/api/fs'
-import { getConfig, putConfig, testRepo } from '@/api/config'
+import { getConfig, putConfig } from '@/api/config'
 import { createJob } from '@/api/jobs'
-import { getRepoStatus } from '@/api/repo'
+import { createRepo, deleteRepo, getRepo, getRepoStatus, listRepos, testRepo, updateRepo } from '@/api/repo'
 import { isAppError } from '@/api/http'
-import type { ConfigItem, RepoTestResponse } from '@/api/types'
+import type { ConfigItem, RepoOut, RepoTestResponse, RepoUpdateRequest } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
@@ -34,45 +37,238 @@ import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
 const ui = useUiStore()
+const queryClient = useQueryClient()
 
 const message = useMessage()
 ui.setMessageApi(message)
 onUnmounted(() => ui.setMessageApi(null))
 
-type RepoType = 'local' | 's3' | 'b2'
+// ---------------------------------------------------------------- 仓库列表（R-023）
+const reposQuery = useQuery({ queryKey: ['repos'], queryFn: listRepos })
 
-interface CredField {
-  key: string
-  labelKey: string
+function onSetCurrent(id: string): void {
+  ui.setCurrentRepoId(id)
+  // 切换仓库：所有仓库域查询（快照/任务/状态/仪表盘）带新 X-Repo-Id 重取
+  void queryClient.invalidateQueries()
 }
 
-/** 凭据键表（§4.3）：全部为 cred.* 敏感项，API 只回 has_value + source。 */
-const CRED_FIELDS: Record<RepoType, CredField[]> = {
-  local: [],
-  s3: [
-    { key: 'cred.aws_access_key_id', labelKey: 'repo.credAwsAccessKeyId' },
-    { key: 'cred.aws_secret_access_key', labelKey: 'repo.credAwsSecretAccessKey' },
-    { key: 'cred.aws_default_region', labelKey: 'repo.credAwsDefaultRegion' },
-    { key: 'cred.aws_endpoint_url', labelKey: 'repo.credAwsEndpointUrl' },
-  ],
-  b2: [
-    { key: 'cred.b2_account_id', labelKey: 'repo.credB2AccountId' },
-    { key: 'cred.b2_account_key', labelKey: 'repo.credB2AccountKey' },
-  ],
+// ---------------------------------------------------------------- 新建仓库（R-023）
+const createShow = ref(false)
+const creating = ref(false)
+const createForm = reactive({ id: '', name: '', url: '', hostTag: '' })
+
+function openCreate(): void {
+  createForm.id = ''
+  createForm.name = ''
+  createForm.url = ''
+  createForm.hostTag = ''
+  createShow.value = true
 }
 
-const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig })
+async function onCreate(): Promise<void> {
+  if (!createForm.id.trim()) {
+    message.warning(t('repo.idRequired'))
+    return
+  }
+  if (!createForm.name.trim()) {
+    message.warning(t('repo.nameRequired'))
+    return
+  }
+  creating.value = true
+  try {
+    const created = await createRepo({
+      id: createForm.id.trim(),
+      name: createForm.name.trim(),
+      url: createForm.url.trim() || null,
+      host_tag: createForm.hostTag.trim() || null,
+    })
+    message.success(t('repo.created'))
+    createShow.value = false
+    await reposQuery.refetch()
+    onSetCurrent(created.id)
+  } catch (error) {
+    // AppError（如 id 重复 → 409 / 422）已由全局提示展示
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    creating.value = false
+  }
+}
 
-// E30：服务端 30s 缓存，60s 轮询 + 手动刷新
+// ---------------------------------------------------------------- 删除仓库（R-023）
+const deleting = ref(false)
+const deleteShow = ref(false)
+const deleteTarget = ref<string | null>(null)
+
+function onDeleteClick(id: string): void {
+  if (id === 'default') {
+    message.warning(t('repo.deleteDefaultForbidden'))
+    return
+  }
+  deleteTarget.value = id
+  deleteShow.value = true
+}
+
+async function confirmDelete(): Promise<void> {
+  const id = deleteTarget.value
+  if (!id) {
+    return
+  }
+  deleting.value = true
+  try {
+    await deleteRepo(id)
+    message.success(t('repo.deleted'))
+    if (ui.currentRepoId === id) {
+      onSetCurrent('default')
+    }
+    await reposQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    deleting.value = false
+    deleteTarget.value = null
+    deleteShow.value = false
+  }
+}
+
+function typeLabel(ty: string): string {
+  return ty === 's3' ? t('repo.typeS3') : ty === 'b2' ? t('repo.typeB2') : t('repo.typeLocal')
+}
+
+const columns = computed<DataTableColumns<RepoOut>>(() => [
+  {
+    title: t('repo.colId'),
+    key: 'id',
+    render: (row) =>
+      h(NSpace, { align: 'center', size: 6 }, () => [
+        row.id,
+        row.id === 'default'
+          ? h(NTag, { size: 'tiny', type: 'warning', round: true }, () => t('repo.defaultTag'))
+          : null,
+        row.id === ui.currentRepoId
+          ? h(NTag, { size: 'tiny', type: 'success', round: true }, () => t('repo.currentTag'))
+          : null,
+      ]),
+  },
+  { title: t('repo.colName'), key: 'name' },
+  { title: t('repo.colType'), key: 'type', render: (row) => typeLabel(row.type) },
+  { title: t('repo.colUrl'), key: 'url', render: (row) => row.url ?? '—' },
+  { title: t('repo.colHostTag'), key: 'host_tag', render: (row) => row.host_tag ?? '—' },
+  {
+    title: '',
+    key: 'actions',
+    width: 170,
+    render: (row) =>
+      h(NSpace, { size: 6 }, () => [
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            type: row.id === ui.currentRepoId ? 'primary' : 'default',
+            disabled: row.id === ui.currentRepoId,
+            onClick: () => onSetCurrent(row.id),
+          },
+          () => t('repo.setCurrent'),
+        ),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            type: 'error',
+            disabled: row.id === 'default',
+            onClick: () => onDeleteClick(row.id),
+          },
+          () => t('repo.delete'),
+        ),
+      ]),
+  },
+])
+
+// ---------------------------------------------------------------- 当前仓库配置（R-023）
+const currentRepoId = computed(() => ui.currentRepoId)
+
+const repoQuery = useQuery({
+  queryKey: ['repo', currentRepoId],
+  queryFn: () => getRepo(currentRepoId.value),
+})
+
 const statusQuery = useQuery({
-  queryKey: ['repo', 'status'],
-  queryFn: getRepoStatus,
+  queryKey: ['repo', 'status', currentRepoId],
+  queryFn: () => getRepoStatus(currentRepoId.value),
   refetchInterval: 60_000,
 })
 
+const repo = computed(() => repoQuery.data.value ?? null)
+const repoType = computed<RepoTypeKey>(() => {
+  const ty = repo.value?.type
+  return ty === 's3' || ty === 'b2' ? ty : 'local'
+})
+
 const form = reactive({ url: '', hostTag: '' })
-const credInput = reactive<Record<string, string>>({})
 const initial = reactive({ url: '', hostTag: '' })
+watch(
+  () => repo.value,
+  (r) => {
+    if (!r) {
+      return
+    }
+    form.url = r.url ?? ''
+    form.hostTag = r.host_tag ?? ''
+    initial.url = form.url
+    initial.hostTag = form.hostTag
+  },
+  { immediate: true },
+)
+
+// 切换仓库时清空凭据输入与浏览态，避免残留
+watch(currentRepoId, () => {
+  clearCredInput()
+  urlMode.value = 'manual'
+})
+
+// ---------------------------------------------------------------- 凭据（按仓库命名空间）
+const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig })
+
+type RepoTypeKey = 'local' | 's3' | 'b2'
+interface CredField {
+  suffix: string
+  labelKey: string
+}
+
+/** 凭据键表（§4.3）：基础后缀；完整键 = cred.{repo_id}.{suffix}（R-023 命名空间化）。 */
+const CRED_FIELDS: Record<RepoTypeKey, CredField[]> = {
+  local: [],
+  s3: [
+    { suffix: 'aws_access_key_id', labelKey: 'repo.credAwsAccessKeyId' },
+    { suffix: 'aws_secret_access_key', labelKey: 'repo.credAwsSecretAccessKey' },
+    { suffix: 'aws_default_region', labelKey: 'repo.credAwsDefaultRegion' },
+    { suffix: 'aws_endpoint_url', labelKey: 'repo.credAwsEndpointUrl' },
+  ],
+  b2: [
+    { suffix: 'b2_account_id', labelKey: 'repo.credB2AccountId' },
+    { suffix: 'b2_account_key', labelKey: 'repo.credB2AccountKey' },
+  ],
+}
+
+const credPrefix = computed(() => `cred.${currentRepoId.value}.`)
+const credInput = reactive<Record<string, string>>({})
+
+/** 只取当前仓库命名空间内的凭据项（隔离其它仓库的 cred.*）。 */
+const credItems = computed(() =>
+  (configQuery.data.value?.items ?? []).filter((item) => item.key.startsWith(credPrefix.value)),
+)
+
+function itemOf(suffix: string): ConfigItem | undefined {
+  return credItems.value.find((item) => item.key === credPrefix.value + suffix)
+}
+
+const credFields = computed<CredField[]>(() => CRED_FIELDS[repoType.value])
+
 const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<RepoTestResponse | null>(null)
@@ -86,7 +282,6 @@ const initJobId = ref('')
 // ---------------------------------------------------------------- 本地路径浏览器（E33）
 const CONTAINER_ROOT = '/'
 const browsePath = ref(CONTAINER_ROOT)
-/** 已挂载点快跳列表：只在浏览容器根时才有（mounts 由 /proc/mounts 过滤伪文件系统得出） */
 const mountChips = ref<string[]>([])
 const urlMode = ref<'browse' | 'manual'>('manual')
 
@@ -107,7 +302,6 @@ function fsLoader(path: string, cursor?: string): Promise<TreePage> {
   })
 }
 
-/** 点目录 = 选为仓库地址（同时把浏览器同步到该目录，便于继续向下钻）。 */
 function onTreeSelect(item: TreeItem): void {
   form.url = item.path
   if (item.type === 'dir') {
@@ -123,50 +317,96 @@ function jumpTo(path: string): void {
   browsePath.value = path
 }
 
-const itemMap = computed<Map<string, ConfigItem>>(() => {
-  const map = new Map<string, ConfigItem>()
-  for (const item of configQuery.data.value?.items ?? []) {
-    map.set(item.key, item)
+// ---------------------------------------------------------------- 保存 / 测试 / 解锁 / 初始化
+async function onSave(): Promise<void> {
+  const repoPatch: RepoUpdateRequest = {}
+  if (form.url !== initial.url) {
+    repoPatch.url = form.url || null
   }
-  return map
-})
-
-function itemOf(key: string): ConfigItem | undefined {
-  return itemMap.value.get(key)
+  if (form.hostTag !== initial.hostTag) {
+    repoPatch.host_tag = form.hostTag || null
+  }
+  const credPatch: Record<string, string | null> = {}
+  for (const field of credFields.value) {
+    const value = credInput[field.suffix]
+    if (value) {
+      credPatch[credPrefix.value + field.suffix] = value
+    }
+  }
+  if (
+    repoPatch.url === undefined &&
+    repoPatch.host_tag === undefined &&
+    Object.keys(credPatch).length === 0
+  ) {
+    message.info(t('repo.noChanges'))
+    return
+  }
+  saving.value = true
+  try {
+    if (repoPatch.url !== undefined || repoPatch.host_tag !== undefined) {
+      await updateRepo(currentRepoId.value, repoPatch)
+    }
+    if (Object.keys(credPatch).length > 0) {
+      await putConfig(credPatch)
+    }
+    message.success(t('repo.saved'))
+    clearCredInput()
+    await Promise.all([repoQuery.refetch(), configQuery.refetch()])
+    void statusQuery.refetch()
+  } finally {
+    saving.value = false
+  }
 }
 
-/** 仓库类型是服务端只读派生键（E06 回 value，E07 直写会 409 READONLY_KEY），
- * 由 repo.url 协议推导；此处仅作未保存 URL 时的本地预览。 */
-const repoType = computed<RepoType>(() => {
-  const stored = itemOf('repo.type')?.value
-  if (stored === 's3' || stored === 'b2' || stored === 'local') {
-    return stored
+function clearCredInput(): void {
+  for (const key of Object.keys(credInput)) {
+    credInput[key] = ''
   }
-  const url = form.url.trim()
-  if (url.startsWith('s3://')) return 's3'
-  if (url.startsWith('b2:')) return 'b2'
-  return 'local'
-})
+}
 
-const credFields = computed<CredField[]>(() => CRED_FIELDS[repoType.value])
+async function onTest(): Promise<void> {
+  testing.value = true
+  testResult.value = null
+  try {
+    testResult.value = await testRepo(currentRepoId.value)
+  } finally {
+    testing.value = false
+  }
+}
 
-// 配置加载后回填表单（敏感项无明文，只回填非敏感键）
-watch(
-  () => configQuery.data.value,
-  (data) => {
-    if (!data) {
-      return
+async function onUnlock(): Promise<void> {
+  unlocking.value = true
+  try {
+    const created = await createJob('unlock')
+    unlockJobId.value = created.id
+    message.success(t('repo.unlockSubmitted'))
+    void statusQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
     }
-    const url = data.items.find((item) => item.key === 'repo.url')
-    const hostTag = data.items.find((item) => item.key === 'repo.host_tag')
-    form.url = url?.value ?? ''
-    form.hostTag = hostTag?.value ?? ''
-    initial.url = form.url
-    initial.hostTag = form.hostTag
-  },
-  { immediate: true },
-)
+  } finally {
+    unlocking.value = false
+  }
+}
 
+async function onInit(): Promise<void> {
+  initializing.value = true
+  try {
+    const created = await createJob('init')
+    initJobId.value = created.id
+    message.success(t('repo.initSubmitted'))
+    void statusQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    initializing.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 展示辅助
 const repoStatus = computed(() => statusQuery.data.value ?? null)
 
 const capacityText = computed(() => {
@@ -184,97 +424,28 @@ function formatBytes(value: number): string {
   }
   return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
-
-async function onSave(): Promise<void> {
-  const patch: Record<string, string | null> = {}
-  if (form.url !== initial.url) {
-    patch['repo.url'] = form.url
-  }
-  if (form.hostTag !== initial.hostTag) {
-    patch['repo.host_tag'] = form.hostTag || null
-  }
-  for (const field of credFields.value) {
-    const value = credInput[field.key]
-    if (value) {
-      patch[field.key] = value
-    }
-  }
-  if (Object.keys(patch).length === 0) {
-    message.info(t('repo.noChanges'))
-    return
-  }
-  saving.value = true
-  try {
-    await putConfig(patch)
-    message.success(t('repo.saved'))
-    clearCredInput()
-    await configQuery.refetch()
-    // 仓库地址/凭据可能已变：服务端已清 E30 缓存，前端立即重取状态卡
-    void statusQuery.refetch()
-  } finally {
-    saving.value = false
-  }
-}
-
-function clearCredInput(): void {
-  for (const key of Object.keys(credInput)) {
-    credInput[key] = ''
-  }
-}
-
-async function onTest(): Promise<void> {
-  testing.value = true
-  testResult.value = null
-  try {
-    testResult.value = await testRepo()
-  } finally {
-    testing.value = false
-  }
-}
-
-async function onUnlock(): Promise<void> {
-  unlocking.value = true
-  try {
-    const created = await createJob('unlock')
-    unlockJobId.value = created.id
-    message.success(t('repo.unlockSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    // 409 JOB_CONFLICT / NOT_CANCELLABLE 已由全局提示展示
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    unlocking.value = false
-  }
-}
-
-/** 初始化仓库（E12 init）：仅状态卡显示「未连接」时出现。
- * P1 无 AUTO_INIT（归 P2 行为开关），而 UI 此前没有任何 init 入口——
- * 本地路径仓库（/repo）不 init 就永远「未连接」，这是流程级缺口。 */
-async function onInit(): Promise<void> {
-  initializing.value = true
-  try {
-    const created = await createJob('init')
-    initJobId.value = created.id
-    message.success(t('repo.initSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    initializing.value = false
-  }
-}
 </script>
 
 <template>
   <n-space vertical :size="16">
+    <!-- 仓库列表（R-023） -->
+    <n-card :title="t('repo.listTitle')" size="small">
+      <template #header-extra>
+        <n-button size="small" type="primary" secondary @click="openCreate">{{ t('repo.newRepo') }}</n-button>
+      </template>
+      <n-data-table
+        size="small"
+        :columns="columns"
+        :data="reposQuery.data.value ?? []"
+        :loading="reposQuery.isFetching.value"
+        :row-key="(row: RepoOut) => row.id"
+      />
+    </n-card>
+
+    <!-- 当前仓库配置（R-023） -->
     <n-grid cols="1 1100:2" :x-gap="16" :y-gap="16" responsive="screen">
-      <!-- 仓库与凭据 -->
       <n-gi>
-        <n-card :title="t('nav.repo')" size="small">
+        <n-card :title="t('repo.currentConfigTitle')" size="small">
           <n-space vertical :size="12">
             <n-form label-placement="top" size="small">
               <n-form-item :label="t('repo.type')">
@@ -283,7 +454,7 @@ async function onInit(): Promise<void> {
                     <n-tag size="small" round :type="repoType === 'local' ? 'default' : 'info'">
                       {{ repoType === 'local' ? t('repo.typeLocal') : repoType === 's3' ? t('repo.typeS3') : t('repo.typeB2') }}
                     </n-tag>
-                    <n-tag v-if="itemOf('repo.type')?.source === 'env'" size="tiny" round type="warning">
+                    <n-tag v-if="repo?.url_source === 'env'" size="tiny" round type="warning">
                       {{ t('repo.credSourceEnv') }}
                     </n-tag>
                   </n-space>
@@ -291,7 +462,6 @@ async function onInit(): Promise<void> {
                 </n-space>
               </n-form-item>
               <n-form-item :label="t('repo.url')">
-                <!-- 本地路径：浏览 / 手动输入 双入口；对象存储只保留手动输入 -->
                 <n-space vertical :size="6" class="repo__cred">
                   <n-tabs
                     v-if="repoType === 'local'"
@@ -354,7 +524,7 @@ async function onInit(): Promise<void> {
                 <n-text strong>{{ t('repo.credentials') }}</n-text>
                 <n-form-item
                   v-for="field in credFields"
-                  :key="field.key"
+                  :key="field.suffix"
                   :label="t(field.labelKey)"
                 >
                   <n-space vertical :size="4" class="repo__cred">
@@ -362,12 +532,12 @@ async function onInit(): Promise<void> {
                       <n-tag
                         size="tiny"
                         round
-                        :type="itemOf(field.key)?.has_value ? 'success' : 'default'"
+                        :type="itemOf(field.suffix)?.has_value ? 'success' : 'default'"
                       >
-                        {{ itemOf(field.key)?.has_value ? t('repo.credSet') : t('repo.credUnset') }}
+                        {{ itemOf(field.suffix)?.has_value ? t('repo.credSet') : t('repo.credUnset') }}
                       </n-tag>
                       <n-tag
-                        v-if="itemOf(field.key)?.source === 'env'"
+                        v-if="itemOf(field.suffix)?.source === 'env'"
                         size="tiny"
                         round
                         type="warning"
@@ -375,7 +545,7 @@ async function onInit(): Promise<void> {
                         {{ t('repo.credSourceEnv') }}
                       </n-tag>
                     </n-space>
-                    <n-tooltip v-if="itemOf(field.key)?.source === 'env'" trigger="hover">
+                    <n-tooltip v-if="itemOf(field.suffix)?.source === 'env'" trigger="hover">
                       <template #trigger>
                         <n-input
                           :value="''"
@@ -389,7 +559,7 @@ async function onInit(): Promise<void> {
                     </n-tooltip>
                     <n-input
                       v-else
-                      v-model:value="credInput[field.key]"
+                      v-model:value="credInput[field.suffix]"
                       :placeholder="t('repo.credNewPlaceholder')"
                       type="password"
                       show-password-on="click"
@@ -412,7 +582,7 @@ async function onInit(): Promise<void> {
             </n-alert>
 
             <n-text depth="3">{{ t('repo.passfileStatus') }}：
-              {{ configQuery.data.value?.passfile_status === 'configured'
+              {{ repo?.passfile_status === 'configured'
                 ? t('repo.passfileConfigured')
                 : t('repo.passfileMissing') }}
             </n-text>
@@ -468,6 +638,33 @@ async function onInit(): Promise<void> {
       </n-gi>
     </n-grid>
 
+    <!-- 新建仓库 -->
+    <n-modal
+      v-model:show="createShow"
+      :title="t('repo.newRepoTitle')"
+      preset="card"
+      style="width: 480px"
+    >
+      <n-form label-placement="top" size="small">
+        <n-form-item :label="t('repo.colId')">
+          <n-input v-model:value="createForm.id" :placeholder="t('repo.idRequired')" />
+        </n-form-item>
+        <n-form-item :label="t('repo.colName')">
+          <n-input v-model:value="createForm.name" :placeholder="t('repo.nameRequired')" />
+        </n-form-item>
+        <n-form-item :label="t('repo.url')">
+          <n-input v-model:value="createForm.url" :placeholder="t('repo.urlPlaceholder')" />
+        </n-form-item>
+        <n-form-item :label="t('repo.hostTag')">
+          <n-input v-model:value="createForm.hostTag" :placeholder="t('repo.hostTagPlaceholder')" />
+        </n-form-item>
+      </n-form>
+      <n-space justify="end">
+        <n-button secondary @click="createShow = false">{{ t('common.cancel') }}</n-button>
+        <n-button type="primary" :loading="creating" @click="onCreate">{{ t('common.confirm') }}</n-button>
+      </n-space>
+    </n-modal>
+
     <!-- 手动解锁：三步确认门 -->
     <ConfirmGate
       v-model:show="unlockShow"
@@ -493,6 +690,20 @@ async function onInit(): Promise<void> {
     >
       <template #preview>
         <n-text depth="3">{{ t('repo.initPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
+    <!-- 删除仓库：三步确认门 -->
+    <ConfirmGate
+      v-model:show="deleteShow"
+      :title="t('repo.delete')"
+      :keyword="'DELETE'"
+      :description="t('repo.deleteConfirm')"
+      :loading="deleting"
+      @confirm="confirmDelete"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.deleteConfirm') }}</n-text>
       </template>
     </ConfirmGate>
   </n-space>

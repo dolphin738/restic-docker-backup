@@ -38,6 +38,8 @@ const message = useMessage()
 const page = ref(1)
 /** R-026-10：按任务标签筛选（E17 ?tag=；空 = 全部）。 */
 const tagFilter = ref<string | null>(null)
+/** R-023 多主机视图：按快照主机标识筛选（E17 ?host=；空 = 全部）。 */
+const hostFilter = ref<string | null>(null)
 
 /** 标签选项：E34 任务列表 {id,name,tag} + 当前页快照中出现的历史遗留 tag。 */
 const tasksQuery = useQuery({
@@ -46,8 +48,14 @@ const tasksQuery = useQuery({
 })
 
 const snapshotsQuery = useQuery({
-  queryKey: ['snapshots', page, tagFilter],
-  queryFn: () => listSnapshots(PAGE_SIZE, (page.value - 1) * PAGE_SIZE, tagFilter.value ?? undefined),
+  queryKey: ['snapshots', page, tagFilter, hostFilter],
+  queryFn: () =>
+    listSnapshots(
+      PAGE_SIZE,
+      (page.value - 1) * PAGE_SIZE,
+      tagFilter.value ?? undefined,
+      hostFilter.value ?? undefined,
+    ),
   placeholderData: (previous) => previous,
 })
 
@@ -67,6 +75,20 @@ const tagOptions = computed(() => {
         known.add(tag)
         options.push({ label: tag, value: tag })
       }
+    }
+  }
+  return options
+})
+
+/** 主机选项（R-023 多主机视图）：从当前页快照归并 host 去重 + 全部主机兜底。 */
+const hostOptions = computed(() => {
+  const options = [{ label: t('snapshot.allHosts'), value: '' }]
+  const known = new Set<string>([''])
+  for (const snapshot of snapshots.value) {
+    const host = snapshot.host
+    if (host && !known.has(host)) {
+      known.add(host)
+      options.push({ label: host, value: host })
     }
   }
   return options
@@ -265,14 +287,24 @@ async function confirmForget(): Promise<void> {
     <n-card :title="t('nav.snapshots')" size="small">
       <!-- R-026-10：tag 筛选 + 分组头（当前筛选维度摘要） -->
       <n-space vertical :size="10" class="snapshots__filter">
-        <n-select
-          v-model:value="tagFilter"
-          :options="tagOptions"
-          size="small"
-          class="snapshots__tag-select"
-          :placeholder="t('snapshot.tagFilter')"
-          clearable
-        />
+        <n-space :size="10" :wrap="false" class="snapshots__filters">
+          <n-select
+            v-model:value="tagFilter"
+            :options="tagOptions"
+            size="small"
+            class="snapshots__tag-select"
+            :placeholder="t('snapshot.tagFilter')"
+            clearable
+          />
+          <n-select
+            v-model:value="hostFilter"
+            :options="hostOptions"
+            size="small"
+            class="snapshots__host-select"
+            :placeholder="t('snapshot.hostFilter')"
+            clearable
+          />
+        </n-space>
         <n-text v-if="groupHeaderText" depth="2" class="snapshots__group">
           {{ groupHeaderText }}
         </n-text>
@@ -422,6 +454,14 @@ async function confirmForget(): Promise<void> {
 
 .snapshots__tag-select {
   max-width: 320px;
+}
+
+.snapshots__host-select {
+  max-width: 240px;
+}
+
+.snapshots__filters {
+  flex-wrap: wrap;
 }
 
 .snapshots__group {

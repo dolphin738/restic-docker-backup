@@ -27,17 +27,16 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
-  REPO_ID,
   createBackupTask,
   dryRunBackupTask,
   dryRunSources,
   getBackupTask,
   updateBackupTask,
 } from '@/api/backupTasks'
-import { getConfig, testRepo } from '@/api/config'
+import { getConfig } from '@/api/config'
 import { hasCode, isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
-import { getRepoStatus } from '@/api/repo'
+import { getRepo, getRepoStatus, testRepo } from '@/api/repo'
 import type { BackupTask, DryRunResponse, RepoTestResponse, TaskUpsertRequest } from '@/api/types'
 import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
@@ -151,17 +150,20 @@ watch(
   { immediate: true },
 )
 
-// ---------------------------------------------------------------- 仓库与配置（E30/E06）
+// ---------------------------------------------------------------- 仓库与配置（E30/E06/R-023）
 const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig })
+const repoQuery = useQuery({
+  queryKey: ['repo', ui.currentRepoId],
+  queryFn: () => getRepo(ui.currentRepoId),
+})
 const repoStatusQuery = useQuery({
-  queryKey: ['repo', 'status'],
-  queryFn: getRepoStatus,
+  queryKey: ['repo', 'status', ui.currentRepoId],
+  queryFn: () => getRepoStatus(ui.currentRepoId),
   refetchInterval: 60_000,
 })
 
-const repoUrl = computed(
-  () => configQuery.data.value?.items.find((item) => item.key === 'repo.url')?.value ?? '',
-)
+// R-023：仓库地址落在 repos 表（E07 已拒收 repo.url 配置键），从 repo 对象读取
+const repoUrl = computed(() => repoQuery.data.value?.url ?? '')
 const passfileConfigured = computed(() => configQuery.data.value?.passfile_status === 'configured')
 
 /** 源集合是否较预填值发生变化（保存后服务端会重置 dry_run_pending）。 */
@@ -361,7 +363,7 @@ async function onTestConnection(): Promise<void> {
   testing.value = true
   testResult.value = null
   try {
-    testResult.value = await testRepo()
+    testResult.value = await testRepo(ui.currentRepoId)
   } finally {
     testing.value = false
   }
@@ -455,7 +457,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
                     : t('dashboard.repoDisconnected')
                 }}
               </n-tag>
-              <n-text depth="3">{{ REPO_ID }}</n-text>
+              <n-text depth="3">{{ ui.currentRepoId }}</n-text>
             </n-space>
             <n-text depth="3">{{ t('dashboard.repoCacheNote') }}</n-text>
           </n-space>
