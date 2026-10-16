@@ -62,14 +62,14 @@ async def _seed_backup(db: Database, job_id: str, *, status: str, finished: bool
 
 
 async def test_collect_and_render(tmp_path) -> None:
-    """聚合 + 渲染：状态计数、ratio、sentinel(-1)、process_start、加密开关。"""
+    """聚合 + 渲染：状态计数、ratio、sentinel(-1)、process_start（加密状态指标已移除，审计 2026-10-16 nit-2）。"""
     db = Database(tmp_path / "m.db")
     await db.connect()
     await _seed_backup(db, "job-ok1", status="success")
     await _seed_backup(db, "job-ok2", status="success")
     await _seed_backup(db, "job-bad", status="failed")
 
-    snapshot = await collect_metrics(JobRepo(db), cred_encryption_enabled=True)
+    snapshot = await collect_metrics(JobRepo(db))
     assert snapshot.backup_jobs_by_status == {"success": 2, "failed": 1}
     assert snapshot.backup_success_ratio == pytest.approx(2 / 3)
     assert snapshot.jobs_active == 0
@@ -79,7 +79,6 @@ async def test_collect_and_render(tmp_path) -> None:
     assert 'restic_web_backup_jobs_total{status="failed"} 1' in text
     assert 'restic_web_backup_jobs_total{status="interrupted"} 0' in text
     assert "restic_web_backup_success_ratio 0.6666666666666666" in text
-    assert "restic_web_cred_encryption_enabled 1" in text
     assert "restic_web_process_start_time_seconds" in text
     assert text.count("# TYPE restic_web_backup_jobs_total gauge") == 1
     assert text.endswith("\n")

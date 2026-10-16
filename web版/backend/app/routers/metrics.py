@@ -64,10 +64,7 @@ async def require_metrics_access(request: Request) -> None:
 )
 async def get_metrics(request: Request) -> PlainTextResponse:
     """返回 Prometheus exposition format 0.0.4 文本（pull 模型，抓取时现算）。"""
-    snapshot: MetricsSnapshot = await collect_metrics(
-        request.app.state.job_repo,
-        cred_encryption_enabled=request.app.state.encryption.enabled,
-    )
+    snapshot: MetricsSnapshot = await collect_metrics(request.app.state.job_repo)
     return PlainTextResponse(render_prometheus(snapshot), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 

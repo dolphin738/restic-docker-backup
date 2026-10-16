@@ -71,7 +71,6 @@ class MetricsSnapshot:
     last_backup: Job | None
     last_backup_success_at: float | None
     jobs_active: int
-    cred_encryption_enabled: bool
 
 
 def _epoch(iso_text: str | None) -> float | None:
@@ -82,11 +81,7 @@ def _epoch(iso_text: str | None) -> float | None:
     return moment.timestamp() if moment is not None else None
 
 
-async def collect_metrics(
-    job_repo: JobRepo,
-    *,
-    cred_encryption_enabled: bool = False,
-) -> MetricsSnapshot:
+async def collect_metrics(job_repo: JobRepo) -> MetricsSnapshot:
     """从库里聚合指标快照（pull 模型；每次抓取现算，无计数器漂移）。"""
     counts = await job_repo.backup_status_counts()
     terminal_total = sum(counts.get(status, 0) for status in _TERMINAL_STATUSES)
@@ -100,7 +95,6 @@ async def collect_metrics(
         last_backup=last_backup,
         last_backup_success_at=last_success_at,
         jobs_active=await job_repo.count_active(),
-        cred_encryption_enabled=cred_encryption_enabled,
     )
 
 
@@ -144,11 +138,6 @@ def render_prometheus(snapshot: MetricsSnapshot) -> str:
         ),
         _gauge(f"{METRIC_PREFIX}_process_start_time_seconds", _PROCESS_STARTED_AT, "进程启动时刻（epoch 秒）"),
         _gauge(f"{METRIC_PREFIX}_jobs_active", snapshot.jobs_active, "活跃任务数（running/pending，全类型）"),
-        _gauge(
-            f"{METRIC_PREFIX}_cred_encryption_enabled",
-            1 if snapshot.cred_encryption_enabled else 0,
-            "凭据加密是否启用（R-025；1=启用）",
-        ),
         _family(
             f"{METRIC_PREFIX}_backup_jobs_total",
             "backup 任务累计数（按终态）",
