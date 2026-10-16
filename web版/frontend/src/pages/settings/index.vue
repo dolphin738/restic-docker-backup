@@ -195,6 +195,40 @@ async function onSaveBehavior(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- 凭据加密（R-025 / P3-A）
+
+/** 缺省开（与后端 owner 2026-10-16 裁决一致）：键缺失 = 开；仅显式 '0' 为关。 */
+const credEncryption = ref(true)
+/** 密码文件就位与否（E06 passfile_status）：缺失时开关置灰，启用被后端 422 拒绝。 */
+const credEncryptionAvailable = ref(true)
+const savingCredEncryption = ref(false)
+
+watch(configQuery.data, (data) => {
+  if (!data) {
+    return
+  }
+  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
+  credEncryption.value = item('security.cred_encryption')?.value !== '0'
+  credEncryptionAvailable.value = data.passfile_status === 'configured'
+}, { immediate: true })
+
+/** 即时保存（单开关不设保存按钮）：失败回滚开关，错误文案由 http 层全局提示。 */
+async function onToggleCredEncryption(value: boolean): Promise<void> {
+  if (savingCredEncryption.value) {
+    return
+  }
+  savingCredEncryption.value = true
+  try {
+    await saveDumpBehaviorConfig({ 'security.cred_encryption': value ? '1' : '0' })
+    message.success(t('settings.credential.saved'))
+    await configQuery.refetch()
+  } catch {
+    credEncryption.value = !value
+  } finally {
+    savingCredEncryption.value = false
+  }
+}
+
 // ---------------------------------------------------------------- 缓存维护（E25，批次 A 实装）
 
 const cacheQuery = useQuery({
@@ -441,6 +475,27 @@ async function onChangePassword(): Promise<void> {
             </n-button>
           </n-space>
         </n-form>
+      </n-space>
+    </n-card>
+
+    <!-- 凭据加密（R-025 / P3-A：密钥源自仓库密码文件，默认开） -->
+    <n-card :title="t('settings.credential.title')" size="small">
+      <n-space vertical :size="10">
+        <n-text depth="3">{{ t('settings.credential.desc') }}</n-text>
+        <n-alert v-if="!credEncryptionAvailable" type="warning" :show-icon="false">
+          {{ t('settings.credential.unavailable') }}
+        </n-alert>
+        <n-space align="center" :size="8">
+          <n-switch
+            :value="credEncryption"
+            size="small"
+            :loading="savingCredEncryption"
+            :disabled="!credEncryptionAvailable"
+            @update:value="onToggleCredEncryption"
+          />
+          <n-text>{{ t('settings.credential.enabled') }}</n-text>
+        </n-space>
+        <n-text depth="3" class="settings__hint">{{ t('settings.credential.hint') }}</n-text>
       </n-space>
     </n-card>
 

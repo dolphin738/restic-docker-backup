@@ -559,6 +559,14 @@ export default {
       invalidDay: 'Monthly full-check day must be an integer between 1 and 28',
       saved: 'Behavior switches saved',
     },
+    credential: {
+      title: 'Credential encryption',
+      desc: 'When enabled, S3/B2 credentials, database passwords and notification channel tokens are encrypted (AES-256-GCM) before being written to the database. The key is derived from the repository password file and never enters the database. Existing credentials are converted to the matching storage form when you toggle this.',
+      enabled: 'Enable credential encryption',
+      hint: 'Enabled by default. When disabled, credentials are stored in plaintext inside the database file — keep it enabled unless you are certain the password file is always available.',
+      unavailable: 'Repository password file is missing: credential encryption cannot be enabled. Place the password file (/data/repos/<repo>/password) first.',
+      saved: 'Credential encryption setting saved',
+    },
     cache: {
       title: 'Cache maintenance',
       desc: 'restic cache directory usage (server-side 30s result cache; partial value on timeout). Clearing only affects the cache — repository data and snapshots are untouched.',
