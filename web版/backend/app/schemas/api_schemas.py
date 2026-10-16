@@ -666,3 +666,27 @@ class RepoStatusResponse(_Base):
     locked: bool = False
     capacity: RepoCapacity = Field(default_factory=RepoCapacity)
     last_error: str | None = None
+
+
+class ReportBucketOut(_Base):
+    """R-024 报表单日桶（按配置时区；无运行日 total=0、ratio=null）。"""
+
+    date: str
+    total: int
+    success: int
+    failed: int
+    ratio: float | None
+
+
+class BackupSuccessReportOut(_Base):
+    """R-024 备份成功率报表（E37）。"""
+
+    days: int
+    timezone: str
+    from_date: str
+    to_date: str
+    buckets: list[ReportBucketOut]
+    total: int
+    success: int
+    failed: int
+    ratio: float | None

@@ -56,6 +56,7 @@ from app.routers import config as config_router
 from app.routers import fs as fs_router
 from app.routers import health as health_router
 from app.routers import jobs as jobs_router
+from app.routers import metrics as metrics_router
 from app.routers import ops as ops_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
@@ -331,6 +332,9 @@ def create_app() -> FastAPI:
     app.include_router(ops_router.router, dependencies=protected)        # E21 forget 预览（R-016）
     app.include_router(checks_router.router, dependencies=protected)     # E22 check 结果（R-017，批次 B）
     app.include_router(restore_router.router, dependencies=protected)    # E19
+    # E37/E38（R-024）：不挂全局 protected——E37 指标端点自有鉴权（Bearer 令牌或
+    # session 任一通过，owner 裁决 1C）；E38 报表端点路由内显式挂 _PROTECTED
+    app.include_router(metrics_router.router)
     # 后续批次（dump/notify/cache/audit…）在此按同样方式挂载：
     #   app.include_router(x_router.router, dependencies=protected)
 

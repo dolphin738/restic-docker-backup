@@ -234,6 +234,59 @@ class JobRepo:
                 latest[task_id] = str(row["finished_at"])
         return latest
 
+    # ---------------------------------------------------------------- R-024 指标/报表聚合
+
+    async def backup_status_counts(self, *, since: str | None = None) -> dict[str, int]:
+        """backup 任务按状态计数（R-024 指标；pull 模型即时聚合，无进程内计数器漂移）。
+
+        Args:
+            since: ``created_at >=`` 下界（UTC ISO 文本）；None = 不限（全量）。
+
+        Returns:
+            ``{status: count}``；无数据返回空字典。
+        """
+        where = "WHERE type = 'backup'"
+        params: list[Any] = []
+        if since is not None:
+            where += " AND created_at >= ?"
+            params.append(since)
+        rows = await self._db.fetch_all(
+            f"SELECT status, COUNT(*) AS n FROM jobs {where} GROUP BY status", tuple(params)
+        )
+        return {str(row["status"]): int(row["n"]) for row in rows}
+
+    async def backup_window_rows(self, *, since: str, limit: int = 20_000) -> list[tuple[str, str]]:
+        """时间窗内 backup 的 ``(created_at, status)`` 紧凑行（R-024 报表分桶用）。
+
+        只取两列 + 上限行数：报表按**配置时区**分桶（C8：日期语义走 utils/time），
+        故不在 SQL 里 substr；窗宽由调用方限制（``REPORTS_MAX_DAYS``），行数有界。
+        """
+        rows = await self._db.fetch_all(
+            "SELECT created_at, status FROM jobs WHERE type = 'backup' AND created_at >= ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (since, int(limit)),
+        )
+        return [(str(row["created_at"]), str(row["status"])) for row in rows]
+
+    async def last_backup_terminal(self) -> Job | None:
+        """最近一次**终态** backup（R-024 指标：上次运行时间/时长/跳过数）。"""
+        terminal_placeholders = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        row = await self._db.fetch_one(
+            f"{_SELECT} WHERE type = 'backup' AND status IN ({terminal_placeholders}) "
+            "ORDER BY finished_at DESC, created_at DESC LIMIT 1",
+            tuple(TERMINAL_JOB_STATUSES),
+        )
+        return _to_job(row) if row else None
+
+    async def count_active(self) -> int:
+        """活跃任务数（running/pending，全类型；R-024 指标）。"""
+        placeholders = ",".join("?" * len(ACTIVE_JOB_STATUSES))
+        row = await self._db.fetch_one(
+            f"SELECT COUNT(*) AS n FROM jobs WHERE status IN ({placeholders})",
+            tuple(ACTIVE_JOB_STATUSES),
+        )
+        return int(row["n"]) if row else 0
+
     # ---------------------------------------------------------------- 写
 
     async def create(

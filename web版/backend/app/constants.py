@@ -237,6 +237,15 @@ DUMP_RUN_TIMEOUT_SECONDS = 1800          # 单库 dump 执行超时（30 分钟�
 # 清除该键（值为 NULL）等同缺省=开。
 CRED_ENCRYPTION_KEY = "security.cred_encryption"
 
+# ---------------------------------------------------------------- P3-B：R-024 Prometheus 指标与报表
+
+# 指标端点抓取令牌（config KV；**库内只存 SHA-256**，与 session token 同口径）。
+# 界面设置（不进 ENV_KEY_MAP——env 同步写原值会绕过硬哈希）；空/未设 = 仅 session 可拉。
+METRICS_TOKEN_KEY = "metrics.token"
+# 成功率报表时间窗上限（天）：与 retention.jobs_days 缺省 90 对齐——更早的 backup
+# 历史可能已被清理，报了反而误导；下限 1 天。
+REPORTS_MAX_DAYS = 90
+
 # ---------------------------------------------------------------- P2 收尾批次 D：R-015 原位恢复（E19/E20）
 
 # E20 覆盖预览分页（游标分页，编码与 E18 同源：base64 偏移游标）

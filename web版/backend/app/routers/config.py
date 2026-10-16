@@ -35,6 +35,7 @@ from app.constants import (
     DUMP_PORT_KEY,
     DUMP_RETENTION_DAYS_KEY,
     DUMP_TYPE_KEY,
+    METRICS_TOKEN_KEY,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
     REPO_PROBE_TIMEOUT_SECONDS,
@@ -54,6 +55,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.crypto import EncryptionState
 from app.services.env_sync import load_credentials, passfile_status
+from app.services.metrics import hash_metrics_token
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
 logger = logging.getLogger(__name__)
@@ -143,6 +145,12 @@ async def put_config(
     flag_in_patch = CRED_ENCRYPTION_KEY in patch
     flag_value = patch.pop(CRED_ENCRYPTION_KEY) if flag_in_patch else None
     enable = flag_in_patch and (flag_value or "1").strip() != "0"
+
+    # R-024：metrics.token 原地置换为 SHA-256 硬哈希（None=不变 / ""=清除 /
+    # 非空=设置；设置后不可读，与 session token 同口径）。原地变换保持 set_many
+    # 的原子性（env 覆盖整体拒绝、无部分写入不受影响）。
+    if patch.get(METRICS_TOKEN_KEY):
+        patch[METRICS_TOKEN_KEY] = hash_metrics_token(patch[METRICS_TOKEN_KEY])
 
     if enable and not encryption.crypto.available():
         raise CredentialKeyUnavailableError(str(encryption.crypto.passfile()))

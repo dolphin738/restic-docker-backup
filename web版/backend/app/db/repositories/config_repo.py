@@ -30,7 +30,13 @@ logger = logging.getLogger(__name__)
 # 敏感键：API 只回 has_value + source，不回明文（§4.3 键表"敏感=是"的项）
 SENSITIVE_PREFIXES: tuple[str, ...] = ("cred.",)
 # R-018：通知渠道 URL 内嵌令牌（healthchecks ping UUID / webhook 地址），同凭据口径脱敏
-SENSITIVE_EXACT_KEYS: tuple[str, ...] = ("dump.password", "notify.healthchecks_url", "notify.webhook.url")
+# R-024：metrics.token 同口径（且库内只存 SHA-256 硬哈希，界面设置不可读）
+SENSITIVE_EXACT_KEYS: tuple[str, ...] = (
+    "dump.password",
+    "notify.healthchecks_url",
+    "notify.webhook.url",
+    "metrics.token",
+)
 
 # 仓库地址与派生类型键（§4.3 键表）
 REPO_URL_KEY = "repo.url"
