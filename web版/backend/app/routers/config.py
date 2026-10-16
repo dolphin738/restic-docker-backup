@@ -28,6 +28,7 @@ from app.constants import (
     BEHAVIOR_CHECK_ENABLED_KEY,
     BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    CRED_ENCRYPTION_KEY,
     DUMP_DATABASES_KEY,
     DUMP_ENABLED_KEY,
     DUMP_ENGINES,
@@ -41,7 +42,7 @@ from app.constants import (
     REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
-from app.errors import ValidationError
+from app.errors import CredentialKeyUnavailableError, ValidationError
 from app.schemas.api_schemas import (
     ConfigItem,
     ConfigPatchRequest,
@@ -51,6 +52,7 @@ from app.schemas.api_schemas import (
     RepoStatusResponse,
     RepoTestResponse,
 )
+from app.services.crypto import EncryptionState
 from app.services.env_sync import load_credentials, passfile_status
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
@@ -70,13 +72,14 @@ _status_lock = asyncio.Lock()
 # 锁残留关键词（从 cat config 的失败输出里识别，零额外 restic 调用）
 _LOCK_KEYWORDS: tuple[str, ...] = ("already locked", "unable to create lock", "remove stale locks")
 
-# 0/1 开关键（批次 B 批次面：behavior.* 三开关 + dump.enabled）
+# 0/1 开关键（批次 B 批次面：behavior.* 三开关 + dump.enabled；R-025：凭据加密开关）
 _BOOL_KEYS: frozenset[str] = frozenset(
     {
         BEHAVIOR_AUTO_INIT_KEY,
         BEHAVIOR_AUTO_UNLOCK_KEY,
         BEHAVIOR_CHECK_ENABLED_KEY,
         DUMP_ENABLED_KEY,
+        CRED_ENCRYPTION_KEY,
     }
 )
 
@@ -111,7 +114,13 @@ async def put_config(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> OkResponse:
-    """批量写入配置项；命中 env 覆盖键时整体拒绝（409 ENV_OVERRIDDEN，不产生部分写入）。"""
+    """批量写入配置项；命中 env 覆盖键时整体拒绝（409 ENV_OVERRIDDEN，不产生部分写入）。
+
+    R-025：patch 含 ``security.cred_encryption`` 时单独处理开关（先迁移后落键 /
+    先落键后迁移的崩溃安全序见 :meth:`ConfigRepo.migrate_encryption` 与
+    ``_apply_cred_encryption_flag``）；含敏感键而密码文件缺失时前置 422，
+    守住「不产生部分写入」契约。
+    """
     del session
     if not payload.patch:
         raise ValidationError("patch 不能为空")
@@ -126,19 +135,77 @@ async def put_config(
     _validate_patch_values(payload.patch)
 
     repo = request.app.state.config_repo
-    await repo.set_many(payload.patch)
+    encryption: EncryptionState = request.app.state.encryption
+
+    # R-025 开关先 pop 出来（其余键仍走 set_many，env 覆盖整体拒绝不变）；
+    # 所有可能 422 的预检都在任何写入之前——守住「不产生部分写入」契约
+    patch = dict(payload.patch)
+    flag_in_patch = CRED_ENCRYPTION_KEY in patch
+    flag_value = patch.pop(CRED_ENCRYPTION_KEY) if flag_in_patch else None
+    enable = flag_in_patch and (flag_value or "1").strip() != "0"
+
+    if enable and not encryption.crypto.available():
+        raise CredentialKeyUnavailableError(str(encryption.crypto.passfile()))
+    if (
+        encryption.enabled
+        and patch
+        and any(ConfigRepo.is_sensitive(key) for key in patch)
+        and not encryption.crypto.available()
+    ):
+        raise CredentialKeyUnavailableError(str(encryption.crypto.passfile()))
+
+    # set_many 的 env 覆盖整体拒绝必须先于开关落键/迁移，否则拒绝时开关已改写（半写）
+    await repo.set_many(patch)
     # E30 有 30s 进程内 TTL 缓存：配置刚保存（尤其 repo.url/凭据）时必须失效，
     # 否则用户保存后点「刷新」拿到的仍是旧状态，误以为"保存了也没连上"。
     invalidate_repo_status_cache()
 
+    cred_migrated = 0
+    if flag_in_patch:
+        cred_migrated = await _apply_cred_encryption_flag(repo, encryption, flag_value)
+
     keys = sorted(payload.patch.keys())
+    detail: dict[str, object] = {"keys": keys, "count": len(keys)}
+    if cred_migrated:
+        detail["cred_migrated"] = cred_migrated
     await request.app.state.audit.record(
         AUDIT_CONFIG_UPDATE,
         target="config",
-        detail={"keys": keys, "count": len(keys)},
+        detail=detail,
         result="ok",
     )
     return OkResponse()
+
+
+async def _apply_cred_encryption_flag(
+    repo: ConfigRepo,
+    encryption: EncryptionState,
+    flag_value: str | None,
+) -> int:
+    """应用凭据加密开关（R-025）：返回存量搬运键数（审计用，不含任何明文）。
+
+    崩溃安全序（读侧恒按 ``enc:v1:`` 前缀判定，与开关无关，故任一中断点均可读）：
+    - **启用**：密码文件缺失 → 422 前置拒绝；否则先落开关再明文→密文搬运
+     （中断残留明文，重跑即收敛）；
+    - **关闭**：先密文→明文搬运再落开关（中断时开关仍开、新写仍加密，重跑即收敛）；
+    - None（清除）= 缺省 = 开。
+    """
+    enable = (flag_value or "1").strip() != "0"
+    if enable:
+        if not encryption.crypto.available():
+            raise CredentialKeyUnavailableError(str(encryption.crypto.passfile()))
+        if not encryption.enabled:
+            await repo.set(CRED_ENCRYPTION_KEY, "1")
+            encryption.enabled = True
+        # 已开启也跑一次幂等迁移：愈合上次中断残留的明文（X6 类中断恢复思路）
+        return await repo.migrate_encryption(encrypt=True)
+    if encryption.enabled:
+        migrated = await repo.migrate_encryption(encrypt=False)
+        await repo.set(CRED_ENCRYPTION_KEY, "0")
+        encryption.enabled = False
+        return migrated
+    await repo.set(CRED_ENCRYPTION_KEY, "0")
+    return 0
 
 
 def invalidate_repo_status_cache() -> None:

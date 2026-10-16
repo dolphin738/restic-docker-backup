@@ -33,6 +33,7 @@ from app.auth.dependencies import (
 from app.auth.service import AuthService
 from app.auth.session import SessionService
 from app.constants import (
+    CRED_ENCRYPTION_KEY,
     CSRF_ORIGIN,
     ERROR_STATUS,
     FORBIDDEN,
@@ -63,6 +64,7 @@ from app.routers.config import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
 from app.services.compare import CompareService
+from app.services.crypto import CredentialCrypto, EncryptionState
 from app.services.env_sync import sync_env_overrides
 from app.services.job_runner import JobRunner
 from app.services.notifier import Notifier
@@ -172,7 +174,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     db = await init_database(settings.db_path)
     audit = AuditRepo(db)
-    config_repo = ConfigRepo(db)
+    # R-025 凭据加密（P3-A，owner 2026-10-16 裁决默认开）：密钥源自仓库密码文件
+    # （E5 per-repo 布局）经 HKDF-SHA256 派生；缺省 enabled=True，随后按持久化键校准
+    credential_crypto = CredentialCrypto(settings)
+    encryption = EncryptionState(credential_crypto)
+    config_repo = ConfigRepo(db, encryption=encryption)
     sessions = SessionService(db, settings)
     admin = AdminAccountStore(db, settings)
     auth_service = AuthService(audit, sessions, admin, settings)
@@ -239,6 +245,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = db
     app.state.audit = audit
     app.state.config_repo = config_repo
+    app.state.encryption = encryption
     app.state.sessions = sessions
     app.state.admin = admin
     app.state.auth_service = auth_service
@@ -264,8 +271,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     purged = await sessions.purge_expired()
     if purged:
         logger.info("启动清理过期会话 %d 条", purged)
+    # R-025：先按持久化键校准加密开关（缺省=开），再跑 env 同步——保证 env 写入的
+    # 存储形态与开关一致；随后把存量明文敏感键迁为密文（幂等，混合形态可读）
+    flag = await config_repo.get_value(CRED_ENCRYPTION_KEY)
+    encryption.enabled = flag != "0"
+    if encryption.enabled and not credential_crypto.available():
+        logger.warning(
+            "凭据加密已启用但仓库密码文件缺失（%s）：新凭据写入将失败，直至密码文件就位",
+            credential_crypto.passfile(),
+        )
     # env→config 一次性同步：使 E07 的 ENV_OVERRIDDEN 真正触发得到（§6 env 覆盖优先）
     await sync_env_overrides(config_repo, settings, audit)
+    if encryption.enabled:
+        migrated = await config_repo.migrate_encryption(encrypt=True)
+        if migrated:
+            logger.info("凭据加密已启用：%d 个存量明文键已迁移为密文", migrated)
     # 存量回填：repo.url 已有但 repo.type 缺失的老库，按协议推导补写（前端不再自行推导）
     if await config_repo.backfill_repo_type():
         logger.info("已按 repo.url 协议回填 repo.type")

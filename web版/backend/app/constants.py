@@ -62,6 +62,7 @@ CSRF_ORIGIN = "CSRF_ORIGIN"                        # 403 写方法 Origin 校验
 BOOTSTRAP_REQUIRED = "BOOTSTRAP_REQUIRED"          # 403 首启未改密门
 TASK_RUNNING = "TASK_RUNNING"                      # 409 E35''：运行中/等待中任务拒绝删除
 REPO_NOT_FOUND = "REPO_NOT_FOUND"                  # 404 E34–E36：repo 作用域 id 不存在（P2 仅 default）
+CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密文无法解密（密码文件被换/数据损坏）
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
 ERROR_STATUS: dict[str, int] = {
@@ -86,6 +87,7 @@ ERROR_STATUS: dict[str, int] = {
     BOOTSTRAP_REQUIRED: 403,
     TASK_RUNNING: 409,
     REPO_NOT_FOUND: 404,
+    CREDENTIAL_DECRYPT_FAILED: 500,
 }
 
 # ---------------------------------------------------------------- 审计动作（§4.6 / §7.6）
@@ -226,6 +228,14 @@ DUMP_PORT_DEFAULT = 5432
 DUMP_RETENTION_DAYS_DEFAULT = 7          # 产物保留天数缺省；<=0 = 不启用清理（fail-safe）
 DUMP_PROBE_TIMEOUT_SECONDS = 15          # pg 客户端/服务端版本探测超时
 DUMP_RUN_TIMEOUT_SECONDS = 1800          # 单库 dump 执行超时（30 分钟）
+
+# ---------------------------------------------------------------- P3-A：R-025 凭据加密存储（E07 可调）
+
+# 凭据加密开关键（config KV；0/1）。**缺省 1（默认开）**——owner 2026-10-16 裁决：
+# 开=敏感键（cred.* / dump.password / notify.*）写入即加密（AES-256-GCM，密钥源自
+# 仓库密码文件派生）；关=明文存储。读侧恒按 `enc:v1:` 前缀判定，与开关无关（崩溃安全）。
+# 清除该键（值为 NULL）等同缺省=开。
+CRED_ENCRYPTION_KEY = "security.cred_encryption"
 
 # ---------------------------------------------------------------- P2 收尾批次 D：R-015 原位恢复（E19/E20）
 

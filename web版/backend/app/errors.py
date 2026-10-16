@@ -15,6 +15,7 @@ from app.constants import (
     ACCOUNT_LOCKED,
     BOOTSTRAP_REQUIRED,
     BOOTSTRAP_SHOWN,
+    CREDENTIAL_DECRYPT_FAILED,
     CSRF_ORIGIN,
     ENV_OVERRIDDEN,
     ERROR_STATUS,
@@ -165,6 +166,31 @@ class ReadonlyKeyError(AppError):
     code = READONLY_KEY
     status = ERROR_STATUS[READONLY_KEY]
     message = "该配置项为只读派生键，由服务端自动维护，不可直接修改"
+
+
+class CredentialKeyUnavailableError(ValidationError):
+    """422 仓库密码文件缺失/不可读，无法进行凭据加解密（R-025，E5 布局）。"""
+
+    message = "仓库密码文件缺失或不可读，无法进行凭据加解密"
+
+    def __init__(self, path: str | None = None) -> None:
+        """构造密钥不可用错误。
+
+        Args:
+            path: 密码文件路径（E5 per-repo 布局，回显供用户定位；非敏感信息）。
+        """
+        super().__init__(data={"path": path} if path else None)
+
+
+class CredentialDecryptError(AppError):
+    """500 凭据密文无法解密（密钥不匹配/数据被篡改；R-025）。
+
+    明文/密文都不进 message——只给可操作原因（密码文件被更换或数据损坏）。
+    """
+
+    code = CREDENTIAL_DECRYPT_FAILED
+    status = ERROR_STATUS[CREDENTIAL_DECRYPT_FAILED]
+    message = "凭据解密失败：仓库密码文件可能已被更换，或配置数据已损坏"
 
 
 class NotCancellableError(AppError):

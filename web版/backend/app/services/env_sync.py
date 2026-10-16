@@ -21,6 +21,7 @@ from pathlib import Path
 from app.constants import AUDIT_ENV_SYNC
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
+from app.errors import CredentialKeyUnavailableError
 from app.schemas.enums import ConfigSource
 from app.settings import Settings, get_settings
 
@@ -96,17 +97,26 @@ async def sync_env_overrides(
         audit: 审计仓储；传入时记录一条同步摘要。
 
     Returns:
-        ``{"upserted": n, "pruned": m}``——写入/覆盖条数与回收条数。
+        ``{"upserted": n, "pruned": m, "skipped": k}``——写入/覆盖条数、回收条数、
+        因密码文件缺失被跳过的凭据键数（R-025）。
     """
     del settings  # 当前映射表只依赖 os.environ；保留形参以便调用方显式注入
     upserted = 0
     pruned = 0
+    skipped = 0
     touched: list[str] = []
 
     for env_name, key in ENV_KEY_MAP.items():
         value = os.environ.get(env_name, "").strip()
         if value:
-            await config_repo.set(key, value, source=ConfigSource.ENV, force=True)
+            try:
+                await config_repo.set(key, value, source=ConfigSource.ENV, force=True)
+            except CredentialKeyUnavailableError:
+                # R-025：密码文件缺失 ⇒ 凭据加密不可用。env 覆盖键降级跳过
+                # （不阻断启动）；密码文件就位后下次启动自动补同步
+                logger.warning("env→config 同步跳过 %s：仓库密码文件缺失，凭据加密不可用", key)
+                skipped += 1
+                continue
             touched.append(key)
             upserted += 1
             continue
@@ -119,6 +129,8 @@ async def sync_env_overrides(
         logger.info("env→config 同步：覆盖 %d 个键（%s）", upserted, ", ".join(touched))
     if pruned:
         logger.info("env→config 同步：回收 %d 个失效的 env 覆盖键", pruned)
+    if skipped:
+        logger.warning("env→config 同步：%d 个凭据键因密码文件缺失被跳过", skipped)
 
     if audit is not None and (upserted or pruned):
         await audit.record(
@@ -127,4 +139,4 @@ async def sync_env_overrides(
             detail={"upserted": upserted, "pruned": pruned, "keys": touched},
             result="ok",
         )
-    return {"upserted": upserted, "pruned": pruned}
+    return {"upserted": upserted, "pruned": pruned, "skipped": skipped}
