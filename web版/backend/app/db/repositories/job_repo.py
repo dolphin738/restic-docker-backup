@@ -10,7 +10,7 @@ from app.db.database import Database
 from app.utils.time import utc_iso
 
 _COLUMNS = (
-    "id", "type", "status", "trigger", "policy_id", "task_id", "snapshot_id", "bytes_done", "files_done",
+    "id", "type", "status", "trigger", "repo_id", "policy_id", "task_id", "snapshot_id", "bytes_done", "files_done",
     "skipped_count", "last_event_id", "log_path", "summary", "started_at", "finished_at",
     "exit_code", "created_at",
 )
@@ -24,12 +24,14 @@ class Job:
     ``task_id`` 语义（增量设计 §1.2 决策二）：该 job 由哪个备份任务产生；新任务
     （backup/forget）落 ``task_id``、``policy_id`` 为 NULL；legacy 行仅 ``policy_id``；
     删除任务后 ``task_id`` 经外键 ``ON DELETE SET NULL`` 置空（行与日志保留）。
+    ``repo_id``（0003，R-023）：该 job 归属的仓库；历史行恒 ``default``。
     """
 
     id: str
     type: str
     status: str
     trigger: str
+    repo_id: str
     policy_id: int | None
     task_id: int | None
     snapshot_id: str | None
@@ -63,12 +65,22 @@ class JobRepo:
         row = await self._db.fetch_one(f"{_SELECT} WHERE id = ?", (job_id,))
         return _to_job(row) if row else None
 
-    async def list_active(self) -> list[Job]:
-        """返回进行中（running/pending）任务，按创建时间升序（先来先服务）。"""
+    async def list_active(self, repo_id: str | None = None) -> list[Job]:
+        """返回进行中（running/pending）任务，按创建时间升序（先来先服务）。
+
+        Args:
+            repo_id: 仓库过滤（R-023：E1 仓库维度互斥——多仓库互不阻塞）；
+                None = 不限仓库（管理面/恢复扫描用）。
+        """
         placeholders = ",".join("?" * len(ACTIVE_JOB_STATUSES))
+        where = f"WHERE status IN ({placeholders})"
+        params: list[Any] = list(ACTIVE_JOB_STATUSES)
+        if repo_id is not None:
+            where += " AND repo_id = ?"
+            params.append(repo_id)
         rows = await self._db.fetch_all(
-            f"{_SELECT} WHERE status IN ({placeholders}) ORDER BY created_at ASC",
-            tuple(ACTIVE_JOB_STATUSES),
+            f"{_SELECT} {where} ORDER BY created_at ASC",
+            tuple(params),
         )
         return [_to_job(row) for row in rows]
 
@@ -296,6 +308,7 @@ class JobRepo:
         job_type: str,
         trigger: str,
         log_path: str,
+        repo_id: str = "default",
         policy_id: int | None = None,
         task_id: int | None = None,
         snapshot_id: str | None = None,
@@ -308,6 +321,7 @@ class JobRepo:
             job_type: 任务类型（E12 白名单）。
             trigger: ``manual`` / ``scheduled``。
             log_path: 日志文件路径（插入即确定，供 SSE 回放）。
+            repo_id: 归属仓库（R-023；历史行恒 ``default``）。
             policy_id: 关联策略（legacy）；可为空。
             task_id: 关联备份任务（与 policy_id 互斥由上层保证）；可为空。
             snapshot_id: 关联快照；可为空。
@@ -318,9 +332,9 @@ class JobRepo:
         """
         now = utc_iso()
         await self._db.write(
-            "INSERT INTO jobs (id, type, status, trigger, policy_id, task_id, snapshot_id, "
-            "skipped_count, last_event_id, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
-            (job_id, job_type, status, trigger, policy_id, task_id, snapshot_id, log_path, now),
+            "INSERT INTO jobs (id, type, status, trigger, repo_id, policy_id, task_id, snapshot_id, "
+            "skipped_count, last_event_id, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+            (job_id, job_type, status, trigger, repo_id, policy_id, task_id, snapshot_id, log_path, now),
         )
         created = await self.get(job_id)
         if created is None:  # pragma: no cover - 理论不可达
@@ -456,6 +470,7 @@ def _to_job(row: Any) -> Job:
         type=str(row["type"]),
         status=str(row["status"]),
         trigger=str(row["trigger"]),
+        repo_id=str(row["repo_id"] or "default"),
         policy_id=None if row["policy_id"] is None else int(row["policy_id"]),
         task_id=None if row["task_id"] is None else int(row["task_id"]),
         snapshot_id=None if row["snapshot_id"] is None else str(row["snapshot_id"]),

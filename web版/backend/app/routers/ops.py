@@ -36,6 +36,8 @@ from app.constants import (
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import ReposRepo
+from app.dependencies import current_repo_id
 from app.errors import JobConflictError, ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
     AuditOut,
@@ -146,6 +148,7 @@ def build_forget_args(
 async def preview_forget(
     payload: ForgetPreviewRequest,
     request: Request,
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> ForgetPreviewResponse:
     """``forget --dry-run --json`` → 将被裁剪的快照列表（只读，不落任何裁剪）。
@@ -161,11 +164,13 @@ async def preview_forget(
     parser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
     config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
     audit = request.app.state.audit
 
-    repo_url = (await config_repo.get_value("repo.url")) or ""
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
     if not repo_url:
-        raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写 repo.url）")
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
     args = build_forget_args(
         tag=payload.tag,
@@ -175,7 +180,9 @@ async def preview_forget(
         prune=False,  # dry-run 与 --prune 并存无意义，prune 只属于确认后的执行
     )
     argv = restic.build("forget", args=args)
-    env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
     probe = await restic.run_json(argv, env=env, timeout_seconds=FORGET_PREVIEW_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, FORGET_PREVIEW_TIMEOUT_SECONDS)

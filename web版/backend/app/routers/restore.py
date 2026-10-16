@@ -41,6 +41,8 @@ from app.constants import (
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
+from app.dependencies import current_repo_id
 from app.errors import PathOutOfPrefixError, RestoreForbiddenError, ValidationError
 from app.schemas.api_schemas import (
     RestorePreviewItem,
@@ -80,6 +82,7 @@ _STEM_MAX_LENGTH = 32
 async def restore_snapshot(
     payload: RestoreRequest,
     request: Request,
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> RestoreResponse:
     """提交恢复任务并返回服务端计算的时间戳子目录（202）。
@@ -106,7 +109,7 @@ async def restore_snapshot(
 
     # 覆盖语义请求 → 原位恢复分支（时间戳路径出现覆盖参数由该分支判 422）
     if payload.overwrite_mode is not None or payload.keyword is not None:
-        return await _restore_inplace(payload, request)
+        return await _restore_inplace(payload, request, repo_id)
 
     try:
         target_root = mapper.validate(payload.target, allowed_prefixes=RESTORE_ALLOWED_PREFIXES)
@@ -119,7 +122,7 @@ async def restore_snapshot(
     include = _normalize_include_paths(payload.paths, mapper, settings)
 
     stamp = format_local(now_utc(), settings.tz, "%Y%m%d-%H%M")
-    stem = await _resolve_stem(request, payload.snapshot_id)
+    stem = await _resolve_stem(request, payload.snapshot_id, repo_id)
     restore_target = posixpath.join(target_root.rstrip("/"), f"{stem}-{stamp}")
 
     params: dict[str, Any] = {"target": restore_target}
@@ -127,6 +130,7 @@ async def restore_snapshot(
         params["include"] = include
     job = await runner.submit(
         "restore",
+        repo_id=repo_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,
         params=params,
@@ -162,6 +166,7 @@ async def restore_snapshot(
 async def preview_inplace_restore(
     payload: RestorePreviewRequest,
     request: Request,
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> RestorePreviewResponse:
     """比对快照内容与目标磁盘现状，返回「将被覆盖文件清单」（只读，游标分页）。
@@ -187,7 +192,7 @@ async def preview_inplace_restore(
     compare: CompareService = request.app.state.compare_service
 
     container_target, roots = await _enforce_inplace_lock(request, payload.snapshot_id, payload.target)
-    scan = compare.diff(payload.snapshot_id, container_target, roots=roots)
+    scan = compare.diff(payload.snapshot_id, container_target, repo_id=repo_id, roots=roots)
     items: list[OverwriteItem] = [item async for item in scan]
 
     start = decode_cursor(payload.cursor, SNAPSHOT_FILES_MAX_OFFSET)
@@ -224,7 +229,7 @@ async def preview_inplace_restore(
 
 # ---------------------------------------------------------------- 内部实现
 
-async def _restore_inplace(payload: RestoreRequest, request: Request) -> RestoreResponse:
+async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: str) -> RestoreResponse:
     """原位恢复分支（R-015 US-P2-14）：双重锁 + 三重确认门后端校验 + 审计。
 
     执行层落点（S7 v1.3「执行层落点纪律」）：restic 的落点是 ``--target`` +
@@ -261,7 +266,7 @@ async def _restore_inplace(payload: RestoreRequest, request: Request) -> Restore
 
     include = _resolve_inplace_include(payload.paths, mapper, settings, container_target)
     overwrite_count = await _current_overwrite_count(
-        compare, payload.snapshot_id, container_target, roots
+        compare, payload.snapshot_id, container_target, roots, repo_id=repo_id
     )
     params: dict[str, Any] = {
         # 落点固定 "/"：restic 落点 = --target + 快照内绝对路径（S7 v1.3）
@@ -273,6 +278,7 @@ async def _restore_inplace(payload: RestoreRequest, request: Request) -> Restore
     }
     job = await runner.submit(
         "restore",
+        repo_id=repo_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,
         params=params,
@@ -402,7 +408,7 @@ def _within(mapper: PathMapper, path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 async def _current_overwrite_count(
-    compare: CompareService, snapshot_id: str, target: str, roots: list[str]
+    compare: CompareService, snapshot_id: str, target: str, roots: list[str], repo_id: str = DEFAULT_REPO_ID
 ) -> int | None:
     """执行前重算一次覆盖计数（审计 detail 的「预览值」；失败不阻断执行）。
 
@@ -415,7 +421,7 @@ async def _current_overwrite_count(
     比对失败时返回 ``None``（审计 detail 留空），**不阻断**已过三重确认门的恢复执行。
     """
     try:
-        scan = compare.diff(snapshot_id, target, roots=roots)
+        scan = compare.diff(snapshot_id, target, repo_id=repo_id, roots=roots)
         return len([item async for item in scan])
     except Exception as exc:  # noqa: BLE001 - 计数失败不得阻断恢复主流程
         logger.warning("原位恢复覆盖计数失败，审计 detail 置 null：%s", exc)
@@ -469,7 +475,7 @@ def _normalize_include_paths(
             include.append(container)
     return include
 
-async def _resolve_stem(request: Request, snapshot_id: str) -> str:
+async def _resolve_stem(request: Request, snapshot_id: str, repo_id: str) -> str:
     """解析时间戳子目录的"源目录名"（best-effort，失败回退快照 id 前 8 位）。
 
     目录名取自快照首个备份路径的**顶层目录名**（快照存容器路径 ``/host/etc/nginx`` →
@@ -490,11 +496,15 @@ async def _resolve_stem(request: Request, snapshot_id: str) -> str:
     config_repo: ConfigRepo = request.app.state.config_repo
 
     try:
-        repo_url = (await config_repo.get_value("repo.url")) or ""
+        repos_repo: ReposRepo = request.app.state.repos_repo
+        repo = await repos_repo.get(repo_id)
+        repo_url = (repo.url if repo is not None else None) or ""
         if not repo_url:
             return fallback
         argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
-        env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
+        env = restic.build_env(
+            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+        )
         started = time.monotonic()
         probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
         if probe.exit_code != 0:

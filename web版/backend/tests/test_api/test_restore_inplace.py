@@ -171,9 +171,9 @@ async def _wait_terminal(ns, job_id: str) -> None:
 
 
 async def _setup(ns, *, snapshot_paths: list[str] | None = None, names: list[str] | None = None) -> None:
-    """登录 + 配置 repo.url + 装好 restic 替身。"""
+    """登录 + 配置默认仓库 url（P3-C 起 url 落在 repos 表）+ 装好 restic 替身。"""
     await finish_bootstrap(ns)
-    await ns.app.state.config_repo.set("repo.url", "/repo")
+    await ns.app.state.repos_repo.update("default", url="/repo")
     _patch_run_json(ns, snapshot_paths=snapshot_paths or [ROOT], names=names or ["nginx.conf"])
 
 

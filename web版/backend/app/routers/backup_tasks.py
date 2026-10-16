@@ -29,7 +29,8 @@ from app.constants import (
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
-from app.db.repositories.task_repo import DEFAULT_REPO_ID, Task, TaskRepo
+from app.db.repositories.repo_repo import ReposRepo
+from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import NotFoundError, PathOutOfPrefixError, RepoNotFoundError, TaskRunningError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.schemas.api_schemas import (
@@ -61,16 +62,18 @@ CARD_PAUSED = "paused"
 CARD_NEVER_RUN = "never_run"
 
 
-def _require_default_repo(repo_id: str) -> None:
-    """repo 作用域守卫：仅接受 ``default``，其余 404 REPO_NOT_FOUND（E6/E7）。
+async def _require_repo(request: Request, repo_id: str) -> None:
+    """repo 作用域守卫（R-023）：接受**任意已存在**的仓库 id，其余 404 REPO_NOT_FOUND。
 
     Args:
+        request: 当前请求（取 repos_repo）。
         repo_id: 路径前缀中的仓库作用域 id。
 
     Raises:
-        RepoNotFoundError: repo_id 非 ``default``（404，data 带 repo_id）。
+        RepoNotFoundError: 仓库不存在（404，data 带 repo_id）。
     """
-    if repo_id != DEFAULT_REPO_ID:
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    if not await repos_repo.exists(repo_id):
         raise RepoNotFoundError(repo_id)
 
 
@@ -108,13 +111,13 @@ async def list_tasks(
     ``SchedulerService.next_fire_time`` / ``_due_for_prune``（cron 推导与 prune 提示）。
     """
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     task_repo: TaskRepo = request.app.state.task_repo
     job_repo: JobRepo = request.app.state.job_repo
     scheduler = getattr(request.app.state, "scheduler", None)
 
-    tasks = await task_repo.list_all(DEFAULT_REPO_ID)
-    active_jobs = await job_repo.list_active()
+    tasks = await task_repo.list_all(repo_id)
+    active_jobs = await job_repo.list_active(repo_id)
     active_by_task: dict[int, Job] = {}
     for job in active_jobs:
         if job.task_id is not None:
@@ -143,9 +146,9 @@ async def get_task(
 ) -> TaskOut:
     """返回任务全字段 + display 派生（tag 只读露出）；不存在返回 404 NOT_FOUND。"""
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     task = await request.app.state.task_repo.get(task_id)
-    if task is None:
+    if task is None or task.repo_id != repo_id:
         raise NotFoundError("任务不存在")
     return TaskOut(**request.app.state.task_service.to_api(task))
 
@@ -169,11 +172,12 @@ async def create_task(
     """创建任务（US-026-01）：normalize（共享字段委托策略域）→ create（dry_run_pending=1、
     tag 回写 ``task-<id>``）→ 审计 ``task.create`` → 调度器 reload → 201 TaskOut。"""
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     service = request.app.state.task_service
     task_repo: TaskRepo = request.app.state.task_repo
 
     values = service.normalize(payload.model_dump())
+    values["repo_id"] = repo_id  # 任务归属路径作用域仓库（E7）
     task = await task_repo.create(values)
     await request.app.state.audit.record(
         AUDIT_TASK_CREATE, target=str(task.id), detail={"name": task.name, "tag": task.tag}, result="ok"
@@ -199,12 +203,12 @@ async def update_task(
     """更新任务（US-026-02，全量语义）：存在性校验 → normalize → 源集合变更则
     ``dry_run_pending=1``（AC2）→ tag 永不被写 → 调度器 reload → 审计 → 200 TaskOut。"""
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     task_repo: TaskRepo = request.app.state.task_repo
     service = request.app.state.task_service
 
     existing = await task_repo.get(task_id)
-    if existing is None:
+    if existing is None or existing.repo_id != repo_id:
         raise NotFoundError("任务不存在")
 
     values = service.normalize(payload.model_dump())
@@ -240,15 +244,15 @@ async def delete_task(
     """删除任务（US-026-03）：活跃 job 检查（409 TASK_RUNNING）→ 删除（jobs.task_id
     经外键置空、快照不动）→ 调度器移除触发器 → 审计 ``task.delete`` → 200 OkResponse。"""
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     task_repo: TaskRepo = request.app.state.task_repo
     job_repo: JobRepo = request.app.state.job_repo
 
     existing = await task_repo.get(task_id)
-    if existing is None:
+    if existing is None or existing.repo_id != repo_id:
         raise NotFoundError("任务不存在")
 
-    for job in await job_repo.list_active():
+    for job in await job_repo.list_active(repo_id):
         if job.task_id == task_id:
             raise TaskRunningError(job.id, existing.name)
 
@@ -287,7 +291,7 @@ async def dry_run_task(
     是 US-026-01 AC1 第⑤步「预览→确认」的服务端凭证。截断视为未看全，保守不清标记。
     """
     del session
-    _require_default_repo(repo_id)
+    await _require_repo(request, repo_id)
     settings = request.app.state.settings
     mapper: PathMapper = request.app.state.path_mapper
     restic: ResticCmd = request.app.state.restic
@@ -296,7 +300,7 @@ async def dry_run_task(
     task_repo: TaskRepo = request.app.state.task_repo
 
     task = await task_repo.get(task_id)
-    if task is None:
+    if task is None or task.repo_id != repo_id:
         raise NotFoundError("任务不存在")
 
     raw_sources = payload.sources if payload.sources is not None else task.sources
@@ -321,10 +325,12 @@ async def dry_run_task(
         one_file_system=task.one_file_system,
     )
 
-    repo_url = (await config_repo.get_value("repo.url")) or ""
-    env_extras = await load_credentials(config_repo)
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    env_extras = await load_credentials(config_repo, repo_id)
     argv = restic.build("backup", args=args, env_extras=env_extras)
-    env = restic.build_env(repo_url=repo_url, env_extras=env_extras)
+    env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
 
     log_path = settings.jobs_dir / f"dryrun-task-{new_ulid()}.log"
     proc = await restic.spawn(argv, log_path, env=env)

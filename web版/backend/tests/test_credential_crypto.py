@@ -231,8 +231,8 @@ async def test_ciphertext_without_component_rejected(tmp_path) -> None:
 async def test_load_credentials_decrypts(tmp_path) -> None:
     """cred.* → 子进程 env 的唯一出口：密文入库、明文出站（AWS_/B2_ 还原规则不变）。"""
     db, repo, _state = await _repo(tmp_path)
-    await repo.set("cred.aws_secret_access_key", SECRET)
-    await repo.set("cred.b2_account_key", "b2-key")
+    await repo.set("cred.default.aws_secret_access_key", SECRET)
+    await repo.set("cred.default.b2_account_key", "b2-key")
     env = await load_credentials(repo)
     assert env == {"AWS_SECRET_ACCESS_KEY": SECRET, "B2_ACCOUNT_KEY": "b2-key"}
     await db.close()
@@ -276,7 +276,7 @@ async def test_e07_cred_write_encrypted_at_rest(app_client) -> None:
 
     resp = await client.put(
         "/api/config",
-        json={"patch": {"cred.aws_secret_access_key": SECRET, "repo.url": "/repo"}},
+        json={"patch": {"cred.aws_secret_access_key": SECRET}},
         headers=ORIGIN,
     )
     assert resp.status_code == 200, resp.text

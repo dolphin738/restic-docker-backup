@@ -32,6 +32,7 @@ from app.constants import (
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.errors import ResticFailedError
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
@@ -70,7 +71,14 @@ class CompareScan:
     而 async generator 无法在 ``async for`` 之外回传值。
     """
 
-    def __init__(self, service: CompareService, snapshot_id: str, target: str, roots: list[str] | None) -> None:
+    def __init__(
+        self,
+        service: CompareService,
+        snapshot_id: str,
+        target: str,
+        roots: list[str] | None,
+        repo_id: str = DEFAULT_REPO_ID,
+    ) -> None:
         """构造扫描句柄（惰性：真正的子进程调用发生在迭代时）。
 
         Args:
@@ -78,11 +86,13 @@ class CompareScan:
             snapshot_id: 快照 id（可为 restic 接受的前缀）。
             target: 原位恢复目标（容器形态，已过双重锁）。
             roots: 快照备份根（路由层已取到时传入，省一次 ``snapshots --json``）。
+            repo_id: 归属仓库（R-023）。
         """
         self._service = service
         self._snapshot_id = snapshot_id
         self._target = target
         self._roots = roots
+        self._repo_id = repo_id
         self.truncated = False
 
     def __aiter__(self) -> AsyncIterator[OverwriteItem]:
@@ -91,7 +101,9 @@ class CompareScan:
 
     async def _iterate(self) -> AsyncIterator[OverwriteItem]:
         """执行扫描并逐条产出覆盖项。"""
-        items, truncated = await self._service.scan(self._snapshot_id, self._target, self._roots)
+        items, truncated = await self._service.scan(
+            self._snapshot_id, self._target, self._roots, repo_id=self._repo_id
+        )
         self.truncated = truncated
         for item in items:
             yield item
@@ -100,34 +112,49 @@ class CompareScan:
 class CompareService:
     """快照 × 磁盘的覆盖比对（E20 预览与原位恢复审计计数的唯一数据源）。"""
 
-    def __init__(self, restic: ResticCmd, parser: OutputParser, config_repo: ConfigRepo) -> None:
+    def __init__(
+        self,
+        restic: ResticCmd,
+        parser: OutputParser,
+        config_repo: ConfigRepo,
+        repos_repo: ReposRepo | None = None,
+    ) -> None:
         """构造比对服务。
 
         Args:
             restic: restic 命令器（``ls`` / ``snapshots`` 走白名单拼装）。
             parser: 输出解析器（纯函数，解析在线程池里跑）。
-            config_repo: 配置仓储（取 ``repo.url`` 与后端凭据）。
+            config_repo: 配置仓储（取后端凭据，按仓库命名空间）。
+            repos_repo: 仓库仓储（R-023：``repo.url`` 事实源；生产由 main.py 注入，
+                测试可省略——省略时 ``_probe`` 报「仓库未配置」而不崩）。
         """
         self._restic = restic
         self._parser = parser
         self._config_repo = config_repo
+        self._repos_repo = repos_repo
 
     def diff(
-        self, snapshot_id: str, target: str, *, roots: list[str] | None = None
+        self,
+        snapshot_id: str,
+        target: str,
+        *,
+        repo_id: str = DEFAULT_REPO_ID,
+        roots: list[str] | None = None,
     ) -> CompareScan:
         """开启一次覆盖比对扫描（设计 §3.3 签名）。
 
         Args:
             snapshot_id: 快照 id。
             target: 原位恢复目标（容器形态）。
+            repo_id: 归属仓库（R-023；凭据/仓库地址按它解析）。
             roots: 快照备份根；缺省时内部再查一次 ``snapshots --json``。
 
         Returns:
             :class:`CompareScan` 句柄（``async for`` 迭代）。
         """
-        return CompareScan(self, snapshot_id, target, roots)
+        return CompareScan(self, snapshot_id, target, roots, repo_id)
 
-    async def snapshot_roots(self, snapshot_id: str) -> list[str]:
+    async def snapshot_roots(self, snapshot_id: str, repo_id: str = DEFAULT_REPO_ID) -> list[str]:
         """取该快照的备份根路径（容器形态），供双重锁的「快照 paths 交集」收紧。
 
         Args:
@@ -139,7 +166,9 @@ class CompareService:
         Raises:
             ResticFailedError: 仓库未配置或 ``snapshots --json`` 失败（原因明示）。
         """
-        probe = await self._probe("snapshots", WhitelistArgs(json_output=True), SNAPSHOT_LIST_TIMEOUT_SECONDS)
+        probe = await self._probe(
+            "snapshots", WhitelistArgs(json_output=True), SNAPSHOT_LIST_TIMEOUT_SECONDS, repo_id
+        )
         records = await asyncio.to_thread(self._parser.parse_snapshot_list, "\n".join(probe.lines))
         for record in records:
             if not (record.snapshot_id or "").startswith(snapshot_id):
@@ -148,7 +177,11 @@ class CompareService:
         return []
 
     async def scan(
-        self, snapshot_id: str, target: str, roots: list[str] | None = None
+        self,
+        snapshot_id: str,
+        target: str,
+        roots: list[str] | None = None,
+        repo_id: str = DEFAULT_REPO_ID,
     ) -> tuple[list[OverwriteItem], bool]:
         """执行一次完整比对（供 :class:`CompareScan` 与单测直接调用）。
 
@@ -170,12 +203,14 @@ class CompareService:
             return [], False
         # 取数范围直接收紧到 target 子树（与执行层 --include=<target> 同范围），
         # 不为整棵快照根做 ls；root 只用于定位「目标属于哪条快照根」与上面的兜底。
-        records, truncated = await self._list_files(snapshot_id, target)
+        records, truncated = await self._list_files(snapshot_id, target, repo_id)
         return await self._compare(records, target), truncated
 
     # ---------------------------------------------------------------- 内部实现
 
-    async def _list_files(self, snapshot_id: str, subtree: str) -> tuple[list[FileRecord], bool]:
+    async def _list_files(
+        self, snapshot_id: str, subtree: str, repo_id: str = DEFAULT_REPO_ID
+    ) -> tuple[list[FileRecord], bool]:
         """``restic ls --json <id> <子树>`` → 文件条目清单（子树即原位目标）。"""
         args = WhitelistArgs(
             snapshot_id=snapshot_id,
@@ -183,18 +218,23 @@ class CompareService:
             extra_positionals=(subtree,),
             json_output=True,
         )
-        probe = await self._probe("ls", args, RESTORE_PREVIEW_TIMEOUT_SECONDS)
+        probe = await self._probe("ls", args, RESTORE_PREVIEW_TIMEOUT_SECONDS, repo_id)
         records = await asyncio.to_thread(self._parser.parse_file_list, "\n".join(probe.lines))
         return records, probe.truncated
 
-    async def _probe(self, verb: str, args: WhitelistArgs, timeout_seconds: float) -> ProbeResult:
-        """执行一次只读探测（仓库未配置 / restic 失败 → 500 且原因明示）。"""
-        repo_url = (await self._config_repo.get_value("repo.url")) or ""
+    async def _probe(
+        self, verb: str, args: WhitelistArgs, timeout_seconds: float, repo_id: str = DEFAULT_REPO_ID
+    ) -> ProbeResult:
+        """执行一次只读探测（仓库未配置 / restic 失败 → 500 且原因明示）。
+
+        ``repo_id`` 决定仓库地址与凭据命名空间（R-023）。
+        """
+        repo_url = await self._resolve_repo_url(repo_id)
         if not repo_url:
-            raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写 repo.url）")
+            raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写仓库 url）")
         argv = self._restic.build(verb, args=args)
         env = self._restic.build_env(
-            repo_url=repo_url, env_extras=await load_credentials(self._config_repo)
+            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(self._config_repo, repo_id)
         )
         probe = await self._restic.run_json(argv, env=env, timeout_seconds=timeout_seconds)
         if probe.exit_code != 0:
@@ -202,6 +242,18 @@ class CompareService:
             logger.warning("覆盖比对探测失败（verb=%s）：%s", verb, reason)
             raise ResticFailedError(reason, exit_code=probe.exit_code)
         return probe
+
+    async def _resolve_repo_url(self, repo_id: str) -> str:
+        """取仓库地址（repos 表优先；仓储未注入时回落 config 旧键，保测试兼容）。
+
+        R-023 后 ``repo.url`` 已迁入 repos 表；``repos_repo`` 在生产由 main.py 注入，
+        单测可省略（省略时回落已退役的 config 旧键，不崩）。
+        """
+        if self._repos_repo is not None:
+            repo = await self._repos_repo.get(repo_id)
+            if repo is not None and repo.url:
+                return repo.url
+        return (await self._config_repo.get_value("repo.url")) or ""
 
     async def _compare(self, records: list[FileRecord], target: str) -> list[OverwriteItem]:
         """逐条比对：快照 mtime/size × 磁盘现状（os.stat 批量在线程池里跑）。

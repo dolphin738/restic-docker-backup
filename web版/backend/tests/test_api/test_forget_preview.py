@@ -63,8 +63,8 @@ def _patch_run_json(ns, *, lines: list[str], exit_code: int = 0) -> list[list[st
 
 
 async def _setup_repo(ns) -> None:
-    """E21 前置：配置 repo.url。"""
-    await ns.app.state.config_repo.set("repo.url", "/repo")
+    """E21 前置：配置仓库地址（R-023 后 repos 表事实源）。"""
+    await ns.app.state.repos_repo.update("default", url="/repo")
 
 
 async def test_e21_preview_returns_remove_list(app_client):

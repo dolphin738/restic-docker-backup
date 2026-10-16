@@ -438,7 +438,7 @@ async def test_fire_backup_books_last_run_at_before_submit(tmp_path):
 
     assert len(submitted) == 1
     kwargs, last_run_at_at_submit, job = submitted[0]
-    assert kwargs == {"task_id": task.id, "trigger": "scheduled"}
+    assert kwargs == {"repo_id": "default", "task_id": task.id, "trigger": "scheduled"}
     assert last_run_at_at_submit is not None  # submit 发生时记账已落库
     assert (await task_repo.get(task.id)).last_run_at is not None
 

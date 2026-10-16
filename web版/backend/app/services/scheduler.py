@@ -45,7 +45,7 @@ from app.constants import (
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
-from app.db.repositories.task_repo import DEFAULT_REPO_ID, Task, TaskRepo
+from app.db.repositories.task_repo import Task, TaskRepo
 from app.services.dump import DumpService
 from app.services.job_runner import JobRunner
 from app.services.retention import RetentionService
@@ -327,7 +327,9 @@ class SchedulerService:
         behavior.*/dump.* 配置经 E07 变更后同样「保存即生效」。
         """
         await self._refresh_config_snapshot()
-        tasks = await self._tasks.list_all(DEFAULT_REPO_ID)
+        # R-023：调度覆盖**全部仓库**的任务（task.repo_id 随 submit 落到 job；
+        # 触发器按 task.id 建，与仓库无关）
+        tasks = await self._tasks.list_all()
         keep: set[str] = set()
         for task in tasks:
             job_id = self._job_id(task.id)
@@ -507,7 +509,7 @@ class SchedulerService:
         now = datetime.now(UTC)
         today_start = now.astimezone(self._tz).replace(hour=0, minute=0, second=0, microsecond=0)
 
-        for task in await self._tasks.list_all(DEFAULT_REPO_ID):
+        for task in await self._tasks.list_all():
             if not task.enabled:
                 continue
             cron = self._effective_cron(task)
@@ -600,6 +602,7 @@ class SchedulerService:
             # prune=True：自动清理的目的是回收存储，只 forget 不 prune 达不成目的。
             await self._runner.submit(
                 "forget",
+                repo_id=task.repo_id,
                 task_id=task.id,
                 trigger="scheduled",
                 params={"prune": True},
@@ -636,7 +639,9 @@ class SchedulerService:
     async def _submit(self, task: Task, *, reason: str) -> None:
         """提交 backup（scheduled）；异常按任务隔离记录，不中断调用方循环。"""
         try:
-            await self._runner.submit("backup", task_id=task.id, trigger="scheduled")
+            await self._runner.submit(
+                "backup", repo_id=task.repo_id, task_id=task.id, trigger="scheduled"
+            )
         except Exception:  # noqa: BLE001 - 单任务提交失败不应拖垮整个补跑/触发循环
             logger.exception("调度提交失败：task=%s reason=%s", task.id, reason)
 

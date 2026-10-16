@@ -122,7 +122,7 @@ async def test_e30_configured_false_without_repo_url(app_client):
     """E30（L3）：repo.url 未配置 → configured=false（「未配置」与「连接失败」分色数据源）。"""
     ns = app_client
     await finish_bootstrap(ns)
-    resp = await ns.client.get("/api/repo/status")
+    resp = await ns.client.get("/api/repos/default/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["configured"] is False

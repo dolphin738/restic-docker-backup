@@ -9,12 +9,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-import time
-from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
@@ -22,7 +19,6 @@ from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
     AUDIT_CONFIG_UPDATE,
-    AUDIT_REPO_TEST,
     BEHAVIOR_AUTO_INIT_KEY,
     BEHAVIOR_AUTO_UNLOCK_KEY,
     BEHAVIOR_CHECK_ENABLED_KEY,
@@ -38,25 +34,19 @@ from app.constants import (
     METRICS_TOKEN_KEY,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
-    REPO_PROBE_TIMEOUT_SECONDS,
-    REPO_STATS_TIMEOUT_SECONDS,
-    REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import CredentialKeyUnavailableError, ValidationError
+from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import (
     ConfigItem,
     ConfigPatchRequest,
     ConfigResponse,
     OkResponse,
-    RepoCapacity,
-    RepoStatusResponse,
-    RepoTestResponse,
 )
 from app.services.crypto import EncryptionState
-from app.services.env_sync import load_credentials, passfile_status
+from app.services.env_sync import passfile_status
 from app.services.metrics import hash_metrics_token
-from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +57,8 @@ _PROTECTED = [Depends(require_session), Depends(require_bootstrap_done)]
 # 键名形态白名单：小写字母开头，仅含小写字母/数字/点/下划线/连字符/星号（防污染键空间）
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9.*_-]{0,63}$")
 
-# E30 进程内 TTL 缓存：仪表盘轮询不打爆仓库（单进程单仓库，无需跨实例一致性）
-_status_cache: tuple[float, RepoStatusResponse] | None = None
-_status_lock = asyncio.Lock()
-
-# 锁残留关键词（从 cat config 的失败输出里识别，零额外 restic 调用）
-_LOCK_KEYWORDS: tuple[str, ...] = ("already locked", "unable to create lock", "remove stale locks")
+# R-023：仓库单例键已迁 repos 表——E07 收到这些键时明确拒绝并指路（不静默忽略）
+_RETIRED_REPO_PREFIXES: tuple[str, ...] = ("repo.",)
 
 # 0/1 开关键（批次 B 批次面：behavior.* 三开关 + dump.enabled；R-025：凭据加密开关）
 _BOOL_KEYS: frozenset[str] = frozenset(
@@ -130,6 +116,15 @@ async def put_config(
     illegal = [key for key in payload.patch if not _KEY_PATTERN.match(key)]
     if illegal:
         raise ValidationError("配置键名非法", data={"illegal": illegal})
+
+    # R-023：仓库单例键（repo.url/repo.type/repo.host_tag）已迁 repos 表——明确
+    # 拒绝并指路 /api/repos（不静默忽略：静默会让旧前端以为保存成功）
+    retired = [key for key in payload.patch if key.startswith(_RETIRED_REPO_PREFIXES)]
+    if retired:
+        raise ValidationError(
+            "仓库配置已迁至仓库管理（/api/repos），不再经配置键写入",
+            data={"retired": retired},
+        )
 
     # 键级校验钩子（批次 B）：behavior.*/dump.* 值域前置 422——坏值落库会让
     # check 域/ dump 域在运行期静默降级，必须在写入侧拒绝（与 repo.type 只读键
@@ -216,15 +211,23 @@ async def _apply_cred_encryption_flag(
     return 0
 
 
-def invalidate_repo_status_cache() -> None:
-    """清除 E30 的进程内 TTL 缓存。
+def _parse_databases_for_validation(raw: str) -> list[str] | None:
+    """校验 ``dump.databases`` 取值：非空 JSON 字符串数组（元素须为字符串）。
 
-    调用时机：E07 配置写入（repo.url / 凭据变了）、任务终态（init/unlock 会改变
-    仓库可连性，由 JobRunner 的 ``on_finish`` 回调触发）。本函数无锁——赋值为
-    ``None`` 是原子的，最多让一次并发请求多做一次探测，无正确性问题。
+    非法（非 JSON / 非数组 / 含非字符串元素 / 空数组）返回 ``None``，由调用方
+    转 422（整体拒绝，不产生部分写入）。
     """
-    global _status_cache
-    _status_cache = None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if (
+        not isinstance(data, list)
+        or len(data) == 0
+        or not all(isinstance(item, str) for item in data)
+    ):
+        return None
+    return data
 
 
 def _validate_patch_values(patch: dict[str, str | None]) -> None:
@@ -279,150 +282,3 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
                 )
 
 
-@router.post(
-    "/repo/test",
-    response_model=RepoTestResponse,
-    summary="E29 仓库连通性测试",
-    dependencies=_PROTECTED,
-)
-async def test_repo(
-    request: Request,
-    session: SessionContext = Depends(require_session),
-) -> RepoTestResponse:
-    """``restic cat config`` 探测连通性：成功回 ``{ok: true, latency_ms}``。
-
-    失败**不抛错也不静默**：回 ``{ok: false, reason}``（锁残留/凭据缺失/仓库未初始化…）。
-    """
-    del session
-    restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
-
-    repo_url = (await config_repo.get_value("repo.url")) or ""
-    if not repo_url:
-        await request.app.state.audit.record(
-            AUDIT_REPO_TEST, target="repo.url", detail={"ok": False}, result="denied"
-        )
-        return RepoTestResponse(ok=False, latency_ms=0, reason="仓库地址未配置（请先填写 repo.url）")
-
-    argv = restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
-    env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
-
-    started = time.monotonic()
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS)
-    latency_ms = int((time.monotonic() - started) * 1000)
-
-    if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS)
-        logger.warning("仓库连通性测试失败：%s", reason)
-        await request.app.state.audit.record(
-            AUDIT_REPO_TEST, target=repo_url, detail={"ok": False, "reason": reason}, result="denied"
-        )
-        return RepoTestResponse(ok=False, latency_ms=latency_ms, reason=reason)
-
-    await request.app.state.audit.record(
-        AUDIT_REPO_TEST, target=repo_url, detail={"ok": True, "latency_ms": latency_ms}, result="ok"
-    )
-    return RepoTestResponse(ok=True, latency_ms=latency_ms)
-
-
-@router.get(
-    "/repo/status",
-    response_model=RepoStatusResponse,
-    summary="E30 仓库状态",
-    dependencies=_PROTECTED,
-)
-async def repo_status(
-    request: Request,
-    session: SessionContext = Depends(require_session),
-) -> RepoStatusResponse:
-    """仓库状态卡数据源：``{connected, locked, capacity, last_error}``。
-
-    成本可控三招（文档未定义，自定）：
-    1. 结果走 ``REPO_STATUS_CACHE_SECONDS`` 秒进程内 TTL 缓存，仪表盘轮询不重复打仓库；
-    2. ``locked`` **不额外调用** ``list locks``，而是从 ``cat config`` 的失败输出关键词识别；
-    3. 容量探测（``stats --mode raw-data``）**仅在 connected 为真时**执行，失败只留空容量、
-       不影响 connected 判定。
-    """
-    global _status_cache  # noqa: PLW0603 - 单进程 TTL 缓存，见模块 docstring
-
-    cached = _status_cache
-    if cached is not None and time.monotonic() - cached[0] < REPO_STATUS_CACHE_SECONDS:
-        return cached[1]
-
-    async with _status_lock:
-        cached = _status_cache  # 双检：等锁期间可能已被别的请求刷新
-        if cached is not None and time.monotonic() - cached[0] < REPO_STATUS_CACHE_SECONDS:
-            return cached[1]
-        status = await _probe_repo_status(request)
-        _status_cache = (time.monotonic(), status)
-        return status
-
-
-# ---------------------------------------------------------------- 内部实现
-
-async def _probe_repo_status(request: Request) -> RepoStatusResponse:
-    """执行一次仓库探测（E30 的未缓存实现）。"""
-    restic: ResticCmd = request.app.state.restic
-    parser = request.app.state.parser
-    config_repo: ConfigRepo = request.app.state.config_repo
-
-    repo_url = (await config_repo.get_value("repo.url")) or ""
-    if not repo_url:
-        return RepoStatusResponse(
-            configured=False, connected=False, locked=False, last_error="仓库地址未配置（请先填写 repo.url）"
-        )
-
-    env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
-    argv = restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS)
-
-    if probe.exit_code != 0:
-        return RepoStatusResponse(
-            connected=False,
-            locked=_looks_locked(probe.lines),
-            last_error=failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS),
-        )
-
-    return RepoStatusResponse(connected=True, locked=False, capacity=await _read_capacity(restic, parser, env))
-
-
-async def _read_capacity(restic: ResticCmd, parser: Any, env: dict[str, str]) -> RepoCapacity:
-    """``restic stats --mode raw-data --json`` 读取仓库容量（失败返回空容量，不影响 connected）。"""
-    argv = restic.build("stats", args=WhitelistArgs(json_output=True, stats_mode="raw-data"))
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_STATS_TIMEOUT_SECONDS)
-    if probe.exit_code != 0:
-        logger.warning(
-            "仓库容量探测失败（不影响连通性判定）：%s",
-            failure_reason(probe.exit_code, probe.lines, REPO_STATS_TIMEOUT_SECONDS),
-        )
-        return RepoCapacity()
-    blob = parser.parse_json_blob("\n".join(probe.lines))
-    if not isinstance(blob, dict):
-        return RepoCapacity()
-    return RepoCapacity(
-        size=_as_optional_int(blob.get("total_size")),
-        snaps=_as_optional_int(blob.get("snapshots_count")),
-    )
-
-
-def _looks_locked(lines: list[str]) -> bool:
-    """从探测失败输出里识别锁残留（避免为锁状态再打一次仓库）。"""
-    joined = "\n".join(lines).lower()
-    return any(keyword in joined for keyword in _LOCK_KEYWORDS)
-
-
-def _parse_databases_for_validation(raw: str) -> list[str] | None:
-    """校验用：解析 ``dump.databases`` JSON 字符串数组；非法/为空返回 None。"""
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, list):
-        return None
-    items = [str(item).strip() for item in payload if isinstance(item, str) and str(item).strip()]
-    return items or None
-
-
-def _as_optional_int(value: Any) -> int | None:
-    """把 restic JSON 字段安全地转为可选整数。"""
-    return int(value) if isinstance(value, int | float) else None

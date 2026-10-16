@@ -98,7 +98,7 @@ class FakeRestic:
         self.last_args = args
         return ["restic-fake", verb]
 
-    def build_env(self, *, repo_url, env_extras=None):  # noqa: ANN001, ANN202
+    def build_env(self, *, repo_url, repo_id="default", env_extras=None):  # noqa: ANN001, ANN202
         return {}
 
     async def spawn(self, argv, log_path, *, env=None):  # noqa: ANN001, ANN202
@@ -440,7 +440,7 @@ async def test_auto_unlock_submits_unlock_job(tmp_path):
     """AUTO_UNLOCK=1：提交 scheduled unlock 清理锁残留（审计沿用 job.submit/finished 埋点）。"""
     fake = FakeResticWithProbe(lines=[])
     db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
-    await config.set("repo.url", "/repo")
+    await runner._repos.update("default", url="/repo")
     await config.set(BEHAVIOR_AUTO_UNLOCK_KEY, "1")
 
     await runner.recover_on_startup()
@@ -468,7 +468,7 @@ async def test_auto_init_runs_when_repo_uninitialized(tmp_path):
         probe_lines=['{"error":"unable to open config file"}'],
     )
     db, runner, repo, config = await _make_auto_runner(tmp_path, fake)
-    await config.set("repo.url", "/repo")
+    await runner._repos.update("default", url="/repo")
     await config.set(BEHAVIOR_AUTO_INIT_KEY, "1")
 
     await runner.recover_on_startup()

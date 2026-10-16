@@ -15,15 +15,12 @@ from typing import Any
 
 from app.db.database import Database
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.utils.time import utc_iso
 
-# 备份任务 ``--host`` 的来源键（§4.3：可由环境变量 RESTIC_HOST 覆盖写入）
-# 与 policy_repo.HOST_TAG_KEY 同键同义——仓库级配置，不落在任务/策略列上。
-HOST_TAG_KEY = "repo.host_tag"
-
-# P2 唯一仓库 id（R-023 起多仓库：repos 表加行 + 仓库切换器，路由/调度器不动——
-# 共享知识 §9.8）。定义在仓储层：路由作用域守卫与调度器任务列举共用同一真源。
-DEFAULT_REPO_ID = "default"
+# DEFAULT_REPO_ID 自 repo_repo 再导出（路由作用域守卫与调度器任务列举的既有导入点；
+# 单一真源在 repo_repo——R-023 多仓库的事实表模块）。
+__all__ = ["DEFAULT_REPO_ID", "Task", "TaskRepo"]
 
 _COLUMNS = (
     "id", "repo_id", "name", "enabled", "tag", "sources", "excludes",
@@ -97,16 +94,24 @@ class Task:
 class TaskRepo:
     """backup_tasks 表唯一访问点。"""
 
-    def __init__(self, db: Database, config_repo: ConfigRepo | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config_repo: ConfigRepo | None = None,
+        repos_repo: ReposRepo | None = None,
+    ) -> None:
         """构造仓储。
 
         Args:
             db: 数据库单例。
-            config_repo: 配置仓储；缺省按同一 db 构造（``get_dict`` 需要读
-                ``repo.host_tag``，它是**仓库级配置**而非任务列，与 PolicyRepo 同口径）。
+            config_repo: 配置仓储（保留形参；R-023 后 ``get_dict`` 不再读 config）。
+            repos_repo: 仓库仓储；缺省按同一 db 构造（``get_dict`` 按
+                ``task.repo_id`` 取该仓库的 ``host_tag``——0003 起 host_tag 是
+                repos 表列，不再是 config 全局键）。
         """
         self._db = db
         self._config = config_repo or ConfigRepo(db)
+        self._repos = repos_repo or ReposRepo(db)
 
     # ---------------------------------------------------------------- 读
 
@@ -132,18 +137,20 @@ class TaskRepo:
             task_id: 任务 id。
 
         Returns:
-            含 sources/excludes/tag/group_by/one_file_system/compression/keep_*/limit_*_kibps
-            以及 ``host_tag``（取自 config 表 ``repo.host_tag``，缺失为 None）的字典；
-            任务不存在返回 None。
+            含 sources/excludes/tag/group_by/one_file_system/compression/keep_*/limit_*_kibps、
+            ``repo_id`` 以及 ``host_tag``（按 ``task.repo_id`` 取 repos 表该仓库的值，
+            缺失为 None）的字典；任务不存在返回 None。
         """
         task = await self.get(task_id)
         if task is None:
             return None
+        repo = await self._repos.get(task.repo_id)
         return {
             # name 随 profile 透出：JobRunner 冲突判定需要运行中 job 的任务名
             # （E12 409 data 的 running_task_name，US-026-04 AC2）
             "name": task.name,
-            "host_tag": await self._config.get_value(HOST_TAG_KEY),
+            "repo_id": task.repo_id,
+            "host_tag": repo.host_tag if repo is not None else None,
             "sources": list(task.sources),
             "excludes": list(task.excludes),
             "tag": task.tag,

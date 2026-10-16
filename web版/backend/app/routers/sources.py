@@ -32,6 +32,8 @@ from app.constants import (
     SOURCE_BROWSE_MAX_LIMIT,
 )
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import ReposRepo
+from app.dependencies import current_repo_id
 from app.errors import PathOutOfPrefixError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.schemas.api_schemas import (
@@ -148,6 +150,7 @@ async def list_exclusions(
 async def dry_run(
     payload: DryRunRequest,
     request: Request,
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> DryRunResponse:
     """``restic backup --dry-run --json --verbose`` 流式预览扫描范围。
@@ -182,10 +185,12 @@ async def dry_run(
         one_file_system=settings.restic_web_mode == "sources",
     )
 
-    repo_url = (await config_repo.get_value("repo.url")) or ""
-    env_extras = await load_credentials(config_repo)
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    env_extras = await load_credentials(config_repo, repo_id)
     argv = restic.build("backup", args=args, env_extras=env_extras)
-    env = restic.build_env(repo_url=repo_url, env_extras=env_extras)
+    env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
 
     log_path = settings.jobs_dir / f"dryrun-{new_ulid()}.log"
     proc = await restic.spawn(argv, log_path, env=env)

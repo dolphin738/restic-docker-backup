@@ -54,8 +54,8 @@ def _patch_run_json(ns, lines: list[str]) -> list[list[str]]:
 
 
 async def _setup_repo(ns) -> list[list[str]]:
-    """配置 repo.url（E17 前置）并挂 run_json 替身。"""
-    await ns.app.state.config_repo.set("repo.url", "/repo")
+    """配置默认仓库 url（E17 前置，P3-C 起 url 落在 repos 表）并挂 run_json 替身。"""
+    await ns.app.state.repos_repo.update("default", url="/repo")
     return _patch_run_json(ns, SNAPSHOTS_LINES)
 
 

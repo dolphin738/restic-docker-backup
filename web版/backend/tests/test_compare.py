@@ -131,7 +131,7 @@ class _FakeRestic:
         argv.extend(getattr(args, "extra_positionals", ()) or ())
         return argv
 
-    def build_env(self, *, repo_url: str, env_extras=None) -> dict[str, str]:  # noqa: ANN001
+    def build_env(self, *, repo_url: str, repo_id: str = "default", env_extras=None) -> dict[str, str]:  # noqa: ANN001
         """最小化环境（不含任何凭据，S3）。"""
         return {"RESTIC_REPOSITORY": repo_url}
 

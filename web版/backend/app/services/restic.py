@@ -212,11 +212,18 @@ class ResticCmd:
             argv.extend(self._positionals(verb, args))
         return argv
 
-    def build_env(self, *, repo_url: str, env_extras: dict[str, str] | None = None) -> dict[str, str]:
+    def build_env(
+        self,
+        *,
+        repo_url: str,
+        repo_id: str = "default",
+        env_extras: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         """构造子进程环境变量：宿主环境 + restic 必需项 + 白名单凭据 + TZ。
 
         Args:
             repo_url: 仓库地址，注入 ``RESTIC_REPOSITORY``。
+            repo_id: 仓库标识（R-023 多仓库：密码文件按仓库派生；缺省 ``default``）。
             env_extras: 界面配置的后端凭据（``AWS_*`` / ``B2_*``）。
 
         Returns:
@@ -225,7 +232,7 @@ class ResticCmd:
         env = dict(os.environ)
         env["RESTIC_REPOSITORY"] = repo_url
         # E5 per-repo 布局（唯一实现点 Settings.passfile_path）；RESTIC_PASSWORD_FILE 覆盖优先
-        env["RESTIC_PASSWORD_FILE"] = str(self._settings.passfile_path())
+        env["RESTIC_PASSWORD_FILE"] = str(self._settings.passfile_path(repo_id))
         env["RESTIC_CACHE_DIR"] = self._settings.cache_dir
         if self._settings.tz:
             env["TZ"] = self._settings.tz

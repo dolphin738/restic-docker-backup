@@ -1,8 +1,8 @@
-"""config 表仓储（§4.3）：KV 读写 + 敏感项脱敏 + ``source='env'`` 键写保护 + 派生键维护。
+"""config 表仓储（§4.3）：KV 读写 + 敏感项脱敏 + ``source='env'`` 键写保护。
 
 派生键（只读，服务端自动维护）：
-- ``repo.type``：由 ``repo.url`` 的协议前缀推导（``s3:``→s3、``b2:``→b2、其余→local），
-  在**任何** ``repo.url`` 写入路径（E07 界面 / env 同步）上同源落库；直接写它 → 409 ``READONLY_KEY``。
+- （R-023 起无仓库派生键）``repo.url``/``repo.type``/``repo.host_tag`` 已随 E4
+  裁决整体迁入 ``repos`` 表（``repo_repo``）；config 键空间不再含仓库单例键。
 
 R-025 凭据加密（P3-A，owner 2026-10-16 裁决默认开）：注入 :class:`EncryptionState` 后，
 敏感键（``cred.*`` / ``dump.password`` / ``notify.*``）写入即加密、读取透明解密——
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.db.database import Database
-from app.errors import CredentialDecryptError, EnvOverriddenError, ReadonlyKeyError
+from app.errors import CredentialDecryptError, EnvOverriddenError, ValidationError
 from app.schemas.enums import ConfigSource
 from app.services.crypto import CredentialCrypto
 from app.utils.time import utc_iso
@@ -37,27 +37,6 @@ SENSITIVE_EXACT_KEYS: tuple[str, ...] = (
     "notify.webhook.url",
     "metrics.token",
 )
-
-# 仓库地址与派生类型键（§4.3 键表）
-REPO_URL_KEY = "repo.url"
-REPO_TYPE_KEY = "repo.type"
-
-
-def derive_repo_type(url: str | None) -> str:
-    """按仓库地址的协议前缀推导 ``repo.type``（§4.3：s3 / b2 / local）。
-
-    Args:
-        url: 仓库地址，如 ``s3:https://s3.endpoint/bucket`` 或 ``/repo``。
-
-    Returns:
-        ``s3`` / ``b2`` / ``local`` 之一（空地址回落 ``local``）。
-    """
-    lowered = (url or "").strip().lower()
-    if lowered.startswith("s3:"):
-        return "s3"
-    if lowered.startswith("b2:"):
-        return "b2"
-    return "local"
 
 
 @dataclass(frozen=True)
@@ -143,7 +122,7 @@ class ConfigRepo:
         """写入（upsert）单个键；``source='env'`` 的键拒绝界面写入。
 
         Args:
-            key: 配置键，如 ``repo.url``。
+            key: 配置键，如 ``dump.host``。
             value: 配置值；None 表示清空。
             source: 来源标记，界面写入恒为 ``ui``。
             force: 仅供启动期 env→config 同步使用（``env_sync``），
@@ -151,20 +130,11 @@ class ConfigRepo:
 
         Raises:
             EnvOverriddenError: 该键已由环境变量覆盖且 ``force=False``（409 ENV_OVERRIDDEN）。
-            ReadonlyKeyError: 试图直接写只读派生键 ``repo.type``（409 READONLY_KEY）。
         """
-        if key == REPO_TYPE_KEY:
-            raise ReadonlyKeyError(data={"key": key})
         await self._guard_env_source(key, force=force)
         stored = self._maybe_encrypt(key, value)
         now = utc_iso()
         await self._upsert(key, stored, str(source), now)
-        if key == REPO_URL_KEY:
-            # 派生键同源落库：repo.url 的任何写入路径都同步维护 repo.type（单一事实来源）
-            if value:
-                await self._upsert(REPO_TYPE_KEY, derive_repo_type(value), str(source), now)
-            else:
-                await self._db.write("DELETE FROM config WHERE key = ?", (REPO_TYPE_KEY,))
         return ConfigRow(key=key, value=value, source=str(source), updated_at=now)
 
     async def _guard_env_source(self, key: str, *, force: bool) -> None:
@@ -237,10 +207,7 @@ class ConfigRepo:
 
         Raises:
             EnvOverriddenError: 存在被环境变量覆盖的键。
-            ReadonlyKeyError: patch 中含只读派生键 ``repo.type``。
         """
-        if REPO_TYPE_KEY in patch:
-            raise ReadonlyKeyError(data={"key": REPO_TYPE_KEY})
         keys = list(patch.keys())
         if not keys:
             return []
@@ -255,22 +222,22 @@ class ConfigRepo:
             raise EnvOverriddenError(data={"keys": blocked})
         return [await self.set(key, value) for key, value in patch.items()]
 
-    async def backfill_repo_type(self) -> bool:
-        """存量数据回填：库里有 ``repo.url`` 但缺 ``repo.type`` 时按协议推导补写。
+    async def rename(self, key: str, new_key: str) -> ConfigRow:
+        """重命名配置键（保留 value/source/updated_at 原样；供启动期迁移专用）。
 
-        供启动期调用一次，保证老库升级后 ``repo.type`` 也有值（前端无需再从 URL 推导）。
-
-        Returns:
-            实际回填返回 True。
+        业务写入路径**不得使用**——界面无改键名入口；本方法存在的唯一理由是
+        R-023 一次性迁移（``cred.*`` → ``cred.default.*``）。
         """
-        url = await self.get_value(REPO_URL_KEY)
-        if not url:
-            return False
-        existing_type = await self.get_value(REPO_TYPE_KEY)
-        if existing_type is not None:
-            return False
-        await self._upsert(REPO_TYPE_KEY, derive_repo_type(url), str(ConfigSource.UI))
-        return True
+        row = await self._db.fetch_one("SELECT value, source, updated_at FROM config WHERE key = ?", (key,))
+        if row is None:
+            raise ValidationError("配置键不存在", data={"key": key})
+        await self._db.write("DELETE FROM config WHERE key = ?", (key,))
+        new_value = None if row["value"] is None else str(row["value"])
+        await self._upsert(new_key, new_value, str(row["source"]), str(row["updated_at"]))
+        moved = await self.get(new_key)
+        if moved is None:  # pragma: no cover - 理论不可达
+            raise RuntimeError(f"配置键 {new_key} 重命名后无法读回")
+        return moved
 
     async def delete(self, key: str, *, force: bool = False) -> bool:
         """删除单个键；``source='env'`` 的键拒绝删除。
@@ -284,9 +251,6 @@ class ConfigRepo:
         if not force and str(row["source"]) == ConfigSource.ENV:
             raise EnvOverriddenError(data={"key": key})
         await self._db.write("DELETE FROM config WHERE key = ?", (key,))
-        if key == REPO_URL_KEY:
-            # 派生键跟随清空：repo.url 没了，repo.type 不应残留旧值
-            await self._db.write("DELETE FROM config WHERE key = ?", (REPO_TYPE_KEY,))
         return True
 
     # ---------------------------------------------------------------- 脱敏

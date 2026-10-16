@@ -134,6 +134,7 @@ class JobOut(_Base):
     type: JobType
     status: JobStatus
     trigger: JobTrigger
+    repo_id: str = "default"
     policy_id: int | None = None
     task_id: int | None = None
     snapshot_id: str | None = None
@@ -690,3 +691,34 @@ class BackupSuccessReportOut(_Base):
     success: int
     failed: int
     ratio: float | None
+
+
+class RepoOut(_Base):
+    """R-023 仓库输出（repos 表事实源；type 派生不落库，passfile_status 只读派生）。"""
+
+    id: str
+    name: str
+    type: str
+    url: str | None
+    host_tag: str | None
+    url_source: str
+    host_tag_source: str
+    passfile_status: str
+    created_at: str
+
+
+class RepoCreateRequest(_Base):
+    """R-023 新建仓库请求（url/host_tag 可空，日后再补）。"""
+
+    id: str
+    name: str
+    url: str | None = None
+    host_tag: str | None = None
+
+
+class RepoUpdateRequest(_Base):
+    """R-023 更新仓库请求（三态：None=不变 / ""=清除 / 非空=设置）。"""
+
+    name: str | None = None
+    url: str | None = None
+    host_tag: str | None = None

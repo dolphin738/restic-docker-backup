@@ -21,6 +21,7 @@ from app.constants import (
     LOG_TAIL_DEFAULT_BYTES,
     LOG_TAIL_MAX_BYTES,
 )
+from app.dependencies import current_repo_id
 from app.errors import NotFoundError, ValidationError
 from app.exclusions import normalize_user_excludes
 from app.schemas.api_schemas import (
@@ -56,6 +57,7 @@ def _to_out(job: object) -> JobOut:
 async def create_job(
     payload: JobCreateRequest,
     request: Request,
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> JobCreateResponse:
     """触发一个任务（manual）；同仓库已有 running/pending 时返回 409 JOB_CONFLICT。
@@ -75,8 +77,14 @@ async def create_job(
     # 存在性前置校验（Q1）：非法 task_id 会在 JobRunner 落库时撞 jobs.task_id 外键
     # 抛 sqlite3.IntegrityError → 未捕获即 500。此处提前 422 VALIDATION_ERROR
     # （与其它参数类错误同口径），data 带 task_id 便于前端定位是哪条关联写错。
-    if payload.task_id is not None and await task_repo.get(payload.task_id) is None:
+    task = await task_repo.get(payload.task_id) if payload.task_id is not None else None
+    if payload.task_id is not None and task is None:
         raise ValidationError("备份任务不存在", data={"task_id": payload.task_id})
+    # R-023：任务归属仓库必须与当前仓库一致——防跨仓库误触发（快照/锁/凭据都按当前仓库解析）
+    if task is not None and task.repo_id != repo_id:
+        raise ValidationError(
+            "该任务不属于当前仓库", data={"task_id": payload.task_id, "repo_id": repo_id}
+        )
     params = dict(payload.params)
     if params.get("excludes"):
         # 锚定路径白名单收紧为当前模式根（越界 → 422），见 exclusions.normalize_user_excludes
@@ -87,6 +95,7 @@ async def create_job(
         )
     job = await runner.submit(
         str(payload.type),
+        repo_id=repo_id,
         task_id=payload.task_id,
         trigger="manual",
         snapshot_id=payload.snapshot_id,

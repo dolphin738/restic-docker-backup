@@ -45,7 +45,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 2
+    assert await db.user_version() == 3
     await db.close()
 
 
@@ -55,7 +55,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 2
+    assert await db.user_version() == 3
     await db.close()
 
 
@@ -68,7 +68,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 2
+    assert await db2.user_version() == 3
     assert await db2.migrate() == 0
     await db2.close()
 

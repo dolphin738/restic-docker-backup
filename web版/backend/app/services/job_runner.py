@@ -35,6 +35,7 @@ from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.errors import JobConflictError, NotCancellableError, NotFoundError, ValidationError
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
@@ -103,6 +104,7 @@ class JobRunner:
         settings: Settings | None = None,
         policy_loader: PolicyLoader | None = None,
         task_loader: TaskLoader | None = None,
+        repos_repo: ReposRepo | None = None,
         on_finish: Callable[[], None] | None = None,
         on_task_backup_success: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
@@ -120,6 +122,8 @@ class JobRunner:
             policy_loader: 策略加载回调（批次 3 由 PolicyRepo 注入；P1 可为空）。
             task_loader: 任务加载回调（选项②由 TaskRepo.get_dict 注入）；
                 profile 解析时 task_id 优先于 policy_id（任务即策略，legacy 兼容）。
+            repos_repo: 仓库仓储（R-023：repo_url/host_tag 的事实源；缺省按同一
+                db 构造）。
             on_finish: 任务到达终态后的外部回调（如 E30 仓库状态缓存失效）；
                 回调异常只记日志，不影响任务链路。
             on_task_backup_success: backup 类型任务到达 **success** 终态且 ``task_id``
@@ -142,6 +146,7 @@ class JobRunner:
 
         self._jobs = JobRepo(db)
         self._config = ConfigRepo(db)
+        self._repos = repos_repo or ReposRepo(db)
         self._exclusions = ExclusionRules(self._settings)
         self._locks: dict[str, asyncio.Lock] = {}
         self._processes: dict[str, ResticProcess] = {}
@@ -153,7 +158,7 @@ class JobRunner:
     # ---------------------------------------------------------------- 互斥锁（§7.1）
 
     def _repo_lock(self, repo_url: str) -> asyncio.Lock:
-        """按仓库维度惰性建锁（当前单仓库；R-023 多仓库时按 repo_url 分桶）。"""
+        """按仓库维度惰性建锁（E1：restic 锁是仓库级的——多仓库天然并行，互不阻塞）。"""
         lock = self._locks.get(repo_url)
         if lock is None:
             lock = asyncio.Lock()
@@ -185,6 +190,7 @@ class JobRunner:
         self,
         job_type: str,
         *,
+        repo_id: str = DEFAULT_REPO_ID,
         policy_id: int | None = None,
         task_id: int | None = None,
         trigger: str = "manual",
@@ -195,6 +201,7 @@ class JobRunner:
 
         Args:
             job_type: 任务类型（E12 白名单）。
+            repo_id: 归属仓库（R-023；互斥/凭据/密码文件都按它解析）。
             policy_id: 关联策略 id（legacy）；可为空。
             task_id: 关联备份任务 id（选项②；与 policy_id 互斥由上层校验）；
                 新任务 job 落 ``task_id``、``policy_id`` 为 NULL（§1.2 决策二）。
@@ -206,16 +213,17 @@ class JobRunner:
             新建任务（manual 冲突时抛错；scheduled 冲突时返回一条 cancelled 任务）。
 
         Raises:
-            JobConflictError: manual 触发且已有 running/pending 任务（409，
+            JobConflictError: manual 触发且**同仓库**已有 running/pending 任务（409，
                 data 带 ``running_job_id`` 与 ``running_task_name``）。
         """
         if job_type not in JOB_TYPES:
             raise ValidationError(f"不支持的任务类型：{job_type}", data={"allowed": list(JOB_TYPES)})
-        repo_url = await self._repo_url()
+        repo_url = await self._repo_url(repo_id)
         lock = self._repo_lock(repo_url)
 
         async with lock:
-            active = await self._jobs.list_active()
+            # E1 仓库维度互斥：只查**同仓库**的活跃任务——多仓库互不阻塞
+            active = await self._jobs.list_active(repo_id)
             if active:
                 conflict = active[0]
                 if trigger == "manual":
@@ -233,6 +241,7 @@ class JobRunner:
                     job_type=job_type,
                     trigger=trigger,
                     log_path=str(self._settings.jobs_dir / f"{job_type}-skipped.log"),
+                    repo_id=repo_id,
                     policy_id=policy_id,
                     task_id=task_id,
                     snapshot_id=snapshot_id,
@@ -253,6 +262,7 @@ class JobRunner:
                 job_type=job_type,
                 trigger=trigger,
                 log_path=log_path,
+                repo_id=repo_id,
                 policy_id=policy_id,
                 task_id=task_id,
                 snapshot_id=snapshot_id,
@@ -264,7 +274,13 @@ class JobRunner:
         await self._audit.record(
             AUDIT_JOB_SUBMIT,
             target=job_id,
-            detail={"type": job_type, "trigger": trigger, "policy_id": policy_id, "task_id": task_id},
+            detail={
+                "type": job_type,
+                "trigger": trigger,
+                "repo_id": repo_id,
+                "policy_id": policy_id,
+                "task_id": task_id,
+            },
             result="ok",
         )
         self._tasks[job_id] = asyncio.create_task(self._run(job), name=f"job-{job_id}")
@@ -314,7 +330,8 @@ class JobRunner:
 
     async def _run(self, job: Job) -> None:
         """执行单个任务：抢锁 → running → spawn → 逐行解析落库 → 终态 → 审计/通知。"""
-        repo_url = await self._repo_url()
+        repo_id = job.repo_id
+        repo_url = await self._repo_url(repo_id)
         async with self._repo_lock(repo_url):
             line_no = 0
             try:
@@ -336,7 +353,7 @@ class JobRunner:
                         await self._finish_dump_only(job)
                         return
 
-                argv, env = await self._prepare(job, repo_url)
+                argv, env = await self._prepare(job, repo_url, repo_id)
                 log_path = Path(job.log_path)
                 proc = await self._restic.spawn(argv, log_path, env=env)
                 self._processes[job.id] = proc
@@ -592,8 +609,10 @@ class JobRunner:
           **不动**（fail-safe：误 init 已初始化仓库会报错并污染任务历史）。
 
         补跑本身由 ``SchedulerService.catchup_on_startup`` 承担（启动时序晚于本方法）。
+        R-023：启动期自动任务只覆盖 **default** 仓库（env 覆盖锚点）；其余仓库的
+        锁残留/未初始化由各仓库首次任务或人工处理（多仓库全量自愈超出 P3-C 范围）。
         """
-        repo_url = await self._repo_url()
+        repo_url = await self._repo_url(DEFAULT_REPO_ID)
         if not repo_url:
             return  # 仓库未配置：unlock/init 都无从谈起（避免无谓 failed 任务）
 
@@ -601,7 +620,10 @@ class JobRunner:
             logger.warning("AUTO_UNLOCK 开启：提交 unlock 清理仓库锁残留")
             await self._submit_auto("unlock")
 
-        if await self._behavior_flag(BEHAVIOR_AUTO_INIT_KEY) and not await self._repo_initialized(repo_url):
+        if (
+            await self._behavior_flag(BEHAVIOR_AUTO_INIT_KEY)
+            and not await self._repo_initialized(repo_url, DEFAULT_REPO_ID)
+        ):
             logger.warning("AUTO_INIT 开启且仓库未初始化：提交 init")
             await self._submit_auto("init")
 
@@ -616,14 +638,16 @@ class JobRunner:
         except Exception:  # noqa: BLE001 - 自动恢复失败不应拖垮应用启动
             logger.exception("启动期自动任务提交失败：%s", job_type)
 
-    async def _repo_initialized(self, repo_url: str) -> bool:
+    async def _repo_initialized(self, repo_url: str, repo_id: str = DEFAULT_REPO_ID) -> bool:
         """探测仓库是否已初始化（``cat config``；未初始化关键词命中即 False）。
 
         探测失败但非「未初始化」（锁残留/网络不可达）时返回 True——交给 AUTO_UNLOCK
         或人工处理，绝不在此路径误触发 init。
         """
         argv = self._restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
-        env = self._restic.build_env(repo_url=repo_url, env_extras=await self._load_credentials())
+        env = self._restic.build_env(
+            repo_url=repo_url, repo_id=repo_id, env_extras=await self._load_credentials(repo_id)
+        )
         probe = await self._restic.run_json(
             argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS
         )
@@ -680,14 +704,16 @@ class JobRunner:
 
     # ---------------------------------------------------------------- 命令拼装
 
-    async def _prepare(self, job: Job, repo_url: str) -> tuple[list[str], dict[str, str]]:
-        """拼装 argv 与子进程环境。"""
+    async def _prepare(
+        self, job: Job, repo_url: str, repo_id: str = DEFAULT_REPO_ID
+    ) -> tuple[list[str], dict[str, str]]:
+        """拼装 argv 与子进程环境（凭据/密码文件均按 ``repo_id`` 解析）。"""
         params = self._params.get(job.id, {})
         profile = await self._load_profile(job)
         args = self._build_args(job.type, job.snapshot_id, params, profile)
-        env_extras = await self._load_credentials()
+        env_extras = await self._load_credentials(repo_id)
         argv = self._restic.build(job.type, args=args, env_extras=env_extras)
-        env = self._restic.build_env(repo_url=repo_url, env_extras=env_extras)
+        env = self._restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
         return argv, env
 
     def _build_args(
@@ -719,8 +745,8 @@ class JobRunner:
                 targets=tuple(str(item) for item in sources),
                 excludes=excludes,
                 tags=tags,
-                # --host 取自 config.repo.host_tag（仓库级配置，非策略列），由
-                # PolicyRepo.get_dict 透传；空值不加 flag。值仍走 WhitelistArgs.host
+                # --host 取自 repos 表该仓库的 host_tag（仓库级配置，非任务列），由
+                # TaskRepo.get_dict 透传；空值不加 flag。值仍走 WhitelistArgs.host
                 # → _assert_safe_value 白名单校验，**不裸拼进 argv**。
                 host=_clean_host(policy.get("host_tag")),
                 one_file_system=bool(policy.get("one_file_system", self._settings.restic_web_mode == "sources")),
@@ -787,9 +813,10 @@ class JobRunner:
 
     # ---------------------------------------------------------------- 依赖读取
 
-    async def _repo_url(self) -> str:
-        """读取仓库地址（config.repo.url），未配置返回空串。"""
-        return (await self._config.get_value("repo.url")) or ""
+    async def _repo_url(self, repo_id: str = DEFAULT_REPO_ID) -> str:
+        """读取仓库地址（repos 表，R-023 后的事实源），未配置返回空串。"""
+        repo = await self._repos.get(repo_id)
+        return (repo.url if repo is not None else None) or ""
 
     async def _load_policy(self, policy_id: int | None) -> dict[str, Any]:
         """加载策略字典；无 loader 或策略缺失时返回空字典。"""
@@ -839,9 +866,9 @@ class JobRunner:
         name = profile.get("name")
         return str(name) if name else None
 
-    async def _load_credentials(self) -> dict[str, str]:
-        """把 config 中 ``cred.*`` 键还原为子进程环境变量（``AWS_*`` / ``B2_*``）。"""
-        return await load_credentials(self._config)
+    async def _load_credentials(self, repo_id: str = DEFAULT_REPO_ID) -> dict[str, str]:
+        """把 config 中该仓库的 ``cred.<repo_id>.*`` 键还原为子进程环境变量。"""
+        return await load_credentials(self._config, repo_id)
 
     @staticmethod
     def _summarize(status: str, aggregate: JobAggregate, exit_code: int) -> str:
@@ -869,7 +896,7 @@ def _as_keep_rule(value: Any) -> int | None:
 
 
 def _clean_host(value: Any) -> str | None:
-    """把 ``config.repo.host_tag`` 归一为可安全传给 ``--host`` 的值。
+    """把仓库的 ``host_tag``（repos 表列）归一为可安全传给 ``--host`` 的值。
 
     Args:
         value: 配置值（可能为 None / 空串 / 非字符串）。

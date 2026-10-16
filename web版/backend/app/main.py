@@ -46,6 +46,7 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.repo_repo import ReposRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import AppError
 from app.exclusions import ExclusionRules
@@ -58,19 +59,21 @@ from app.routers import health as health_router
 from app.routers import jobs as jobs_router
 from app.routers import metrics as metrics_router
 from app.routers import ops as ops_router
+from app.routers import repos as repos_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
-from app.routers.config import invalidate_repo_status_cache
+from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
 from app.services.compare import CompareService
 from app.services.crypto import CredentialCrypto, EncryptionState
-from app.services.env_sync import sync_env_overrides
+from app.services.env_sync import sync_env_overrides, sync_env_repo_overrides
 from app.services.job_runner import JobRunner
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
+from app.services.repo_migration import migrate_legacy_repo_config
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
 from app.services.scheduler import SchedulerService
@@ -180,6 +183,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     credential_crypto = CredentialCrypto(settings)
     encryption = EncryptionState(credential_crypto)
     config_repo = ConfigRepo(db, encryption=encryption)
+    # R-023 多仓库（P3-C）：repos 表为仓库事实源（0003 扩列）；TaskRepo 经它取 host_tag
+    repos_repo = ReposRepo(db)
     sessions = SessionService(db, settings)
     admin = AdminAccountStore(db, settings)
     auth_service = AuthService(audit, sessions, admin, settings)
@@ -227,7 +232,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     retention = RetentionService(job_repo, config_repo, audit, settings)
     cache_service = CacheService(settings)
     # 覆盖比对服务（R-015 E20 预览 + 原位恢复审计计数；stateless，只持有依赖）
-    compare_service = CompareService(restic_cmd, parser, config_repo)
+    compare_service = CompareService(restic_cmd, parser, config_repo, repos_repo=repos_repo)
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(
@@ -246,6 +251,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = db
     app.state.audit = audit
     app.state.config_repo = config_repo
+    app.state.repos_repo = repos_repo
     app.state.encryption = encryption
     app.state.sessions = sessions
     app.state.admin = admin
@@ -272,6 +278,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     purged = await sessions.purge_expired()
     if purged:
         logger.info("启动清理过期会话 %d 条", purged)
+    # R-023 一次性迁移（marker 幂等）：config 的 repo.* 单例键 → repos.default、
+    # cred.* → cred.default.*（E4 裁决；必须早于 env 同步——env 同步的新落点
+    # 已是 repos 表/命名空间键，晚一步会把 env 值写回已废弃的旧键）
+    await migrate_legacy_repo_config(config_repo, repos_repo)
     # R-025：先按持久化键校准加密开关（缺省=开），再跑 env 同步——保证 env 写入的
     # 存储形态与开关一致；随后把存量明文敏感键迁为密文（幂等，混合形态可读）
     flag = await config_repo.get_value(CRED_ENCRYPTION_KEY)
@@ -283,13 +293,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     # env→config 一次性同步：使 E07 的 ENV_OVERRIDDEN 真正触发得到（§6 env 覆盖优先）
     await sync_env_overrides(config_repo, settings, audit)
+    # R-023：RESTIC_REPOSITORY / RESTIC_HOST → repos.default（env 只覆盖默认仓库）
+    await sync_env_repo_overrides(repos_repo)
     if encryption.enabled:
         migrated = await config_repo.migrate_encryption(encrypt=True)
         if migrated:
             logger.info("凭据加密已启用：%d 个存量明文键已迁移为密文", migrated)
-    # 存量回填：repo.url 已有但 repo.type 缺失的老库，按协议推导补写（前端不再自行推导）
-    if await config_repo.backfill_repo_type():
-        logger.info("已按 repo.url 协议回填 repo.type")
     # 启动恢复：遗留 running/pending 改标 interrupted（P1 不做补跑与 AUTO_UNLOCK）
     await job_runner.recover_on_startup()
     # 调度器启动（§4.3）：recover 之后 start（内部 reload + 当天补跑），
@@ -325,7 +334,8 @@ def create_app() -> FastAPI:
     protected = [Depends(require_session), Depends(require_bootstrap_done)]
     app.include_router(sources_router.router, dependencies=protected)    # E05/E31
     app.include_router(fs_router.router, dependencies=protected)         # E33 容器文件系统浏览
-    app.include_router(config_router.router, dependencies=protected)     # E06/E07 + E29/E30
+    app.include_router(config_router.router, dependencies=protected)     # E06/E07（E29/E30 已迁 repos）
+    app.include_router(repos_router.router, dependencies=protected)      # R-023 仓库 CRUD + E29/E30 per-repo
     app.include_router(jobs_router.router, dependencies=protected)       # E12–E16/E27
     app.include_router(backup_tasks_router.router, dependencies=protected)  # E34–E36（选项② R-026）
     app.include_router(snapshots_router.router, dependencies=protected)  # E17/E18

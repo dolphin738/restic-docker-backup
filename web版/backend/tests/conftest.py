@@ -95,9 +95,9 @@ def api_env(tmp_path, monkeypatch):
 
     get_settings.cache_clear()
 
-    import app.routers.config as config_module
+    import app.routers.repos as repos_module
 
-    monkeypatch.setattr(config_module, "_status_cache", None)
+    monkeypatch.setattr(repos_module, "_status_cache", {})
     return SimpleNamespace(data_dir=data_dir, tmp_path=tmp_path, passfile=passfile)
 
 

@@ -32,6 +32,8 @@ from app.constants import (
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
+from app.db.repositories.repo_repo import ReposRepo
+from app.dependencies import current_repo_id
 from app.errors import ResticFailedError
 from app.schemas.api_schemas import Page, SnapshotFileOut, SnapshotFilesResponse, SnapshotOut
 from app.services.env_sync import load_credentials
@@ -61,6 +63,11 @@ async def list_snapshots(
         default=None,
         description="按快照 tags 数组**包含**过滤（如任务 tag task-1）；缺省不过滤",
     ),
+    host: str | None = Query(
+        default=None,
+        description="按快照 host 精确过滤（R-023 多主机视图；缺省不过滤）",
+    ),
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> Page[SnapshotOut]:
     """``restic snapshots --json`` → 映射原路径语义 →（可选 tag 包含过滤）→ 按时间倒序 → 分页。
@@ -74,13 +81,16 @@ async def list_snapshots(
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
     config_repo: ConfigRepo = request.app.state.config_repo
-
-    repo_url = (await config_repo.get_value("repo.url")) or ""
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
     if not repo_url:
-        raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写 repo.url）")
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
     argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
-    env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
     probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
@@ -92,6 +102,9 @@ async def list_snapshots(
     if tag:
         # X2：包含语义过滤（tags 数组含该 tag 即保留），分页前先过滤保证 total 正确
         items = [item for item in items if tag in item.tags]
+    if host:
+        # R-023 4B：多主机视图——按快照 host 精确过滤（与 tag 同机制位，分页前执行）
+        items = [item for item in items if item.host == host]
     items.sort(key=lambda item: item.time or "", reverse=True)  # 最新在前，restic 默认升序
     return Page(items=items[offset : offset + limit], total=len(items), limit=limit, offset=offset)
 
@@ -108,6 +121,7 @@ async def list_snapshot_files(
     path: str = Query(default="/", description="展示形态的目录路径（如 /etc）；缺省为模式根"),
     cursor: str | None = Query(default=None, description="上一页末条目的不透明游标"),
     limit: int = Query(default=SNAPSHOT_FILES_DEFAULT_LIMIT, ge=1, le=SNAPSHOT_FILES_MAX_LIMIT),
+    repo_id: str = Depends(current_repo_id),
     session: SessionContext = Depends(require_session),
 ) -> SnapshotFilesResponse:
     """``restic ls --json <id> <子树>`` → 直接子项过滤 → 游标分页（懒加载树一次只要一层）。"""
@@ -116,10 +130,11 @@ async def list_snapshot_files(
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
     config_repo: ConfigRepo = request.app.state.config_repo
-
-    repo_url = (await config_repo.get_value("repo.url")) or ""
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
     if not repo_url:
-        raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写 repo.url）")
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
     container_path = mapper.to_snapshot(path or "/")
     argv = restic.build(
@@ -131,7 +146,9 @@ async def list_snapshot_files(
             json_output=True,
         ),
     )
-    env = restic.build_env(repo_url=repo_url, env_extras=await load_credentials(config_repo))
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
     probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
