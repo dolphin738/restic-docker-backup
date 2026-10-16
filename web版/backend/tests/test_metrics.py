@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
+from datetime import timezone as dt_timezone
 
 import httpx
 import pytest
@@ -124,13 +126,25 @@ async def test_report_buckets_and_timezone(tmp_path) -> None:
 
 
 async def test_report_local_midnight_boundary(tmp_path) -> None:
-    """窗口下界=本地零点：UTC 0x:30 的作业在东八区应落在首日桶内（不漏 8 小时）。"""
+    """窗口下界=本地零点：东八区**当日 01:30** 的作业须落在首日桶（不漏 8 小时）。
+
+    时间戳按**配置时区**构造（上海当日 01:30 → UTC 前一日 17:30），而非按 UTC
+    墙钟构造。原写法取「UTC 昨天 17:30」，其上海日期取决于测试运行时刻：UTC 小时
+    ≥16 时上海已跨日，该刻落在上海**前一日**桶，而断言要求等于 ``to_date`` ——
+    于是每天 UTC 16:00 之后跑必然失败（时间依赖 flaky）。改为相对时区构造后恒等：
+    上海当日 01:30 若误用 UTC 零点（= 上海当日 08:00）作窗口下界仍会被漏掉，
+    原「不漏 8 小时」的护栏意图完整保留。
+    """
     db = Database(tmp_path / "rb.db")
     await db.connect()
     repo = JobRepo(db)
     await _seed_backup(db, "job-edge", status="success")
-    # 昨天 UTC 17:30 = 上海次日 01:30：若 since 误用 UTC 零点，该行被漏掉
-    stamp = utc_iso(now_utc().replace(hour=17, minute=30, second=0, microsecond=0) - timedelta(days=1))
+    # 东八区固定偏移（上海自 1991 年起无夏令时，与 ZoneInfo("Asia/Shanghai") 等价）
+    sh_tz = dt_timezone(timedelta(hours=8))
+    sh_today = now_utc().astimezone(sh_tz).date()
+    stamp = utc_iso(
+        datetime.combine(sh_today, dt_time(hour=1, minute=30), tzinfo=sh_tz).astimezone(UTC)
+    )
     await db.write("UPDATE jobs SET created_at = ? WHERE id = 'job-edge'", (stamp,))
 
     report = await build_backup_success_report(repo, days=2, timezone="Asia/Shanghai")
