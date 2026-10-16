@@ -9,6 +9,8 @@ import type {
   OkResponse,
   RepoCreateRequest,
   RepoOut,
+  RepoPasswordRequest,
+  RepoPasswordResponse,
   RepoStatusResponse,
   RepoTestResponse,
   RepoUpdateRequest,
@@ -47,4 +49,21 @@ export function getRepoStatus(id: string): Promise<RepoStatusResponse> {
 /** E29 仓库连通性测试（失败不静默：ok=false + reason）。 */
 export function testRepo(id: string): Promise<RepoTestResponse> {
   return request<RepoTestResponse>(`/api/repos/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}
+
+/**
+ * R-023 设置仓库密码（POST /api/repos/{id}/password；**仅密码文件不存在时允许**）。
+ *
+ * `password` 为空 → 后端生成强随机密码并一次性回显（须提示用户立即备份）；
+ * 非空 → 按该值写入，响应不回显。密码既是仓库密钥也是凭据加密密钥源，
+ * 覆盖已存在的文件会让仓库不可读，故后端对已存在场景返回 422。
+ */
+export function setRepoPassword(
+  id: string,
+  body: RepoPasswordRequest = {},
+): Promise<RepoPasswordResponse> {
+  return request<RepoPasswordResponse>(`/api/repos/${encodeURIComponent(id)}/password`, {
+    method: 'POST',
+    body,
+  })
 }

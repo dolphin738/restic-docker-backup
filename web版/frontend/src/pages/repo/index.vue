@@ -26,9 +26,24 @@ import { useI18n } from 'vue-i18n'
 import { browseFs } from '@/api/fs'
 import { getConfig, putConfig } from '@/api/config'
 import { createJob } from '@/api/jobs'
-import { createRepo, deleteRepo, getRepo, getRepoStatus, listRepos, testRepo, updateRepo } from '@/api/repo'
+import {
+  createRepo,
+  deleteRepo,
+  getRepo,
+  getRepoStatus,
+  listRepos,
+  setRepoPassword,
+  testRepo,
+  updateRepo,
+} from '@/api/repo'
 import { isAppError } from '@/api/http'
-import type { ConfigItem, RepoOut, RepoTestResponse, RepoUpdateRequest } from '@/api/types'
+import type {
+  ConfigItem,
+  RepoOut,
+  RepoPasswordRequest,
+  RepoTestResponse,
+  RepoUpdateRequest,
+} from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
@@ -138,6 +153,65 @@ function typeLabel(ty: string): string {
   return ty === 's3' ? t('repo.typeS3') : ty === 'b2' ? t('repo.typeB2') : t('repo.typeLocal')
 }
 
+// ---------------------------------------------------------------- 仓库密码（R-023）
+// 密码文件按仓库维度摆放（<PASSFILE_ROOT>/<repo_id>/password），新仓库缺省不存在。
+// 它既是 restic 仓库密钥，也是凭据加密的密钥源——缺失时任何仓库操作都注定失败，
+// 故此处提供「生成/自填」入口，而不是让用户自己去猜宿主机路径。
+const passwordShow = ref(false)
+const passwordSaving = ref(false)
+const passwordInput = ref('')
+/** 生成场景的一次性明文：仅在弹窗内展示，关闭即丢弃（不落库、不落日志）。 */
+const generatedPassword = ref<string | null>(null)
+
+const passfileMissing = computed(() => (repo.value?.passfile_status ?? 'missing') !== 'configured')
+
+function openPassword(): void {
+  passwordInput.value = ''
+  generatedPassword.value = null
+  passwordShow.value = true
+}
+
+async function generatePassword(): Promise<void> {
+  await submitPassword({})
+}
+
+async function submitPassword(body: RepoPasswordRequest): Promise<void> {
+  const id = currentRepoId.value
+  if (!id) {
+    return
+  }
+  passwordSaving.value = true
+  try {
+    const result = await setRepoPassword(id, body)
+    // 只在生成场景回显；自填场景 password 恒为 null
+    generatedPassword.value = result.generated ? result.password : null
+    passwordInput.value = ''
+    message.success(t('repo.passwordSetOk'))
+    await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
+    if (!result.generated) {
+      passwordShow.value = false
+    }
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    passwordSaving.value = false
+  }
+}
+
+async function copyGenerated(): Promise<void> {
+  if (!generatedPassword.value) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(generatedPassword.value)
+    message.success(t('repo.passwordCopied'))
+  } catch {
+    message.warning(t('repo.passwordCopyFailed'))
+  }
+}
+
 const columns = computed<DataTableColumns<RepoOut>>(() => [
   {
     title: t('repo.colId'),
@@ -157,6 +231,19 @@ const columns = computed<DataTableColumns<RepoOut>>(() => [
   { title: t('repo.colType'), key: 'type', render: (row) => typeLabel(row.type) },
   { title: t('repo.colUrl'), key: 'url', render: (row) => row.url ?? '—' },
   { title: t('repo.colHostTag'), key: 'host_tag', render: (row) => row.host_tag ?? '—' },
+  {
+    title: t('repo.colPassfile'),
+    key: 'passfile_status',
+    render: (row) =>
+      h(
+        NTag,
+        { size: 'tiny', round: true, type: row.passfile_status === 'configured' ? 'success' : 'warning' },
+        () =>
+          row.passfile_status === 'configured'
+            ? t('repo.passfileConfigured')
+            : t('repo.passfileMissingShort'),
+      ),
+  },
   {
     title: '',
     key: 'actions',
@@ -613,8 +700,32 @@ function formatBytes(value: number): string {
             <n-alert v-if="repoStatus?.last_error" type="error" :show-icon="false">
               {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
             </n-alert>
+            <!--
+              密码文件缺失 = 任何仓库操作都注定失败（restic 拿不到密码）。
+              与其让用户点了 init 才看到 exit=1，不如在这里直接挡住并给可操作入口。
+            -->
+            <n-alert v-if="passfileMissing" type="warning" :show-icon="false">
+              {{ t('repo.passfileMissingAlert') }}
+            </n-alert>
+            <n-button v-if="passfileMissing" size="small" type="primary" @click="openPassword">
+              {{ t('repo.passwordSetBtn') }}
+            </n-button>
             <template v-if="repoStatus && !repoStatus.connected">
-              <n-button size="small" type="warning" :loading="initializing" @click="initShow = true">
+              <n-tooltip v-if="passfileMissing" trigger="hover">
+                <template #trigger>
+                  <n-button size="small" type="warning" disabled>
+                    {{ t('repo.initBtn') }}
+                  </n-button>
+                </template>
+                {{ t('repo.initBlockedByPassfile') }}
+              </n-tooltip>
+              <n-button
+                v-else
+                size="small"
+                type="warning"
+                :loading="initializing"
+                @click="initShow = true"
+              >
                 {{ t('repo.initBtn') }}
               </n-button>
               <n-text depth="3" class="repo__note">{{ t('repo.initHint') }}</n-text>
@@ -637,6 +748,53 @@ function formatBytes(value: number): string {
         </n-card>
       </n-gi>
     </n-grid>
+
+    <!-- 设置仓库密码：生成（一次性回显）或自填 -->
+    <n-modal
+      v-model:show="passwordShow"
+      :title="t('repo.passwordTitle')"
+      preset="card"
+      style="width: 520px"
+    >
+      <n-alert v-if="!generatedPassword" type="warning" :show-icon="false">
+        {{ t('repo.passwordIntro') }}
+      </n-alert>
+      <template v-if="generatedPassword">
+        <n-alert type="success" :show-icon="false">{{ t('repo.passwordGeneratedHint') }}</n-alert>
+        <n-input :value="generatedPassword" readonly class="repo__password-out" />
+        <n-space justify="end" class="repo__password-actions">
+          <n-button size="small" secondary @click="copyGenerated">
+            {{ t('repo.passwordCopy') }}
+          </n-button>
+          <n-button size="small" type="primary" @click="passwordShow = false">
+            {{ t('repo.passwordSavedClose') }}
+          </n-button>
+        </n-space>
+      </template>
+      <template v-else>
+        <n-form label-placement="top" size="small">
+          <n-form-item :label="t('repo.passwordCustomLabel')">
+            <n-input
+              v-model:value="passwordInput"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('repo.passwordCustomPlaceholder')"
+            />
+          </n-form-item>
+        </n-form>
+        <n-space justify="end" class="repo__password-actions">
+          <n-button size="small" secondary @click="passwordShow = false">
+            {{ t('common.cancel') }}
+          </n-button>
+          <n-button size="small" :disabled="!passwordInput.trim()" :loading="passwordSaving" @click="submitPassword({ password: passwordInput })">
+            {{ t('repo.passwordUseCustom') }}
+          </n-button>
+          <n-button size="small" type="primary" :loading="passwordSaving" @click="generatePassword">
+            {{ t('repo.passwordGenerate') }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
 
     <!-- 新建仓库 -->
     <n-modal
@@ -726,6 +884,16 @@ function formatBytes(value: number): string {
 
 .repo__mount {
   cursor: pointer;
+}
+
+/* 一次性密码展示：等宽字体便于人工抄录，只读态由 n-input 的 readonly 提供 */
+.repo__password-out {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.repo__password-actions {
+  margin-top: 12px;
 }
 
 .repo__picked {

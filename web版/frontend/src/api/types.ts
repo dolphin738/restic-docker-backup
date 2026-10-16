@@ -75,6 +75,23 @@ export interface RepoCapacity {
   snaps: number | null
 }
 
+/** R-023 设置仓库密码请求（password 为空 = 后端生成强随机密码）。 */
+export interface RepoPasswordRequest {
+  /** 空/null → 后端生成；非空 → 按此值写入（响应不回显）。 */
+  password?: string | null
+}
+
+/** R-023 设置仓库密码结果（password 仅 generated 时一次性回显）。 */
+export interface RepoPasswordResponse {
+  ok: boolean
+  /** 本次是否为后端生成（决定 password 是否回显）。 */
+  generated: boolean
+  /** 仅 generated=true 时非空：**一次性展示**，不落库、不落日志。 */
+  password: string | null
+  /** 容器内路径（供运维在宿主机挂载点定位该文件）。 */
+  path: string
+}
+
 export interface RepoStatusResponse {
   /** repo.url 是否已配置（L3：未配置与连接失败分色——warning / error）。 */
   configured: boolean
