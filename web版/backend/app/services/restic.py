@@ -14,6 +14,7 @@ import contextlib
 import json
 import math
 import os
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,10 @@ OVERWRITE_MODES: tuple[str, ...] = ("if-changed", "always", "never")
 # stats --mode 白名单（只读探测，用于 E30 仓库容量）
 STATS_MODES: tuple[str, ...] = ("raw-data", "restore-size", "blobs-per-file", "files-per-contents")
 SNAPSHOT_ID_PATTERN = frozenset("0123456789abcdef")
+# A2 forget 时长档（--keep-within*）：restic duration 形态——若干个 <整数><单位> 顺接，
+# 单位 y（年）/m（月）/d（日）/h（时），任意顺序（restic internal/data/duration.go
+# ParseDuration：2y5m7d3h；无单位数字、负号、其余字母在 restic 端直接 Fatal）。
+DURATION_PATTERN = re.compile(r"^(?:\d+[ymdh])+$")
 
 # --read-data-subset 取值域约束（restic 0.19.1 checkFlags 口径；§7.1 V4 事实 3）
 READ_DATA_SUBSET_MAX_BUCKETS = 256          # 分数形态 n/t 的 t 上限（totalBucketsMax）
@@ -91,6 +96,18 @@ class WhitelistArgs:
     keep_weekly: int | None = None
     keep_monthly: int | None = None
     keep_yearly: int | None = None
+    # A2 时间线保留（Duplicati keep-time / retention-policy 分段的 restic 等价物）：
+    # restic duration 形态（y/m/d/h，如 1y5m7d2h），None/空 = 未启用该档；
+    # 形态校验与归一见 _normalize_duration（拼装层前移，restic 端 Fatal 无 JSON 输出）。
+    keep_within: str | None = None
+    keep_within_hourly: str | None = None
+    keep_within_daily: str | None = None
+    keep_within_weekly: str | None = None
+    keep_within_monthly: str | None = None
+    keep_within_yearly: str | None = None
+    # A2 --keep-tag（restic TagLists：每次出现一个 tag 列表；本项目每元素一条 flag，
+    # 多值间 OR 语义——命中任一的快照保留）。空 tuple = 未启用。
+    keep_tags: tuple[str, ...] = ()
     one_file_system: bool = False
     compression: str | None = None
     limit_up_kibps: int = 0
@@ -406,6 +423,26 @@ class ResticCmd:
             for flag, value in keep_pairs:
                 if value is not None and value >= 0:
                     flags.extend([flag, str(int(value))])
+            # A2 时间线档：--keep-within*（restic duration，拼装层校验+归一；
+            # 全零/空 = 未启用，不加 flag——与 keep_* 的 0 口径一致）
+            within_pairs = (
+                ("--keep-within", args.keep_within),
+                ("--keep-within-hourly", args.keep_within_hourly),
+                ("--keep-within-daily", args.keep_within_daily),
+                ("--keep-within-weekly", args.keep_within_weekly),
+                ("--keep-within-monthly", args.keep_within_monthly),
+                ("--keep-within-yearly", args.keep_within_yearly),
+            )
+            for flag, value in within_pairs:
+                if not value:
+                    continue
+                normalized = _normalize_duration(value, flag.lstrip("-"))
+                if normalized:
+                    flags.extend([flag, normalized])
+            # A2 --keep-tag：每元素一条 flag（OR 语义）；值过 _assert_safe_value
+            # 防 flag 注入（与 --tag 同款校验）
+            for keep_tag in args.keep_tags:
+                flags.extend(["--keep-tag", _assert_safe_value(keep_tag, "keep_tag")])
             if args.group_by:
                 flags.extend(["--group-by", _assert_safe_value(args.group_by, "group_by")])
             # E21 预览：--dry-run 只读（R-016 预览恒 dry_run，由路由层强制）；
@@ -660,4 +697,46 @@ def _validate_read_data_subset(value: str) -> str:
         raise ValidationError(invalid, data=data) from exc
     if not math.isfinite(size) or size <= 0:
         raise ValidationError(invalid, data=data)
+    return text
+
+
+def _normalize_duration(value: str | None, field_name: str) -> str | None:
+    """校验并归一 forget 时长档位取值（A2：``--keep-within*``，S2）。
+
+    取值域（restic 0.19.1 ``data.ParseDuration``）：若干个 ``<整数><单位>`` 顺接，
+    单位 ``y``/``m``/``d``/``h``（年/月/日/时），任意顺序，如 ``1y5m7d2h``。
+    与 restic 的两处**刻意差异**（本项目 stricter，均在拼装层 422 前置）：
+
+    - **重复单位拒绝**：restic 对 ``2y3y`` 后者覆盖前者（静默变 3y），语义歧义，
+      直接 422 要求合并为一段；
+    - **全零归一未启用**：``0d``/``0y0m`` 解析为零时长（restic 无约束力），
+      归一为 ``None``（不加 flag）——与 ``keep_*`` 整数档 0 = 未启用同口径。
+
+    Args:
+        value: 待校验取值（None/空串 = 未启用）。
+        field_name: 字段名（错误提示与 data 回带）。
+
+    Returns:
+        归一后的时长串（去首尾空白）；未启用返回 ``None``。
+
+    Raises:
+        ValidationError: 形态非法（无单位数字、负号、未知单位等）或重复单位。
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    data = {"field": field_name, "value": value}
+    if not DURATION_PATTERN.match(text):
+        raise ValidationError(
+            f"{field_name} 取值非法（restic 时长格式：数字+单位顺接，单位 y/m/d/h，如 1y5m7d2h）",
+            data=data,
+        )
+    units = [match.group(1) for match in re.finditer(r"\d+([ymdh])", text)]
+    if len(set(units)) != len(units):
+        raise ValidationError(
+            f"{field_name} 存在重复单位（restic 会后者覆盖前者，语义歧义，请合并为一段）",
+            data=data,
+        )
+    if all(int(match.group(1)) == 0 for match in re.finditer(r"(\d+)[ymdh]", text)):
+        return None  # 全零 = 零时长 = 无约束力，按未启用处理
     return text

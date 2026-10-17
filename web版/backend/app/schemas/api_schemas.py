@@ -374,6 +374,14 @@ class TaskOut(_Base):
     keep_weekly: int = 0
     keep_monthly: int = 0
     keep_yearly: int = 0
+    # A2 时间线保留（restic duration，如 1y5m7d2h；空串 = 未启用）与 --keep-tag 清单
+    keep_within: str = ""
+    keep_within_hourly: str = ""
+    keep_within_daily: str = ""
+    keep_within_weekly: str = ""
+    keep_within_monthly: str = ""
+    keep_within_yearly: str = ""
+    keep_tags: list[str] = Field(default_factory=list)
     group_by: str = "host,paths,tags"
     cron: str | None = None
     one_file_system: bool = False
@@ -430,6 +438,15 @@ class TaskUpsertRequest(_Base):
     keep_weekly: int = 0
     keep_monthly: int = 0
     keep_yearly: int = 0
+    # A2 时间线保留（restic duration 形态，如 1y5m7d2h；空串 = 未启用）与
+    # --keep-tag 清单（每元素一条 flag，多值 OR 语义；空列表 = 未启用）
+    keep_within: str = ""
+    keep_within_hourly: str = ""
+    keep_within_daily: str = ""
+    keep_within_weekly: str = ""
+    keep_within_monthly: str = ""
+    keep_within_yearly: str = ""
+    keep_tags: list[str] = Field(default_factory=list)
     group_by: str = "host,paths,tags"
     cron: str | None = None
     one_file_system: bool | None = None   # None=按模式取缺省（sources 模式缺省 true）
@@ -482,9 +499,13 @@ class SnapshotFilesResponse(_Base):
 class ForgetPreviewRequest(_Base):
     """E21 forget 预览请求（R-016：策略参数 → forget --dry-run --json）。
 
-    至少一个 ``keep_*`` 规则必须显式给出——无保留规则的 forget 会删除组内**全部**
-    快照（G3 服务端兜底：preview 与 E12 执行两侧同拒 422）。规则值域 ``≥1``：
-    0 = 不启用该维度（``--keep-last 0`` 的 restic 语义歧义，禁止显式传 0）。
+    至少一个保留规则必须显式给出——无保留规则的 forget 会删除组内**全部**快照
+    （G3 服务端兜底：preview 与 E12 执行两侧同拒 422）。计数档（keep_last/…）
+    值域 ``≥1``：0 = 不启用该维度（``--keep-last 0`` 的 restic 语义歧义，禁止显式传 0）。
+
+    A2 时间线档（keep_within/keep_within_*）：restic duration 形态（y/m/d/h，
+    如 ``1y5m7d2h``），空串/None = 未启用；keep_tags：``--keep-tag`` 清单
+    （每元素一条 flag，多值 OR 语义），空列表 = 未启用。
     """
 
     tag: str | None = Field(default=None, description="按 tag 限定 forget 范围（如任务 tag task-1）；缺省作用于全仓库")
@@ -495,6 +516,13 @@ class ForgetPreviewRequest(_Base):
     keep_weekly: int | None = Field(default=None, ge=1)
     keep_monthly: int | None = Field(default=None, ge=1)
     keep_yearly: int | None = Field(default=None, ge=1)
+    keep_within: str | None = Field(default=None, description="时间线保留：最新快照指定时长内的全部快照（如 1y5m7d2h）")
+    keep_within_hourly: str | None = Field(default=None, description="时间线保留：时长内的 hourly 快照")
+    keep_within_daily: str | None = Field(default=None, description="时间线保留：时长内的 daily 快照")
+    keep_within_weekly: str | None = Field(default=None, description="时间线保留：时长内的 weekly 快照")
+    keep_within_monthly: str | None = Field(default=None, description="时间线保留：时长内的 monthly 快照")
+    keep_within_yearly: str | None = Field(default=None, description="时间线保留：时长内的 yearly 快照")
+    keep_tags: list[str] = Field(default_factory=list, description="--keep-tag 清单（命中任一的快照保留）")
     prune: bool = Field(default=True, description="确认执行后是否随 forget --prune 回收数据（预览本身恒只读）")
 
 

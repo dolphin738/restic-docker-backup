@@ -1,6 +1,7 @@
 """迁移器回归（§10.1）：user_version 推进、幂等重跑、六表+索引、PRAGMA 工程约定。
 
 0002_multi_backup_tasks.sql（选项② R-026）：repos / backup_tasks / jobs.task_id 三结构断言；
+0004_retention_within.sql（批次 A2）：backup_tasks keep_within*/keep_tags 七列断言。
 greenfield（owner 2026-10-13 裁决）——**无物化断言**（不产生首任务）。
 """
 
@@ -45,7 +46,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 3
+    assert await db.user_version() == 4
     await db.close()
 
 
@@ -55,7 +56,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 3
+    assert await db.user_version() == 4
     await db.close()
 
 
@@ -68,7 +69,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 3
+    assert await db2.user_version() == 4
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -125,6 +126,43 @@ async def test_0002_jobs_task_id_column_exists(tmp_path):
     columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(jobs)")}
     assert "task_id" in columns
     assert "policy_id" in columns  # legacy 列保留（历史兼容读）
+    await db.close()
+
+
+async def test_0004_retention_within_columns(tmp_path):
+    """0004（批次 A2）：backup_tasks 新增 keep_within* 六列 + keep_tags，缺省全空。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
+    assert {
+        "keep_within",
+        "keep_within_hourly",
+        "keep_within_daily",
+        "keep_within_weekly",
+        "keep_within_monthly",
+        "keep_within_yearly",
+        "keep_tags",
+    } <= columns
+    # DDL 缺省口径：时长档空串 / tag 档空 JSON 数组（= 未启用，与 keep_* 的 0 一致）
+    row = await db.fetch_one(
+        "SELECT keep_within, keep_within_yearly, keep_tags FROM backup_tasks LIMIT 1"
+    )
+    assert row is None  # greenfield 无存量行；缺省值经新建任务路径断言（test_task_service）
+    await db.close()
+
+
+async def test_0004_new_task_defaults_unset(tmp_path):
+    """0004 缺省落地：新建任务不显式给新档位 → 空串/空列表（未启用）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    await db.write(_TASK_INSERT)
+    row = await db.fetch_one(
+        "SELECT keep_within, keep_within_daily, keep_tags FROM backup_tasks WHERE tag = 'task-1'"
+    )
+    assert row is not None
+    assert str(row["keep_within"]) == ""
+    assert str(row["keep_within_daily"]) == ""
+    assert str(row["keep_tags"]) == "[]"
     await db.close()
 
 

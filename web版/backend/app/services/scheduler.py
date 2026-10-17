@@ -574,8 +574,9 @@ class SchedulerService:
         - 任务存在且 ``enabled``；
         - ``prune_interval_days > 0``（显式关闭自动清理的开关）；
         - :meth:`_due_for_prune` 到期；
-        - 任务至少一个 ``keep_* > 0``（0 = 未启用，全零任务**绝不**自动裁剪——
-          JobRunner forget 分支的 G3 兜底也会拒绝，此处预检避免无谓落库）。
+        - 任务至少一个保留规则生效（``keep_* > 0`` 或 A2 起任一 ``keep_within*``
+          非空 / ``keep_tags`` 非空；全空任务**绝不**自动裁剪——JobRunner forget
+          分支的 G3 兜底也会拒绝，此处预检避免无谓落库）。
 
         提交走 ``trigger="scheduled"``：仓库忙时按既有语义 cancelled + 审计后跳过，
         下次 backup 成功后再判（E1 不回归）。结果经 R-018 Notifier 事后告知。
@@ -594,8 +595,26 @@ class SchedulerService:
                 task.keep_monthly,
                 task.keep_yearly,
             )
-            if all(rule <= 0 for rule in keep_rules):
-                logger.info("任务 %s 未配置任何保留规则（keep_*=0），跳过自动 forget（G3）", task_id)
+            # A2 时长档/标签档同属保留规则（写侧归一不变式：库存值必为合法非零
+            # 时长或空串——全零在 TaskService.normalize 即归一为空串，到不了这里；
+            # keep_tags 空列表 = 未启用）
+            within_rules = (
+                task.keep_within,
+                task.keep_within_hourly,
+                task.keep_within_daily,
+                task.keep_within_weekly,
+                task.keep_within_monthly,
+                task.keep_within_yearly,
+            )
+            if (
+                all(rule <= 0 for rule in keep_rules)
+                and not any(str(rule).strip() for rule in within_rules)
+                and not task.keep_tags
+            ):
+                logger.info(
+                    "任务 %s 未配置任何保留规则（keep_*=0 且无 keep_within/keep_tags），跳过自动 forget（G3）",
+                    task_id,
+                )
                 return
             logger.info("任务 %s prune 到期（interval=%s 天），自动提交 forget", task_id, task.prune_interval_days)
             # keep 规则经任务 profile（task_loader）透传，与 E12 手动路径同源；

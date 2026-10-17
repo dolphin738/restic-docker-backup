@@ -41,7 +41,7 @@ from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
-from app.services.restic import ResticCmd, ResticProcess, WhitelistArgs
+from app.services.restic import ResticCmd, ResticProcess, WhitelistArgs, _normalize_duration
 from app.settings import Settings, get_settings
 from app.utils.time import utc_iso
 from app.utils.ulid import new_job_id
@@ -794,20 +794,48 @@ class JobRunner:
                 "keep_weekly": _as_keep_rule(params.get("keep_weekly", policy.get("keep_weekly"))),
                 "keep_monthly": _as_keep_rule(params.get("keep_monthly", policy.get("keep_monthly"))),
                 "keep_yearly": _as_keep_rule(params.get("keep_yearly", policy.get("keep_yearly"))),
+                # A2 时长档（--keep-within*）：拼装层同款归一（形态校验前移；
+                # 空/全零 = 未启用，与计数档 0 口径一致）
+                "keep_within": _as_within_rule(
+                    params.get("keep_within", policy.get("keep_within")), "keep_within"
+                ),
+                "keep_within_hourly": _as_within_rule(
+                    params.get("keep_within_hourly", policy.get("keep_within_hourly")),
+                    "keep_within_hourly",
+                ),
+                "keep_within_daily": _as_within_rule(
+                    params.get("keep_within_daily", policy.get("keep_within_daily")),
+                    "keep_within_daily",
+                ),
+                "keep_within_weekly": _as_within_rule(
+                    params.get("keep_within_weekly", policy.get("keep_within_weekly")),
+                    "keep_within_weekly",
+                ),
+                "keep_within_monthly": _as_within_rule(
+                    params.get("keep_within_monthly", policy.get("keep_within_monthly")),
+                    "keep_within_monthly",
+                ),
+                "keep_within_yearly": _as_within_rule(
+                    params.get("keep_within_yearly", policy.get("keep_within_yearly")),
+                    "keep_within_yearly",
+                ),
             }
-            # G3 服务端兜底：无任何保留规则的 forget 会删除分组内全部快照——
-            # 与 E21 预览同拒 422（routers/ops.py require_keep_rule），杜绝绕过
-            # 预览门直接提交「全删」语义。
-            if all(value is None for value in keep.values()):
+            # A2 标签档（--keep-tag）：空 tuple = 未启用
+            keep_tags = _as_keep_tags(params.get("keep_tags", policy.get("keep_tags")))
+            # G3 服务端兜底：无任何保留规则（计数/时长/标签三门并列，A2）的 forget
+            # 会删除分组内全部快照——与 E21 预览同拒 422（routers/ops.py
+            # require_keep_rule），杜绝绕过预览门直接提交「全删」语义。
+            if all(value is None for value in keep.values()) and not keep_tags:
                 raise ValidationError(
-                    "forget 必须至少指定一个保留规则（keep_last/keep_hourly/…），"
+                    "forget 必须至少指定一个保留规则（keep_last/keep_hourly/…、keep_within/keep_tags），"
                     "否则会删除分组内全部快照",
-                    data={"keep_fields": list(keep)},
+                    data={"keep_fields": [*keep, "keep_tags"]},
                 )
             return WhitelistArgs(
                 tags=tags,
                 group_by=str(params.get("group_by") or policy.get("group_by") or "host,paths,tags"),
                 **keep,  # type: ignore[arg-type]
+                keep_tags=keep_tags,
                 prune=bool(params.get("prune", False)),
             )
 
@@ -895,6 +923,37 @@ def _as_keep_rule(value: Any) -> int | None:
     """
     converted = _as_optional_int(value)
     return converted if converted is not None and converted > 0 else None
+
+
+def _as_within_rule(value: Any, field_name: str) -> str | None:
+    """forget 时长档归一（A2）：形态校验 + 空/全零 = 未启用（None）。
+
+    复用 restic 层 :func:`_normalize_duration`（单一校验实现，与 argv 拼装层
+    同源）：params 来自 E21 回显（预览时已归一）或任务 profile（写侧已校验），
+    此处仍防御性校验——绕过前端的直提交若带坏 duration，restic 端是 Fatal 且
+    零 JSON 产出，执行层没有兜底机会（§7.1 V4 事实 3 同型）。
+    """
+    return _normalize_duration(str(value) if value is not None else None, field_name)
+
+
+def _as_keep_tags(value: Any) -> tuple[str, ...]:
+    """forget 标签档归一（A2 ``--keep-tag``）：去空白、丢空、保序去重；空 tuple = 未启用。
+
+    接受 list/tuple（API 契约形态）或单字符串（宽松兼容）；flag 注入校验由
+    拼装层 :func:`_assert_safe_value` 终判（与 ``--tag`` 同款）。
+    """
+    if value is None:
+        return ()
+    candidates: list[Any] = list(value) if isinstance(value, list | tuple) else [value]
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return tuple(result)
 
 
 def _clean_host(value: Any) -> str | None:

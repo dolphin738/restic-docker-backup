@@ -5,7 +5,8 @@
 1. **E21 只读**：恒以 ``forget --dry-run`` 执行（:class:`WhitelistArgs.dry_run`
    由本路由硬编码 ``True``，调用方无法覆盖），**绝不**落任何裁剪。实际执行必须经
    E12 ``{"type":"forget"}``（三重确认门在 UI，执行入审计 job.submit/finished）。
-2. **G3 服务端兜底**：无任何 ``keep_*`` 规则的 forget 会删除分组内**全部**快照——
+2. **G3 服务端兜底**：无任何保留规则（``keep_*`` 计数档 / ``keep_within*`` 时长档 /
+   ``keep_tags`` 标签档，A2 起三门并列）的 forget 会删除分组内**全部**快照——
    preview 与 E12 执行两侧同拒 422（见 :func:`require_keep_rule`）。
 3. **探测/推送失败不静默**：restic 非 0 退出/超时 → 500 ``RESTIC_FAILED``；
    E24 测试消息逐渠道回结果，失败必须带原因。
@@ -70,7 +71,7 @@ from app.services.notifier import (
     _parse_threshold,
 )
 from app.services.path_mapper import PathMapper
-from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.services.restic import ResticCmd, WhitelistArgs, _normalize_duration, failure_reason
 from app.utils.time import parse_utc_bound
 
 logger = logging.getLogger(__name__)
@@ -88,22 +89,53 @@ _KEEP_FIELDS: tuple[str, ...] = (
     "keep_monthly",
     "keep_yearly",
 )
+# A2 时间线档（restic duration）与 --keep-tag 清单：同属 G3「至少一个规则」门与
+# build_forget_args 映射面（restic ExpirePolicy.Empty 亦含 Within/Tags 维度）
+_KEEP_WITHIN_FIELDS: tuple[str, ...] = (
+    "keep_within",
+    "keep_within_hourly",
+    "keep_within_daily",
+    "keep_within_weekly",
+    "keep_within_monthly",
+    "keep_within_yearly",
+)
+_KEEP_TAG_FIELD = "keep_tags"
 
 
-def require_keep_rule(*keep_values: int | None) -> None:
+def _rule_active(value: object) -> bool:
+    """保留规则是否生效：None/空串/空列表/0 = 未启用（A2 起时长档与 tag 档入列）。
+
+    计数档 int 的 0 口径由调用侧（job_runner ``_as_keep_rule``）预先归一为 None，
+    此处仍防御性处理（E21 请求 schema 已 ``ge=1``，0 到不了本函数）。
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list | tuple):
+        return bool(value)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value > 0
+    return True
+
+
+def require_keep_rule(*keep_values: object) -> None:
     """G3 兜底：至少一个保留规则显式给出，否则 422。
 
     Args:
-        keep_values: 全部 keep_* 的有效值（None 表示未指定）。
+        keep_values: 全部保留规则的有效值（None/空 = 未指定；计数档 int、
+            时长档 str、tag 档 list 混合传入）。
 
     Raises:
         ValidationError: 全部未指定。
     """
-    if all(value is None for value in keep_values):
+    if all(not _rule_active(value) for value in keep_values):
         raise ValidationError(
-            "forget 必须至少指定一个保留规则（keep_last/keep_hourly/…），"
+            "forget 必须至少指定一个保留规则（keep_last/keep_hourly/…、keep_within/keep_tags），"
             "否则会删除分组内全部快照",
-            data={"keep_fields": list(_KEEP_FIELDS)},
+            data={"keep_fields": [*_KEEP_FIELDS, *_KEEP_WITHIN_FIELDS, _KEEP_TAG_FIELD]},
         )
 
 
@@ -111,7 +143,7 @@ def build_forget_args(
     *,
     tag: str | None,
     group_by: str,
-    keep: dict[str, int | None],
+    keep: dict[str, object],
     dry_run: bool,
     prune: bool,
 ) -> WhitelistArgs:
@@ -120,19 +152,27 @@ def build_forget_args(
     Args:
         tag: 限定 tag（None = 不加 --tag）。
         group_by: 分组维度。
-        keep: keep_* 具名字段 → 值映射。
+        keep: 保留规则具名字段 → 值映射（计数档 int|None / 时长档 str|None /
+            tag 档 list；缺失键按未启用处理）。
         dry_run: 预览恒 True；执行恒 False。
         prune: 是否随 forget --prune 回收数据。
     """
     return WhitelistArgs(
         tags=(tag,) if tag else (),
         group_by=group_by,
-        keep_last=keep.get("keep_last"),
-        keep_hourly=keep.get("keep_hourly"),
-        keep_daily=keep.get("keep_daily"),
-        keep_weekly=keep.get("keep_weekly"),
-        keep_monthly=keep.get("keep_monthly"),
-        keep_yearly=keep.get("keep_yearly"),
+        keep_last=keep.get("keep_last"),  # type: ignore[arg-type]
+        keep_hourly=keep.get("keep_hourly"),  # type: ignore[arg-type]
+        keep_daily=keep.get("keep_daily"),  # type: ignore[arg-type]
+        keep_weekly=keep.get("keep_weekly"),  # type: ignore[arg-type]
+        keep_monthly=keep.get("keep_monthly"),  # type: ignore[arg-type]
+        keep_yearly=keep.get("keep_yearly"),  # type: ignore[arg-type]
+        keep_within=keep.get("keep_within"),  # type: ignore[arg-type]
+        keep_within_hourly=keep.get("keep_within_hourly"),  # type: ignore[arg-type]
+        keep_within_daily=keep.get("keep_within_daily"),  # type: ignore[arg-type]
+        keep_within_weekly=keep.get("keep_within_weekly"),  # type: ignore[arg-type]
+        keep_within_monthly=keep.get("keep_within_monthly"),  # type: ignore[arg-type]
+        keep_within_yearly=keep.get("keep_within_yearly"),  # type: ignore[arg-type]
+        keep_tags=tuple(keep.get("keep_tags") or ()),  # type: ignore[arg-type]
         dry_run=dry_run,
         prune=prune,
         json_output=True,
@@ -158,7 +198,14 @@ async def preview_forget(
     """
     del session
     keep = {field: getattr(payload, field) for field in _KEEP_FIELDS}
-    require_keep_rule(*keep.values())
+    # A2 时长档：拼装层归一（形态非法 422；全零/空 = 未启用 → None）后再过 G3 门，
+    # 避免「0d」这类空策略穿过门后由 restic 端 Fatal（静默防线前移）
+    within = {
+        field: _normalize_duration(getattr(payload, field), field) for field in _KEEP_WITHIN_FIELDS
+    }
+    keep_tags = tuple(str(item).strip() for item in payload.keep_tags if str(item).strip())
+    require_keep_rule(*keep.values(), *within.values(), keep_tags)
+    keep_all: dict[str, object] = {**keep, **within, _KEEP_TAG_FIELD: keep_tags}
 
     restic: ResticCmd = request.app.state.restic
     parser = request.app.state.parser
@@ -175,7 +222,7 @@ async def preview_forget(
     args = build_forget_args(
         tag=payload.tag,
         group_by=payload.group_by,
-        keep=keep,
+        keep=keep_all,
         dry_run=True,  # 预览恒只读（模块 docstring 约定①），调用方无法经本端点传 False
         prune=False,  # dry-run 与 --prune 并存无意义，prune 只属于确认后的执行
     )
@@ -206,15 +253,24 @@ async def preview_forget(
     # 参数回显：前端确认门提交 E12 时原样透传（预览与实际结果一致）。
     # tag 的执行侧消费键是 params["tags"]（列表，JobRunner._build_args forget 分支），
     # 回显必须与消费端同键名，否则确认提交后范围限定会静默丢失。
+    # A2：keep_tags 的回显键是 params["keep_tags"]（与 filter 的 "tags" 区分，
+    # JobRunner forget 分支分别消费）；时长档原样回传归一后的串。
     echo_params: dict[str, object] = {"group_by": payload.group_by, "prune": payload.prune}
     if payload.tag:
         echo_params["tags"] = [payload.tag]
-    echo_params.update({field: value for field, value in keep.items() if value is not None})
+    for field, value in keep_all.items():
+        if _rule_active(value):
+            echo_params[field] = list(value) if isinstance(value, tuple) else value
 
     await audit.record(
         AUDIT_FORGET_PREVIEW,
         target="forget",
-        detail={"tag": payload.tag, "remove_count": len(items), "prune": payload.prune},
+        detail={
+            "tag": payload.tag,
+            "remove_count": len(items),
+            "prune": payload.prune,
+            "keep_fields": sorted(field for field, value in keep_all.items() if _rule_active(value)),
+        },
         result="ok",
     )
     return ForgetPreviewResponse(

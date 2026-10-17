@@ -25,6 +25,8 @@ __all__ = ["DEFAULT_REPO_ID", "Task", "TaskRepo"]
 _COLUMNS = (
     "id", "repo_id", "name", "enabled", "tag", "sources", "excludes",
     "keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly",
+    "keep_within", "keep_within_hourly", "keep_within_daily", "keep_within_weekly",
+    "keep_within_monthly", "keep_within_yearly", "keep_tags",
     "group_by", "cron", "one_file_system", "compression", "check_sample_ratio",
     "monthly_full_day", "prune_interval_days", "limit_up_kibps", "limit_down_kibps",
     "dry_run_pending", "last_run_at", "created_at", "updated_at",
@@ -45,6 +47,14 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "keep_weekly": 0,
     "keep_monthly": 0,
     "keep_yearly": 0,
+    # A2 时间线保留：空串/空列表 = 未启用（0004 DDL 缺省同口径）
+    "keep_within": "",
+    "keep_within_hourly": "",
+    "keep_within_daily": "",
+    "keep_within_weekly": "",
+    "keep_within_monthly": "",
+    "keep_within_yearly": "",
+    "keep_tags": [],
     "group_by": "host,paths,tags",
     "cron": None,
     "one_file_system": 0,
@@ -76,6 +86,15 @@ class Task:
     keep_weekly: int = 0
     keep_monthly: int = 0
     keep_yearly: int = 0
+    # A2 时间线保留（restic duration 形态；空串 = 未启用）与 --keep-tag 清单
+    # （每元素一条 flag，OR 语义；空列表 = 未启用）
+    keep_within: str = ""
+    keep_within_hourly: str = ""
+    keep_within_daily: str = ""
+    keep_within_weekly: str = ""
+    keep_within_monthly: str = ""
+    keep_within_yearly: str = ""
+    keep_tags: list[str] = field(default_factory=list)
     group_by: str = "host,paths,tags"
     cron: str | None = None
     one_file_system: bool = False
@@ -163,6 +182,13 @@ class TaskRepo:
             "keep_weekly": task.keep_weekly,
             "keep_monthly": task.keep_monthly,
             "keep_yearly": task.keep_yearly,
+            "keep_within": task.keep_within,
+            "keep_within_hourly": task.keep_within_hourly,
+            "keep_within_daily": task.keep_within_daily,
+            "keep_within_weekly": task.keep_within_weekly,
+            "keep_within_monthly": task.keep_within_monthly,
+            "keep_within_yearly": task.keep_within_yearly,
+            "keep_tags": list(task.keep_tags),
             "limit_up_kibps": task.limit_up_kibps,
             "limit_down_kibps": task.limit_down_kibps,
         }
@@ -295,6 +321,13 @@ def _to_task(row: Any) -> Task:
         keep_weekly=int(row["keep_weekly"] or 0),
         keep_monthly=int(row["keep_monthly"] or 0),
         keep_yearly=int(row["keep_yearly"] or 0),
+        keep_within=str(row["keep_within"] or ""),
+        keep_within_hourly=str(row["keep_within_hourly"] or ""),
+        keep_within_daily=str(row["keep_within_daily"] or ""),
+        keep_within_weekly=str(row["keep_within_weekly"] or ""),
+        keep_within_monthly=str(row["keep_within_monthly"] or ""),
+        keep_within_yearly=str(row["keep_within_yearly"] or ""),
+        keep_tags=_load_list(row["keep_tags"]),
         group_by=str(row["group_by"] or "host,paths,tags"),
         cron=None if row["cron"] is None else str(row["cron"]),
         one_file_system=bool(int(row["one_file_system"] or 0)),

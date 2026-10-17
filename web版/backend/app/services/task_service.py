@@ -12,7 +12,9 @@ policies 遗留面（路由 E08–E11 / PolicyRepo / 测试）一并移除，该
   有星期偏移一天的历史缺陷，issue #286；Q4 静默防线：写入侧试构造，失败即 422
   并透出 APScheduler 原始报错文本）；
 - keep_* 非负、compression 白名单、one_file_system 模式缺省、check_sample_ratio
-  [0,1]、monthly_full_day 1~31。
+  [0,1]、monthly_full_day 1~31；
+- A2 时间线保留 keep_within*（restic duration 形态，复用 restic 层校验器）与
+  keep_tags（去空白/去空/保序去重 + flag 注入写侧 fail-fast）。
 
 任务域特有规则（原策略域不适用，故在本模块实现）：
 - ``name`` 必填非空（无默认名）；
@@ -30,6 +32,7 @@ from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.services.path_mapper import PathMapper
+from app.services.restic import _assert_safe_value, _normalize_duration
 from app.services.scheduler import _cron_trigger
 from app.settings import Settings, get_settings
 
@@ -77,6 +80,13 @@ class TaskService:
             "keep_weekly": task.keep_weekly,
             "keep_monthly": task.keep_monthly,
             "keep_yearly": task.keep_yearly,
+            "keep_within": task.keep_within,
+            "keep_within_hourly": task.keep_within_hourly,
+            "keep_within_daily": task.keep_within_daily,
+            "keep_within_weekly": task.keep_within_weekly,
+            "keep_within_monthly": task.keep_within_monthly,
+            "keep_within_yearly": task.keep_within_yearly,
+            "keep_tags": list(task.keep_tags),
             "group_by": task.group_by,
             "cron": task.cron,
             "one_file_system": task.one_file_system,
@@ -127,6 +137,19 @@ class TaskService:
             "keep_yearly",
         ):
             values[key] = _non_negative_int(payload.get(key, 0), key)
+        # A2 时间线保留：restic duration 形态校验复用 restic 层单一实现
+        # （与 _cron_trigger 同款跨模块私有导入先例——校验逻辑不复制第二套）；
+        # 归一后空串 = 未启用（与 keep_* 的 0 口径一致）。
+        for key in (
+            "keep_within",
+            "keep_within_hourly",
+            "keep_within_daily",
+            "keep_within_weekly",
+            "keep_within_monthly",
+            "keep_within_yearly",
+        ):
+            values[key] = _normalize_duration(payload.get(key), key) or ""
+        values["keep_tags"] = _normalize_keep_tags(payload.get("keep_tags"))
         values["group_by"] = _non_empty_str(payload.get("group_by"), "group_by", default=DEFAULT_GROUP_BY)
         values["cron"] = self._normalize_cron(payload.get("cron"))
         values["one_file_system"] = self._normalize_one_file_system(payload.get("one_file_system"))
@@ -282,6 +305,38 @@ def _non_negative_int(value: Any, field_name: str) -> int:
     if number < 0:
         raise ValidationError(f"{field_name} 不能为负数", data={"field": field_name})
     return number
+
+
+def _normalize_keep_tags(value: Any) -> list[str]:
+    """A2 ``keep_tags`` 写侧归一：去首尾空白、丢空串、保序去重。
+
+    每元素过 :func:`_assert_safe_value`（禁 ``-`` 开头/NUL/换行——防 flag 注入，
+    与拼装层同款校验）——**写侧 fail-fast**：表单保存即 422，不留到任务提交时
+    才报（Q4 静默防线：坏配置尽早显式失败）。
+
+    Args:
+        value: 请求体原值（None/列表/元组；其余形态 422）。
+
+    Returns:
+        归一后的标签列表（可能为空 = 未启用）。
+
+    Raises:
+        ValidationError: 形态非列表或任一元素非法。
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list | tuple):
+        raise ValidationError("keep_tags 须为字符串数组", data={"field": "keep_tags"})
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        _assert_safe_value(item, "keep_tags")
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _ratio(value: Any) -> float:
