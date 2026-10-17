@@ -135,7 +135,7 @@ dump 数据库任务、Prometheus 指标、审计日志、多仓库（R-023）+ 
 
 
 
-| A7 | **原位恢复 Duplicati 化**（owner 2026-10-17 裁决「Duplicati 怎么实现本项目就怎么实现」；源码证据：`Options.cs:529` `--overwrite` 布尔默认 false、`RestoreHandler.cs:1784` 原位置分支、唯一护栏 `allow-restore-outside-target-directory` 默认 false）：① 恢复页目标 = **原位置（默认）**（restic 等价 `--target /`，机制复用现有 `INPLACE_RESTORE_TARGET_ROOT`，执行层零改动）或自定义目录（时间戳语义）；② `overwrite` 从「固定 always」改为 **Duplicati 布尔勾选**（默认不勾 → `--overwrite=never` 已存在文件跳过；勾选 → `=always`），时间戳路径的 `if-changed` 注入不动；③ 确认门从「三重确认（关键词=快照短 id）」放松为**单次 ConfirmGate 确认**（对齐 Duplicati 无关键词确认）；④ 保留的底线护栏 = 目标前缀白名单（等价 Duplicati 的 outside-target-directory=false）+ `restore.inplace` 审计；⑤ **规范 §3.1 S7 修订先行**（三重确认门/固定 always 条目改写 + AGENTS.md 编号同步），否则 verify_redlines 假绿（开发期无存量数据，无历史 `/host/*` 快照兼容负担） | `routers/restore.py`、`restic.py`（WhitelistArgs.overwrite 值域扩 never）、规范 §3.1 + AGENTS.md、前端 restore 页、E2E |
+| A7（✅ 已交付 2026-10-17） | **原位恢复 Duplicati 化**（owner 2026-10-17 裁决「Duplicati 怎么实现本项目就怎么实现」；源码证据：`Options.cs:529` `--overwrite` 布尔默认 false、`RestoreHandler.cs:1784` 原位置分支、唯一护栏 `allow-restore-outside-target-directory` 默认 false）：① 恢复页目标 = **原位置（默认）**（restic 等价 `--target /`，机制复用现有 `INPLACE_RESTORE_TARGET_ROOT`，执行层零改动）或自定义目录（时间戳语义）；② `overwrite` 从「固定 always」改为 **Duplicati 布尔勾选**（默认不勾 → `--overwrite=never` 已存在文件跳过；勾选 → `=always`），时间戳路径的 `if-changed` 注入不动；③ 确认门从「三重确认（关键词=快照短 id）」放松为**单次 ConfirmGate 确认**（对齐 Duplicati 无关键词确认）；④ 保留的底线护栏 = 目标前缀白名单（等价 Duplicati 的 outside-target-directory=false）+ `restore.inplace` 审计；⑤ **规范 §3.1 S7 修订先行**（三重确认门/固定 always 条目改写 + AGENTS.md 编号同步），否则 verify_redlines 假绿（开发期无存量数据，无历史 `/host/*` 快照兼容负担） | `routers/restore.py`、`restic.py`（WhitelistArgs.overwrite 值域扩 never）、规范 §3.1 + AGENTS.md、前端 restore 页、E2E |
 
 **A1 细则：rclone 实现方案（2026-10-17 接续《讨论记录-R-022立项前置-2026-10-16》§3/§5 定稿，owner 批示写入）**
 
@@ -207,6 +207,10 @@ owner 已声明本次改造不受现有规范限制，但本仓库红线是机�
 
 ## 6. 里程碑建议
 
-1. P3（R-023/024/025）提交收尾 → **批次 A**（A0 → A7 → A1 → A2 → A3 → A8；后端 + 规范 §3.1 修订 + 镜像）→ **批次 B**（A4/A5/A6 纯前端，可与 C/D 并行）→ **批次 C**（自愈）→ **批次 D**（钩子/邮件/重试/多目的地+copy+key）→ **批次 E**（多仓库落地后的配置导入/导出）；
+1. P3（R-023/024/025）提交收尾 → **批次 A**（✅ A0 已交付 2026-10-17 → ✅ A7 已交付 2026-10-17（规范 S7 v1.4 先行签署）→ A1 → A2 → A3 → A8；后端 + 规范 §3.1 修订 + 镜像）→ **批次 B**（A4/A5/A6 纯前端，可与 C/D 并行）→ **批次 C**（自愈）→ **批次 D**（钩子/邮件/重试/多目的地+copy+key）→ **批次 E**（多仓库落地后的配置导入/导出）；
 2. 每批次独立 PR、独立回归（pytest + 前端三件套 + verify_redlines + 真机 E2E），按特性拆分提交；
 3. 本文结论若被 owner 采纳，蒸馏进《Web版改造方案.md》新章节后归档本文。
+
+> **交付记录（2026-10-17）**：
+> - **A0**：host 模式整体退役（后端 14 文件 / 前端 12 文件 / compose / 红线探针扩前端 / 测试全域 / 文档全域含 archive 注记）；补漏记录：`INPLACE_TARGET_ROOT='/host'`（api/restore.ts）曾因机器探针只扫 .py 而漏出，前端原位恢复会全量 400——探针已扩到 TS/Vue。
+> - **A7**：原位恢复 Duplicati 化。S7 v1.4 签署（三重确认门→单次确认、固定 always→never/always 布尔）；后端契约 `overwrite_mode: never|always`、keyword 字段删除（extra=forbid 反证）；前端「原位置」默认 + 覆盖勾选（默认不勾）+ ConfirmGate 无关键词可选模式；语义差异如实标注（Duplicati overwrite=false = 冲突改名另存，restic 取最近似 never=跳过）。真机 E2E 待跑（本机无 docker）。
