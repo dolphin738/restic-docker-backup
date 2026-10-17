@@ -32,6 +32,7 @@ import {
   getRepo,
   getRepoStatus,
   listRepos,
+  listRcloneRemotes,
   setRepoPassword,
   testRepo,
   updateRepo,
@@ -39,6 +40,7 @@ import {
 import { isAppError } from '@/api/http'
 import type {
   ConfigItem,
+  RcloneRemotesOut,
   RepoOut,
   RepoPasswordRequest,
   RepoTestResponse,
@@ -150,7 +152,8 @@ async function confirmDelete(): Promise<void> {
 }
 
 function typeLabel(ty: string): string {
-  return ty === 's3' ? t('repo.typeS3') : ty === 'b2' ? t('repo.typeB2') : t('repo.typeLocal')
+  const key = `repo.type${ty.charAt(0).toUpperCase()}${ty.slice(1)}`
+  return t(key)
 }
 
 // ---------------------------------------------------------------- 仓库密码（R-023）
@@ -293,8 +296,20 @@ const statusQuery = useQuery({
 const repo = computed(() => repoQuery.data.value ?? null)
 const repoType = computed<RepoTypeKey>(() => {
   const ty = repo.value?.type
-  return ty === 's3' || ty === 'b2' ? ty : 'local'
+  return ty === 's3' || ty === 'b2' || ty === 'sftp' || ty === 'azure' || ty === 'gcs' || ty === 'rest' || ty === 'rclone'
+    ? ty
+    : 'local'
 })
+
+// A1 rclone 只读探测（Q17）：仅 rclone 类型仓库按需拉取（spawn 子进程，60s 内不重取）。
+// 定义须晚于 repoType（enabled 依赖它）——vue-query 求值 enabled 是即时的。
+const rcloneRemotesQuery = useQuery({
+  queryKey: ['rclone', 'remotes'],
+  queryFn: listRcloneRemotes,
+  enabled: computed(() => repoType.value === 'rclone'),
+  staleTime: 60_000,
+})
+const rcloneRemotes = computed<RcloneRemotesOut | null>(() => rcloneRemotesQuery.data.value ?? null)
 
 const form = reactive({ url: '', hostTag: '' })
 const initial = reactive({ url: '', hostTag: '' })
@@ -321,13 +336,15 @@ watch(currentRepoId, () => {
 // ---------------------------------------------------------------- 凭据（按仓库命名空间）
 const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig })
 
-type RepoTypeKey = 'local' | 's3' | 'b2'
+type RepoTypeKey = 'local' | 's3' | 'b2' | 'sftp' | 'azure' | 'gcs' | 'rest' | 'rclone'
 interface CredField {
   suffix: string
   labelKey: string
 }
 
-/** 凭据键表（§4.3）：基础后缀；完整键 = cred.{repo_id}.{suffix}（R-023 命名空间化）。 */
+/** 凭据键表（§4.3）：基础后缀；完整键 = cred.{repo_id}.{suffix}（R-023 命名空间化）。
+ * A1 新增后端（restic 0.19.1 官方 env 逐一登记；sftp 无凭据字段——免密登录；
+ * rclone 无凭据字段——conf 宿主机托管，Q17 只读档位）。 */
 const CRED_FIELDS: Record<RepoTypeKey, CredField[]> = {
   local: [],
   s3: [
@@ -340,6 +357,20 @@ const CRED_FIELDS: Record<RepoTypeKey, CredField[]> = {
     { suffix: 'b2_account_id', labelKey: 'repo.credB2AccountId' },
     { suffix: 'b2_account_key', labelKey: 'repo.credB2AccountKey' },
   ],
+  sftp: [],
+  azure: [
+    { suffix: 'azure_account_name', labelKey: 'repo.credAzureAccountName' },
+    { suffix: 'azure_account_key', labelKey: 'repo.credAzureAccountKey' },
+  ],
+  gcs: [
+    { suffix: 'google_project_id', labelKey: 'repo.credGoogleProjectId' },
+    { suffix: 'google_application_credentials', labelKey: 'repo.credGoogleApplicationCredentials' },
+  ],
+  rest: [
+    { suffix: 'restic_rest_username', labelKey: 'repo.credRestUsername' },
+    { suffix: 'restic_rest_password', labelKey: 'repo.credRestPassword' },
+  ],
+  rclone: [],
 }
 
 const credPrefix = computed(() => `cred.${currentRepoId.value}.`)
@@ -539,7 +570,7 @@ function formatBytes(value: number): string {
                 <n-space vertical :size="4" class="repo__cred">
                   <n-space align="center" :size="6">
                     <n-tag size="small" round :type="repoType === 'local' ? 'default' : 'info'">
-                      {{ repoType === 'local' ? t('repo.typeLocal') : repoType === 's3' ? t('repo.typeS3') : t('repo.typeB2') }}
+                      {{ typeLabel(repoType) }}
                     </n-tag>
                     <n-tag v-if="repo?.url_source === 'env'" size="tiny" round type="warning">
                       {{ t('repo.credSourceEnv') }}
@@ -600,6 +631,32 @@ function formatBytes(value: number): string {
                     v-model:value="form.url"
                     :placeholder="t('repo.urlPlaceholder')"
                   />
+                  <!-- 分类型地址提示（A1 新后端）：sftp 免密登录 / rclone 远端托管 -->
+                  <n-text v-if="repoType === 'sftp'" depth="3" class="repo__note">
+                    {{ t('repo.urlHintSftp') }}
+                  </n-text>
+                  <n-text v-else-if="repoType === 'rclone'" depth="3" class="repo__note">
+                    {{ t('repo.urlHintRclone') }}
+                  </n-text>
+                  <!-- rclone conf 只读状态（Q17：UI 不生成、不编辑、不展示凭据） -->
+                  <n-alert
+                    v-if="repoType === 'rclone' && rcloneRemotes"
+                    :type="rcloneRemotes.conf_present ? 'success' : 'warning'"
+                    :show-icon="false"
+                  >
+                    {{
+                      rcloneRemotes.conf_present
+                        ? t('repo.rcloneConfOk', { list: rcloneRemotes.remotes.join('、') || '—' })
+                        : t('repo.rcloneConfMissing')
+                    }}
+                  </n-alert>
+                  <n-alert
+                    v-else-if="repoType === 'rclone' && rcloneRemotesQuery.error.value"
+                    type="error"
+                    :show-icon="false"
+                  >
+                    {{ t('repo.rcloneProbeFailed', { reason: String(rcloneRemotesQuery.error.value) }) }}
+                  </n-alert>
                 </n-space>
               </n-form-item>
               <n-form-item :label="t('repo.hostTag')">

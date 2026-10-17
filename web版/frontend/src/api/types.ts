@@ -178,6 +178,20 @@ export interface RepoTestResponse {
   reason: string | null
 }
 
+/** A1 rclone 只读探测（Q17：不生成、不编辑、不展示 conf 内凭据）。 */
+export interface RcloneRemotesOut {
+  /** rclone 二进制可用且探测成功（与 conf 是否存在无关）。 */
+  available: boolean
+  /** conf 文件在容器内真实存在。 */
+  conf_present: boolean
+  /** 生效的 conf 路径（RCLONE_CONFIG 设置值；未设置为 null）。 */
+  conf_path: string | null
+  /** 远端名清单（已去行尾冒号）。 */
+  remotes: string[]
+  /** 不可用/缺 conf 时的可操作原因。 */
+  reason: string | null
+}
+
 /** E06 配置项：敏感项只回 has_value + source，不回明文。 */
 export interface ConfigItem {
   key: string

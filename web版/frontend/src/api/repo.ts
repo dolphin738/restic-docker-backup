@@ -7,6 +7,7 @@
 import { request } from './http'
 import type {
   OkResponse,
+  RcloneRemotesOut,
   RepoCreateRequest,
   RepoOut,
   RepoPasswordRequest,
@@ -49,6 +50,17 @@ export function getRepoStatus(id: string): Promise<RepoStatusResponse> {
 /** E29 仓库连通性测试（失败不静默：ok=false + reason）。 */
 export function testRepo(id: string): Promise<RepoTestResponse> {
   return request<RepoTestResponse>(`/api/repos/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}
+
+/**
+ * A1 rclone 只读探测（GET /api/rclone/remotes）：conf 状态 + 远端名清单。
+ *
+ * Q17 档位：conf 由宿主机 `rclone config` 生成、compose 挂载（必须 :rw——OAuth
+ * token 过期时 rclone 回写 conf）。本接口不生成、不编辑、不展示 conf 内凭据。
+ * 用途：rclone 仓库地址输入提示 + A5 类型选择卡 preset 清单。
+ */
+export function listRcloneRemotes(): Promise<RcloneRemotesOut> {
+  return request<RcloneRemotesOut>('/api/rclone/remotes')
 }
 
 /**
