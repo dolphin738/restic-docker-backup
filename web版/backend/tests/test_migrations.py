@@ -46,7 +46,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 4
+    assert await db.user_version() == 5
     await db.close()
 
 
@@ -56,7 +56,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 4
+    assert await db.user_version() == 5
     await db.close()
 
 
@@ -69,7 +69,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 4
+    assert await db2.user_version() == 5
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -163,6 +163,27 @@ async def test_0004_new_task_defaults_unset(tmp_path):
     assert str(row["keep_within"]) == ""
     assert str(row["keep_within_daily"]) == ""
     assert str(row["keep_tags"]) == "[]"
+    await db.close()
+
+
+async def test_0005_task_hook_columns(tmp_path):
+    """0005（批次 D C1）：backup_tasks 新增 pre_cmd/post_cmd 两列，缺省空串（= 未配置）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
+    assert {"pre_cmd", "post_cmd"} <= columns
+    await db.close()
+
+
+async def test_0005_new_task_hook_defaults_empty(tmp_path):
+    """0005 缺省落地：新建任务不填钩子 → 空串（执行层据此跳过，不产生子进程）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    await db.write(_TASK_INSERT)
+    row = await db.fetch_one("SELECT pre_cmd, post_cmd FROM backup_tasks WHERE tag = 'task-1'")
+    assert row is not None
+    assert str(row["pre_cmd"]) == ""
+    assert str(row["post_cmd"]) == ""
     await db.close()
 
 

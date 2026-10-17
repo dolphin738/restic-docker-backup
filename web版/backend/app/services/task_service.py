@@ -31,6 +31,7 @@ from typing import Any
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
+from app.services.hooks import split_command
 from app.services.path_mapper import PathMapper
 from app.services.restic import _assert_safe_value, _normalize_duration
 from app.services.scheduler import _cron_trigger
@@ -98,6 +99,9 @@ class TaskService:
             "limit_down": task.limit_down_kibps,
             "dry_run_pending": task.dry_run_pending,
             "last_run_at": task.last_run_at,
+            # C1 任务级前后钩子（空串 = 未配置）
+            "pre_cmd": task.pre_cmd,
+            "post_cmd": task.post_cmd,
             # greenfield：无 legacy 策略可继承，DDL 无此列，恒 None（wire 兼容占位）
             "legacy_policy_id": None,
             "created_at": task.created_at,
@@ -159,6 +163,10 @@ class TaskService:
         values["prune_interval_days"] = _non_negative_int(payload.get("prune_interval_days", 7), "prune_interval_days")
         values["limit_up_kibps"] = _non_negative_int(payload.get("limit_up", 0), "limit_up")
         values["limit_down_kibps"] = _non_negative_int(payload.get("limit_down", 0), "limit_down")
+        # C1 钩子：空串 = 未配置（与 cron 的 NULL 语义区分）；写侧 fail-fast——
+        # 长度/引号闭合/危险字符三类坏值在保存时即 422，不留到任务提交时才报。
+        values["pre_cmd"] = _normalize_cmd(payload.get("pre_cmd"), "pre_cmd")
+        values["post_cmd"] = _normalize_cmd(payload.get("post_cmd"), "post_cmd")
         # tag 由服务端生成（task-<id>），客户端提交一律忽略（共享知识 §9.1）；
         # 注意 tag 不出现在 values 中——TaskRepo.create 负责插入后回写。
         return values
@@ -337,6 +345,27 @@ def _normalize_keep_tags(value: Any) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _normalize_cmd(value: Any, field_name: str) -> str:
+    """C1 钩子命令归一（空 = 未配置）：去空白 + 长度 + 切分可行性三重校验。
+
+    复用 :func:`~app.services.hooks.split_command`（单一实现点，与执行层同口径）：
+    保存时就把「引号不闭合 / 超长 / 切分后为空」挡掉——否则这类坏配置只在任务
+    跑起来时才报，且会污染任务历史（Q4 静默防线同款）。
+
+    Raises:
+        ValidationError: 形态非法（422）。
+    """
+    if value is None or str(value).strip() == "":
+        return ""
+    try:
+        argv = split_command(str(value))
+    except ValueError as exc:
+        raise ValidationError(str(exc), data={"field": field_name}) from exc
+    if argv is None:
+        return ""
+    return str(value).strip()
 
 
 def _ratio(value: Any) -> float:

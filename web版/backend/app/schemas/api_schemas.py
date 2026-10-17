@@ -393,6 +393,9 @@ class TaskOut(_Base):
     limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
     dry_run_pending: bool = False
     last_run_at: str | None = None
+    # C1 任务级前后钩子（空串 = 未配置）
+    pre_cmd: str = ""
+    post_cmd: str = ""
     legacy_policy_id: int | None = None   # greenfield 恒 None（无 legacy_policy_id 列）
     created_at: str
     updated_at: str
@@ -456,6 +459,9 @@ class TaskUpsertRequest(_Base):
     prune_interval_days: int = 7
     limit_up: int = 0
     limit_down: int = 0
+    # C1 任务级前后钩子（空串 = 未配置；不经 shell，管道/重定向等 shell 语法不被解释）
+    pre_cmd: str = ""
+    post_cmd: str = ""
 
 
 # ---------------------------------------------------------------- E17/E18 快照

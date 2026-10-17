@@ -47,7 +47,7 @@ bash scripts/verify_redlines.sh
 4. **[S4/S5/S8] 鉴权与首启门（三条合一）**——① 新增端点必须挂 `require_session`（免鉴权仅限 `routers/health.py` 与 auth/bootstrap）；② 写方法（POST/PUT/DELETE）必须过 Origin 同源校验，SSE 与普通 API 同一 cookie 鉴权、**禁止 query token 鉴权**；③ bootstrap 未完成时的全站压制逻辑不得被新路由或中间件顺序破坏，**随机密码明文只能一次性返回，不得进日志**。
    自查：`grep -rn "token=\|token=" backend/app/routers | grep -vi "current_token\|next_token"` ｜ 新增 router 后确认其 `dependencies` 含 `require_session`
 
-5. **[S6] 审计只增不改**——`audit_logs` 代码面只允许 INSERT 与 SELECT（出现 UPDATE/DELETE = Blocker）；**危险操作共 9 项必须埋点**：`forget --prune` / `unlock` / **`cache.clear`** / `config.update` / **`login.failed`** / `restore.run` / **`restore.inplace`（原位恢复）** / **`retention.cleanup`** / **`dump.cleanup`**（动作名一律取 `app/constants.py` 的 `AUDIT_*` 常量）。*`restore.preview` / `forget.preview` 是只读留痕，**不属**危险清单。*
+5. **[S6] 审计只增不改**——`audit_logs` 代码面只允许 INSERT 与 SELECT（出现 UPDATE/DELETE = Blocker）；**危险操作共 13 项必须埋点**：`forget --prune` / `unlock` / **`cache.clear`** / `config.update` / **`login.failed`** / `restore.run` / **`restore.inplace`（原位恢复）** / **`retention.cleanup`** / **`dump.cleanup`** / **`repair.run`** / **`recover.run`** / **`hook.run`（C1 钩子）** / **`copy.run` + `key.rotate`（C4 多目的地）**（动作名一律取 `app/constants.py` 的 `AUDIT_*` 常量）。*`restore.preview` / `forget.preview` 是只读留痕，**不属**危险清单。*
    自查：`grep -rn "UPDATE audit_logs\|DELETE FROM audit" backend/app`
 
 6. **[S7] 覆盖语义仅限「原位恢复（in-place）」路径**（v1.4 修订，owner 2026-10-17 签署；v1.3 2026-10-15；A0 修订 2026-10-17）——引入覆盖语义须**四要件齐备**：① 目标经**双重锁**（`/sources` 前缀白名单 + 快照 `paths` 交集收紧，实现于 restore 路由；A0 前为「rw 档 `host_root` 白名单」，`host_mount_mode` 随 host 模式删除）；② 先经 E20 预览 + **单次确认门**（ConfirmGate 无关键词；v1.4 修订：原「三重确认门 keyword = 快照短 id」放松，对齐 Duplicati 无关键词确认）；③ `--overwrite` 取值 **`never`/`always`**（v1.4 修订：原「固定 `always`」改为 Duplicati 布尔勾选——默认不勾 = `never` 跳过已存在文件，勾选 = `always`；`if-changed` 仅是时间戳路径的服务端固定注入值，原位分支不接受；`OVERWRITE_MODES` 白名单校验）；④ 执行写审计 `restore.inplace`。**时间戳子目录路径（E19 默认）继续零覆盖语义**：`--overwrite=if-changed` 仅由 `JobRunner` 固定注入、界面无入口，E19 请求体在该路径出现 `overwrite_mode` 即 **422**。除上述两类调用点外，任何覆盖语义参数**不得接任何路由**。
@@ -71,6 +71,9 @@ bash scripts/verify_redlines.sh
 
 11. **[C8] 时间语义只走 `app/utils/time.py`**——`zoneinfo` 只允许在 `utils/time.py` 直连（`resolve_timezone` 的唯一实现点）；业务代码与测试的时区处理一律走 `resolve_timezone()` / `now_utc()` / `parse_iso()`，直连 `ZoneInfo` = Blocker：tzdata 异常的容器里 `ZoneInfo("UTC")` 的 utcoffset 非零，同刻换算结果随环境漂移（CI 复盘 cnb-opa-1k4qp8tdh、cnb-dgc-1k4qqhg77 两次同签名事故）。
     自查：`grep -rIln "from zoneinfo import\|^import zoneinfo" backend/app backend/tests --include=*.py | grep -v utils/time.py`（应零命中）
+
+12. **[S9] 用户命令执行边界**（v1.5 新增，批次 D C1：任务级 `pre_cmd`/`post_cmd` 引入用户自带命令执行面）——四要件：① **不经 shell**（`shlex.split` 切 argv + `create_subprocess_exec`，禁止 `shell=True`/`os.system`/`os.popen`）；② **强制超时**（`constants.HOOK_TIMEOUT_SECONDS`，超时 kill）；③ 输出入任务日志、**审计 detail 绝不含命令行原文**（命令行可能夹带凭据，S3 延续）；④ **写侧校验前置**（长度/引号闭合/控制字符在保存时 422，见 `TaskService._normalize_cmd`）。
+    自查：`grep -rn "create_subprocess_exec" backend/app --include=*.py`（应只落在 `services/hooks.py` 与 `services/dump.py`——新增子进程调用点必须说明为何不经 shell）｜ `grep -rn "shell=True\|os.system\|os.popen" backend/app`（应零命中）
 
 ## 可调阈值（不得裸写数值）
 

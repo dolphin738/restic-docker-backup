@@ -29,7 +29,10 @@ _COLUMNS = (
     "keep_within_monthly", "keep_within_yearly", "keep_tags",
     "group_by", "cron", "one_file_system", "compression", "check_sample_ratio",
     "monthly_full_day", "prune_interval_days", "limit_up_kibps", "limit_down_kibps",
-    "dry_run_pending", "last_run_at", "created_at", "updated_at",
+    "dry_run_pending", "last_run_at",
+    # C1 任务级前后钩子（空串 = 未配置）
+    "pre_cmd", "post_cmd",
+    "created_at", "updated_at",
 )
 _SELECT = "SELECT " + ", ".join(_COLUMNS) + " FROM backup_tasks"
 
@@ -66,6 +69,9 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "limit_down_kibps": 0,
     "dry_run_pending": 1,  # R-026-08：创建即置 1（首跑须先过 E36 dry-run 预览）
     "last_run_at": None,
+    # C1 钩子（0005 DDL 缺省同口径：空串 = 未配置，不执行）
+    "pre_cmd": "",
+    "post_cmd": "",
 }
 
 
@@ -106,6 +112,9 @@ class Task:
     limit_down_kibps: int = 0
     dry_run_pending: bool = False
     last_run_at: str | None = None
+    # C1 任务级前后钩子（空串 = 未配置；不经 shell，见 services/hooks.py）
+    pre_cmd: str = ""
+    post_cmd: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -191,6 +200,9 @@ class TaskRepo:
             "keep_tags": list(task.keep_tags),
             "limit_up_kibps": task.limit_up_kibps,
             "limit_down_kibps": task.limit_down_kibps,
+            # C1 钩子：JobRunner 在 restic 阶段前后读取（不经 shell，见 services/hooks.py）
+            "pre_cmd": task.pre_cmd,
+            "post_cmd": task.post_cmd,
         }
 
     # ---------------------------------------------------------------- 写
@@ -342,6 +354,8 @@ def _to_task(row: Any) -> Task:
         limit_down_kibps=int(row["limit_down_kibps"] or 0),
         dry_run_pending=bool(int(row["dry_run_pending"] or 0)),
         last_run_at=None if row["last_run_at"] is None else str(row["last_run_at"]),
+        pre_cmd=str(row["pre_cmd"] or ""),
+        post_cmd=str(row["post_cmd"] or ""),
         created_at=str(row["created_at"] or ""),
         updated_at=str(row["updated_at"] or ""),
     )
