@@ -6,10 +6,14 @@
 
 import { request } from './http'
 import type {
+  KeyRotateResponse,
+  ManualCopyRequest,
+  ManualCopyResponse,
   OkResponse,
   RepoCreateRequest,
   RepoIdSuggestion,
   RcloneRemotesOut,
+  RepoKeyRotateRequest,
   RepoOut,
   RepoPasswordRequest,
   RepoPasswordResponse,
@@ -87,4 +91,23 @@ export function setRepoPassword(
     method: 'POST',
     body,
   })
+}
+
+/**
+ * C4 仓库密钥轮换（POST /api/repos/rotate-key；restic key passwd）。
+ *
+ * 旧密码须仍有效（经当前口令文件提供）；成功后服务端同步重写口令文件。
+ * 新密码只经请求体，响应不回显。
+ */
+export function rotateRepoKey(body: RepoKeyRotateRequest): Promise<KeyRotateResponse> {
+  return request<KeyRotateResponse>('/api/repos/rotate-key', { method: 'POST', body })
+}
+
+/**
+ * C4 手动 copy（POST /api/copy；搬家/建异地副本场景，增量只传新快照）。
+ *
+ * 两仓须均已配置地址与密码；exit_code -1 = 超时中断（增量可续传，重跑补齐）。
+ */
+export function manualCopy(body: ManualCopyRequest): Promise<ManualCopyResponse> {
+  return request<ManualCopyResponse>('/api/copy', { method: 'POST', body })
 }

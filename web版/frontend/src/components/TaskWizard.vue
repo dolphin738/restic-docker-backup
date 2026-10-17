@@ -15,6 +15,8 @@ import {
   NButton,
   NCard,
   NInput,
+  NInputNumber,
+  NSelect,
   NSpace,
   NStep,
   NSteps,
@@ -37,7 +39,7 @@ import {
 import { getConfig } from '@/api/config'
 import { hasCode, isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
-import { getRepo, getRepoStatus, testRepo } from '@/api/repo'
+import { getRepo, getRepoStatus, listRepos, testRepo } from '@/api/repo'
 import type { BackupTask, DryRunResponse, RepoTestResponse, TaskUpsertRequest } from '@/api/types'
 import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
@@ -77,6 +79,13 @@ interface TaskFormState extends ScheduleRetentionValue {
   check_sample_ratio: number
   monthly_full_day: number
   prune_interval_days: number
+  /** C1 任务级前后钩子（单条命令，shlex 切分后不经 shell 执行；空串 = 未配置）。 */
+  pre_cmd: string
+  post_cmd: string
+  /** C3 调度触发失败后的最大重试次数（0 = 不重试）。 */
+  retry_count: number
+  /** C4 多目的地：主备份成功后镜像到的仓库 id。 */
+  mirror_repo_ids: string[]
 }
 
 function defaultForm(): TaskFormState {
@@ -106,6 +115,10 @@ function defaultForm(): TaskFormState {
     check_sample_ratio: 0.02,
     monthly_full_day: 1,
     prune_interval_days: 7,
+    pre_cmd: '',
+    post_cmd: '',
+    retry_count: 2,
+    mirror_repo_ids: [],
   }
 }
 
@@ -161,6 +174,10 @@ watch(
     form.check_sample_ratio = task.check_sample_ratio
     form.monthly_full_day = task.monthly_full_day
     form.prune_interval_days = task.prune_interval_days
+    form.pre_cmd = task.pre_cmd
+    form.post_cmd = task.post_cmd
+    form.retry_count = task.retry_count
+    form.mirror_repo_ids = [...task.mirror_repo_ids]
     originalSources.value = [...task.display_sources]
     originalExcludes.value = [...task.display_excludes]
   },
@@ -182,6 +199,18 @@ const repoStatusQuery = useQuery({
 // R-023：仓库地址落在 repos 表（E07 已拒收 repo.url 配置键），从 repo 对象读取
 const repoUrl = computed(() => repoQuery.data.value?.url ?? '')
 const passfileConfigured = computed(() => configQuery.data.value?.passfile_status === 'configured')
+
+// C4 多目的地：镜像仓候选 = 其它仓库（自身已排除，由提交前校验双保险）
+const reposQuery = useQuery({ queryKey: ['repos'], queryFn: listRepos })
+const mirrorOptions = computed(() =>
+  (reposQuery.data.value ?? [])
+    .filter((repo) => repo.id !== ui.currentRepoId)
+    .map((repo) => ({
+      label: `${repo.name} (${repo.id})`,
+      value: repo.id,
+      disabled: !(repo.url ?? '').trim() || repo.passfile_status !== 'configured',
+    })),
+)
 
 /** 源集合是否较预填值发生变化（保存后服务端会重置 dry_run_pending）。 */
 const sourcesChanged = computed(() => {
@@ -321,6 +350,10 @@ function buildPayload(): TaskUpsertRequest {
     prune_interval_days: form.prune_interval_days,
     limit_up: 0,
     limit_down: 0,
+    pre_cmd: form.pre_cmd.trim(),
+    post_cmd: form.post_cmd.trim(),
+    retry_count: form.retry_count,
+    mirror_repo_ids: form.mirror_repo_ids,
   }
 }
 
@@ -480,6 +513,35 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
               {{ passfileConfigured ? t('wizard.passfileConfigured') : t('wizard.passfileMissing') }}
             </n-tag>
           </n-space>
+
+          <!-- C3 任务级失败重试 -->
+          <n-space align="center" :size="8">
+            <n-text depth="3">{{ t('wizard.retryCount') }}</n-text>
+            <n-input-number
+              v-model:value="form.retry_count"
+              :min="0"
+              :max="5"
+              size="small"
+              class="wizard__num"
+            />
+            <n-text depth="3">{{ t('wizard.retryHint') }}</n-text>
+          </n-space>
+
+          <!-- C1 任务级前后钩子（shlex 切分后不经 shell 执行） -->
+          <n-space vertical :size="4">
+            <n-text strong>{{ t('wizard.hooksTitle') }}</n-text>
+            <n-text depth="3">{{ t('wizard.hooksHint') }}</n-text>
+            <n-input
+              v-model:value="form.pre_cmd"
+              :placeholder="t('wizard.preCmdPlaceholder')"
+              :maxlength="512"
+            />
+            <n-input
+              v-model:value="form.post_cmd"
+              :placeholder="t('wizard.postCmdPlaceholder')"
+              :maxlength="512"
+            />
+          </n-space>
         </template>
 
         <!-- ② 备份源 -->
@@ -516,6 +578,21 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           <n-alert v-if="testResult && !testResult.ok" type="error" :show-icon="false">
             {{ testResult.reason || t('wizard.testFail') }}
           </n-alert>
+
+          <!-- C4 多目的地镜像（主备份成功后增量复制） -->
+          <n-space vertical :size="4">
+            <n-text strong>{{ t('wizard.mirrorTitle') }}</n-text>
+            <n-text depth="3">{{ t('wizard.mirrorHint') }}</n-text>
+            <n-select
+              v-model:value="form.mirror_repo_ids"
+              multiple
+              clearable
+              :max-tag-count="3"
+              :options="mirrorOptions"
+              :placeholder="t('wizard.mirrorPlaceholder')"
+            />
+            <n-text depth="3">{{ t('wizard.mirrorMax') }}</n-text>
+          </n-space>
         </template>
 
         <!-- ④ 调度 -->
@@ -623,6 +700,10 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 .wizard__hint {
   display: block;
   font-size: 12px;
+}
+
+.wizard__num {
+  width: 120px;
 }
 
 .wizard__preview {

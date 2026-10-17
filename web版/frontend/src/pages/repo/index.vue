@@ -13,6 +13,7 @@ import {
   NModal,
   NRadio,
   NRadioGroup,
+  NSelect,
   NSpace,
   NStatistic,
   NTabPane,
@@ -35,6 +36,8 @@ import {
   getRepoStatus,
   listRepos,
   listRcloneRemotes,
+  manualCopy,
+  rotateRepoKey,
   setRepoPassword,
   suggestRepoId,
   testRepo,
@@ -464,6 +467,76 @@ const repairing = ref(false)
 const repairJobId = ref('')
 const repairTarget = ref<'index' | 'packs'>('index')
 
+// ---------------------------------------------------------------- C4 密钥轮换 + 手动 copy（搬家）
+const rotateShow = ref(false)
+const rotating = ref(false)
+const rotatePw = ref('')
+const rotatePwConfirm = ref('')
+const copyShow = ref(false)
+const copying = ref(false)
+const copyTarget = ref<string | null>(null)
+const copyResult = ref<{ ok: boolean; exit_code: number; message: string } | null>(null)
+
+const rotateReady = computed(
+  () =>
+    rotatePw.value.length >= 10 &&
+    rotatePw.value === rotatePwConfirm.value,
+)
+
+/** copy 目标候选：其它仓库中已配地址与密码的（否则后端 422）。 */
+const copyOptions = computed(() =>
+  (reposQuery.data.value ?? [])
+    .filter((repo) => repo.id !== currentRepoId.value)
+    .map((repo) => ({
+      label: `${repo.name} (${repo.id})`,
+      value: repo.id,
+      disabled: !(repo.url ?? '').trim() || repo.passfile_status !== 'configured',
+    })),
+)
+
+async function onRotate(): Promise<void> {
+  if (!currentRepoId.value || !rotateReady.value) {
+    return
+  }
+  rotating.value = true
+  try {
+    await rotateRepoKey({ repo_id: currentRepoId.value, new_password: rotatePw.value })
+    message.success(t('repo.rotateOk'))
+    rotateShow.value = false
+    rotatePw.value = ''
+    rotatePwConfirm.value = ''
+  } catch {
+    // AppError 已有全局提示
+  } finally {
+    rotating.value = false
+  }
+}
+
+async function onCopy(): Promise<void> {
+  if (!currentRepoId.value || !copyTarget.value) {
+    return
+  }
+  copying.value = true
+  copyResult.value = null
+  try {
+    const resp = await manualCopy({ source_repo_id: currentRepoId.value, target_repo_id: copyTarget.value })
+    copyResult.value = { ok: resp.ok, exit_code: resp.exit_code, message: resp.message }
+    if (resp.ok) {
+      message.success(t('repo.copyOk'))
+    }
+  } catch {
+    // AppError 已有全局提示
+  } finally {
+    copying.value = false
+  }
+}
+
+function openCopy(): void {
+  copyTarget.value = null
+  copyResult.value = null
+  copyShow.value = true
+}
+
 // ---------------------------------------------------------------- 本地路径浏览器（E33）
 const CONTAINER_ROOT = '/'
 const browsePath = ref(CONTAINER_ROOT)
@@ -882,6 +955,21 @@ function formatBytes(value: number): string {
                 {{ t('repo.repairBtn') }}
               </n-button>
               <n-text depth="3" class="repo__note">{{ t('repo.repairHint') }}</n-text>
+
+              <!-- C4 密钥轮换 + 手动 copy -->
+              <n-space :size="8">
+                <n-button
+                  size="small"
+                  secondary
+                  :disabled="passfileMissing"
+                  @click="rotateShow = true"
+                >
+                  {{ t('repo.rotateBtn') }}
+                </n-button>
+                <n-button size="small" secondary @click="openCopy">
+                  {{ t('repo.copyBtn') }}
+                </n-button>
+              </n-space>
             </template>
             <n-text depth="3" class="repo__note">{{ t('dashboard.repoCacheNote') }}</n-text>
 
@@ -1081,6 +1169,73 @@ function formatBytes(value: number): string {
         <n-text depth="3">{{ t('repo.deleteConfirm') }}</n-text>
       </template>
     </ConfirmGate>
+
+    <!-- C4 密钥轮换：新密码须输入两次且 ≥10 位；成功后旧密码作废，口令文件同步重写 -->
+    <n-modal v-model:show="rotateShow" preset="card" :title="t('repo.rotateBtn')" class="repo__modal">
+      <n-space vertical :size="10">
+        <n-alert type="warning" :show-icon="false">{{ t('repo.rotateDesc') }}</n-alert>
+        <n-form label-placement="left" label-width="120" size="small">
+          <n-form-item :label="t('repo.rotateNewPw')">
+            <n-input
+              v-model:value="rotatePw"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('repo.rotateNewPwPlaceholder')"
+            />
+          </n-form-item>
+          <n-form-item :label="t('repo.rotateConfirmPw')">
+            <n-input
+              v-model:value="rotatePwConfirm"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('repo.rotateConfirmPwPlaceholder')"
+            />
+          </n-form-item>
+        </n-form>
+        <n-text v-if="rotatePwConfirm && !rotateReady" depth="3" type="error">
+          {{ t('repo.rotateMismatch') }}
+        </n-text>
+        <n-space justify="end">
+          <n-button quaternary @click="rotateShow = false">{{ t('common.cancel') }}</n-button>
+          <n-button type="primary" :loading="rotating" :disabled="!rotateReady" @click="onRotate">
+            {{ t('repo.rotateBtn') }}
+          </n-button>
+        </n-space>
+      </n-space>
+    </n-modal>
+
+    <!-- C4 手动 copy：把当前仓快照增量复制到目标仓（增量只传新快照，可中断续传） -->
+    <n-modal v-model:show="copyShow" preset="card" :title="t('repo.copyBtn')" class="repo__modal">
+      <n-space vertical :size="10">
+        <n-text depth="3">{{ t('repo.copyDesc') }}</n-text>
+        <n-form label-placement="left" label-width="120" size="small">
+          <n-form-item :label="t('repo.copyTarget')">
+            <n-select
+              v-model:value="copyTarget"
+              :options="copyOptions"
+              :placeholder="t('repo.copyTargetPlaceholder')"
+            />
+          </n-form-item>
+        </n-form>
+        <n-space justify="end">
+          <n-button quaternary @click="copyShow = false">{{ t('common.cancel') }}</n-button>
+          <n-button
+            type="primary"
+            :loading="copying"
+            :disabled="!copyTarget"
+            @click="onCopy"
+          >
+            {{ t('repo.copyRun') }}
+          </n-button>
+        </n-space>
+        <template v-if="copyResult">
+          <n-alert v-if="copyResult.ok" type="success" :show-icon="false">{{ t('repo.copyDone') }}</n-alert>
+          <n-alert v-else type="error" :show-icon="false">
+            {{ t('repo.copyFailed', { code: copyResult.exit_code, message: copyResult.message }) }}
+          </n-alert>
+        </template>
+      </n-space>
+    </n-modal>
   </n-space>
 </template>
 

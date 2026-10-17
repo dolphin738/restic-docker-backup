@@ -398,6 +398,13 @@ export interface BackupTask {
   prune_interval_days: number
   limit_up: number
   limit_down: number
+  /** C1 任务级前后钩子（空串 = 未配置；shlex 切分后不经 shell 执行）。 */
+  pre_cmd: string
+  post_cmd: string
+  /** C3 调度触发失败后的最大重试次数（0 = 不重试，上限 5）。 */
+  retry_count: number
+  /** C4 多目的地：备份成功后镜像到的仓库 id（空数组 = 单目的地）。 */
+  mirror_repo_ids: string[]
   dry_run_pending: boolean
   last_run_at: string | null
   created_at: string
@@ -436,6 +443,13 @@ export interface TaskUpsertRequest {
   prune_interval_days: number
   limit_up: number
   limit_down: number
+  /** C1 任务级前后钩子（空串 = 未配置；shlex 切分后不经 shell 执行）。 */
+  pre_cmd?: string
+  post_cmd?: string
+  /** C3 调度触发失败后的最大重试次数（0 = 不重试，上限 5）。 */
+  retry_count?: number
+  /** C4 多目的地：备份成功后镜像到的仓库 id（空数组 = 单目的地）。 */
+  mirror_repo_ids?: string[]
 }
 
 /** E36 任务域 dry-run 请求（均可选，缺省取任务存量值）。 */
@@ -589,6 +603,15 @@ export interface NotifyConfigResponse {
   skipped_threshold: number
   webhook_redact: boolean
   meow_redact: boolean
+  /** C2 SMTP 邮件（密码只回 mail_password_set）。 */
+  mail_host: string
+  mail_port: number
+  mail_username: string
+  mail_password_set: boolean
+  mail_from: string
+  mail_to: string
+  mail_security: 'none' | 'starttls' | 'tls'
+  mail_redact: boolean
 }
 
 /** E23 写入：URL 字段三态（undefined=不变 / ''=清除 / 非空=设置），其余 undefined=不变。 */
@@ -601,11 +624,20 @@ export interface NotifyConfigPatch {
   skipped_threshold?: number
   webhook_redact?: boolean
   meow_redact?: boolean
+  /** C2 SMTP 邮件；mail_password 三态（undefined=不变 / ''=清除 / 非空=设置）。 */
+  mail_host?: string
+  mail_port?: number
+  mail_username?: string
+  mail_password?: string
+  mail_from?: string
+  mail_to?: string
+  mail_security?: 'none' | 'starttls' | 'tls'
+  mail_redact?: boolean
 }
 
 /** E24 单渠道测试结果（失败必须带原因）。 */
 export interface NotifyTestChannel {
-  channel: 'healthchecks' | 'webhook' | 'meow'
+  channel: 'healthchecks' | 'webhook' | 'meow' | 'mail'
   ok: boolean
   reason: string | null
 }
@@ -698,4 +730,32 @@ export interface BackupSuccessReport {
   success: number
   failed: number
   ratio: number | null
+}
+
+/** C4 仓库密钥轮换请求（restic key passwd；新密码只经请求体，不回显）。 */
+export interface RepoKeyRotateRequest {
+  repo_id: string
+  new_password: string
+}
+
+/** C4 仓库密钥轮换响应。 */
+export interface KeyRotateResponse {
+  ok: boolean
+  repo_id: string
+}
+
+/** C4 手动 copy（搬家场景）请求。 */
+export interface ManualCopyRequest {
+  source_repo_id: string
+  target_repo_id: string
+  tags?: string[]
+}
+
+/** C4 手动 copy 响应（exit_code -1 = 超时中断，增量可续传）。 */
+export interface ManualCopyResponse {
+  ok: boolean
+  source_repo_id: string
+  target_repo_id: string
+  exit_code: number
+  message: string
 }

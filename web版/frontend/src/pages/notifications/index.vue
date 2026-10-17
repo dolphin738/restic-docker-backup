@@ -8,6 +8,7 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NSelect,
   NSpace,
   NSwitch,
   NTag,
@@ -29,13 +30,23 @@ const healthchecksUrl = ref('')
 const webhookUrl = ref('')
 const webhookTemplate = ref('')
 const meowNickname = ref('')
+// C2 SMTP 邮件（密码三态：留空不变 / 点清除后提交空串 / 输入新值覆盖）
+const mailHost = ref('')
+const mailPort = ref<number>(587)
+const mailUsername = ref('')
+const mailPassword = ref('')
+const mailFrom = ref('')
+const mailTo = ref('')
+const mailSecurity = ref<'none' | 'starttls' | 'tls'>('starttls')
+const mailRedact = ref(false)
 const onSuccess = ref(false)
 const skippedThreshold = ref<number>(100)
 const webhookRedact = ref(false)
 const meowRedact = ref(true)
-// 敏感 URL「清除」意图（点击清除按钮后保存时提交空串）
+// 敏感字段「清除」意图（点击清除按钮后保存时提交空串）
 const clearHealthchecks = ref(false)
 const clearWebhook = ref(false)
+const clearMailPassword = ref(false)
 
 watch(configQuery.data, (data) => {
   if (!data) {
@@ -43,6 +54,13 @@ watch(configQuery.data, (data) => {
   }
   webhookTemplate.value = data.webhook_template
   meowNickname.value = data.meow_nickname
+  mailHost.value = data.mail_host
+  mailPort.value = data.mail_port
+  mailUsername.value = data.mail_username
+  mailFrom.value = data.mail_from
+  mailTo.value = data.mail_to
+  mailSecurity.value = data.mail_security
+  mailRedact.value = data.mail_redact
   onSuccess.value = data.on_success
   skippedThreshold.value = data.skipped_threshold
   webhookRedact.value = data.webhook_redact
@@ -58,6 +76,8 @@ const hasAnyChannel = computed(
     configQuery.data.value?.healthchecks_url_set ||
     configQuery.data.value?.webhook_url_set ||
     (configQuery.data.value?.meow_nickname ?? '') !== '' ||
+    configQuery.data.value?.mail_password_set === true ||
+    mailHost.value.trim() !== '' ||
     healthchecksUrl.value.trim() !== '' ||
     webhookUrl.value.trim() !== '' ||
     meowNickname.value.trim() !== '',
@@ -73,6 +93,15 @@ async function save(): Promise<void> {
       ...(webhookUrl.value.trim() ? { webhook_url: webhookUrl.value.trim() } : {}),
       webhook_template: webhookTemplate.value,
       meow_nickname: meowNickname.value.trim(),
+      mail_host: mailHost.value.trim(),
+      mail_port: mailPort.value ?? 587,
+      mail_username: mailUsername.value.trim(),
+      ...(clearMailPassword.value ? { mail_password: '' } : {}),
+      ...(mailPassword.value ? { mail_password: mailPassword.value } : {}),
+      mail_from: mailFrom.value.trim(),
+      mail_to: mailTo.value.trim(),
+      mail_security: mailSecurity.value,
+      mail_redact: mailRedact.value,
       on_success: onSuccess.value,
       skipped_threshold: skippedThreshold.value ?? 100,
       webhook_redact: webhookRedact.value,
@@ -81,8 +110,10 @@ async function save(): Promise<void> {
     message.success(t('notify.saved'))
     clearHealthchecks.value = false
     clearWebhook.value = false
+    clearMailPassword.value = false
     healthchecksUrl.value = ''
     webhookUrl.value = ''
+    mailPassword.value = ''
     await configQuery.refetch()
   } catch (error) {
     // AppError 已有全局提示；此处仅防未处理异常冒泡
@@ -170,6 +201,68 @@ async function runTest(): Promise<void> {
               :placeholder="t('notify.meowPlaceholder')"
               class="notify__field"
             />
+          </n-form-item>
+
+          <!-- C2 SMTP 邮件渠道 -->
+          <n-form-item :label="t('notify.mailHost')">
+            <n-input v-model:value="mailHost" :placeholder="t('notify.mailHostPlaceholder')" class="notify__field" />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailPort')">
+            <n-input-number v-model:value="mailPort" :min="1" :max="65535" size="small" class="notify__num" />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailUsername')">
+            <n-input v-model:value="mailUsername" :placeholder="t('notify.mailUsernamePlaceholder')" class="notify__field" />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailPassword')">
+            <n-space vertical :size="4" class="notify__field">
+              <n-input
+                v-model:value="mailPassword"
+                type="password"
+                show-password-on="click"
+                :placeholder="
+                  configQuery.data.value?.mail_password_set
+                    ? t('notify.urlConfigured')
+                    : t('notify.mailPasswordPlaceholder')
+                "
+                :disabled="clearMailPassword"
+              />
+              <n-text v-if="configQuery.data.value?.mail_password_set" depth="3" class="notify__hint">
+                {{ t('notify.urlKeepHint') }}
+                <n-button size="tiny" quaternary type="warning" @click="clearMailPassword = !clearMailPassword">
+                  {{ clearMailPassword ? t('notify.urlClearUndo') : t('notify.urlClear') }}
+                </n-button>
+              </n-text>
+            </n-space>
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailFrom')">
+            <n-input v-model:value="mailFrom" :placeholder="t('notify.mailFromPlaceholder')" class="notify__field" />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailTo')">
+            <n-input v-model:value="mailTo" :placeholder="t('notify.mailToPlaceholder')" class="notify__field" />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailSecurity')">
+            <n-select
+              v-model:value="mailSecurity"
+              :options="[
+                { label: 'STARTTLS', value: 'starttls' },
+                { label: 'TLS/SSL', value: 'tls' },
+                { label: t('notify.mailSecurityNone'), value: 'none' },
+              ]"
+              class="notify__num"
+            />
+          </n-form-item>
+
+          <n-form-item :label="t('notify.mailRedact')">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="mailRedact" size="small" />
+              <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
+            </n-space>
           </n-form-item>
 
           <n-form-item :label="t('notify.onSuccess')">
