@@ -753,3 +753,43 @@ export interface ManualCopyResponse {
   exit_code: number
   message: string
 }
+
+
+/** 批次 E 配置导出请求（导出口令至少 10 位，保护加密凭据段）。 */
+export interface ConfigExportRequest {
+  password: string
+}
+
+/** 批次 E 导出包（前端只透传，不解释内容；secrets 为加密凭据段）。 */
+export interface ConfigExportPack {
+  format: string
+  version: number
+  created_at: string
+  encryption: Record<string, unknown>
+  data: Record<string, unknown>
+}
+
+/** 批次 E 配置导入请求（replace_existing 由 ConfirmGate 二次确认后置真）。 */
+export interface ConfigImportRequest {
+  pack: ConfigExportPack
+  password: string
+  replace_existing: boolean
+}
+
+/** 批次 E 导入报告（逐项可展示；reason 为服务端可读中文）。 */
+export interface ConfigImportReport {
+  repos: {
+    created: string[]
+    reused: string[]
+    updated: string[]
+    skipped: { id: string; reason: string }[]
+  }
+  tasks: {
+    created: string[]
+    updated: string[]
+    skipped: { name: string; reason: string }[]
+  }
+  mirror_warnings: { mirror_id: string; reason: string }[]
+  notify_updated: number
+  creds_imported: number
+}

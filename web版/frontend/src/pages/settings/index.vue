@@ -31,7 +31,9 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { changePassword } from '@/api/auth'
 import { getConfig } from '@/api/config'
+import { exportConfig, importConfig } from '@/api/configTransfer'
 import { hasCode, isAppError } from '@/api/http'
+import type { ConfigExportPack, ConfigImportReport } from '@/api/types'
 import { clearCache, getCacheUsage, saveDumpBehaviorConfig } from '@/api/settings'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import { formatDateTime } from '@/utils/datetime'
@@ -365,6 +367,89 @@ async function onChangePassword(): Promise<void> {
     changing.value = false
   }
 }
+
+// ---------------------------------------------------------------- 批次 E 配置迁移
+const exportPassword = ref('')
+const exporting = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+const pickedPack = ref<ConfigExportPack | null>(null)
+const pickedName = ref('')
+const importPassword = ref('')
+const replace_existing = ref(false)
+const importing = ref(false)
+const gateShowImport = ref(false)
+const report = ref<ConfigImportReport | null>(null)
+
+/** 导出：拿包对象 → 本地 Blob 下载（文件名带日期，凭据在包内为加密形态）。 */
+async function onExport(): Promise<void> {
+  if (exportPassword.value.length < 10) {
+    return
+  }
+  exporting.value = true
+  try {
+    const pack = await exportConfig({ password: exportPassword.value })
+    const blob = new Blob([JSON.stringify(pack, null, 1)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `restic-web-config-${(pack.created_at || '').slice(0, 10)}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    message.success(t('settings.transfer.exportOk'))
+    exportPassword.value = ''
+  } catch {
+    // PASSWORD_TOO_SHORT 等由 http 层全局提示
+  } finally {
+    exporting.value = false
+  }
+}
+
+/** 选文件：读文本 → JSON 解析（非本系统导出文件立即报错，不发请求）。 */
+function onPickFile(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) {
+    return
+  }
+  void file.text().then((text) => {
+    try {
+      const parsed = JSON.parse(text) as ConfigExportPack
+      if (parsed?.format !== 'restic-web-config-export') {
+        message.error(t('settings.transfer.badFile'))
+        return
+      }
+      pickedPack.value = parsed
+      pickedName.value = file.name
+      report.value = null
+    } catch {
+      message.error(t('settings.transfer.badFile'))
+    }
+  })
+}
+
+/** 导入：口令随请求体提交；错口令 401 由 http 层提示；报告逐项展示。 */
+async function doImport(): Promise<void> {
+  if (!pickedPack.value) {
+    return
+  }
+  gateShowImport.value = false
+  importing.value = true
+  try {
+    report.value = await importConfig({
+      pack: pickedPack.value,
+      password: importPassword.value,
+      replace_existing: replace_existing.value,
+    })
+    message.success(t('settings.transfer.done'))
+    importPassword.value = ''
+    replace_existing.value = false
+  } catch {
+    // PASSWORD_WRONG（错口令）/ VALIDATION_ERROR 由 http 层全局提示
+  } finally {
+    importing.value = false
+  }
+}
 </script>
 
 <template>
@@ -679,6 +764,117 @@ async function onChangePassword(): Promise<void> {
       :loading="clearing"
       @confirm="onConfirmClear"
     />
+    <!-- 批次 E 配置迁移：导出（口令加密凭据段）+ 导入（跳过/覆盖 + 报告） -->
+    <n-card :title="t('settings.transfer.title')" size="small">
+      <n-space vertical :size="12">
+        <n-text depth="3">{{ t('settings.transfer.desc') }}</n-text>
+        <n-space align="center" :size="8" wrap>
+          <n-input
+            v-model:value="exportPassword"
+            type="password"
+            show-password-on="click"
+            :placeholder="t('settings.transfer.exportPassword')"
+            class="settings__transfer-pw"
+          />
+          <n-button
+            size="small"
+            type="primary"
+            secondary
+            :loading="exporting"
+            :disabled="exportPassword.length < 10"
+            @click="onExport"
+          >
+            {{ t('settings.transfer.exportBtn') }}
+          </n-button>
+        </n-space>
+        <n-space align="center" :size="8" wrap>
+          <input
+            ref="fileInput"
+            type="file"
+            accept="application/json,.json"
+            class="settings__file-input"
+            @change="onPickFile"
+          />
+          <n-button size="small" secondary @click="fileInput?.click()">
+            {{ t('settings.transfer.pickFile') }}
+          </n-button>
+          <n-text v-if="pickedName" depth="2">{{ pickedName }}</n-text>
+          <n-input
+            v-model:value="importPassword"
+            type="password"
+            show-password-on="click"
+            :placeholder="t('settings.transfer.importPassword')"
+            class="settings__transfer-pw"
+            :disabled="!pickedPack"
+          />
+          <n-checkbox v-model:checked="replace_existing" :disabled="!pickedPack">
+            {{ t('settings.transfer.replace_existing') }}
+          </n-checkbox>
+          <n-button
+            size="small"
+            type="warning"
+            secondary
+            :loading="importing"
+            :disabled="!pickedPack || importPassword.length < 1"
+            @click="replace_existing ? (gateShowImport = true) : doImport()"
+          >
+            {{ t('settings.transfer.importBtn') }}
+          </n-button>
+        </n-space>
+
+        <!-- 导入报告（逐项展示；跳过/警告全量可见，绝不静默） -->
+        <template v-if="report">
+          <n-alert type="success" :show-icon="false">{{ t('settings.transfer.done') }}</n-alert>
+          <n-descriptions :column="2" size="small" bordered>
+            <n-descriptions-item :label="t('settings.transfer.reposCreated')">
+              {{ report.repos.created.join(', ') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.reposReused')">
+              {{ report.repos.reused.join(', ') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.reposUpdated')">
+              {{ report.repos.updated.join(', ') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.reposSkipped')">
+              {{ report.repos.skipped.map((x) => `${x.id}（${x.reason}）`).join('；') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.tasksCreated')">
+              {{ report.tasks.created.join(', ') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.tasksUpdated')">
+              {{ report.tasks.updated.join(', ') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.tasksSkipped')" :span="2">
+              {{ report.tasks.skipped.map((x) => `${x.name}（${x.reason}）`).join('；') || '—' }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.creds')">
+              {{ report.creds_imported }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('settings.transfer.notify')">
+              {{ report.notify_updated }}
+            </n-descriptions-item>
+          </n-descriptions>
+          <n-alert
+            v-for="(w, i) in report.mirror_warnings"
+            :key="i"
+            type="warning"
+            :show-icon="false"
+          >
+            {{ w.mirror_id }}：{{ w.reason }}
+          </n-alert>
+        </template>
+      </n-space>
+    </n-card>
+
+    <!-- 覆盖导入确认门：预览 → 输入 IMPORT → 二次确认（覆盖不可逆） -->
+    <ConfirmGate
+      v-model:show="gateShowImport"
+      :title="t('settings.transfer.gateTitle')"
+      :keyword="'IMPORT'"
+      :description="t('settings.transfer.gateDesc')"
+      :loading="importing"
+      @confirm="doImport"
+    />
   </n-space>
 </template>
 
@@ -721,5 +917,13 @@ async function onChangePassword(): Promise<void> {
 
 .settings__hint {
   font-size: 12px;
+}
+
+.settings__transfer-pw {
+  width: 260px;
+}
+
+.settings__file-input {
+  display: none;
 }
 </style>
