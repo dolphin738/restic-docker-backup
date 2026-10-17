@@ -46,7 +46,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 5
+    assert await db.user_version() == 6
     await db.close()
 
 
@@ -56,7 +56,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 5
+    assert await db.user_version() == 6
     await db.close()
 
 
@@ -69,7 +69,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 5
+    assert await db2.user_version() == 6
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -184,6 +184,26 @@ async def test_0005_new_task_hook_defaults_empty(tmp_path):
     assert row is not None
     assert str(row["pre_cmd"]) == ""
     assert str(row["post_cmd"]) == ""
+    await db.close()
+
+
+async def test_0006_task_retry_column(tmp_path):
+    """0006（批次 D C3）：backup_tasks 新增 retry_count，缺省 2（首次 + 2 次重试）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
+    assert "retry_count" in columns
+    await db.close()
+
+
+async def test_0006_new_task_retry_default(tmp_path):
+    """0006 缺省落地：新建任务不填 retry_count → 2。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    await db.write(_TASK_INSERT)
+    row = await db.fetch_one("SELECT retry_count FROM backup_tasks WHERE tag = 'task-1'")
+    assert row is not None
+    assert int(row["retry_count"]) == 2
     await db.close()
 
 

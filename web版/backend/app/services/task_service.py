@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import UTC
 from typing import Any
 
+from app.constants import RETRY_COUNT_DEFAULT, RETRY_COUNT_MAX
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
@@ -102,6 +103,8 @@ class TaskService:
             # C1 任务级前后钩子（空串 = 未配置）
             "pre_cmd": task.pre_cmd,
             "post_cmd": task.post_cmd,
+            # C3 任务级失败重试（0 = 不重试）
+            "retry_count": task.retry_count,
             # greenfield：无 legacy 策略可继承，DDL 无此列，恒 None（wire 兼容占位）
             "legacy_policy_id": None,
             "created_at": task.created_at,
@@ -167,6 +170,8 @@ class TaskService:
         # 长度/引号闭合/危险字符三类坏值在保存时即 422，不留到任务提交时才报。
         values["pre_cmd"] = _normalize_cmd(payload.get("pre_cmd"), "pre_cmd")
         values["post_cmd"] = _normalize_cmd(payload.get("post_cmd"), "post_cmd")
+        # C3 重试次数：钳 [0, RETRY_COUNT_MAX]（写侧 fail-fast，不留给运行期静默截断）
+        values["retry_count"] = _retry_count(payload.get("retry_count", RETRY_COUNT_DEFAULT))
         # tag 由服务端生成（task-<id>），客户端提交一律忽略（共享知识 §9.1）；
         # 注意 tag 不出现在 values 中——TaskRepo.create 负责插入后回写。
         return values
@@ -305,7 +310,15 @@ def _non_empty_str(value: Any, field_name: str, *, default: str) -> str:
 
 
 def _non_negative_int(value: Any, field_name: str) -> int:
-    """校验并转换为非负整数。"""
+    """校验并转换为非负整数（非整数形态 → 422）。
+
+    陷阱：``int(1.5)`` 不报错、静默截断为 1。对 keep_* 保留份数 / retry_count
+    重试次数这类「份数」语义是错的——用户填 1.5 应显式 422，不能悄悄变成 1
+    （Q4 静默防线：宁可早失败，不要晚发现）。与 pydantic 取整契约同口径：
+    整值浮点（``1.0``）与整数字符串（``"3"``）照常接受。
+    """
+    if isinstance(value, float) and not value.is_integer():
+        raise ValidationError(f"{field_name} 须为整数", data={"field": field_name})
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:
@@ -345,6 +358,16 @@ def _normalize_keep_tags(value: Any) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _retry_count(value: Any) -> int:
+    """C3 重试次数归一：非负整数 + 钳上限（>上限按上限，非整数/负数 → 422）。
+
+    Duplicati 的 number-of-retries 无上限，本项目必须设上限：无上限的重试会让
+    任务长期占着仓库互斥锁（E1），后续调度周期全部撞冲突跳过。
+    """
+    number = _non_negative_int(value, "retry_count")
+    return min(number, RETRY_COUNT_MAX)
 
 
 def _normalize_cmd(value: Any, field_name: str) -> str:

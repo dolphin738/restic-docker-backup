@@ -16,6 +16,7 @@ from app.constants import (
     REPO_ID_PATTERN,
     RESTORE_PREVIEW_DEFAULT_LIMIT,
     RESTORE_PREVIEW_MAX_LIMIT,
+    RETRY_COUNT_DEFAULT,
 )
 from app.schemas.enums import ConfigSource, JobStatus, JobTrigger, JobType
 
@@ -401,6 +402,8 @@ class TaskOut(_Base):
     # C1 任务级前后钩子（空串 = 未配置）
     pre_cmd: str = ""
     post_cmd: str = ""
+    # C3 调度触发失败后的最大重试次数
+    retry_count: int = RETRY_COUNT_DEFAULT
     legacy_policy_id: int | None = None   # greenfield 恒 None（无 legacy_policy_id 列）
     created_at: str
     updated_at: str
@@ -467,6 +470,8 @@ class TaskUpsertRequest(_Base):
     # C1 任务级前后钩子（空串 = 未配置；不经 shell，管道/重定向等 shell 语法不被解释）
     pre_cmd: str = ""
     post_cmd: str = ""
+    # C3 调度触发失败后的最大重试次数（0 = 不重试；手动触发恒不重试）
+    retry_count: int = RETRY_COUNT_DEFAULT
 
 
 # ---------------------------------------------------------------- E17/E18 快照

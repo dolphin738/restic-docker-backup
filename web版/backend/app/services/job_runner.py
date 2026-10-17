@@ -16,6 +16,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,9 @@ from app.constants import (
     BEHAVIOR_AUTO_UNLOCK_KEY,
     JOB_TYPES,
     REPO_PROBE_TIMEOUT_SECONDS,
+    RETRY_BASE_DELAY_SECONDS,
+    RETRY_COUNT_MAX,
+    RETRY_MAX_DELAY_SECONDS,
 )
 from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
@@ -66,6 +70,27 @@ CHECK_PARAMS_MEMORY_MAX = 200
 # 否则 dump.enabled=1 且 DB 配置故障时会阻断 AUTO_UNLOCK 等启动恢复链，
 # 仓库锁残留无法自愈（设计 §3.2/§5 的「backup 任务链」意图）。
 DUMP_PHASE_JOB_TYPES: tuple[str, ...] = ("backup", "dump")
+
+
+@dataclass(frozen=True)
+class _PhaseOutcome:
+    """C3 单次 restic 阶段结果（含重试次数记账）。"""
+
+    exit_code: int
+    aggregate: JobAggregate
+    snapshot_id: str | None
+    line_no: int
+    attempt: int = 1
+
+    def with_attempt(self, attempt: int) -> _PhaseOutcome:
+        """返回附带实际尝试次数的新结果（frozen 数据类的不可变更新）。"""
+        return _PhaseOutcome(
+            exit_code=self.exit_code,
+            aggregate=self.aggregate,
+            snapshot_id=self.snapshot_id,
+            line_no=self.line_no,
+            attempt=attempt,
+        )
 
 
 class NoopNotifier:
@@ -389,65 +414,41 @@ class JobRunner:
                         return
 
                 argv, env = await self._prepare(job, repo_url, repo_id, profile)
-                log_path = Path(job.log_path)
-                proc = await self._restic.spawn(argv, log_path, env=env)
-                self._processes[job.id] = proc
-
-                aggregate = JobAggregate()
-                snapshot_id = job.snapshot_id
-                last_flush = time.monotonic()
-
-                async for line in proc.lines():
-                    line_no += 1
-                    event = await asyncio.to_thread(self._parser.parse_line, line)
-                    if isinstance(event, ProgressEvent):
-                        event.event_id = line_no
-                        aggregate = self._parser.aggregate(aggregate, event)
-                    elif isinstance(event, SnapshotRecord):
-                        if event.snapshot_id:
-                            snapshot_id = event.snapshot_id
-                        # X12：restore 的 summary 用 files_skipped 记录因权限等原因
-                        # 未被恢复的文件数（--overwrite=always 下仍写不进去即计入；
-                        # 该行不产生 ProgressEvent，此前被整体丢弃 → skipped_count
-                        # 恒 0、任务静默报 success，见架构文档 §12 V7 / 缺陷 X12）。
-                        # 此处把 files_skipped 折入聚合，让 skipped_count / 审计 /
-                        # SSE / UI 反映真实的部分失败。restic summary 每任务唯一一行
-                        # （输出末尾），折一次即正确、不重复累加；backup summary 无
-                        # 该字段（None）→ 不进本分支，行为逐字节不变。
-                        if event.files_skipped is not None:
-                            aggregate = self._parser.aggregate(
-                                aggregate, ProgressEvent(skipped_delta=event.files_skipped)
-                            )
-                    if time.monotonic() - last_flush >= self._db_flush_interval:
-                        await self._jobs.update_progress(
-                            job.id,
-                            bytes_done=aggregate.bytes_done,
-                            files_done=aggregate.files_done,
-                            skipped_count=aggregate.skipped_count,
-                            last_event_id=line_no,
-                        )
-                        last_flush = time.monotonic()
-
-                exit_code = await proc.wait()
+                # C3 重试：restic 阶段按任务级 retry_count 自动重试（仅 scheduled 触发）
+                attempts = 1 + self._retry_budget(job, profile)
+                phase = await self._run_restic_phase(
+                    job,
+                    argv,
+                    env,
+                    log_path=Path(job.log_path),
+                    start_line_no=line_no,
+                    attempts=attempts,
+                )
+                line_no = phase.line_no
+                exit_code = phase.exit_code
+                aggregate = phase.aggregate
+                snapshot_id = phase.snapshot_id
                 status = "success" if exit_code == 0 else "failed"
+                # C3 记账：重试次数进摘要（UI 一眼看到「这次是重试后成的」）
+                retry_note = f"；重试 {phase.attempt - 1} 次后成功" if phase.attempt > 1 else ""
                 # C1 后置钩子：仅**成功后**执行；失败把终态翻转为 failed（钩子是任务
                 # 契约的一部分，静默吞掉会让运维以为后续动作已完成）。
                 hook_note = ""
                 if status == "success":
                     post_cmd = str(profile.get("post_cmd") or "").strip()
                     if post_cmd:
-                        outcome = await run_hook(
+                        hook = await run_hook(
                             command=post_cmd, phase=HOOK_PHASE_POST, log_path=Path(job.log_path)
                         )
-                        await self._audit_hook(job, HOOK_PHASE_POST, outcome)
-                        if not outcome.ok:
+                        await self._audit_hook(job, HOOK_PHASE_POST, hook)
+                        if not hook.ok:
                             status = "failed"
-                            hook_note = f"；后置钩子失败：{outcome.reason()}"
+                            hook_note = f"；后置钩子失败：{hook.reason()}"
                 await self._jobs.finalize(
                     job.id,
                     status,
                     exit_code=exit_code,
-                    summary=self._summarize(status, aggregate, exit_code) + hook_note,
+                    summary=self._summarize(status, aggregate, exit_code) + retry_note + hook_note,
                     bytes_done=aggregate.bytes_done,
                     files_done=aggregate.files_done,
                     skipped_count=aggregate.skipped_count,
@@ -464,6 +465,8 @@ class JobRunner:
                         "exit_code": exit_code,
                         "skipped_count": aggregate.skipped_count,
                         "bytes_done": aggregate.bytes_done,
+                        # C3：尝试次数（1 = 一次通过；>1 = 重试后成 / 重试后仍败）
+                        "attempts": phase.attempt,
                     },
                     result="ok" if status == "success" else "failed",
                 )
@@ -614,6 +617,126 @@ class JobRunner:
             },
             result="ok" if outcome.ok else "failed",
         )
+
+    # ---------------------------------------------------------------- C3 任务级重试（number-of-retries）
+
+    @staticmethod
+    def _retry_budget(job: Job, profile: dict[str, Any]) -> int:
+        """C3 重试预算（追加在首次执行之上的**额外**尝试次数）。
+
+        - 手动触发（``manual``）恒 0：用户点「立即运行」是立刻要看结果，自动重试
+          会把它变成不可预期的长任务（且进度条会二次回卷，观感更差）；
+        - 任务级 ``retry_count`` 钳 [0, RETRY_COUNT_MAX]；无任务关联（legacy 策略
+          job）或值非法 → 0（fail-safe：不重试绝不比乱重试更糟）。
+        """
+        if job.trigger != "scheduled":
+            return 0
+        try:
+            value = int(profile.get("retry_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(value, RETRY_COUNT_MAX))
+
+    async def _run_restic_phase(
+        self,
+        job: Job,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        log_path: Path,
+        start_line_no: int,
+        attempts: int,
+    ) -> _PhaseOutcome:
+        """执行 restic 阶段并在失败时按预算重试（指数退避）。
+
+        **只对 restic 阶段重试**（刻意设计，文档同步）：dump 阶段失败多为配置/版本
+        问题（pg 客户端版本不匹配之类），重试无益且会拖长任务；restic 失败才有
+        「锁冲突 exit 11 / 远端瞬时错误 / 网络抖动」这类重试能救的场景。
+
+        每次尝试**重新计数**聚合（不累加）：进度不应因重试而翻倍，最终落库的是
+        **最后一次**尝试的结果。
+        """
+        line_no = start_line_no
+        attempt = 0
+        while True:
+            attempt += 1
+            result = await self._spawn_and_consume(
+                job, argv, env, log_path=log_path, start_line_no=line_no
+            )
+            line_no = result.line_no
+            if result.exit_code == 0 or attempt >= attempts:
+                return result.with_attempt(attempt)
+            delay = _retry_delay(attempt)
+            await self._log_retry(job, log_path, attempt=attempt, attempts=attempts, delay=delay)
+            await asyncio.sleep(delay)
+
+    async def _spawn_and_consume(
+        self,
+        job: Job,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        log_path: Path,
+        start_line_no: int,
+    ) -> _PhaseOutcome:
+        """单次 restic 执行：spawn → 逐行解析落库 → 等退出码（与原行为逐字节一致）。"""
+        proc = await self._restic.spawn(argv, log_path, env=env)
+        self._processes[job.id] = proc
+
+        aggregate = JobAggregate()
+        snapshot_id = job.snapshot_id
+        line_no = start_line_no
+        last_flush = time.monotonic()
+
+        async for line in proc.lines():
+            line_no += 1
+            event = await asyncio.to_thread(self._parser.parse_line, line)
+            if isinstance(event, ProgressEvent):
+                event.event_id = line_no
+                aggregate = self._parser.aggregate(aggregate, event)
+            elif isinstance(event, SnapshotRecord):
+                if event.snapshot_id:
+                    snapshot_id = event.snapshot_id
+                # X12：restore 的 summary 用 files_skipped 记录因权限等原因
+                # 未被恢复的文件数（--overwrite=always 下仍写不进去即计入；
+                # 该行不产生 ProgressEvent，此前被整体丢弃 → skipped_count
+                # 恒 0、任务静默报 success，见架构文档 §12 V7 / 缺陷 X12）。
+                # 此处把 files_skipped 折入聚合，让 skipped_count / 审计 /
+                # SSE / UI 反映真实的部分失败。restic summary 每任务唯一一行
+                # （输出末尾），折一次即正确、不重复累加；backup summary 无
+                # 该字段（None）→ 不进本分支，行为逐字节不变。
+                if event.files_skipped is not None:
+                    aggregate = self._parser.aggregate(
+                        aggregate, ProgressEvent(skipped_delta=event.files_skipped)
+                    )
+            if time.monotonic() - last_flush >= self._db_flush_interval:
+                await self._jobs.update_progress(
+                    job.id,
+                    bytes_done=aggregate.bytes_done,
+                    files_done=aggregate.files_done,
+                    skipped_count=aggregate.skipped_count,
+                    last_event_id=line_no,
+                )
+                last_flush = time.monotonic()
+
+        exit_code = await proc.wait()
+        return _PhaseOutcome(
+            exit_code=exit_code, aggregate=aggregate, snapshot_id=snapshot_id, line_no=line_no
+        )
+
+    async def _log_retry(
+        self, job: Job, log_path: Path, *, attempt: int, attempts: int, delay: float
+    ) -> None:
+        """把重试决定写进任务日志（SSE/E27 可见，禁止静默重试）。"""
+        line = (
+            f"[retry] 第 {attempt}/{attempts - 1} 次重试将于 {delay:g}s 后开始"
+            f"（attempt={attempt + 1}/{attempts}）"
+        )
+        logger.info("任务 %s 失败，%s", job.id, line)
+        try:
+            await asyncio.to_thread(_append_log_sync, log_path, line)
+        except OSError:  # 日志写失败不应打断重试判定
+            logger.warning("任务 %s 重试日志写入失败", job.id)
 
     async def _fail_in_phase(self, job: Job, summary: str, *, phase: str) -> None:
         """阶段失败收敛：failed 终态 + 审计 + 告警（与 _run 异常路径同口径，不 5xx）。"""
@@ -996,6 +1119,22 @@ class JobRunner:
             f"{status}（exit={exit_code}）files={aggregate.files_done} "
             f"bytes={aggregate.bytes_done} skipped={aggregate.skipped_count}"
         )
+
+
+def _retry_delay(attempt: int) -> float:
+    """C3 指数退避：``base * 2 ** (attempt - 1)``，钳上限（attempt 从 1 计）。
+
+    钳上限是必须的：没有上限的指数退避在 retry_count=5 时最后一次会等 8 分钟，
+    任务挂在 running 里不释放仓库锁——把整条互斥语义拖坏（E1 回归面）。
+    """
+    return min(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), RETRY_MAX_DELAY_SECONDS)
+
+
+def _append_log_sync(log_path: Path, line: str) -> None:
+    """同步追加一行到任务日志（重试痕迹走同一日志文件，SSE/E27 可见）。"""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{line}\n")
 
 
 def _as_optional_int(value: Any) -> int | None:

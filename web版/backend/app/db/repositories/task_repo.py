@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.constants import RETRY_COUNT_DEFAULT
 from app.db.database import Database
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
@@ -32,6 +33,8 @@ _COLUMNS = (
     "dry_run_pending", "last_run_at",
     # C1 任务级前后钩子（空串 = 未配置）
     "pre_cmd", "post_cmd",
+    # C3 任务级失败重试（0 = 不重试）
+    "retry_count",
     "created_at", "updated_at",
 )
 _SELECT = "SELECT " + ", ".join(_COLUMNS) + " FROM backup_tasks"
@@ -72,6 +75,8 @@ _SEED_DEFAULTS: dict[str, Any] = {
     # C1 钩子（0005 DDL 缺省同口径：空串 = 未配置，不执行）
     "pre_cmd": "",
     "post_cmd": "",
+    # C3 重试（0006 DDL 缺省同口径：2 = 首次 + 2 次重试）
+    "retry_count": RETRY_COUNT_DEFAULT,
 }
 
 
@@ -115,6 +120,8 @@ class Task:
     # C1 任务级前后钩子（空串 = 未配置；不经 shell，见 services/hooks.py）
     pre_cmd: str = ""
     post_cmd: str = ""
+    # C3 任务级失败重试（仅调度触发；0 = 不重试）
+    retry_count: int = RETRY_COUNT_DEFAULT
     created_at: str = ""
     updated_at: str = ""
 
@@ -203,6 +210,8 @@ class TaskRepo:
             # C1 钩子：JobRunner 在 restic 阶段前后读取（不经 shell，见 services/hooks.py）
             "pre_cmd": task.pre_cmd,
             "post_cmd": task.post_cmd,
+            # C3 重试预算（JobRunner 据此决定是否自动重试）
+            "retry_count": task.retry_count,
         }
 
     # ---------------------------------------------------------------- 写
@@ -356,6 +365,7 @@ def _to_task(row: Any) -> Task:
         last_run_at=None if row["last_run_at"] is None else str(row["last_run_at"]),
         pre_cmd=str(row["pre_cmd"] or ""),
         post_cmd=str(row["post_cmd"] or ""),
+        retry_count=int(row["retry_count"] if row["retry_count"] is not None else RETRY_COUNT_DEFAULT),
         created_at=str(row["created_at"] or ""),
         updated_at=str(row["updated_at"] or ""),
     )
