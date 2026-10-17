@@ -7,9 +7,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 from conftest import ORIGIN, finish_bootstrap
+
+from app.errors import CredentialDecryptError
 
 
 class _FakeProc:
@@ -187,3 +191,66 @@ async def test_rotate_key_success_rewrites_passfile(app_client):
 
     rows, _total = await ns.app.state.audit.query(action="key.rotate", limit=10)
     assert len(rows) == 1
+
+
+async def test_rotate_default_reencrypts_credentials(app_client):
+    """审计 2026-10-18 S-1：rotate default 仓库后，存量凭据必须用**新密钥**重加密。
+
+    缺口原状：rotate 成功重写口令文件 → R-025 密钥（密码文件派生）随之切换 →
+    旧密钥加密的存量 enc:v2 凭据全部解不开，后续任务 500。修复后：rotate 在
+    重写口令文件前用旧密钥解出明文快照，重写后经 set() 写侧用新密钥写回。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.update("default", url="local:/main")
+    ns.app.state.settings.passfile_path("default").write_text("old-pw", encoding="utf-8")
+
+    # 旧密钥下经 E07 录入一条凭据（落库应为 enc:v2 旧密钥密文）
+    resp = await ns.client.put(
+        "/api/config",
+        json={"patch": {"cred.default.aws_secret_access_key": "sekret-1"}},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+    crypto = ns.app.state.encryption.crypto
+    raw_before = {r.key: r.value for r in await ns.app.state.config_repo.list_all_raw()}
+    cipher_before = raw_before["cred.default.aws_secret_access_key"]
+    assert cipher_before.startswith("enc:v2:")
+    assert crypto.decrypt(cipher_before) == "sekret-1"
+
+    async def _fake_spawn(argv, log_path, *, env=None):  # noqa: ANN001, ANN202
+        return _FakeProc(Path(log_path), 0)
+
+    ns.app.state.restic.spawn = _fake_spawn  # type: ignore[assignment]
+    resp = await ns.client.post(
+        "/api/repos/rotate-key",
+        json={"repo_id": "default", "new_password": "brand-new-pw"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # 口令文件已换新密码（⇒ 密钥已切换）
+    assert ns.app.state.settings.passfile_path("default").read_text(encoding="utf-8") == "brand-new-pw"
+
+    # 落库形态：仍是 enc:v2，但**密文已变**（新密钥重加密；nonce 随机 ⇒ 必不同）
+    raw_after = {r.key: r.value for r in await ns.app.state.config_repo.list_all_raw()}
+    cipher_after = raw_after["cred.default.aws_secret_access_key"]
+    assert cipher_after.startswith("enc:v2:")
+    assert cipher_after != cipher_before
+
+    # 新密钥可解、明文保持；旧密文用新密钥解不开（隔离证据：不是原样遗留）
+    assert crypto.decrypt(cipher_after) == "sekret-1"
+    with pytest.raises(CredentialDecryptError):
+        crypto.decrypt(cipher_before)  # 旧密文已不可用新密钥解开（确属重加密而非原样遗留）
+
+    # 读侧透明：E30/config 读回明文不变
+    resp = await ns.client.get("/api/config")
+    assert resp.status_code == 200, resp.text
+    items = {i["key"]: i for i in resp.json()["items"]}
+    cred = items["cred.default.aws_secret_access_key"]
+    assert cred["has_value"] is True
+
+    # 审计 detail 带重加密计数（零明文）
+    rows, _total = await ns.app.state.audit.query(action="key.rotate", limit=10)
+    detail = json.loads(str(rows[0].detail))
+    assert detail.get("creds_reencrypted") == 1

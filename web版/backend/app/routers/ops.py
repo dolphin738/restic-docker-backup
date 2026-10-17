@@ -50,10 +50,11 @@ from app.constants import (
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
-from app.db.repositories.repo_repo import ReposRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.dependencies import current_repo_id
 from app.errors import (
+    CredentialDecryptError,
     EnvOverriddenError,
     JobConflictError,
     ReadonlyKeyError,
@@ -636,12 +637,44 @@ async def rotate_repo_key(
         logger.warning("仓库 %s 密钥轮换失败：%s", payload.repo_id, reason)
         raise ResticFailedError(f"密钥轮换失败：{reason}", exit_code=exit_code)
 
+    # R-025 联动（审计 2026-10-18 S-1）：轮换 **default** 仓库 = 凭据加密根（口令文件）
+    # 内容变更——存量 enc:v2 凭据用旧密码派生的密钥加密，口令文件一换即全部解不开。
+    # 趁口令文件仍是旧内容（restic passwd 已成功、新内容尚未写入），先用旧密钥把
+    # 该仓库的敏感键解出（明文只持于内存，S3）；重写口令文件后再经 set() 写侧用
+    # 新密钥重加密。仅 default 走此分支：CredentialCrypto 单实例的口令文件恒为
+    # default 布局，其它仓库的 rotate 不影响凭据密钥；per-repo crypto 落地时
+    # 本分支改为按仓库实例。
+    reencrypt_pairs: list[tuple[str, str]] = []
+    if payload.repo_id == DEFAULT_REPO_ID:
+        crypto = request.app.state.encryption.crypto
+        cred_prefix = f"cred.{payload.repo_id}."
+        for row in await config_repo.list_all_raw():
+            if not (row.key.startswith(cred_prefix) and row.source != "env" and row.value):
+                continue
+            if not crypto.is_encrypted(row.value):
+                continue  # 明文形态（历史上关闭加密的残留），恒可读、无需重加密
+            try:
+                reencrypt_pairs.append((row.key, crypto.decrypt(row.value)))  # 旧密钥
+            except CredentialDecryptError:
+                # legacy 密文解不开（口令文件曾被更换）：跳过+告警，恢复路径=经 E07
+                # 覆写该键（沿 migrate_encryption 既有语义）
+                logger.warning("key.rotate 跳过凭据重加密 %s：旧密文无法解密", row.key)
+
     # restic 已用新密码重写仓库密钥 → 同步口令文件，后续访问用新密码
     passfile_path(settings, payload.repo_id).write_text(payload.new_password, encoding="utf-8")
+    # 口令文件内容已变 → 凭据加密密钥随之切换（crypto 缓存按 stat 自动失效）：
+    # 上方快照的明文经 set() 写侧透明加密（新密钥）写回；set 对 source='env' 有
+    # 守卫，但 env 行已在收集阶段过滤，不会触达。
+    for key, plain in reencrypt_pairs:
+        await config_repo.set(key, plain)
     await audit.record(
         AUDIT_KEY_ROTATE,
         target=payload.repo_id,
-        detail={"repo_id": payload.repo_id, "result": "ok"},
+        detail={
+            "repo_id": payload.repo_id,
+            "result": "ok",
+            "creds_reencrypted": len(reencrypt_pairs),
+        },
         result="ok",
     )
     return KeyRotateResponse(ok=True, repo_id=payload.repo_id)
