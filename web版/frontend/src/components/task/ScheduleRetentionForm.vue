@@ -3,6 +3,8 @@
  *
  * - cron 输入 + 常用模板快捷填充 + 「不调度（仅手动）」；
  * - 保留档位 keep_*（0 = 不保留该档）；
+ * - A2 时间线保留 keep_within*（restic duration，如 1y5m7d2h；空串 = 不启用）
+ *   与 keep_tags（--keep-tag 清单，表单层逗号分隔文本，提交时拆分）；
  * - 抖动与生效时机说明。
  *
  * 高级字段（group_by / one_file_system / compression / check_sample_ratio /
@@ -23,6 +25,15 @@ export interface ScheduleRetentionValue {
   keep_weekly: number
   keep_monthly: number
   keep_yearly: number
+  /** A2 时间线保留（restic duration，如 30d / 1y5m7d2h；空串 = 未启用）。 */
+  keep_within: string
+  keep_within_hourly: string
+  keep_within_daily: string
+  keep_within_weekly: string
+  keep_within_monthly: string
+  keep_within_yearly: string
+  /** A2 keep_tags 的表单层表示：逗号分隔文本；空串 = 未启用（提交时拆分为数组）。 */
+  keep_tags_text: string
 }
 
 const props = defineProps<{
@@ -62,6 +73,16 @@ const keepFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: st
   { key: 'keep_weekly', label: t('wizard.keep_weekly') },
   { key: 'keep_monthly', label: t('wizard.keep_monthly') },
   { key: 'keep_yearly', label: t('wizard.keep_yearly') },
+])
+
+/** A2 时间线档（restic duration 文本输入）：与计数档并列的第二排保留规则。 */
+const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: string }>>(() => [
+  { key: 'keep_within', label: t('wizard.keep_within') },
+  { key: 'keep_within_hourly', label: t('wizard.keep_within_hourly') },
+  { key: 'keep_within_daily', label: t('wizard.keep_within_daily') },
+  { key: 'keep_within_weekly', label: t('wizard.keep_within_weekly') },
+  { key: 'keep_within_monthly', label: t('wizard.keep_within_monthly') },
+  { key: 'keep_within_yearly', label: t('wizard.keep_within_yearly') },
 ])
 </script>
 
@@ -110,6 +131,34 @@ const keepFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: st
           />
         </n-space>
       </n-space>
+
+      <!-- A2 时间线保留（keep-within*）：与计数档并列，均为「至少一个保留规则」的成员 -->
+      <n-text strong>{{ t('wizard.retentionWithin') }}</n-text>
+      <n-space :size="10" wrap>
+        <n-space v-for="field in withinFields" :key="field.key" vertical :size="2" class="schedule-form__keep">
+          <n-text depth="3" class="schedule-form__keep-label">{{ field.label }}</n-text>
+          <n-input
+            :value="modelValue[field.key] as string"
+            size="small"
+            style="width: 96px"
+            :placeholder="t('wizard.withinPlaceholder')"
+            @update:value="(value: string) => patch({ [field.key]: value.trim() } as Partial<ScheduleRetentionValue>)"
+          />
+        </n-space>
+      </n-space>
+      <n-text depth="3" class="schedule-form__note">{{ t('wizard.withinNote') }}</n-text>
+
+      <!-- A2 keep_tags（--keep-tag）：命中任一的快照保留；逗号分隔 -->
+      <n-space vertical :size="2" class="schedule-form__keep">
+        <n-text depth="3" class="schedule-form__keep-label">{{ t('wizard.keepTags') }}</n-text>
+        <n-input
+          :value="modelValue.keep_tags_text"
+          size="small"
+          :placeholder="t('wizard.keepTagsPlaceholder')"
+          @update:value="(value: string) => patch({ keep_tags_text: value })"
+        />
+      </n-space>
+      <n-text depth="3" class="schedule-form__note">{{ t('wizard.keepTagsNote') }}</n-text>
     </n-space>
   </n-space>
 </template>

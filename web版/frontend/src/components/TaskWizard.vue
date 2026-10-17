@@ -92,6 +92,14 @@ function defaultForm(): TaskFormState {
     keep_weekly: 4,
     keep_monthly: 6,
     keep_yearly: 1,
+    // A2 时间线保留：新建默认不启用（空串 = 未启用；与计数档 0 口径一致）
+    keep_within: '',
+    keep_within_hourly: '',
+    keep_within_daily: '',
+    keep_within_weekly: '',
+    keep_within_monthly: '',
+    keep_within_yearly: '',
+    keep_tags_text: '',
     group_by: 'host,paths,tags',
     one_file_system: false,
     compression: 'auto',
@@ -139,6 +147,14 @@ watch(
     form.keep_weekly = task.keep_weekly
     form.keep_monthly = task.keep_monthly
     form.keep_yearly = task.keep_yearly
+    // A2 时间线保留原样往返；keep_tags 列表 → 表单层逗号分隔文本
+    form.keep_within = task.keep_within
+    form.keep_within_hourly = task.keep_within_hourly
+    form.keep_within_daily = task.keep_within_daily
+    form.keep_within_weekly = task.keep_within_weekly
+    form.keep_within_monthly = task.keep_within_monthly
+    form.keep_within_yearly = task.keep_within_yearly
+    form.keep_tags_text = task.keep_tags.join(', ')
     form.group_by = task.group_by
     form.one_file_system = task.one_file_system
     form.compression = task.compression
@@ -284,6 +300,18 @@ function buildPayload(): TaskUpsertRequest {
     keep_weekly: form.keep_weekly,
     keep_monthly: form.keep_monthly,
     keep_yearly: form.keep_yearly,
+    // A2 时间线保留原样提交；keep_tags 表单层逗号分隔文本 → 数组（去空白/丢空；
+    // 去重与注入校验由服务端 normalize 终判——前端不做第二套校验）
+    keep_within: form.keep_within,
+    keep_within_hourly: form.keep_within_hourly,
+    keep_within_daily: form.keep_within_daily,
+    keep_within_weekly: form.keep_within_weekly,
+    keep_within_monthly: form.keep_within_monthly,
+    keep_within_yearly: form.keep_within_yearly,
+    keep_tags: form.keep_tags_text
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== ''),
     group_by: form.group_by,
     cron: form.cron.trim() || null,
     one_file_system: form.one_file_system,
@@ -384,6 +412,13 @@ const scheduleValue = computed<ScheduleRetentionValue>(() => ({
   keep_weekly: form.keep_weekly,
   keep_monthly: form.keep_monthly,
   keep_yearly: form.keep_yearly,
+  keep_within: form.keep_within,
+  keep_within_hourly: form.keep_within_hourly,
+  keep_within_daily: form.keep_within_daily,
+  keep_within_weekly: form.keep_within_weekly,
+  keep_within_monthly: form.keep_within_monthly,
+  keep_within_yearly: form.keep_within_yearly,
+  keep_tags_text: form.keep_tags_text,
 }))
 
 function onScheduleUpdate(value: ScheduleRetentionValue): void {
@@ -394,6 +429,13 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
   form.keep_weekly = value.keep_weekly
   form.keep_monthly = value.keep_monthly
   form.keep_yearly = value.keep_yearly
+  form.keep_within = value.keep_within
+  form.keep_within_hourly = value.keep_within_hourly
+  form.keep_within_daily = value.keep_within_daily
+  form.keep_within_weekly = value.keep_within_weekly
+  form.keep_within_monthly = value.keep_within_monthly
+  form.keep_within_yearly = value.keep_within_yearly
+  form.keep_tags_text = value.keep_tags_text
 }
 </script>
 

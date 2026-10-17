@@ -200,6 +200,9 @@ const forgetTag = ref<string | null>(null)
 const forgetKeepDaily = ref<number | null>(null)
 const forgetKeepWeekly = ref<number | null>(null)
 const forgetKeepMonthly = ref<number | null>(null)
+/** A2 时间线档（restic duration，如 30d）与标签档（--keep-tag，逗号分隔）；空 = 未启用。 */
+const forgetKeepWithin = ref('')
+const forgetKeepTagsText = ref('')
 const forgetPrune = ref(true)
 const forgetPreview = ref<ForgetPreviewResponse | null>(null)
 const forgetShow = ref(false)
@@ -207,7 +210,7 @@ const forgetLoading = ref(false)
 const forgetExecuting = ref(false)
 
 /** 选中的 tag 匹配到任务时，回填该任务的保留档位（E34 卡片不带 keep 字段，取详情）；
- * 历史遗留 tag 无回填来源，维持手填值。 */
+ * 历史遗留 tag 无回填来源，维持手填值。A2 起时长档/标签档一并回填。 */
 watch(forgetTag, async (tag) => {
   const card = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === tag)
   if (!card) {
@@ -218,13 +221,22 @@ watch(forgetTag, async (tag) => {
     forgetKeepDaily.value = task.keep_daily
     forgetKeepWeekly.value = task.keep_weekly
     forgetKeepMonthly.value = task.keep_monthly
+    forgetKeepWithin.value = task.keep_within
+    forgetKeepTagsText.value = task.keep_tags.join(', ')
   } catch {
     // 回填失败不打断手填路径（AppError 已有全局提示）
   }
 })
 
+/** G3 三门并列（A2）：计数档任一非空，或时长档非空，或标签档非空 → 可预览。 */
 const forgetReady = computed(
-  () => forgetTag.value !== null && (forgetKeepDaily.value !== null || forgetKeepWeekly.value !== null || forgetKeepMonthly.value !== null),
+  () =>
+    forgetTag.value !== null &&
+    (forgetKeepDaily.value !== null ||
+      forgetKeepWeekly.value !== null ||
+      forgetKeepMonthly.value !== null ||
+      forgetKeepWithin.value.trim() !== '' ||
+      forgetKeepTagsText.value.trim() !== ''),
 )
 
 const removeColumns = computed<DataTableColumns<ForgetPreviewSnapshot>>(() => [
@@ -244,6 +256,12 @@ async function runForgetPreview(): Promise<void> {
       keep_daily: forgetKeepDaily.value ?? undefined,
       keep_weekly: forgetKeepWeekly.value ?? undefined,
       keep_monthly: forgetKeepMonthly.value ?? undefined,
+      // A2：时长档原样传（服务端校验 duration 形态）；标签档逗号分隔文本 → 数组
+      keep_within: forgetKeepWithin.value.trim() || undefined,
+      keep_tags: forgetKeepTagsText.value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item !== ''),
       prune: forgetPrune.value,
     })
     forgetShow.value = true
@@ -367,6 +385,19 @@ async function confirmForget(): Promise<void> {
             :min="0"
             class="snapshots__forget-num"
             :placeholder="t('snapshot.forget.keepMonthly')"
+          />
+          <!-- A2：时长档（restic duration）与标签档（--keep-tag，逗号分隔） -->
+          <n-input
+            v-model:value="forgetKeepWithin"
+            size="small"
+            class="snapshots__forget-num"
+            :placeholder="t('snapshot.forget.keepWithin')"
+          />
+          <n-input
+            v-model:value="forgetKeepTagsText"
+            size="small"
+            class="snapshots__forget-num"
+            :placeholder="t('snapshot.forget.keepTags')"
           />
           <n-space align="center" :size="6" :wrap="false">
             <n-switch v-model:value="forgetPrune" size="small" />

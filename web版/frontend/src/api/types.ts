@@ -374,6 +374,15 @@ export interface BackupTask {
   keep_weekly: number
   keep_monthly: number
   keep_yearly: number
+  /** A2 时间线保留（restic duration，如 1y5m7d2h；空串 = 未启用）。 */
+  keep_within: string
+  keep_within_hourly: string
+  keep_within_daily: string
+  keep_within_weekly: string
+  keep_within_monthly: string
+  keep_within_yearly: string
+  /** A2 --keep-tag 清单（命中任一的快照保留；空数组 = 未启用）。 */
+  keep_tags: string[]
   group_by: string
   cron: string | null
   one_file_system: boolean
@@ -402,6 +411,15 @@ export interface TaskUpsertRequest {
   keep_weekly: number
   keep_monthly: number
   keep_yearly: number
+  /** A2 时间线保留（restic duration，如 1y5m7d2h；空串 = 未启用）。 */
+  keep_within: string
+  keep_within_hourly: string
+  keep_within_daily: string
+  keep_within_weekly: string
+  keep_within_monthly: string
+  keep_within_yearly: string
+  /** A2 --keep-tag 清单（命中任一的快照保留；空数组 = 未启用）。 */
+  keep_tags: string[]
   group_by: string
   /** 空串按缺省传 null（仅手动）。 */
   cron: string | null
@@ -478,6 +496,15 @@ export interface ForgetPreviewRequest {
   keep_weekly?: number | null
   keep_monthly?: number | null
   keep_yearly?: number | null
+  /** A2 时间线保留（restic duration，如 1y5m7d2h；空串/不传 = 未启用）。 */
+  keep_within?: string | null
+  keep_within_hourly?: string | null
+  keep_within_daily?: string | null
+  keep_within_weekly?: string | null
+  keep_within_monthly?: string | null
+  keep_within_yearly?: string | null
+  /** A2 --keep-tag 清单（命中任一的快照保留；空数组 = 未启用）。 */
+  keep_tags?: string[]
   prune?: boolean
 }
 
