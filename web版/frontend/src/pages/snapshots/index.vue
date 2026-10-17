@@ -24,8 +24,8 @@ import { useRouter } from 'vue-router'
 import { getBackupTask, listBackupTasks } from '@/api/backupTasks'
 import { isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
-import { listSnapshotFiles, listSnapshots, previewForget } from '@/api/snapshots'
-import type { ForgetPreviewResponse, ForgetPreviewSnapshot, SnapshotOut } from '@/api/types'
+import { listSnapshotFiles, listSnapshots, previewForget, tagSnapshots } from '@/api/snapshots'
+import type { ForgetPreviewResponse, ForgetPreviewSnapshot, SnapshotOut, TagSnapshotsResponse } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
@@ -296,6 +296,52 @@ async function confirmForget(): Promise<void> {
     forgetExecuting.value = false
   }
 }
+
+// ---------------------------------------------------------------- A3 快照版本标签（restic tag --add/--remove）
+const tagAddText = ref('')
+const tagRemoveText = ref('')
+const tagSnapshotIdsText = ref('')
+const tagApplying = ref(false)
+const tagResultText = ref<string | null>(null)
+
+/** 逗号/中文逗号分隔 → 去空白去空。 */
+function splitTags(text: string): string[] {
+  return text
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+}
+
+async function applyTag(): Promise<void> {
+  const add = splitTags(tagAddText.value)
+  const remove = splitTags(tagRemoveText.value)
+  if (add.length === 0 && remove.length === 0) {
+    message.warning(t('snapshot.tag.needTag'))
+    return
+  }
+  const ids = splitTags(tagSnapshotIdsText.value)
+  tagApplying.value = true
+  tagResultText.value = null
+  try {
+    const resp: TagSnapshotsResponse = await tagSnapshots({
+      snapshot_ids: ids,
+      add,
+      remove,
+      // 留空 ID 时按当前筛选条件（标签/主机）作用全部匹配快照；都空则服务端 422 拒
+      tag_filter: tagFilter.value ? [tagFilter.value] : null,
+      host: hostFilter.value || null,
+    })
+    tagResultText.value = t('snapshot.tag.success', { n: resp.changed_count })
+    message.success(tagResultText.value)
+    void snapshotsQuery.refetch() // 刷新快照列表（标签已变）
+  } catch (error) {
+    if (!isAppError(error)) {
+      message.error(t('errors.UNKNOWN'))
+    }
+  } finally {
+    tagApplying.value = false
+  }
+}
 </script>
 
 <template>
@@ -417,6 +463,48 @@ async function confirmForget(): Promise<void> {
         <n-text v-if="!forgetReady" depth="3" class="snapshots__forget-note">
           {{ t('snapshot.forget.needKeep') }}
         </n-text>
+      </n-space>
+    </n-card>
+
+    <!-- A3 快照版本标签：restic tag --add/--remove（打/去标签） -->
+    <n-card :title="t('snapshot.tag.title')" size="small">
+      <template #header-extra>
+        <n-text depth="3" class="snapshots__tag-note">{{ t('snapshot.tag.note') }}</n-text>
+      </template>
+      <n-space vertical :size="10">
+        <n-alert type="info" :show-icon="false">{{ t('snapshot.tag.desc') }}</n-alert>
+        <n-space align="center" :size="10" :wrap="false" class="snapshots__tag-form">
+          <n-input
+            v-model:value="tagAddText"
+            size="small"
+            class="snapshots__tag-input"
+            :placeholder="t('snapshot.tag.addPlaceholder')"
+          />
+          <n-input
+            v-model:value="tagRemoveText"
+            size="small"
+            class="snapshots__tag-input"
+            :placeholder="t('snapshot.tag.removePlaceholder')"
+          />
+          <n-input
+            v-model:value="tagSnapshotIdsText"
+            size="small"
+            class="snapshots__tag-input"
+            :placeholder="t('snapshot.tag.idsPlaceholder')"
+          />
+          <n-button
+            size="small"
+            type="primary"
+            secondary
+            :loading="tagApplying"
+            :disabled="tagApplying"
+            @click="applyTag"
+          >
+            {{ t('snapshot.tag.apply') }}
+          </n-button>
+        </n-space>
+        <n-text depth="3" class="snapshots__tag-note">{{ t('snapshot.tag.targetHint') }}</n-text>
+        <n-alert v-if="tagResultText" type="success" :show-icon="false">{{ tagResultText }}</n-alert>
       </n-space>
     </n-card>
 

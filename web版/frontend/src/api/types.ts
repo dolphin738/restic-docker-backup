@@ -508,6 +508,33 @@ export interface ForgetPreviewRequest {
   prune?: boolean
 }
 
+/** A3 单条被改标签的快照：旧 id → 新 id（restic tag 改标签会生成新快照对象）。 */
+export interface TagChanged {
+  old_snapshot_id: string
+  new_snapshot_id: string
+}
+
+/** A3 打/去标签响应：改动条数 + 逐条新旧 id 映射。 */
+export interface TagSnapshotsResponse {
+  changed_count: number
+  changed: TagChanged[]
+  truncated: boolean
+}
+
+/** A3 快照打/去标签请求（restic tag --add/--remove）。 */
+export interface TagSnapshotsRequest {
+  /** 目标快照 ID 列表（与 tag_filter/host 二选一；都空则服务端 422 拒，避免改全部）。 */
+  snapshot_ids?: string[]
+  /** 要添加的标签（打标签）。 */
+  add?: string[]
+  /** 要移除的标签（去标签）。 */
+  remove?: string[]
+  /** 按现有 tag 过滤目标快照（--tag 选择语义，可多选）。 */
+  tag_filter?: string[] | null
+  /** 按 host 过滤目标快照（--host）。 */
+  host?: string | null
+}
+
 /** E19 恢复响应（202）：restore_target 由服务端计算的时间戳子目录，前端不自己拼。 */
 export interface RestoreResponse {
   job_id: string

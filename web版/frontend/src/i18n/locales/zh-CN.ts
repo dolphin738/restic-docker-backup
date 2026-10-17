@@ -515,6 +515,18 @@ export default {
       confirmLabel: '确认清理',
       submitted: '清理任务已提交，请在任务页跟踪进度',
     },
+    tag: {
+      title: '快照标签',
+      note: 'A3 · restic tag',
+      desc: '为快照批量打标签或去标签（restic tag --add/--remove）。「目标快照 ID」留空时按上方筛选条件（标签/主机）作用全部匹配快照。',
+      addPlaceholder: '添加标签（逗号分隔）',
+      removePlaceholder: '移除标签（逗号分隔）',
+      idsPlaceholder: '目标快照 ID（可选，逗号分隔）',
+      apply: '应用',
+      targetHint: '目标范围：填写 ID 仅作用于这些快照；留空则按当前标签/主机筛选作用全部匹配快照（务必确认范围）。',
+      needTag: '请至少填写一个要添加或移除的标签',
+      success: '已更新 {n} 个快照的标签',
+    },
   },
   restore: {
     stepPick: '选择快照',

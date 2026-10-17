@@ -518,6 +518,19 @@ export default {
       confirmLabel: 'Confirm pruning',
       submitted: 'Prune job submitted; track it on the jobs page',
     },
+    tag: {
+      title: 'Snapshot tags',
+      note: 'A3 · restic tag',
+      desc: 'Bulk add or remove tags on snapshots (restic tag --add/--remove). Leave "target snapshot IDs" empty to apply to all snapshots matching the filters above (tag/host).',
+      addPlaceholder: 'Add tags (comma-separated)',
+      removePlaceholder: 'Remove tags (comma-separated)',
+      idsPlaceholder: 'Target snapshot IDs (optional, comma-separated)',
+      apply: 'Apply',
+      targetHint:
+        'Target scope: IDs restrict to those snapshots; empty applies to all snapshots matching the current tag/host filter (confirm the scope carefully).',
+      needTag: 'Provide at least one tag to add or remove',
+      success: 'Updated tags on {n} snapshot(s)',
+    },
   },
   restore: {
     stepPick: 'Pick snapshot',

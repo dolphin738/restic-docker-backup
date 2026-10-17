@@ -2,7 +2,15 @@
  * E21 forget 预览（R-016 预览-确认流前半，服务端恒 --dry-run 只读）。 */
 
 import { passCursor, request } from './http'
-import type { ForgetPreviewRequest, ForgetPreviewResponse, Page, SnapshotFilesResponse, SnapshotOut } from './types'
+import type {
+  ForgetPreviewRequest,
+  ForgetPreviewResponse,
+  Page,
+  SnapshotFilesResponse,
+  SnapshotOut,
+  TagSnapshotsRequest,
+  TagSnapshotsResponse,
+} from './types'
 
 /** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。
  * host 为空串/undefined = 不过滤（R-023 多主机视图：按快照主机标识过滤，与当前 X-Repo-Id 仓库叠加生效）。 */
@@ -25,4 +33,9 @@ export function listSnapshotFiles(
 /** E21 forget 预览：返回将被裁剪的快照列表（只读，不落任何裁剪）。至少一个 keep_* 必填。 */
 export function previewForget(payload: ForgetPreviewRequest): Promise<ForgetPreviewResponse> {
   return request<ForgetPreviewResponse>('/api/forget/preview', { method: 'POST', body: payload })
+}
+
+/** A3 快照打/去标签：restic tag --add/--remove（独占锁修改快照）。返回改动条数 + 新旧 id 映射。 */
+export function tagSnapshots(payload: TagSnapshotsRequest): Promise<TagSnapshotsResponse> {
+  return request<TagSnapshotsResponse>('/api/snapshots/tag', { method: 'POST', body: payload })
 }
