@@ -1037,7 +1037,20 @@ function Export-CbmSnapshot {
     $repo = if ($RepoPath) { $RepoPath } else { Get-RepoPath '请输入项目根目录绝对路径（快照将生成在该目录下）' }
     if (-not $repo) { return }
 
-    Invoke-CbmCli -SubCommand 'index_repository' -Payload @{ repo_path = $repo; persistence = $true }
+    # 索引模式选择（与菜单 3 相同的四选一，回车 = 工具默认）
+    $payload = @{ repo_path = $repo; persistence = $true }
+    if (-not $RepoPath) {
+        $sel = Read-Host '索引模式（1=full 全量 2=moderate 均衡 3=fast 快速 4=跨项目，回车=工具默认）'
+        if     ($sel -eq '1') { $payload.mode = 'full' }
+        elseif ($sel -eq '2') { $payload.mode = 'moderate' }
+        elseif ($sel -eq '3') { $payload.mode = 'fast' }
+        elseif ($sel -eq '4') {
+            $payload.mode = 'cross-repo-intelligence'
+            $tp = Read-Host '跨项目搜索目标（回车=全部已索引项目）'
+            $payload.target_projects = if ($tp) { $tp } else { '["*"]' }
+        }
+    }
+    Invoke-CbmCli -SubCommand 'index_repository' -Payload $payload
 
     $snap = Join-Path $repo '.codebase-memory\graph.db.zst'
     if (Test-Path -LiteralPath $snap) {
