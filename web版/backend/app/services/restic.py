@@ -26,8 +26,11 @@ from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
 
 # verb 白名单（§7.1 九类 + 批次 3 为 E30 容量探测新增只读 verb ``stats``）
+# B1 自愈新增 ``repair``（restic repair index / repair packs，重建索引/卷一致性）；
+# B3 自愈新增 ``recover``（restic recover，找回丢失索引的快照）
 VERBS: tuple[str, ...] = (
     "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats", "tag",
+    "repair", "recover",
 )
 
 # 允许注入子进程的环境变量：精确名 + 前缀（凭据走各后端官方前缀，restic 自身走 RESTIC_*）。
@@ -134,6 +137,9 @@ class WhitelistArgs:
     # R-016 forget：--prune 随 forget 回收数据（预览恒 dry_run=True，不落 prune）
     prune: bool = False
     extra_positionals: tuple[str, ...] = field(default_factory=tuple)
+    # B1 自愈：restic repair 的子命令（"index" / "packs"），经白名单校验——
+    # repair 是两级命令（restic repair index），子命令走具名字段而非自由位置参数（S2）。
+    repair_target: str | None = None
 
 
 class ResticProcess:
@@ -500,6 +506,24 @@ class ResticCmd:
 
         if verb == "ls" or verb == "cat":
             return flags
+
+        if verb == "repair":
+            # B1 自愈：restic repair 是两级命令，子命令（index/packs）走具名字段而非
+            # 自由位置参数——值经白名单校验，杜绝 flag 注入（S2）。repair 不产生 JSON
+            # 输出，json_output 由 JobRunner 置 False（build 不加 --json）。
+            target = args.repair_target or "index"
+            if target not in ("index", "packs"):
+                raise ValidationError(
+                    "repair 子命令仅支持 index / packs", data={"repair_target": target}
+                )
+            flags.append(target)
+            return flags
+
+        if verb == "recover":
+            # B3 自愈：restic recover 找回丢失索引的快照，无子命令、无额外 flag；
+            # 输出为人类可读文本（json_output 置 False）。
+            return flags
+
         return flags
 
     def _restore_target(self, args: WhitelistArgs) -> str:

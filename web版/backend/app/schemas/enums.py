@@ -18,6 +18,8 @@ class JobType(StrEnum):
     UNLOCK = "unlock"
     INIT = "init"
     DUMP = "dump"
+    REPAIR = "repair"  # B1 自愈：restic repair index / repair packs（索引/卷一致性重建）
+    RECOVER = "recover"  # B3 自愈：restic recover（找回未快照数据，RecreateDatabase 等价）
 
 
 class JobStatus(StrEnum):

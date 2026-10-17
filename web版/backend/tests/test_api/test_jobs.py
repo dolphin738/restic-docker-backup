@@ -55,6 +55,34 @@ async def test_e12_accept_returns_202(app_client):
     assert body["status"] == "pending"
 
 
+async def test_e12_repair_accept_returns_202(app_client):
+    """B1 自愈：提交 repair 任务（无冲突）202 受理；缺 restic 二进制会转 failed，不在本断言范围。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/jobs",
+        json={"type": "repair", "params": {"repair_target": "index"}},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["id"]
+    assert body["type"] == "repair"
+    assert body["status"] == "pending"
+
+
+async def test_e12_recover_accept_returns_202(app_client):
+    """B3 自愈：提交 recover 任务（无冲突）202 受理；无子命令、无额外参数。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post("/api/jobs", json={"type": "recover"}, headers=ORIGIN)
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["id"]
+    assert body["type"] == "recover"
+    assert body["status"] == "pending"
+
+
 async def test_e14_job_detail_and_404(app_client):
     ns = app_client
     await finish_bootstrap(ns)

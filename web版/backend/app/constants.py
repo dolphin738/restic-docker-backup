@@ -7,7 +7,17 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------- 任务与状态（方案 §5 状态机）
 
-JOB_TYPES: tuple[str, ...] = ("backup", "restore", "forget", "check", "unlock", "init", "dump")
+JOB_TYPES: tuple[str, ...] = (
+    "backup",
+    "restore",
+    "forget",
+    "check",
+    "unlock",
+    "init",
+    "dump",
+    "repair",  # B1 自愈：restic repair index / repair packs
+    "recover",  # B3 自愈：restic recover（找回未快照数据）
+)
 JOB_STATUSES: tuple[str, ...] = ("pending", "running", "success", "failed", "interrupted", "cancelled")
 JOB_TRIGGERS: tuple[str, ...] = ("manual", "scheduled")
 
@@ -132,6 +142,8 @@ AUDIT_TASK_DELETE = "task.delete"
 AUDIT_RETENTION_CLEANUP = "retention.cleanup"  # R-020 每日维护：任务历史/日志清理（调度器触发）
 AUDIT_DUMP_CLEANUP = "dump.cleanup"  # R-019 每日维护兜底：dump 产物清理（调度器触发）
 AUDIT_TAG_UPDATE = "tag.update"  # A3 快照版本标签修改（打/去标签）
+AUDIT_REPAIR_RUN = "repair.run"  # B1 自愈：仓库索引/卷修复（restic repair index/packs，危险操作留痕）
+AUDIT_RECOVER_RUN = "recover.run"  # B3 自愈：找回未快照数据（restic recover，危险操作留痕）
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 

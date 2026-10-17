@@ -286,3 +286,69 @@ def test_restore_regular_target_still_validated_by_path_mapper():
 
     with pytest.raises(PathOutOfPrefixError):
         cmd.build("restore", args=WhitelistArgs(snapshot_id=SNAPSHOT_ID, target_dir="/etc"))
+
+
+# ---------------------------------------------------------------- B1 自愈 repair（restic repair index / packs）
+
+def test_repair_index_assembled_without_json():
+    """repair index：两级命令拼装，且不加 --json（repair 输出非 JSON）。"""
+    cmd = make_cmd()
+    argv = cmd.build("repair", args=WhitelistArgs(repair_target="index", json_output=False))
+    assert "--json" not in argv
+    idx = argv.index("repair")
+    assert argv[idx + 1] == "index"
+
+
+def test_repair_packs_assembled():
+    """repair packs：子命令 packs 透传。"""
+    cmd = make_cmd()
+    argv = cmd.build("repair", args=WhitelistArgs(repair_target="packs", json_output=False))
+    assert argv[argv.index("repair") + 1] == "packs"
+
+
+def test_repair_default_target_is_index():
+    """缺省 repair_target → index（最常用、最安全）。"""
+    cmd = make_cmd()
+    argv = cmd.build("repair", args=WhitelistArgs(json_output=False))
+    assert argv[argv.index("repair") + 1] == "index"
+
+
+def test_repair_invalid_target_rejected():
+    """非法 repair 子命令（非 index/packs）→ ValidationError（S2 白名单）。"""
+    cmd = make_cmd()
+    with pytest.raises(ValidationError):
+        cmd.build("repair", args=WhitelistArgs(repair_target="drop", json_output=False))
+
+
+def test_repair_and_recover_in_verb_whitelist():
+    """B1/B3 自愈 verb 已入白名单（与 test_verb_not_in_whitelist_rejected 互补）。"""
+    from app.services.restic import VERBS
+
+    assert "repair" in VERBS
+    assert "recover" in VERBS
+
+
+def test_repair_in_job_types_and_enum():
+    """repair 已入 JOB_TYPES 与 JobType 枚举（E12 校验口径）。"""
+    from app.constants import JOB_TYPES
+    from app.schemas.enums import JobType
+
+    assert "repair" in JOB_TYPES
+    assert JobType.REPAIR == "repair"
+
+
+def test_recover_in_job_types_and_enum():
+    """B3 自愈：recover 已入 JOB_TYPES 与 JobType 枚举（E12 校验口径）。"""
+    from app.constants import JOB_TYPES
+    from app.schemas.enums import JobType
+
+    assert "recover" in JOB_TYPES
+    assert JobType.RECOVER == "recover"
+
+
+def test_recover_assembled_without_json():
+    """B3 自愈：restic recover 拼装，不加 --json（输出为人类可读文本）。"""
+    cmd = make_cmd()
+    argv = cmd.build("recover", args=WhitelistArgs(json_output=False))
+    assert "--json" not in argv
+    assert "recover" in argv

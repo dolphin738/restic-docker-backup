@@ -26,6 +26,8 @@ from app.constants import (
     AUDIT_JOB_RECOVERED,
     AUDIT_JOB_SKIPPED_CONFLICT,
     AUDIT_JOB_SUBMIT,
+    AUDIT_RECOVER_RUN,
+    AUDIT_REPAIR_RUN,
     BEHAVIOR_AUTO_INIT_KEY,
     BEHAVIOR_AUTO_UNLOCK_KEY,
     JOB_TYPES,
@@ -271,6 +273,23 @@ class JobRunner:
         self._params[job_id] = dict(params or {})
         if job_type == "check":
             self._remember_check_params(job_id, self._params[job_id])
+        if job_type == "repair":
+            # B1 自愈：repair 属危险操作（重建索引/卷，不可逆提示在 UI ConfirmGate），
+            # 单独埋点 repair.run 入审计（与 AUDIT_JOB_SUBMIT 互补）。
+            await self._audit.record(
+                AUDIT_REPAIR_RUN,
+                target=job_id,
+                detail={"repair_target": str(params.get("repair_target") or "index"), "repo_id": repo_id},
+                result="ok",
+            )
+        if job_type == "recover":
+            # B3 自愈：recover 找回丢失索引的快照（写仓库元数据，同属危险操作留痕）。
+            await self._audit.record(
+                AUDIT_RECOVER_RUN,
+                target=job_id,
+                detail={"repo_id": repo_id},
+                result="ok",
+            )
         await self._audit.record(
             AUDIT_JOB_SUBMIT,
             target=job_id,
@@ -731,6 +750,19 @@ class JobRunner:
         """
         if job_type == "dump":
             return WhitelistArgs()
+
+        if job_type == "repair":
+            # B1 自愈：restic repair index / repair packs。repair 不产生 JSON 输出，
+            # 故 json_output=False；子命令（index/packs）缺省 index，经 ResticCmd 白名单校验。
+            return WhitelistArgs(
+                json_output=False,
+                repair_target=str(params.get("repair_target") or "index"),
+            )
+
+        if job_type == "recover":
+            # B3 自愈：restic recover 找回丢失索引的快照，无子命令、无额外 flag；
+            # 输出为人类可读文本，json_output=False（与 repair 同口径）。
+            return WhitelistArgs(json_output=False)
 
         builtin = self._exclusions.built_in()
         user_excludes = list(policy.get("excludes") or []) + list(params.get("excludes") or [])
