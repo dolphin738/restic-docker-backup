@@ -11,6 +11,8 @@ import {
   NGi,
   NInput,
   NModal,
+  NRadio,
+  NRadioGroup,
   NSpace,
   NStatistic,
   NTabPane,
@@ -456,6 +458,11 @@ const unlockJobId = ref('')
 const initShow = ref(false)
 const initializing = ref(false)
 const initJobId = ref('')
+// B1 自愈：仓库修复（repair index / repair packs），危险操作 ConfirmGate 关键词 REPAIR
+const repairShow = ref(false)
+const repairing = ref(false)
+const repairJobId = ref('')
+const repairTarget = ref<'index' | 'packs'>('index')
 
 // ---------------------------------------------------------------- 本地路径浏览器（E33）
 const CONTAINER_ROOT = '/'
@@ -581,6 +588,22 @@ async function onInit(): Promise<void> {
     }
   } finally {
     initializing.value = false
+  }
+}
+
+async function onRepair(): Promise<void> {
+  repairing.value = true
+  try {
+    const created = await createJob('repair', { params: { repair_target: repairTarget.value } })
+    repairJobId.value = created.id
+    message.success(t('repo.repairSubmitted'))
+    void statusQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    repairing.value = false
   }
 }
 
@@ -853,6 +876,13 @@ function formatBytes(value: number): string {
                 {{ t('repo.unlockBtn') }}
               </n-button>
             </template>
+            <!-- B1 自愈：修复仓库（重建索引/卷一致性）；仅已连接仓库可操作（无连接则修复无意义） -->
+            <template v-if="repoStatus?.connected">
+              <n-button size="small" type="error" :loading="repairing" @click="repairShow = true">
+                {{ t('repo.repairBtn') }}
+              </n-button>
+              <n-text depth="3" class="repo__note">{{ t('repo.repairHint') }}</n-text>
+            </template>
             <n-text depth="3" class="repo__note">{{ t('dashboard.repoCacheNote') }}</n-text>
 
             <template v-if="initJobId">
@@ -860,6 +890,9 @@ function formatBytes(value: number): string {
             </template>
             <template v-if="unlockJobId">
               <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
+            </template>
+            <template v-if="repairJobId">
+              <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" />
             </template>
           </n-space>
         </n-card>
@@ -1012,6 +1045,26 @@ function formatBytes(value: number): string {
     >
       <template #preview>
         <n-text depth="3">{{ t('repo.initPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
+    <!-- B1 自愈：修复仓库——三步确认门（关键词 REPAIR，重建索引/卷一致性，不可逆提示） -->
+    <ConfirmGate
+      v-model:show="repairShow"
+      :title="t('repo.repairBtn')"
+      :keyword="'REPAIR'"
+      :description="t('repo.repairDesc')"
+      :loading="repairing"
+      @confirm="onRepair"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.repairPreview') }}</n-text>
+        <n-radio-group v-model:value="repairTarget" size="small">
+          <n-space>
+            <n-radio value="index">{{ t('repo.repairTargetIndex') }}</n-radio>
+            <n-radio value="packs">{{ t('repo.repairTargetPacks') }}</n-radio>
+          </n-space>
+        </n-radio-group>
       </template>
     </ConfirmGate>
 

@@ -1,7 +1,7 @@
 /** 与后端 app/schemas/api_schemas.py 一一对应的响应类型（§5.0 / §5.1）。 */
 
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'interrupted' | 'cancelled'
-export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump'
+export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump' | 'repair' | 'recover'
 
 /** 统一错误响应体（所有非 2xx）。 */
 export interface ErrorBody {

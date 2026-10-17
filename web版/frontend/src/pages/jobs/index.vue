@@ -35,9 +35,11 @@ import {
 import { computed, h, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listBackupTasks } from '@/api/backupTasks'
-import { cancelJob, getCheckDetail, getJobLog, listActiveJobs, listJobsHistory } from '@/api/jobs'
+import { cancelJob, createJob, getCheckDetail, getJobLog, listActiveJobs, listJobsHistory } from '@/api/jobs'
 import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
+import { isAppError } from '@/api/http'
+import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import { formatDateTime } from '@/utils/datetime'
 
@@ -286,6 +288,28 @@ const brokenPacksOnlyHint = computed(
 
 function checkBoolText(value: boolean): string {
   return value ? t('jobs.check.yes') : t('jobs.check.no')
+}
+
+// B2 自愈建议链：check 报告 structural 损坏（suggest_repair_index）→ 一键 repair 入口。
+// 复用 ConfirmGate（关键词 REPAIR，不可逆提示）；仓库维度修复任务统一在「仓库配置」执行，
+// 此处只负责把「建议」变成「可点击动作」，避免用户在两个页面间反复对照。
+const repairShow = ref(false)
+const repairing = ref(false)
+const repairJobId = ref('')
+
+async function onRepair(): Promise<void> {
+  repairing.value = true
+  try {
+    const created = await createJob('repair', { params: { repair_target: 'index' } })
+    repairJobId.value = created.id
+    message.success(t('jobs.check.repairSubmitted'))
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    repairing.value = false
+  }
 }
 
 // ================================================================ 日志抽屉（E27，两视图共用）
@@ -545,6 +569,16 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
             <n-text v-if="brokenPacksOnlyHint" depth="2">
               · {{ t('jobs.check.brokenPacksHint') }}
             </n-text>
+            <!-- B2 一键 repair 建议链：仅当 check 明确建议重建索引时给出可点击动作 -->
+            <n-button
+              v-if="checkView.suggest_repair_index"
+              size="small"
+              type="error"
+              :loading="repairing"
+              @click="repairShow = true"
+            >
+              {{ t('jobs.check.repairBtn') }}
+            </n-button>
           </n-space>
 
           <n-descriptions v-if="checkView" :column="2" size="small" bordered>
@@ -585,6 +619,20 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
           <n-space v-if="checkDetail">
             <n-button size="small" secondary @click="openLog(checkDetail)">{{ t('job.viewLog') }}</n-button>
           </n-space>
+
+          <!-- B2 自愈建议链：一键修复确认门（关键词 REPAIR，重建索引不可并发读写） -->
+          <ConfirmGate
+            v-model:show="repairShow"
+            :title="t('jobs.check.repairBtn')"
+            :keyword="'REPAIR'"
+            :description="t('jobs.check.repairDesc')"
+            :loading="repairing"
+            @confirm="onRepair"
+          >
+            <template #preview>
+              <n-text depth="3">{{ t('jobs.check.repairPreview') }}</n-text>
+            </template>
+          </ConfirmGate>
         </n-space>
       </n-drawer-content>
     </n-drawer>

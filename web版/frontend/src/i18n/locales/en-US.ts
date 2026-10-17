@@ -482,6 +482,15 @@ export default {
     unlockPreview: 'This runs one restic unlock as a manual job; the action is audited.',
     unlockSubmitted: 'Unlock job submitted, progress shown below',
     unlockJobTitle: 'Unlock job',
+    // B1 自愈：修复仓库（restic repair index / repair packs）
+    repairBtn: 'Repair repository',
+    repairHint: 'Run only when check reports index/pack corruption or backups/restores misbehave; rebuilding the index can take time and is an irreversible maintenance action.',
+    repairDesc: 'repair rebuilds the repository index (index) or repairs corrupted packs (packs). It rewrites repository metadata — do not read/write concurrently while it runs.',
+    repairPreview: 'Will trigger a one-off restic repair, recorded in the audit log (repair.run).',
+    repairTargetIndex: 'Rebuild index (repair index, common)',
+    repairTargetPacks: 'Repair corrupted packs (repair packs)',
+    repairSubmitted: 'Repair job submitted, progress shown below',
+    repairJobTitle: 'Repository repair job',
   },
   jobs: {
     tabActive: 'Running',
@@ -502,6 +511,11 @@ export default {
       brokenPacksCount: '{n} broken pack(s)',
       brokenPacksList: 'Pack id list (in order)',
       brokenPacksHint: 'Broken data packs detected — verify repository integrity.',
+      // B2 self-heal suggestion chain: check suggests index rebuild -> one-click repair
+      repairBtn: 'Repair index now',
+      repairDesc: 'This runs restic repair index on the repository to rebuild the index and fix structural damage reported by check. The action rewrites repository metadata — do not read/write concurrently during execution.',
+      repairPreview: 'Triggers one manual restic repair index; action is recorded in the audit log (repair.run).',
+      repairSubmitted: 'Repair job submitted — track progress under Task History.',
       readData: 'read-data sample',
       errorList: 'Error details ({n})',
       yes: 'Yes',

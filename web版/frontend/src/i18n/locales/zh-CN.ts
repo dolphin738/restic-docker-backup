@@ -433,6 +433,15 @@ export default {
     unlockPreview: '将以手动触发方式执行一次 restic unlock，动作入审计日志。',
     unlockSubmitted: '解锁任务已提交，进度见下方卡片',
     unlockJobTitle: '解锁任务',
+    // B1 自愈：修复仓库（restic repair index / repair packs）
+    repairBtn: '修复仓库',
+    repairHint: '仅当 check 提示索引/卷损坏，或备份恢复异常时执行；重建索引可能耗时，属不可逆维护动作。',
+    repairDesc: 'repair 会重建仓库索引（index）或修复损坏的卷（packs）。该操作会改写仓库元数据，执行期间请勿并发读写。',
+    repairPreview: '将以手动触发方式执行一次 restic repair，动作入审计日志（repair.run）。',
+    repairTargetIndex: '重建索引（repair index，常用）',
+    repairTargetPacks: '修复损坏卷（repair packs）',
+    repairSubmitted: '修复任务已提交，进度见下方卡片',
+    repairJobTitle: '修复仓库任务',
     // R-023 多仓库管理
     switchPlaceholder: '切换仓库',
     manageTitle: '仓库管理',
@@ -501,6 +510,11 @@ export default {
       brokenPacksCount: '损坏 pack：{n} 个',
       brokenPacksList: 'pack id 清单（保序）',
       brokenPacksHint: '存在损坏数据 pack，建议检查仓库完整性。',
+      // B2 自愈建议链：check 建议重建索引 → 一键 repair（关键词 REPAIR，不可逆）
+      repairBtn: '一键修复索引',
+      repairDesc: '将对该仓库执行 restic repair index（重建索引以修复 check 报告的结构性损坏）。该动作改写仓库元数据，执行期间请勿并发读写。',
+      repairPreview: '将以手动触发方式执行一次 restic repair index，动作入审计日志（repair.run）。',
+      repairSubmitted: '修复任务已提交，可在「任务历史」跟踪进度。',
       readData: 'read-data 抽检',
       errorList: '错误明细（{n}）',
       yes: '是',
