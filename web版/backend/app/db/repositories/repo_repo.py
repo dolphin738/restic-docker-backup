@@ -18,7 +18,7 @@ from typing import Any
 
 from app.db.database import Database
 from app.errors import EnvOverriddenError, ValidationError
-from app.schemas.enums import ConfigSource
+from app.schemas.enums import ConfigSource, RepoType
 from app.utils.time import utc_iso
 
 # 仓库 id 形态（路径参数/切换器键）：小写字母开头，小写字母/数字/下划线/连字符
@@ -29,22 +29,35 @@ DEFAULT_REPO_ID = "default"
 # 默认仓库不可删除（「缺省 default」是切换器/补跑/env 覆盖的共同锚点）
 DEFAULT_REPO_NAME = "默认仓库"
 
+# URL 协议前缀 → 仓库类型（A1；单一事实源，新增后端只改此处）。
+# 依据 restic 0.19.1 各后端 ParseConfig 的官方前缀逐一登记：
+# s3:/b2:/sftp:/azure:/gs:/rest:/rclone:（gcs 的 restic 前缀是 gs:，历史命名）。
+_PREFIX_TO_TYPE: tuple[tuple[str, RepoType], ...] = (
+    ("s3:", RepoType.S3),
+    ("b2:", RepoType.B2),
+    ("sftp:", RepoType.SFTP),
+    ("azure:", RepoType.AZURE),
+    ("gs:", RepoType.GCS),
+    ("rest:", RepoType.REST),
+    ("rclone:", RepoType.RCLONE),
+)
+
 
 def derive_repo_type(url: str | None) -> str:
-    """按仓库地址的协议前缀推导仓库类型（``s3:``→s3、``b2:``→b2、其余→local）。
+    """按仓库地址的协议前缀推导仓库类型（A1 起覆盖 restic 全部七后端）。
 
     Args:
-        url: 仓库地址，如 ``s3:https://s3.endpoint/bucket`` 或 ``/repo``。
+        url: 仓库地址，如 ``s3:https://s3.endpoint/bucket``、``gs:bucket:/``、
+            ``rclone:remote:path`` 或本地路径 ``/repo``。
 
     Returns:
-        ``s3`` / ``b2`` / ``local`` 之一（空地址回落 ``local``）。
+        :class:`RepoType` 取值之一（空地址或本地路径回落 ``local``）。
     """
     lowered = (url or "").strip().lower()
-    if lowered.startswith("s3:"):
-        return "s3"
-    if lowered.startswith("b2:"):
-        return "b2"
-    return "local"
+    for prefix, repo_type in _PREFIX_TO_TYPE:
+        if lowered.startswith(prefix):
+            return str(repo_type)
+    return str(RepoType.LOCAL)
 
 
 @dataclass(frozen=True)

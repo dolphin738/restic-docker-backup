@@ -725,6 +725,20 @@ class RepoOut(_Base):
     created_at: str
 
 
+class RcloneRemotesOut(_Base):
+    """A1 rclone 只读探测结果（Q17 档位：不生成、不编辑、不展示 conf 内凭据）。
+
+    ``available`` = rclone 二进制可用且探测成功（与 conf 是否存在无关）；
+    ``conf_present`` = conf 文件真实存在；``remotes`` = 远端名清单（去行尾 ``:``）。
+    """
+
+    available: bool
+    conf_present: bool
+    conf_path: str | None
+    remotes: list[str]
+    reason: str | None
+
+
 class RepoCreateRequest(_Base):
     """R-023 新建仓库请求（url/host_tag 可空，日后再补）。
 

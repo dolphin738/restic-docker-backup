@@ -31,7 +31,9 @@ from app.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-# 环境变量名 → config 键（§4.3 键表；R-023 起凭据按仓库命名空间，env 只覆盖 default）
+# 环境变量名 → config 键（§4.3 键表；R-023 起凭据按仓库命名空间，env 只覆盖 default）。
+# A1：新增 restic 0.19.1 后端的官方 env 名（源码核验：azure/gs/rest 各后端
+# ApplyEnvironment）——与 cred.* → 子进程 env 的还原规则（load_credentials）一一对应。
 ENV_KEY_MAP: dict[str, str] = {
     "AWS_ACCESS_KEY_ID": "cred.default.aws_access_key_id",
     "AWS_SECRET_ACCESS_KEY": "cred.default.aws_secret_access_key",
@@ -39,6 +41,15 @@ ENV_KEY_MAP: dict[str, str] = {
     "AWS_ENDPOINT_URL": "cred.default.aws_endpoint_url",
     "B2_ACCOUNT_ID": "cred.default.b2_account_id",
     "B2_ACCOUNT_KEY": "cred.default.b2_account_key",
+    "AZURE_ACCOUNT_NAME": "cred.default.azure_account_name",
+    "AZURE_ACCOUNT_KEY": "cred.default.azure_account_key",
+    "AZURE_ACCOUNT_SAS": "cred.default.azure_account_sas",
+    "AZURE_ENDPOINT_SUFFIX": "cred.default.azure_endpoint_suffix",
+    "GOOGLE_PROJECT_ID": "cred.default.google_project_id",
+    "GOOGLE_APPLICATION_CREDENTIALS": "cred.default.google_application_credentials",
+    "GOOGLE_ACCESS_TOKEN": "cred.default.google_access_token",
+    "RESTIC_REST_USERNAME": "cred.default.restic_rest_username",
+    "RESTIC_REST_PASSWORD": "cred.default.restic_rest_password",
 }
 
 # 仓库通道：环境变量名 → repos 表字段（仅 default 仓库）
@@ -67,9 +78,16 @@ def passfile_status(settings: Settings | None = None, repo_id: str = DEFAULT_REP
 async def load_credentials(config_repo: ConfigRepo, repo_id: str = DEFAULT_REPO_ID) -> dict[str, str]:
     """把 config 中指定仓库的 ``cred.<repo_id>.*`` 键还原为子进程环境变量。
 
-    转换规则：``cred.<repo_id>.aws_<rest>`` → ``AWS_<REST>``、
-    ``cred.<repo_id>.b2_<rest>`` → ``B2_<REST>``（故 ``aws_session_token``
-    之类未在 :data:`ENV_KEY_MAP` 中的键也能正确还原）。
+    转换规则（A1 起按 restic 0.19.1 各后端官方 env 名逐一显式登记；未知前缀**丢弃**——
+    宁可不注入也不把拼错的键变成任意环境变量，最终由 :meth:`ResticCmd.build_env`
+    的 ``ENV_ALLOWED_PREFIXES`` 前缀白名单二次把关）：
+
+    - ``cred.<repo_id>.aws_<rest>`` → ``AWS_<REST>``（故 ``aws_session_token``
+      之类未在 :data:`ENV_KEY_MAP` 中的键也能正确还原）；
+    - ``b2_`` → ``B2_``；``azure_`` → ``AZURE_``；``google_`` → ``GOOGLE_``；
+      ``rclone_`` → ``RCLONE_``；``ssh_`` → ``SSH_``；
+    - ``restic_rest_<rest>`` → ``RESTIC_REST_<REST>``（rest 后端只认
+      ``RESTIC_REST_USERNAME``/``RESTIC_REST_PASSWORD``，前缀整体搬迁）。
 
     本函数是 ``cred.*`` → 子进程环境映射的**唯一实现点**（E05/E17/E18/E19/E29/E30
     与 JobRunner 共用）；最终注入仍由 :meth:`ResticCmd.build_env` 按前缀白名单二次校验。
@@ -79,7 +97,7 @@ async def load_credentials(config_repo: ConfigRepo, repo_id: str = DEFAULT_REPO_
         repo_id: 仓库标识（凭据命名空间）。
 
     Returns:
-        待注入子进程的环境变量字典（键均已落在 ``AWS_`` / ``B2_`` 前缀内）。
+        待注入子进程的环境变量字典（键均已落在各后端官方前缀内）。
     """
     rows = await config_repo.list_all()
     prefix = f"cred.{repo_id}."
@@ -92,6 +110,16 @@ async def load_credentials(config_repo: ConfigRepo, repo_id: str = DEFAULT_REPO_
             extras["AWS_" + rest[len("aws_") :].upper()] = row.value
         elif rest.startswith("b2_"):
             extras["B2_" + rest[len("b2_") :].upper()] = row.value
+        elif rest.startswith("azure_"):
+            extras["AZURE_" + rest[len("azure_") :].upper()] = row.value
+        elif rest.startswith("google_"):
+            extras["GOOGLE_" + rest[len("google_") :].upper()] = row.value
+        elif rest.startswith("rclone_"):
+            extras["RCLONE_" + rest[len("rclone_") :].upper()] = row.value
+        elif rest.startswith("ssh_"):
+            extras["SSH_" + rest[len("ssh_") :].upper()] = row.value
+        elif rest.startswith("restic_rest_"):
+            extras["RESTIC_REST_" + rest[len("restic_rest_") :].upper()] = row.value
     return extras
 
 

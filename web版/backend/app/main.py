@@ -73,6 +73,7 @@ from app.services.job_runner import JobRunner
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
+from app.services.rclone import RcloneProbe
 from app.services.repo_migration import migrate_legacy_repo_config
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
@@ -235,6 +236,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cache_service = CacheService(settings)
     # 覆盖比对服务（R-015 E20 预览 + 原位恢复审计计数；stateless，只持有依赖）
     compare_service = CompareService(restic_cmd, parser, config_repo, repos_repo=repos_repo)
+    # A1 rclone 只读探测器（Q17：listremotes 探测；无状态，URL 校验与端点共用）
+    rclone_probe = RcloneProbe(settings)
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(
@@ -273,6 +276,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cache_service = cache_service
     app.state.compare_service = compare_service
     app.state.notifier = notifier
+    app.state.rclone_probe = rclone_probe
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()

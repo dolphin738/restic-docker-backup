@@ -29,9 +29,23 @@ VERBS: tuple[str, ...] = (
     "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats",
 )
 
-# 允许注入子进程的环境变量：精确名 + 前缀（凭据走 AWS_*/B2_*，restic 自身走 RESTIC_*）
+# 允许注入子进程的环境变量：精确名 + 前缀（凭据走各后端官方前缀，restic 自身走 RESTIC_*）。
+# A1 扩展（restic 0.19.1 源码核验的各后端官方 env 前缀）：
+# - AZURE_（azure 后端 ApplyEnvironment：AZURE_ACCOUNT_NAME/KEY/SAS/ENDPOINT_SUFFIX）
+# - GOOGLE_（gs 后端：GOOGLE_PROJECT_ID + Google 客户端库的 APPLICATION_CREDENTIALS/ACCESS_TOKEN）
+# - RCLONE_（rclone 子进程自身读取：RCLONE_CONFIG/CONFIG_PASS/BWLIMIT/RCLONE_<REMOTE>_<OPT>）
+# - SSH_（sftp 后端经系统 ssh 子进程：SSH_AUTH_SOCK 等；restic sftp 是 NoPassword，无密码 env）
+# 注：rest 后端凭据是 RESTIC_REST_USERNAME/PASSWORD，已被 RESTIC_ 覆盖，无需单列前缀。
 ENV_ALLOWED_EXACT: tuple[str, ...] = ("TZ",)
-ENV_ALLOWED_PREFIXES: tuple[str, ...] = ("RESTIC_", "AWS_", "B2_")
+ENV_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "RESTIC_",
+    "AWS_",
+    "B2_",
+    "AZURE_",
+    "GOOGLE_",
+    "RCLONE_",
+    "SSH_",
+)
 
 COMPRESSION_MODES: tuple[str, ...] = ("auto", "off", "max")
 OVERWRITE_MODES: tuple[str, ...] = ("if-changed", "always", "never")
@@ -224,7 +238,8 @@ class ResticCmd:
         Args:
             repo_url: 仓库地址，注入 ``RESTIC_REPOSITORY``。
             repo_id: 仓库标识（R-023 多仓库：密码文件按仓库派生；缺省 ``default``）。
-            env_extras: 界面配置的后端凭据（``AWS_*`` / ``B2_*``）。
+            env_extras: 界面配置的后端凭据（A1 起含 AZURE_/GOOGLE_/RCLONE_/SSH_/RESTIC_REST_*；
+                越界前缀由 :data:`ENV_ALLOWED_PREFIXES` 拦截，见 :meth:`_env_allowed`）。
 
         Returns:
             子进程环境字典。

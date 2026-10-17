@@ -54,8 +54,18 @@ class AuditResult(StrEnum):
 
 
 class RepoType(StrEnum):
-    """仓库类型（P1 收敛：s3 / b2 / 本地路径，方案 §4.2）。"""
+    """仓库类型（A1 起与 restic 后端 URL 协议前缀一一对应；type 派生不落库）。
+
+    前缀 → 类型映射的单一事实源在 ``repo_repo._PREFIX_TO_TYPE``（新增后端只改一处）。
+    注意 **gcs 的 URL 前缀是 ``gs:``**（restic 历史命名，早于 GCS 简称普及）——
+    类型名与前缀不同形，映射表里显式登记，勿按名前缀推断。
+    """
 
     LOCAL = "local"
     S3 = "s3"
     B2 = "b2"
+    SFTP = "sftp"
+    AZURE = "azure"
+    GCS = "gcs"
+    REST = "rest"
+    RCLONE = "rclone"

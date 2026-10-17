@@ -19,6 +19,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request
 
@@ -38,6 +39,7 @@ from app.db.repositories.repo_repo import Repo, ReposRepo
 from app.errors import RepoNotFoundError, ValidationError
 from app.schemas.api_schemas import (
     OkResponse,
+    RcloneRemotesOut,
     RepoCapacity,
     RepoCreateRequest,
     RepoOut,
@@ -48,6 +50,7 @@ from app.schemas.api_schemas import (
     RepoUpdateRequest,
 )
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
+from app.services.rclone import RcloneProbe
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 
 router = APIRouter(prefix="/api", tags=["repos"])
@@ -89,6 +92,151 @@ def _to_out(repo: Repo, passfile: str) -> RepoOut:
     )
 
 
+# ---------------------------------------------------------------- A1 URL 严格校验（Q20）
+#
+# 依据 restic 0.19.1 各后端 ParseConfig 的官方语法逐一登记（源码核验，非猜测）：
+# - s3/b2/local **保持原状不校验**（owner 裁定 Q20：既有形态零回归）；
+# - sftp/azure/gs/rest/rclone 新增类型做语法校验；rclone 另加 remote 存在性校验
+#   （``rclone listremotes`` 只读探测，remote 不在册 → 422，防"保存即失败"）。
+# 校验只认**写入路径**（POST/PUT），env 同步（运维显式设置）不走此门。
+
+# sftp 双形态（restic sftp.ParseConfig）：URL 形态支持端口/IPv6，scp 形态不支持端口。
+# restic sftp 后端是 location.NoPassword + 外部 ssh 子进程（免密登录假设）——URL 里的
+# 密码会被 scp 解析当作用户名的一部分静默误解，故显式拒绝并指向私钥挂载部署方式。
+# user 段均不允许 ":"（密码内嵌检测 + 双形态一致）；scp 形态允许 user@domain@host
+# （restic SplitN(host,"@",3) 支持的域限定用户形态）。
+_SFTP_URL_FORM = re.compile(
+    r"^sftp://(?P<user>[^\s@/:]+)@(?P<host>\[[^\s@/]+\]|[^\s@/:]+)(?::(?P<port>\d+))?/(?P<path>\S+)$"
+)
+_SFTP_SCP_FORM = re.compile(r"^sftp:(?P<user>[^\s:]+)@(?P<host>[^\s@/:]+):(?P<path>[^\s:]+)$")
+# Azure 容器名规则（官方：3-63 位小写字母/数字/连字符，首尾字母数字）
+_AZURE_CONTAINER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
+# GCS 存储桶名（官方：3-63 位小写字母/数字/点/下划线/连字符；此处取中等强度子集）
+_GCS_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
+
+
+def _validate_repo_url_syntax(url: str) -> None:
+    """按协议前缀做 URL 语法校验（纯语法；rclone 的 remote 存在性校验在调用方）。
+
+    Raises:
+        ValidationError: 语法非法（422，data 带 url 与可操作提示）。
+    """
+    stripped = url.strip()
+    lowered = stripped.lower()
+    if lowered.startswith("sftp:"):
+        _validate_sftp_url(stripped)
+    elif lowered.startswith("azure:"):
+        _validate_azure_url(stripped)
+    elif lowered.startswith("gs:"):
+        _validate_gs_url(stripped)
+    elif lowered.startswith("rest:"):
+        _validate_rest_url(stripped)
+    # s3:/b2:/本地路径：Q20 裁定不校验（零回归）；rclone: 语法见 _validate_rclone_url_syntax
+
+
+def _validate_sftp_url(url: str) -> None:
+    """sftp 双形态校验；拒密码内嵌（restic 无密码认证，走了也是静默误解）。"""
+    if ":" in url[len("sftp:") :].split("@", 1)[0]:
+        raise ValidationError(
+            "sftp 地址不支持密码认证：restic 的 sftp 后端经系统 ssh 免密登录，"
+            "URL 内密码会被当作用户名一部分静默误解。请挂载 SSH 私钥（见部署指南）",
+            data={"url": url},
+        )
+    if _SFTP_URL_FORM.match(url) or _SFTP_SCP_FORM.match(url):
+        return
+    raise ValidationError(
+        "sftp 地址应为 sftp:user@host:目录 或 sftp://user@host[:端口]/目录"
+        "（目录必填；scp 形态不支持端口，需要端口请用 sftp:// 形态）",
+        data={"url": url},
+    )
+
+
+def _validate_azure_url(url: str) -> None:
+    """azure:container:/prefix 校验（restic azure.ParseConfig：冒号必填）。"""
+    rest = url[len("azure:") :]
+    container, sep, _prefix = rest.partition(":")
+    if not sep or not _AZURE_CONTAINER_RE.match(container):
+        raise ValidationError(
+            "azure 地址应为 azure:容器名:/前缀（前缀可为空；容器名 3-63 位小写字母/数字/连字符）",
+            data={"url": url},
+        )
+
+
+def _validate_gs_url(url: str) -> None:
+    """gs:bucket:/prefix 校验（restic gs.ParseConfig：冒号必填；前缀是 gs: 不是 gcs:）。"""
+    rest = url[len("gs:") :]
+    bucket, sep, _prefix = rest.partition(":")
+    if not sep or not _GCS_BUCKET_RE.match(bucket):
+        raise ValidationError(
+            "gcs 地址应为 gs:桶名:/前缀（restic 前缀是 gs:；前缀可为空，冒号必填）",
+            data={"url": url},
+        )
+
+
+def _validate_rest_url(url: str) -> None:
+    """rest:http(s)://... 校验；拒 user:pass@ 内嵌（env 凭据在 URL 无用户信息时才生效）。"""
+    rest = url[len("rest:") :]
+    if rest.startswith("http+unix://"):
+        return  # 本地 socket 形态（rest:http+unix:///tmp/rest.socket:/repo/），路径由 restic 解析
+    try:
+        parts = urlsplit(rest)
+    except ValueError as exc:
+        raise ValidationError(f"rest 地址解析失败：{exc}", data={"url": url}) from exc
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValidationError(
+            "rest 地址应为 rest:http://主机[:端口][/路径] 或 rest:https://...",
+            data={"url": url},
+        )
+    if parts.username or parts.password:
+        # restic rest 后端 ApplyEnvironment：URL 带用户信息时 RESTIC_REST_* 环境变量**不生效**；
+        # 且密码会以明文落库（url 列不加密）→ 拒绝并指向加密凭据字段
+        raise ValidationError(
+            "rest 地址不支持内嵌用户密码：URL 带用户信息时 RESTIC_REST_USERNAME/PASSWORD "
+            "环境变量将失效，且密码会明文存入 url 列。请只填主机地址，"
+            "用户名/密码走下方凭据字段（加密存储）",
+            data={"url": url},
+        )
+
+
+def _validate_rclone_url_syntax(url: str) -> str:
+    """rclone:remote:path 语法校验；返回 remote 名（存在性校验由调用方异步执行）。"""
+    spec = url[len("rclone:") :]
+    remote, sep, path = spec.partition(":")
+    if not sep or not remote or not path or any(ch.isspace() for ch in spec):
+        raise ValidationError(
+            "rclone 地址应为 rclone:远端名:路径（远端名须与宿主机 rclone config 中配置的一致；"
+            "路径为桶内路径，如 rclone:myremote:mybucket/restic）",
+            data={"url": url},
+        )
+    return remote
+
+
+async def _validate_repo_url(url: str, probe: RcloneProbe) -> None:
+    """仓库 URL 完整校验（语法 + rclone remote 存在性）。空地址跳过（允许日后再补）。
+
+    Raises:
+        ValidationError: 语法非法或 rclone remote 不在册（422）。
+    """
+    stripped = (url or "").strip()
+    if not stripped:
+        return
+    if stripped.lower().startswith("rclone:"):
+        remote = _validate_rclone_url_syntax(stripped)
+        remotes = await probe.list_remotes()
+        if not remotes.available:
+            # 探测不可用（缺二进制/超时/conf 读取失败）→ 放行语法正确的 URL，
+            # 由 E29 连通性测试给出最终判定（原因明示，不静默）
+            return
+        if remote not in remotes.remotes:
+            raise ValidationError(
+                f"rclone 远端「{remote}」不在 rclone 配置中（可用远端："
+                f"{', '.join(remotes.remotes) or '无'}）——请先在宿主机 rclone config 添加",
+                data={"remote": remote, "available_remotes": list(remotes.remotes)},
+            )
+        return
+    _validate_repo_url_syntax(stripped)
+
+
 @router.get(
     "/repos",
     response_model=list[RepoOut],
@@ -117,9 +265,14 @@ async def create_repo(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> RepoOut:
-    """新建仓库（url/host_tag 可空；``source`` 恒 ui——env 只覆盖 default）。"""
+    """新建仓库（url/host_tag 可空；``source`` 恒 ui——env 只覆盖 default）。
+
+    A1（Q20）：``url`` 非空时按协议前缀做严格校验（rclone 另查 remote 存在性）。
+    """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
+    if payload.url:
+        await _validate_repo_url(payload.url, request.app.state.rclone_probe)
     repo = await repos_repo.create(payload.id, payload.name, url=payload.url, host_tag=payload.host_tag)
     return _to_out(repo, passfile_status(request.app.state.settings, repo.id))
 
@@ -156,9 +309,15 @@ async def update_repo(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> RepoOut:
-    """更新仓库资料；``url``/``host_tag`` 被 env 覆盖的字段拒绝界面改（409 ENV_OVERRIDDEN）。"""
+    """更新仓库资料；``url``/``host_tag`` 被 env 覆盖的字段拒绝界面改（409 ENV_OVERRIDDEN）。
+
+    A1（Q20）：``url`` 非空时按协议前缀做严格校验（rclone 另查 remote 存在性）——
+    校验先于落库，坏 URL 不进 repos 表。
+    """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
+    if payload.url:
+        await _validate_repo_url(payload.url, request.app.state.rclone_probe)
     repo = await repos_repo.update(
         repo_id, name=payload.name, url=payload.url, host_tag=payload.host_tag
     )
@@ -234,6 +393,37 @@ async def test_repo(
         AUDIT_REPO_TEST, target=repo_id, detail={"ok": True, "latency_ms": latency_ms}, result="ok"
     )
     return RepoTestResponse(ok=True, latency_ms=latency_ms)
+
+
+@router.get(
+    "/rclone/remotes",
+    response_model=RcloneRemotesOut,
+    summary="A1 rclone 只读探测：conf 状态 + remote 清单（Q17）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def rclone_remotes(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneRemotesOut:
+    """``rclone listremotes`` 只读探测（conf 存在性 + remote 名清单）。
+
+    Q17 档位：conf 由宿主机 ``rclone config`` 生成、compose 挂载（**必须 :rw**——
+    OAuth token 过期时 rclone 回写 conf，只读挂载 = 授权静默失效）；本端点
+    **不生成、不编辑、不展示凭据**（conf 内 OAuth token 永不进 API）。
+
+    用途：rclone 仓库 URL 保存前的前端提示 + A5 类型选择卡的 preset 清单来源。
+    """
+    del session
+    probe: RcloneProbe = request.app.state.rclone_probe
+    result = await probe.list_remotes()
+    return RcloneRemotesOut(
+        available=result.available,
+        conf_present=result.conf_present,
+        conf_path=result.conf_path,
+        remotes=list(result.remotes),
+        reason=result.reason,
+    )
 
 
 @router.post(

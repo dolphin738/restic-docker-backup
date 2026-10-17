@@ -189,6 +189,8 @@ NOTIFY_SKIPPED_THRESHOLD_MAX = 1_000_000  # 阈值写爆兜底
 
 REPO_PROBE_TIMEOUT_SECONDS = 15         # cat config 连通性探测
 REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
+# rclone listremotes 只读探测（A1）：纯本地操作（读 conf），5s 足够；超时即视为不可用
+RCLONE_PROBE_TIMEOUT_SECONDS = 5.0
 # 仓库状态进程内缓存 TTL：避免仪表盘轮询反复打仓库（E30 成本可控的关键手段）
 REPO_STATUS_CACHE_SECONDS = 30.0
 # 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）

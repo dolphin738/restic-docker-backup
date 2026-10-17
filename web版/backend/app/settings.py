@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # 前端 SPA 静态产物目录（单容器方案 §2：同一端口提供 API 与页面）。
     # 目录不存在时后端不挂载静态路由，`/` 仍返回统一 JSON 404（本地开发由 Vite dev server 提供页面）。
     static_dir: str = "/app/webroot"
+    # rclone 配置文件路径（A1 万能后端；compose 把宿主机 `rclone config` 生成的 conf 挂进来）。
+    # 未设置时 rclone 用自身默认（$HOME/.config/rclone/rclone.conf）——容器内 HOME 随运行
+    # 用户变化（root 档 /root、nonRoot 档 /home/backup），显式指定更稳。该值经 os.environ
+    # 原样传给 restic 子进程、再被 rclone 子进程读取（RCLONE_CONFIG）；本字段同时供
+    # 只读探测回报 conf 位置（Q17：UI 不生成、不编辑、不展示 conf 内容）。
+    rclone_config: str | None = None
 
     # ---- HTTP / TLS ----
     host: str = "0.0.0.0"
