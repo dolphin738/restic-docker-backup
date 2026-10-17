@@ -112,10 +112,16 @@ export interface RepoOut {
 
 /** R-023 新建仓库请求（url/host_tag 可空，日后再补）。 */
 export interface RepoCreateRequest {
-  id: string
+  /** A8：可选；留空（null/空串）时服务端生成 repo-<ULID>。 */
+  id?: string | null
   name: string
   url?: string | null
   host_tag?: string | null
+}
+
+/** A8 服务端生成的候选仓库标识（repo-<小写 ULID>），供新建向导预填。 */
+export interface RepoIdSuggestion {
+  id: string
 }
 
 /** R-023 更新仓库请求（三态：null=不变 / ""=清除 / 非空=设置）。 */

@@ -7,8 +7,9 @@
 import { request } from './http'
 import type {
   OkResponse,
-  RcloneRemotesOut,
   RepoCreateRequest,
+  RepoIdSuggestion,
+  RcloneRemotesOut,
   RepoOut,
   RepoPasswordRequest,
   RepoPasswordResponse,
@@ -22,9 +23,17 @@ export function listRepos(): Promise<RepoOut[]> {
   return request<RepoOut[]>('/api/repos')
 }
 
-/** 新建仓库（POST /api/repos；id 在请求体，服务端做存在性校验）。 */
+/** 新建仓库（POST /api/repos；id 可选，留空时服务端生成 repo-<ULID>）。 */
 export function createRepo(body: RepoCreateRequest): Promise<RepoOut> {
   return request<RepoOut>('/api/repos', { method: 'POST', body })
+}
+
+/**
+ * A8 服务端生成的候选仓库标识（GET /api/repos/_new_id）。
+ * 供新建向导预填（对齐 Duplicati 自动起名）；不落库，用户可改可不改。
+ */
+export function suggestRepoId(): Promise<RepoIdSuggestion> {
+  return request<RepoIdSuggestion>('/api/repos/_new_id')
 }
 
 /** 单仓库详情（GET /api/repos/{id}）。 */

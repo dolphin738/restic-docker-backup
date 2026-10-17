@@ -34,6 +34,7 @@ import {
   listRepos,
   listRcloneRemotes,
   setRepoPassword,
+  suggestRepoId,
   testRepo,
   updateRepo,
 } from '@/api/repo'
@@ -69,10 +70,26 @@ function onSetCurrent(id: string): void {
   void queryClient.invalidateQueries()
 }
 
-// ---------------------------------------------------------------- 新建仓库（R-023）
+// ---------------------------------------------------------------- 新建仓库（R-023 / A8）
 const createShow = ref(false)
 const creating = ref(false)
+const generatingId = ref(false)
 const createForm = reactive({ id: '', name: '', url: '', hostTag: '' })
+
+/** A8：向服务端要一个候选仓库标识（repo-<ULID>）预填；失败不阻断（用户可手填/留空）。 */
+async function regenerateRepoId(): Promise<void> {
+  generatingId.value = true
+  try {
+    const res = await suggestRepoId()
+    createForm.id = res.id
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    generatingId.value = false
+  }
+}
 
 function openCreate(): void {
   createForm.id = ''
@@ -80,13 +97,10 @@ function openCreate(): void {
   createForm.url = ''
   createForm.hostTag = ''
   createShow.value = true
+  void regenerateRepoId()
 }
 
 async function onCreate(): Promise<void> {
-  if (!createForm.id.trim()) {
-    message.warning(t('repo.idRequired'))
-    return
-  }
   if (!createForm.name.trim()) {
     message.warning(t('repo.nameRequired'))
     return
@@ -94,7 +108,7 @@ async function onCreate(): Promise<void> {
   creating.value = true
   try {
     const created = await createRepo({
-      id: createForm.id.trim(),
+      id: createForm.id.trim() || undefined,
       name: createForm.name.trim(),
       url: createForm.url.trim() || null,
       host_tag: createForm.hostTag.trim() || null,
@@ -862,7 +876,19 @@ function formatBytes(value: number): string {
     >
       <n-form label-placement="top" size="small">
         <n-form-item :label="t('repo.colId')">
-          <n-input v-model:value="createForm.id" :placeholder="t('repo.idRequired')" />
+          <n-space vertical :size="6" class="repo__cred">
+            <n-space :size="8" align="center">
+              <n-input
+                v-model:value="createForm.id"
+                :placeholder="t('repo.idAutoHint')"
+                class="repo__id-input"
+              />
+              <n-button size="small" secondary :loading="generatingId" @click="regenerateRepoId">
+                {{ t('repo.regenerate') }}
+              </n-button>
+            </n-space>
+            <n-text depth="3" class="repo__note">{{ t('repo.idAutoNote') }}</n-text>
+          </n-space>
         </n-form-item>
         <n-form-item :label="t('repo.colName')">
           <n-input v-model:value="createForm.name" :placeholder="t('repo.nameRequired')" />
@@ -954,6 +980,10 @@ function formatBytes(value: number): string {
 }
 
 .repo__picked {
+  flex: 1 1 200px;
+}
+
+.repo__id-input {
   flex: 1 1 200px;
 }
 </style>
