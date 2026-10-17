@@ -70,11 +70,55 @@ function onSetCurrent(id: string): void {
   void queryClient.invalidateQueries()
 }
 
-// ---------------------------------------------------------------- 新建仓库（R-023 / A8）
+// ---------------------------------------------------------------- 新建仓库（R-023 / A8 / A5）
 const createShow = ref(false)
 const creating = ref(false)
 const generatingId = ref(false)
-const createForm = reactive({ id: '', name: '', url: '', hostTag: '' })
+const createForm = reactive({ id: '', name: '', url: '', hostTag: '', destType: 'local', rclonePreset: '' })
+
+// A5 目的地类型卡片网格（纯 UI 选择辅助；类型仍由后端从 url 派生，零后端改动）。
+// 点选仅驱动 URL 占位/格式提示与按类型说明；rclone 预设卡预填 rclone:<remote>:<path> 模板。
+const DEST_TYPES = computed(() => [
+  { key: 'local', label: t('repo.dest.local'), prefix: '', placeholder: t('repo.dest.localPlaceholder'), note: t('repo.dest.localNote') },
+  { key: 's3', label: t('repo.dest.s3'), prefix: 's3:', placeholder: t('repo.dest.s3Placeholder'), note: t('repo.dest.s3Note') },
+  { key: 'b2', label: t('repo.dest.b2'), prefix: 'b2:', placeholder: t('repo.dest.b2Placeholder'), note: t('repo.dest.b2Note') },
+  { key: 'sftp', label: t('repo.dest.sftp'), prefix: 'sftp:', placeholder: t('repo.dest.sftpPlaceholder'), note: t('repo.dest.sftpNote') },
+  { key: 'azure', label: t('repo.dest.azure'), prefix: 'azure:', placeholder: t('repo.dest.azurePlaceholder'), note: t('repo.dest.azureNote') },
+  { key: 'gcs', label: t('repo.dest.gcs'), prefix: 'gs:', placeholder: t('repo.dest.gcsPlaceholder'), note: t('repo.dest.gcsNote') },
+  { key: 'rest', label: t('repo.dest.rest'), prefix: 'rest:', placeholder: t('repo.dest.restPlaceholder'), note: t('repo.dest.restNote') },
+  { key: 'rclone', label: t('repo.dest.rclone'), prefix: 'rclone:', placeholder: t('repo.dest.rclonePlaceholder'), note: t('repo.dest.rcloneNote') },
+])
+
+// rclone 预设快捷卡（A5：OneDrive/Google Drive/S3 兼容/其它，均为 rclone 后端，视觉等价 Duplicati、实际可用）
+const RCLONE_PRESETS = computed(() => [
+  { key: 'onedrive', label: t('repo.dest.rcloneOnedrive'), url: 'rclone:onedrive:', note: t('repo.dest.rcloneOnedriveNote') },
+  { key: 'googledrive', label: t('repo.dest.rcloneGoogledrive'), url: 'rclone:googledrive:', note: t('repo.dest.rcloneGoogledriveNote') },
+  { key: 's3compat', label: t('repo.dest.rcloneS3'), url: 'rclone:s3compat:', note: t('repo.dest.rcloneS3Note') },
+  { key: 'other', label: t('repo.dest.rcloneOther'), url: 'rclone:remote:', note: t('repo.dest.rcloneOtherNote') },
+])
+
+const currentDest = computed(() => DEST_TYPES.value.find((d) => d.key === createForm.destType) ?? DEST_TYPES.value[0])
+
+function selectDestType(key: string): void {
+  createForm.destType = key
+  if (key !== 'rclone') {
+    createForm.rclonePreset = ''
+    const def = DEST_TYPES.value.find((d) => d.key === key)
+    // 仅在 url 为空时预填 scheme 前缀，避免覆盖用户已输入内容
+    if (def?.prefix && !createForm.url.trim()) {
+      createForm.url = def.prefix
+    }
+  }
+}
+
+function selectRclonePreset(presetKey: string): void {
+  const preset = RCLONE_PRESETS.value.find((p) => p.key === presetKey)
+  if (!preset) {
+    return
+  }
+  createForm.rclonePreset = presetKey
+  createForm.url = preset.url
+}
 
 /** A8：向服务端要一个候选仓库标识（repo-<ULID>）预填；失败不阻断（用户可手填/留空）。 */
 async function regenerateRepoId(): Promise<void> {
@@ -96,6 +140,8 @@ function openCreate(): void {
   createForm.name = ''
   createForm.url = ''
   createForm.hostTag = ''
+  createForm.destType = 'local'
+  createForm.rclonePreset = ''
   createShow.value = true
   void regenerateRepoId()
 }
@@ -875,6 +921,40 @@ function formatBytes(value: number): string {
       style="width: 480px"
     >
       <n-form label-placement="top" size="small">
+        <!-- A5：目的地类型卡片网格 -->
+        <n-form-item :label="t('repo.dest.label')">
+          <div class="repo__dest-grid">
+            <button
+              v-for="dest in DEST_TYPES"
+              :key="dest.key"
+              type="button"
+              class="repo__dest-card"
+              :class="{ 'repo__dest-card--active': createForm.destType === dest.key }"
+              @click="selectDestType(dest.key)"
+            >
+              {{ dest.label }}
+            </button>
+          </div>
+          <n-text depth="3" class="repo__note">{{ t('repo.dest.hint') }}</n-text>
+        </n-form-item>
+
+        <!-- rclone 预设快捷卡（A5） -->
+        <n-form-item v-if="createForm.destType === 'rclone'" :label="t('repo.dest.rclonePresetLabel')">
+          <div class="repo__dest-grid">
+            <button
+              v-for="preset in RCLONE_PRESETS"
+              :key="preset.key"
+              type="button"
+              class="repo__dest-card"
+              :class="{ 'repo__dest-card--active': createForm.rclonePreset === preset.key }"
+              @click="selectRclonePreset(preset.key)"
+            >
+              {{ preset.label }}
+            </button>
+          </div>
+          <n-text depth="3" class="repo__note">{{ currentDest.note }}</n-text>
+        </n-form-item>
+
         <n-form-item :label="t('repo.colId')">
           <n-space vertical :size="6" class="repo__cred">
             <n-space :size="8" align="center">
@@ -894,7 +974,8 @@ function formatBytes(value: number): string {
           <n-input v-model:value="createForm.name" :placeholder="t('repo.nameRequired')" />
         </n-form-item>
         <n-form-item :label="t('repo.url')">
-          <n-input v-model:value="createForm.url" :placeholder="t('repo.urlPlaceholder')" />
+          <n-input v-model:value="createForm.url" :placeholder="currentDest.placeholder" />
+          <n-text depth="3" class="repo__note">{{ currentDest.note }}</n-text>
         </n-form-item>
         <n-form-item :label="t('repo.hostTag')">
           <n-input v-model:value="createForm.hostTag" :placeholder="t('repo.hostTagPlaceholder')" />
@@ -985,5 +1066,36 @@ function formatBytes(value: number): string {
 
 .repo__id-input {
   flex: 1 1 200px;
+}
+
+/* A5 目的地类型卡片网格 */
+.repo__dest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.repo__dest-card {
+  padding: 10px 6px;
+  border: 1px solid var(--n-border-color, #e0e0e6);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.repo__dest-card:hover {
+  border-color: var(--n-color-target, #2080f0);
+}
+
+.repo__dest-card--active {
+  border-color: var(--n-color-target, #2080f0);
+  background: var(--n-color-target-transparent, rgba(32, 128, 240, 0.12));
+  font-weight: 600;
 }
 </style>

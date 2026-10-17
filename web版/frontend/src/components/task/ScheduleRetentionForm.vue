@@ -1,20 +1,41 @@
 <script setup lang="ts">
 /** 向导步骤 4：调度与保留（增量设计 §5.3，抽自退役的策略页）。
  *
- * - cron 输入 + 常用模板快捷填充 + 「不调度（仅手动）」；
- * - 保留档位 keep_*（0 = 不保留该档）；
- * - A2 时间线保留 keep_within*（restic duration，如 1y5m7d2h；空串 = 不启用）
- *   与 keep_tags（--keep-tag 清单，表单层逗号分隔文本，提交时拆分）；
- * - 抖动与生效时机说明。
+ * 调度（A6 双模式，门槛降到 Duplicati 级）：
+ * - 「不调度（仅手动）」/「简单模式」/「高级模式」三段切换；
+ * - 简单模式三控件生成 cron：频率下拉 + 时间点（时/分）+ 日子多选（每周→星期、每月→几号、
+ *   每年→月+几号），全程不露 cron 字样；
+ * - 高级模式直编 5 字段 cron（标准 crontab 语义）；
+ * - 双向解析：受控子集恒可反向解析；编辑回显时解析不了的复杂表达式自动落高级模式，不丢信息。
  *
+ * 保留（沿用）：keep_* 计数档 + A2 时间线档 keep_within*（restic duration）+ keep_tags（--keep-tag）。
  * 高级字段（group_by / one_file_system / compression / check_sample_ratio /
  * monthly_full_day / prune_interval_days）不在向导 UI 暴露：新建取服务端缺省，
  * 编辑时由 TaskWizard 从 E34b 原样往返，避免第二套校验入口。
+ *
+ * 后端零改动：DB 存的还是 cron 字符串，调度语义/APScheduler/cron 星期修正护栏全复用。
  */
 
-import { NButton, NInput, NInputNumber, NSpace, NSwitch, NText } from 'naive-ui'
-import { computed } from 'vue'
+import {
+  NCheckbox,
+  NCheckboxGroup,
+  NInput,
+  NInputNumber,
+  NSelect,
+  NSpace,
+  NTabPane,
+  NTabs,
+  NText,
+} from 'naive-ui'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import {
+  cronToSimple,
+  defaultSimpleSchedule,
+  simpleToCron,
+  type SimpleFrequency,
+  type SimpleSchedule,
+} from '@/utils/cronConverter'
 
 export interface ScheduleRetentionValue {
   /** 空串 = 仅手动（不下传 cron）。 */
@@ -50,21 +71,116 @@ function patch(partial: Partial<ScheduleRetentionValue>): void {
   emit('update:modelValue', { ...props.modelValue, ...partial })
 }
 
-/** cron 空串 ⇔ 「不调度」开关；重新开启时回填每日模板，避免空表达式。 */
-function onNoScheduleChange(manualOnly: boolean): void {
-  if (manualOnly) {
+// ---------------------------------------------------------------- A6 调度双模式
+type CronMode = 'none' | 'simple' | 'advanced'
+
+const cronMode = ref<CronMode>('simple')
+const simple = reactive<SimpleSchedule>(defaultSimpleSchedule())
+const advCron = ref('')
+
+/** 当前内部态对应的 cron（用于判等，打破「emit → 父回填 → watch 重同步」回环）。 */
+function representedCron(): string {
+  if (cronMode.value === 'none') return ''
+  if (cronMode.value === 'advanced') return advCron.value.trim()
+  return simpleToCron(simple)
+}
+
+/** 从 cron 字符串同步内部态（不 emit）。 */
+function syncFromCron(cron: string): void {
+  if (!cron) {
+    cronMode.value = 'none'
+    return
+  }
+  const parsed = cronToSimple(cron)
+  if (parsed) {
+    cronMode.value = 'simple'
+    Object.assign(simple, parsed)
+  } else {
+    cronMode.value = 'advanced'
+    advCron.value = cron
+  }
+}
+
+// 初始同步 + 外部变更（编辑预填）同步；与自身产出判等则跳过，避免回环
+watch(
+  () => props.modelValue.cron,
+  (cron) => {
+    if (cron === representedCron()) return
+    syncFromCron(cron)
+  },
+  { immediate: true },
+)
+
+function onModeChange(mode: CronMode): void {
+  if (mode === 'none') {
+    cronMode.value = 'none'
     patch({ cron: '' })
     return
   }
-  patch({ cron: props.modelValue.cron || '0 2 * * *' })
+  if (mode === 'simple') {
+    // 从高级模式切回：若当前 cron 可解析则载入，否则以默认简单调度起步
+    const parsed = cronToSimple(advCron.value.trim())
+    if (parsed) {
+      Object.assign(simple, parsed)
+    } else if (cronMode.value === 'advanced') {
+      Object.assign(simple, defaultSimpleSchedule())
+    }
+    cronMode.value = 'simple'
+    patch({ cron: simpleToCron(simple) })
+    return
+  }
+  // advanced：以当前 cron（或简单态生成）作为可编辑原文
+  advCron.value = representedCron() || simpleToCron(simple)
+  cronMode.value = 'advanced'
+  patch({ cron: advCron.value })
 }
 
-const cronTemplates = computed(() => [
-  { label: t('wizard.cronTemplates.daily'), value: '0 2 * * *' },
-  { label: t('wizard.cronTemplates.hourly'), value: '15 * * * *' },
-  { label: t('wizard.cronTemplates.weekly'), value: '0 3 * * 1' },
-  { label: t('wizard.cronTemplates.monthly'), value: '0 4 1 * *' },
+function emitSimple(): void {
+  patch({ cron: simpleToCron(simple) })
+}
+
+function onAdvInput(): void {
+  patch({ cron: advCron.value.trim() })
+}
+
+const frequencyOptions = computed(() => [
+  { label: t('wizard.freq.daily'), value: 'daily' as SimpleFrequency },
+  { label: t('wizard.freq.hourly'), value: 'hourly' as SimpleFrequency },
+  { label: t('wizard.freq.weekly'), value: 'weekly' as SimpleFrequency },
+  { label: t('wizard.freq.monthly'), value: 'monthly' as SimpleFrequency },
+  { label: t('wizard.freq.yearly'), value: 'yearly' as SimpleFrequency },
+  { label: t('wizard.freq.everyNHours'), value: 'every_n_hours' as SimpleFrequency },
+  { label: t('wizard.freq.everyNDays'), value: 'every_n_days' as SimpleFrequency },
 ])
+
+const weekdayOptions = computed(() => [
+  { label: t('wizard.dow.sun'), value: 0 },
+  { label: t('wizard.dow.mon'), value: 1 },
+  { label: t('wizard.dow.tue'), value: 2 },
+  { label: t('wizard.dow.wed'), value: 3 },
+  { label: t('wizard.dow.thu'), value: 4 },
+  { label: t('wizard.dow.fri'), value: 5 },
+  { label: t('wizard.dow.sat'), value: 6 },
+])
+
+const dayOfMonthOptions = computed(() =>
+  Array.from({ length: 31 }, (_, i) => ({ label: String(i + 1), value: i + 1 })),
+)
+
+const monthOptions = computed(() =>
+  Array.from({ length: 12 }, (_, i) => ({ label: `${i + 1} 月`, value: i + 1 })),
+)
+
+/** 是否需要「时间点（时/分）」控件（hourly/every_n_hours 仅用分钟）。 */
+const needsTime = computed(() =>
+  ['daily', 'weekly', 'monthly', 'yearly', 'every_n_days'].includes(simple.frequency),
+)
+const needsMinuteOnly = computed(() => simple.frequency === 'hourly' || simple.frequency === 'every_n_hours')
+const needsWeekdays = computed(() => simple.frequency === 'weekly')
+const needsDaysOfMonth = computed(() => simple.frequency === 'monthly' || simple.frequency === 'yearly')
+const needsMonth = computed(() => simple.frequency === 'yearly')
+const needsIntervalHours = computed(() => simple.frequency === 'every_n_hours')
+const needsIntervalDays = computed(() => simple.frequency === 'every_n_days')
 
 const keepFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: string }>>(() => [
   { key: 'keep_last', label: t('wizard.keep_last') },
@@ -88,35 +204,146 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
 <template>
   <n-space vertical :size="14">
+    <!-- A6 调度双模式 -->
     <n-space vertical :size="6">
-      <n-text strong>{{ t('wizard.cron') }}</n-text>
-      <n-input
-        :value="modelValue.cron"
-        :placeholder="t('wizard.cron')"
-        :disabled="modelValue.cron === ''"
-        @update:value="(value: string) => patch({ cron: value })"
-      />
-      <n-space :size="4" wrap>
-        <n-button
-          v-for="template in cronTemplates"
-          :key="template.value"
-          size="tiny"
-          secondary
-          @click="patch({ cron: template.value })"
-        >
-          {{ template.label }}
-        </n-button>
-      </n-space>
-      <n-space align="center" :size="8">
-        <n-switch :value="modelValue.cron === ''" size="small" @update:value="onNoScheduleChange" />
-        <n-text depth="3">{{ t('wizard.noSchedule') }}</n-text>
-      </n-space>
-      <n-text depth="3" class="schedule-form__note">
-        {{ modelValue.cron === '' ? t('task.manual_only') : t('wizard.cronEffectiveNote') }}
+      <n-text strong>{{ t('wizard.schedule') }}</n-text>
+
+      <n-tabs v-model:value="cronMode" type="segment" size="small" @update:value="onModeChange">
+        <n-tab-pane name="none" :tab="t('wizard.scheduleMode.none')" />
+        <n-tab-pane name="simple" :tab="t('wizard.scheduleMode.simple')" />
+        <n-tab-pane name="advanced" :tab="t('wizard.scheduleMode.advanced')" />
+      </n-tabs>
+
+      <!-- 简单模式 -->
+      <template v-if="cronMode === 'simple'">
+        <n-space :size="10" wrap>
+          <n-space vertical :size="2" class="schedule-form__field">
+            <n-text depth="3" class="schedule-form__label">{{ t('wizard.freq.label') }}</n-text>
+            <n-select
+              v-model:value="simple.frequency"
+              :options="frequencyOptions"
+              size="small"
+              style="width: 160px"
+              @update:value="emitSimple"
+            />
+          </n-space>
+
+          <n-space v-if="needsTime" vertical :size="2" class="schedule-form__field">
+            <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleTime') }}</n-text>
+            <n-space :size="4" align="center">
+              <n-input-number
+                v-model:value="simple.hour"
+                :min="0"
+                :max="23"
+                size="small"
+                style="width: 72px"
+                @update:value="emitSimple"
+              />
+              <n-text depth="3">:</n-text>
+              <n-input-number
+                v-model:value="simple.minute"
+                :min="0"
+                :max="59"
+                size="small"
+                style="width: 72px"
+                @update:value="emitSimple"
+              />
+            </n-space>
+          </n-space>
+
+          <n-space v-if="needsMinuteOnly" vertical :size="2" class="schedule-form__field">
+            <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleMinute') }}</n-text>
+            <n-input-number
+              v-model:value="simple.minute"
+              :min="0"
+              :max="59"
+              size="small"
+              style="width: 96px"
+              @update:value="emitSimple"
+            />
+          </n-space>
+
+          <n-space v-if="needsIntervalHours" vertical :size="2" class="schedule-form__field">
+            <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleIntervalHours') }}</n-text>
+            <n-input-number
+              v-model:value="simple.intervalHours"
+              :min="1"
+              :max="24"
+              size="small"
+              style="width: 96px"
+              @update:value="emitSimple"
+            />
+          </n-space>
+
+          <n-space v-if="needsIntervalDays" vertical :size="2" class="schedule-form__field">
+            <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleIntervalDays') }}</n-text>
+            <n-input-number
+              v-model:value="simple.intervalDays"
+              :min="1"
+              :max="365"
+              size="small"
+              style="width: 96px"
+              @update:value="emitSimple"
+            />
+          </n-space>
+        </n-space>
+
+        <n-space v-if="needsWeekdays" vertical :size="2" class="schedule-form__field">
+          <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleWeekdays') }}</n-text>
+          <n-checkbox-group v-model:value="simple.daysOfWeek" @update:value="emitSimple">
+            <n-space :size="4" wrap>
+              <n-checkbox v-for="opt in weekdayOptions" :key="opt.value" :value="opt.value" :label="opt.label" size="small" />
+            </n-space>
+          </n-checkbox-group>
+        </n-space>
+
+        <n-space v-if="needsDaysOfMonth" vertical :size="2" class="schedule-form__field">
+          <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleDaysOfMonth') }}</n-text>
+          <n-select
+            v-model:value="simple.daysOfMonth"
+            :options="dayOfMonthOptions"
+            multiple
+            size="small"
+            style="width: 100%"
+            @update:value="emitSimple"
+          />
+        </n-space>
+
+        <n-space v-if="needsMonth" vertical :size="2" class="schedule-form__field">
+          <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleMonth') }}</n-text>
+          <n-select
+            v-model:value="simple.month"
+            :options="monthOptions"
+            size="small"
+            style="width: 120px"
+            @update:value="emitSimple"
+          />
+        </n-space>
+
+        <n-text depth="3" class="schedule-form__note">{{ t('wizard.scheduleSimpleHint') }}</n-text>
+      </template>
+
+      <!-- 高级模式 -->
+      <template v-else-if="cronMode === 'advanced'">
+        <n-space :size="6" wrap>
+          <n-input
+            v-model:value="advCron"
+            size="small"
+            class="schedule-form__cron"
+            :placeholder="t('wizard.cronAdvancedPlaceholder')"
+            @update:value="onAdvInput"
+          />
+        </n-space>
+        <n-text depth="3" class="schedule-form__note">{{ t('wizard.cronAdvancedNote') }}</n-text>
+      </template>
+
+      <n-text v-else depth="3" class="schedule-form__note">
+        {{ t('task.manual_only') }}
       </n-text>
       <n-text depth="3" class="schedule-form__note">{{ t('wizard.jitterNote') }}</n-text>
     </n-space>
 
+    <!-- 保留策略 -->
     <n-space vertical :size="6">
       <n-text strong>{{ t('wizard.retention') }}</n-text>
       <n-space :size="10" wrap>
@@ -171,5 +398,18 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
 .schedule-form__keep-label {
   font-size: 12px;
+}
+
+.schedule-form__label {
+  font-size: 12px;
+}
+
+.schedule-form__field {
+  margin-bottom: 4px;
+}
+
+.schedule-form__cron {
+  flex: 1 1 280px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 </style>

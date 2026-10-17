@@ -82,6 +82,31 @@ const exclusionsQuery = useQuery({ queryKey: ['exclusions'], queryFn: () => getE
 /** E32 直接回剥好前缀的展示形态（display_core ⊆ display_items），前端不再做前缀转换。 */
 const builtinRules = computed(() => exclusionsQuery.data.value?.display_items ?? [])
 
+// ---------------------------------------------------------------- 手动输入挂载路径（A4：远端源）
+/** 手动键入路径（展示形态，如 /mnt/onedrive）：与浏览点选同形态入库。
+ *  落库时后端经 PathMapper.to_snapshot 还原为 /sources/<path>（恒在 /sources 白名单内）；
+ *  前端仅做基础防护：非空、绝对路径、无 ".." 穿越段。 */
+const manualPath = ref('')
+
+function addManualPath(): void {
+  const value = manualPath.value.trim()
+  if (!value) {
+    return
+  }
+  if (!value.startsWith('/') || value.includes('..')) {
+    message.warning(t('wizard.pathInvalid'))
+    return
+  }
+  if (props.sources.includes(value)) {
+    message.info(t('wizard.sourceExists', { path: value }))
+    manualPath.value = ''
+    return
+  }
+  emit('update:sources', [...props.sources, value])
+  message.success(t('wizard.sourcePicked', { path: value }))
+  manualPath.value = ''
+}
+
 // ---------------------------------------------------------------- 追加排除
 const excludeDraft = ref('')
 
@@ -128,6 +153,20 @@ function removeExclude(rule: string): void {
         {{ path }}
       </n-tag>
     </n-space>
+
+    <!-- A4：手动输入挂载路径（远端源：宿主 rclone mount 后映射进 /sources 的目录） -->
+    <n-text strong>{{ t('wizard.manualPath') }}</n-text>
+    <n-space :size="6">
+      <n-input
+        v-model:value="manualPath"
+        size="small"
+        class="sources-picker__input"
+        :placeholder="t('wizard.manualPathPlaceholder')"
+        @keydown.enter.prevent="addManualPath"
+      />
+      <n-button size="small" @click="addManualPath">{{ t('wizard.manualPathAdd') }}</n-button>
+    </n-space>
+    <n-text depth="3" class="sources-picker__hint">{{ t('wizard.manualPathHint') }}</n-text>
 
     <n-collapse size="small">
       <n-collapse-item :title="t('wizard.exclusionsBuiltin', { n: builtinRules.length })" name="builtin">
