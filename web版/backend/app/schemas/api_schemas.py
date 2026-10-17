@@ -587,10 +587,12 @@ class RestoreRequest(_Base):
     缺省/空数组 = 整快照恢复（兼容既有行为）。服务端逐条还原为容器形态并过
     :class:`PathMapper` 白名单校验（越界 400 ``PATH_OUT_OF_PREFIX``）。
 
-    R-015（红线 S7 v1.3）：``overwrite_mode`` / ``keyword`` **仅原位恢复分支可用**——
-    时间戳子目录路径出现二者之一即 422（该路径的 ``--overwrite=if-changed`` 由
-    JobRunner 固定注入，界面无入口）；原位分支下 ``overwrite_mode`` 必须为
-    ``always``、``keyword`` 必须等于快照短 id（三重确认门的后端校验）。
+    R-015（红线 S7 v1.4）：``overwrite_mode`` **仅原位恢复分支可用**——时间戳
+    子目录路径出现即 422（该路径的 ``--overwrite=if-changed`` 由 JobRunner
+    固定注入，界面无入口）；原位分支下取值 **``never`` 或 ``always``**
+    （A7 Duplicati 布尔勾选：默认不勾 = never 跳过已存在文件，勾选 = always
+    覆盖；``if-changed`` 是时间戳路径的服务端注入值，原位分支不接受）。
+    A7 起确认门放松为单次确认，**不再有** ``keyword`` 字段。
     """
 
     snapshot_id: str = Field(min_length=8, max_length=64)
@@ -600,10 +602,8 @@ class RestoreRequest(_Base):
         description="要恢复的文件/目录（展示形态）；缺省或空 = 整快照恢复",
     )
     overwrite_mode: str | None = Field(
-        default=None, description="原位恢复覆盖模式（仅接受 always；时间戳路径不得传）"
-    )
-    keyword: str | None = Field(
-        default=None, description="原位恢复确认关键字（快照短 id 前 8 位）"
+        default=None,
+        description="原位恢复覆盖模式（仅接受 never/always；时间戳路径不得传）",
     )
 
 

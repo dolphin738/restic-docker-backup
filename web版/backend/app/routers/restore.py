@@ -1,18 +1,20 @@
 """恢复路由：E19 ``POST /api/restore`` + E20 ``POST /api/restore/preview``（§5.1 / §6.3 / R-008、R-015，D4）。
 
-两条恢复路径（红线 S7 v1.3 的两类合法调用点）：
+两条恢复路径（红线 S7 v1.4 的两类合法调用点）：
 
-1. **时间戳子目录**（P1 默认，零覆盖语义）：请求体只有 ``snapshot_id`` / ``target``
-   / ``paths``；时间戳子目录由**服务端**计算：``<target>/<源目录名>-<YYYYmmdd-HHMM>``
+1. **时间戳子目录**（E19 传统流，零覆盖语义）：请求体只有 ``snapshot_id`` /
+   ``target`` / ``paths``；时间戳子目录由**服务端**计算：``<target>/<源目录名>-<YYYYmmdd-HHMM>``
    （例：``/restore`` + 快照含 ``/etc/nginx`` → ``/restore/etc-20261010-0138``），
    物理上不可能覆盖既有文件（PRD G3 误操作零事故）。``target`` 必须在
    :data:`RESTORE_ALLOWED_PREFIXES` 白名单内，否则 403 ``RESTORE_FORBIDDEN``；
    该路径的 ``--overwrite=if-changed`` 由 JobRunner 固定注入、界面无入口——
-   请求体出现 ``overwrite_mode`` / ``keyword`` 即 **422**。
-2. **原位恢复**（R-015）：请求体带 ``overwrite_mode`` / ``keyword``，目标经
-   **双重锁**（``/sources`` 前缀白名单 + 快照 ``paths`` 交集收紧）与三重确认门
-   后端校验（``overwrite_mode == "always"``、``keyword == snapshot_id[:8]``），
-   执行 ``--overwrite=always`` 并写审计 ``restore.inplace``。
+   请求体出现 ``overwrite_mode`` 即 **422**。
+2. **原位恢复**（R-015，A7 Duplicati 化）：请求体带 ``overwrite_mode``，目标经
+   **双重锁**（``/sources`` 前缀白名单 + 快照 ``paths`` 交集收紧）与**单次确认门**
+   （前端 ConfirmGate 无关键词；A7 前为三重确认门 keyword = 快照短 id，随
+   S7 v1.4 修订删除）。``overwrite_mode`` 取值 **``never``/``always``**
+   （Duplicati 布尔勾选：默认不勾 = never 跳过已存在文件，勾选 = always 覆盖），
+   执行对应 ``--overwrite`` 并写审计 ``restore.inplace``。
 
 两者均：同仓库已有 running/pending 任务 → 409 ``JOB_CONFLICT``（JobRunner 拒绝不排队）。
 """
@@ -93,9 +95,8 @@ async def restore_snapshot(
     ``params.include`` 入 JobRunner，由 ``ResticCmd`` 白名单拼 ``--include``
     （校验点②，纵深防御）。缺省/空 paths = 整快照恢复（兼容既有行为）。
 
-    带 ``overwrite_mode`` / ``keyword`` 的请求转**原位恢复分支**（见
-    :func:`_restore_inplace`）；不带二者的请求仍走本函数体内的时间戳分支，
-    行为与 R-015 之前一致（零覆盖回归）。
+    带 ``overwrite_mode`` 的请求转**原位恢复分支**（见 :func:`_restore_inplace`）；
+    不带的请求仍走本函数体内的时间戳分支，行为与 R-015 之前一致（零覆盖回归）。
 
     Raises:
         RestoreForbiddenError: ``target`` 不在恢复白名单（403 RESTORE_FORBIDDEN）。
@@ -108,7 +109,7 @@ async def restore_snapshot(
     runner: JobRunner = request.app.state.job_runner
 
     # 覆盖语义请求 → 原位恢复分支（时间戳路径出现覆盖参数由该分支判 422）
-    if payload.overwrite_mode is not None or payload.keyword is not None:
+    if payload.overwrite_mode is not None:
         return await _restore_inplace(payload, request, repo_id)
 
     try:
@@ -229,7 +230,7 @@ async def preview_inplace_restore(
 # ---------------------------------------------------------------- 内部实现
 
 async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: str) -> RestoreResponse:
-    """原位恢复分支（R-015 US-P2-14）：双重锁 + 三重确认门后端校验 + 审计。
+    """原位恢复分支（R-015 US-P2-14，A7 Duplicati 化）：双重锁 + 覆盖布尔 + 审计。
 
     执行层落点（S7 v1.3「执行层落点纪律」）：restic 的落点是 ``--target`` +
     快照内绝对路径的**拼接**，快照存的是容器绝对路径（``/sources/etc/...``），故
@@ -238,11 +239,16 @@ async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: s
     用户可控范围改由**强制非空**的 ``--include`` 限定（``container_target`` 或其
     与 ``paths`` 的交集）。响应与审计的 ``target`` 仍回用户语义的原位目录。
 
+    A7（S7 v1.4）：确认门放松为单次确认（无 keyword），``overwrite_mode`` 由固定
+    ``always`` 改为 Duplicati 布尔——``never``（默认，跳过已存在文件）/ ``always``
+    （覆盖）。语义差异如实标注：Duplicati ``--overwrite=false`` 是冲突时改名另存，
+    restic 无等价能力，取最接近的 ``never``。
+
     Raises:
         PathOutOfPrefixError: 目标完全越界（400 PATH_OUT_OF_PREFIX）。
         RestoreForbiddenError: 非快照 paths（403 RESTORE_FORBIDDEN）。
         ValidationError: 时间戳子目录路径带覆盖参数；或原位路径的 ``overwrite_mode``
-            非 ``always`` / ``keyword`` 不等于快照短 id / ``paths`` 与目标无交集（422）。
+            非 ``never``/``always`` / ``paths`` 与目标无交集（422）。
     """
     settings: Settings = request.app.state.settings
     mapper: PathMapper = request.app.state.path_mapper
@@ -251,16 +257,13 @@ async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: s
 
     container_target, roots = await _enforce_inplace_lock(request, payload.snapshot_id, payload.target)
 
-    # 三重确认门的后端校验（防前端自报绕过）：模式固定 always + keyword = 快照短 id
-    if payload.overwrite_mode != "always":
+    # 覆盖布尔（S7 要件③）：never/always 二选一；if-changed 是时间戳路径的服务端
+    # 固定注入值，原位分支不接受（防把「仅差异覆盖」偷渡进写回路径）
+    if payload.overwrite_mode not in ("never", "always"):
         raise ValidationError(
-            "原位恢复的 overwrite_mode 必须为 always（界面固定传入，无模式选择项）",
+            "原位恢复的 overwrite_mode 必须为 never 或 always"
+            "（never = 跳过已存在文件，always = 覆盖；if-changed 仅用于时间戳路径）",
             data={"overwrite_mode": payload.overwrite_mode},
-        )
-    if payload.keyword != payload.snapshot_id[:8]:
-        raise ValidationError(
-            "原位恢复确认关键字不正确（须为快照短 id 前 8 位）",
-            data={"keyword": payload.keyword, "expected": payload.snapshot_id[:8]},
         )
 
     include = _resolve_inplace_include(payload.paths, mapper, settings, container_target)
@@ -271,7 +274,8 @@ async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: s
         # 落点固定 "/"：restic 落点 = --target + 快照内绝对路径（S7 v1.3）
         "target": INPLACE_RESTORE_TARGET_ROOT,
         "inplace": True,
-        "overwrite": "always",
+        # A7：布尔透传（never/always），不再固定 always
+        "overwrite": payload.overwrite_mode,
         # 强制非空：--target / 只靠 include 限定写入范围（纵深防御）
         "include": include,
     }
@@ -290,15 +294,17 @@ async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: s
             "snapshot_id": payload.snapshot_id,
             "target": container_target,
             "overwrite_count": overwrite_count,
-            "keyword_confirmed": True,
+            # A7：keyword_confirmed（三重门遗留）→ overwrite_mode 实际取值
+            "overwrite_mode": payload.overwrite_mode,
         },
         result="ok",
     )
     logger.info(
-        "原位恢复任务已提交：job=%s snapshot=%s target=%s overwrite_count=%s",
+        "原位恢复任务已提交：job=%s snapshot=%s target=%s overwrite_mode=%s overwrite_count=%s",
         job.id,
         payload.snapshot_id,
         container_target,
+        payload.overwrite_mode,
         overwrite_count,
     )
     return RestoreResponse(job_id=job.id, restore_target=container_target)
@@ -335,7 +341,7 @@ async def _enforce_inplace_lock(
     except PathOutOfPrefixError as exc:
         if _within(mapper, target, RESTORE_ALLOWED_PREFIXES):
             raise ValidationError(
-                "时间戳子目录路径不接受 overwrite_mode/keyword"
+                "时间戳子目录路径不接受 overwrite_mode"
                 "（该路径的 --overwrite=if-changed 由服务端固定注入，界面无入口）",
                 data={"target": target},
             ) from exc
@@ -409,7 +415,7 @@ async def _current_overwrite_count(
     成本提示（勿当免费调用）：本调用**阻塞**提交请求，量级与一次 E20 预览相当
     （一次 ``ls --json`` + 全量 ``os.stat`` 比对）；大快照下会拉长 E19 响应耗时。
     此处保持服务端重算是**安全优先**的取舍：换成前端上报即等于开放伪造入口。
-    比对失败时返回 ``None``（审计 detail 留空），**不阻断**已过三重确认门的恢复执行。
+    比对失败时返回 ``None``（审计 detail 留空），**不阻断**已过双重锁的恢复执行。
     """
     try:
         scan = compare.diff(snapshot_id, target, repo_id=repo_id, roots=roots)

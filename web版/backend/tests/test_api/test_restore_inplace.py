@@ -1,4 +1,4 @@
-"""API 集成：E20 覆盖预览 + E19 原位恢复分支（R-015，红线 S7 v1.3）。
+"""API 集成：E20 覆盖预览 + E19 原位恢复分支（R-015，红线 S7 v1.4）。
 
 断言点（增量设计 §6-T08 验收要点 + §7 测试策略）：
 
@@ -6,9 +6,13 @@
   403 ``RESTORE_FORBIDDEN``；时间戳分支越界保持既有 403（C7 零回归）；
   （A0 模式收敛：原 ro 档 host_mount_mode 判定随 host 模式删除，两用例移除）；
 - **门禁 422 矩阵**：时间戳路径带 ``overwrite_mode``、原位路径 ``overwrite_mode``
-  非 always、原位路径缺 ``keyword`` / ``keyword`` 错、``paths`` 与目标无交集；
+  非 never/always（``if-changed`` 是时间戳路径的服务端注入值）、已删除的
+  ``keyword`` 字段（extra=forbid）、``paths`` 与目标无交集；
+  （A7/S7 v1.4：三重确认门 keyword 已删除，确认门放松为单次 ConfirmGate）；
 - **执行层落点（S7 v1.3）**：restic 收到的 argv 中 ``--target`` 为 ``/``、
   ``--include`` 为原位目标子树（**反证**：``--target`` 绝不为 ``/sources/etc``）；
+- **覆盖布尔（S7 v1.4 要件③）**：``overwrite_mode=never|always`` 原样透传为
+  ``--overwrite=never|always`` 并落审计 detail；
 - **审计**：``restore.preview``（只读留痕）与 ``restore.inplace``（危险清单）各落一条；
 - **时间戳流 argv 零回归**：不带 ``overwrite_mode`` 的 E19 请求 argv 与 R-015 前一致。
 
@@ -32,7 +36,7 @@ from app.services.restic import ProbeResult
 from app.utils.time import parse_iso
 
 SNAPSHOT_ID = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
-KEYWORD = SNAPSHOT_ID[:8]
+SHORT_ID = SNAPSHOT_ID[:8]
 ROOT = "/sources/etc"
 SNAPSHOT_MTIME = "2026-01-03T12:00:00Z"
 # 磁盘侧现状：与快照不同 → 记为待覆盖（mtime 一致、size 差 1）
@@ -80,7 +84,7 @@ def _snapshots_line(paths: list[str]) -> str:
         [
             {
                 "id": SNAPSHOT_ID,
-                "short_id": KEYWORD,
+                "short_id": SHORT_ID,
                 "time": "2026-01-03T12:00:00.000000000Z",
                 "tree": "0" * 64,
                 "paths": paths,
@@ -298,7 +302,11 @@ async def test_e19_timestamp_path_with_overwrite_mode_422(app_client):
 
 
 async def test_e19_inplace_overwrite_mode_if_changed_422(app_client):
-    """原位路径的 overwrite_mode 非 always → 422（S7 要件③：固定 always）。"""
+    """原位路径的 overwrite_mode 非 never/always → 422（S7 v1.4 要件③）。
+
+    if-changed 是时间戳路径的服务端固定注入值，原位分支不接受——防把「仅差异
+    覆盖」偷渡进写回路径。
+    """
     ns = app_client
     await _setup(ns)
     calls = _patch_submit(ns)
@@ -309,26 +317,28 @@ async def test_e19_inplace_overwrite_mode_if_changed_422(app_client):
             "snapshot_id": SNAPSHOT_ID,
             "target": ROOT,
             "overwrite_mode": "if-changed",
-            "keyword": KEYWORD,
         },
         headers=ORIGIN,
     )
     assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
     assert calls == []
 
 
-@pytest.mark.parametrize("keyword", [None, "deadbeef"])
-async def test_e19_inplace_keyword_gate_422(app_client, keyword):
-    """三重确认门后端校验：keyword 缺失或与快照短 id 不符 → 422。"""
+@pytest.mark.parametrize("keyword", ["deadbeef", SHORT_ID])
+async def test_e19_inplace_keyword_field_rejected_422(app_client, keyword):
+    """A7/S7 v1.4：keyword 字段已删除（三重确认门 → 单次确认），传入即 422。
+
+    对错值都拒（字段本身已不存在）；反证keyword 逻辑没有以任何形式残留。
+    """
     ns = app_client
     await _setup(ns)
     calls = _patch_submit(ns)
 
-    payload = {"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always"}
-    if keyword is not None:
-        payload["keyword"] = keyword
+    payload = {"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always", "keyword": keyword}
     resp = await ns.client.post("/api/restore", json=payload, headers=ORIGIN)
     assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
     assert calls == []
 
 
@@ -340,7 +350,7 @@ async def test_e19_inplace_out_of_snapshot_paths_403(app_client):
 
     resp = await ns.client.post(
         "/api/restore",
-        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always", "keyword": KEYWORD},
+        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always"},
         headers=ORIGIN,
     )
     assert resp.status_code == 403
@@ -349,15 +359,20 @@ async def test_e19_inplace_out_of_snapshot_paths_403(app_client):
 
 # ---------------------------------------------------------------- E19 原位执行
 
-async def test_e19_inplace_submits_always_and_audits(app_client, fake_disk):
-    """原位恢复：落点 / + include 限定 + overwrite=always + restore.inplace 审计。"""
+@pytest.mark.parametrize("mode", ["always", "never"])
+async def test_e19_inplace_submits_overwrite_and_audits(app_client, fake_disk, mode):
+    """原位恢复：落点 / + include 限定 + overwrite 布尔透传 + restore.inplace 审计。
+
+    A7/S7 v1.4：never（默认，跳过已存在文件）与 always（覆盖）二值原样进
+    params.overwrite 与审计 detail.overwrite_mode。
+    """
     ns = app_client
     await _setup(ns, names=["nginx.conf", "hosts"])
     calls = _patch_submit(ns)
 
     resp = await ns.client.post(
         "/api/restore",
-        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always", "keyword": KEYWORD},
+        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": mode},
         headers=ORIGIN,
     )
     assert resp.status_code == 202, resp.text
@@ -367,7 +382,7 @@ async def test_e19_inplace_submits_always_and_audits(app_client, fake_disk):
     params = calls[0]["params"]
     assert params["target"] == INPLACE_RESTORE_TARGET_ROOT  # 执行层落点 = /
     assert params["inplace"] is True
-    assert params["overwrite"] == "always"  # S7 要件③
+    assert params["overwrite"] == mode  # S7 要件③：never/always 透传
     assert params["include"] == [ROOT]  # 强制非空：--target / 只靠 include 限定范围
 
     rows, total = await _audit(ns, "restore.inplace")
@@ -375,11 +390,12 @@ async def test_e19_inplace_submits_always_and_audits(app_client, fake_disk):
     detail = json.loads(rows[0].detail or "{}")
     assert detail["snapshot_id"] == SNAPSHOT_ID
     assert detail["target"] == ROOT  # 审计语义 = 用户语义的原位目录
-    assert detail["keyword_confirmed"] is True
+    assert detail["overwrite_mode"] == mode  # A7：keyword_confirmed → overwrite_mode
     assert detail["overwrite_count"] == 2  # 预览值（执行前重算，同源不可伪造）
 
 
-async def test_e19_inplace_argv_target_is_root_with_include(app_client, fake_disk):
+@pytest.mark.parametrize("mode", ["always", "never"])
+async def test_e19_inplace_argv_target_is_root_with_include(app_client, fake_disk, mode):
     """行为级：restic 收到的 argv --target 为 /、--include 为原位目标子树。
 
     restic 落点 = ``--target`` + 快照内绝对路径：``/`` + ``/sources/etc/...`` →
@@ -391,7 +407,7 @@ async def test_e19_inplace_argv_target_is_root_with_include(app_client, fake_dis
 
     resp = await ns.client.post(
         "/api/restore",
-        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always", "keyword": KEYWORD},
+        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": mode},
         headers=ORIGIN,
     )
     assert resp.status_code == 202, resp.text
@@ -400,7 +416,7 @@ async def test_e19_inplace_argv_target_is_root_with_include(app_client, fake_dis
     argv = argv_log[0]
     assert _flag_value(argv, "--target") == INPLACE_RESTORE_TARGET_ROOT
     assert _flag_values(argv, "--include") == [ROOT]
-    assert "--overwrite=always" in argv
+    assert f"--overwrite={mode}" in argv
     # 反证（防回归）：--target 绝不能是用户目录——那正是"一个文件都覆盖不到"的缺陷形状
     assert _flag_value(argv, "--target") != ROOT
 
@@ -416,8 +432,7 @@ async def test_e19_inplace_argv_include_narrows_to_paths(app_client, fake_disk):
         json={
             "snapshot_id": SNAPSHOT_ID,
             "target": ROOT,
-            "overwrite_mode": "always",
-            "keyword": KEYWORD,
+            "overwrite_mode": "never",
             "paths": ["/etc/nginx"],
         },
         headers=ORIGIN,
@@ -444,7 +459,6 @@ async def test_e19_inplace_paths_without_intersection_422_and_no_spawn(app_clien
             "snapshot_id": SNAPSHOT_ID,
             "target": ROOT,
             "overwrite_mode": "always",
-            "keyword": KEYWORD,
             "paths": paths,
         },
         headers=ORIGIN,
