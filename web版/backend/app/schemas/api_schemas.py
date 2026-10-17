@@ -400,9 +400,6 @@ class TaskOut(_Base):
     limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
     dry_run_pending: bool = False
     last_run_at: str | None = None
-    # C1 任务级前后钩子（空串 = 未配置）
-    pre_cmd: str = ""
-    post_cmd: str = ""
     # C3 调度触发失败后的最大重试次数
     retry_count: int = RETRY_COUNT_DEFAULT
     # C4 多目的地：备份成功后镜像到的仓库 id（空列表 = 单目的地）
@@ -470,9 +467,6 @@ class TaskUpsertRequest(_Base):
     prune_interval_days: int = 7
     limit_up: int = 0
     limit_down: int = 0
-    # C1 任务级前后钩子（空串 = 未配置；不经 shell，管道/重定向等 shell 语法不被解释）
-    pre_cmd: str = ""
-    post_cmd: str = ""
     # C3 调度触发失败后的最大重试次数（0 = 不重试；手动触发恒不重试）
     retry_count: int = RETRY_COUNT_DEFAULT
     # C4 多目的地：镜像仓 id 列表（数量上限由 pydantic 直接 422；存在性/自指由路由层校验）

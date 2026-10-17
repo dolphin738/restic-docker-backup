@@ -248,10 +248,6 @@ export default {
     testOk: '连接正常（{n} ms）',
     testFail: '连接失败',
     // C1 任务级前后钩子 + C3 失败重试
-    hooksTitle: '任务级前后钩子（可选）',
-    hooksHint: '备份前/后各执行一条命令；shlex 规则切分后直接执行，不经 shell。留空 = 不执行。',
-    preCmdPlaceholder: '前置命令，如：/usr/local/bin/notify.sh start',
-    postCmdPlaceholder: '后置命令，如：/usr/local/bin/sync-meta.sh',
     retryCount: '失败重试次数',
     retryHint: '调度触发失败后自动重试的最大次数（0 = 不重试）',
     // C4 多目的地镜像

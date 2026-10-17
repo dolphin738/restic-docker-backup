@@ -398,9 +398,6 @@ export interface BackupTask {
   prune_interval_days: number
   limit_up: number
   limit_down: number
-  /** C1 任务级前后钩子（空串 = 未配置；shlex 切分后不经 shell 执行）。 */
-  pre_cmd: string
-  post_cmd: string
   /** C3 调度触发失败后的最大重试次数（0 = 不重试，上限 5）。 */
   retry_count: number
   /** C4 多目的地：备份成功后镜像到的仓库 id（空数组 = 单目的地）。 */
@@ -443,9 +440,6 @@ export interface TaskUpsertRequest {
   prune_interval_days: number
   limit_up: number
   limit_down: number
-  /** C1 任务级前后钩子（空串 = 未配置；shlex 切分后不经 shell 执行）。 */
-  pre_cmd?: string
-  post_cmd?: string
   /** C3 调度触发失败后的最大重试次数（0 = 不重试，上限 5）。 */
   retry_count?: number
   /** C4 多目的地：备份成功后镜像到的仓库 id（空数组 = 单目的地）。 */

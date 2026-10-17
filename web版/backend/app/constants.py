@@ -144,7 +144,6 @@ AUDIT_DUMP_CLEANUP = "dump.cleanup"  # R-019 每日维护兜底：dump 产物清
 AUDIT_TAG_UPDATE = "tag.update"  # A3 快照版本标签修改（打/去标签）
 AUDIT_REPAIR_RUN = "repair.run"  # B1 自愈：仓库索引/卷修复（restic repair index/packs，危险操作留痕）
 AUDIT_RECOVER_RUN = "recover.run"  # B3 自愈：找回未快照数据（restic recover，危险操作留痕）
-AUDIT_HOOK_RUN = "hook.run"  # C1 运维：任务级前后钩子执行（任意命令，危险操作留痕）
 AUDIT_COPY_RUN = "copy.run"  # C4 多目的地：restic copy 到镜像仓（跨仓库复制，危险操作留痕）
 AUDIT_KEY_ROTATE = "key.rotate"  # C4 多目的地：restic key 轮换仓库密码（改密码，危险操作留痕）
 
@@ -288,16 +287,6 @@ RESTORE_PREVIEW_MAX_LIMIT = 1000
 RESTORE_PREVIEW_TIMEOUT_SECONDS = 60
 # mtime 比对容差（秒）：restic 存纳秒、os.stat 回 float，等值判定需容忍浮点精度损失
 COMPARE_MTIME_TOLERANCE_SECONDS = 0.001
-
-# ---------------------------------------------------------------- 批次 D：C1 任务前后钩子（RunScript 等价）
-
-# 单条钩子命令的超时（秒）：钩子是用户自带命令，失控会拖死整条任务链，必须限时。
-HOOK_TIMEOUT_SECONDS = 60
-# 入任务日志的输出截断上限（字节）：防止钩子刷屏把 SSE 日志撑爆（截断留头不留尾，
-# 与 E27 日志尾部读取的口径相反——钩子输出只留最前面的部分，方便看命令行与首错）。
-HOOK_OUTPUT_MAX_BYTES = 4096
-# 钩子 command 的最大长度（防配置被写爆导致的超大 argv）
-HOOK_COMMAND_MAX_LENGTH = 1024
 
 # ---------------------------------------------------------------- 批次 D：C3 任务级失败重试
 

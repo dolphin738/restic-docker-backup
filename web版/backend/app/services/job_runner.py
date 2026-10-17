@@ -24,7 +24,6 @@ from typing import Any
 from app.constants import (
     ACTIVE_JOB_STATUSES,
     AUDIT_COPY_RUN,
-    AUDIT_HOOK_RUN,
     AUDIT_JOB_CANCEL,
     AUDIT_JOB_FINISHED,
     AUDIT_JOB_RECOVERED,
@@ -51,7 +50,6 @@ from app.errors import JobConflictError, NotCancellableError, NotFoundError, Val
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
-from app.services.hooks import HOOK_PHASE_POST, HOOK_PHASE_PRE, HookOutcome, run_hook
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
 from app.services.restic import (
     ResticCmd,
@@ -418,19 +416,8 @@ class JobRunner:
                 # R-018：healthchecks /start ping（真实 Notifier）；空实现零副作用。
                 await self._safe_notify_start(job)
 
-                # C1 钩子：来源是任务 profile（钩子是任务级配置，仅任务关联 job 才有）
+                # 任务 profile（C3 重试 / C4 镜像共用；仅任务关联 job 才有）
                 profile = await self._load_profile(job)
-                pre_cmd = str(profile.get("pre_cmd") or "").strip()
-                if pre_cmd:
-                    outcome = await run_hook(
-                        command=pre_cmd, phase=HOOK_PHASE_PRE, log_path=Path(job.log_path)
-                    )
-                    await self._audit_hook(job, HOOK_PHASE_PRE, outcome)
-                    if not outcome.ok:
-                        await self._fail_in_phase(
-                            job, f"前置钩子失败：{outcome.reason()}", phase="hook:pre"
-                        )
-                        return
 
                 # dump 阶段（R-019，US-P2-09）：**仅** backup 任务链前缀（含独立
                 # type=dump）执行——失败 → failed 终态 + 告警，**阻断** backup 阶段
@@ -479,27 +466,13 @@ class JobRunner:
                             job, mirror_ids, log_path=Path(job.log_path), start_line_no=line_no
                         )
                         mirror_note = _mirror_note(mirrors)
-                # C1 后置钩子：仅**成功后**执行；失败把终态翻转为 failed（钩子是任务
-                # 契约的一部分，静默吞掉会让运维以为后续动作已完成）。
-                hook_note = ""
-                if status == "success":
-                    post_cmd = str(profile.get("post_cmd") or "").strip()
-                    if post_cmd:
-                        hook = await run_hook(
-                            command=post_cmd, phase=HOOK_PHASE_POST, log_path=Path(job.log_path)
-                        )
-                        await self._audit_hook(job, HOOK_PHASE_POST, hook)
-                        if not hook.ok:
-                            status = "failed"
-                            hook_note = f"；后置钩子失败：{hook.reason()}"
                 await self._jobs.finalize(
                     job.id,
                     status,
                     exit_code=exit_code,
                     summary=self._summarize(status, aggregate, exit_code)
                     + retry_note
-                    + mirror_note
-                    + hook_note,
+                    + mirror_note,
                     bytes_done=aggregate.bytes_done,
                     files_done=aggregate.files_done,
                     skipped_count=aggregate.skipped_count,
@@ -650,24 +623,6 @@ class JobRunner:
             logger.exception("dump 阶段失败：job=%s", job.id)
             return False, str(exc)
         return True, ""
-
-    async def _audit_hook(self, job: Job, phase: str, outcome: HookOutcome) -> None:
-        """C1 钩子留痕（S6：可执行任意命令 = 危险操作，逐次留痕）。
-
-        detail **绝不含命令行本身**（S3：钩子命令可能夹带凭据，命令行只进任务日志、
-        不进审计与 API）。
-        """
-        await self._audit.record(
-            AUDIT_HOOK_RUN,
-            target=job.id,
-            detail={
-                "phase": phase,
-                "exit_code": outcome.exit_code,
-                "timed_out": outcome.timed_out,
-                "parsed": outcome.parsed,
-            },
-            result="ok" if outcome.ok else "failed",
-        )
 
     # ---------------------------------------------------------------- C3 任务级重试（number-of-retries）
 

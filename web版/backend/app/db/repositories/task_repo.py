@@ -31,8 +31,6 @@ _COLUMNS = (
     "group_by", "cron", "one_file_system", "compression", "check_sample_ratio",
     "monthly_full_day", "prune_interval_days", "limit_up_kibps", "limit_down_kibps",
     "dry_run_pending", "last_run_at",
-    # C1 任务级前后钩子（空串 = 未配置）
-    "pre_cmd", "post_cmd",
     # C3 任务级失败重试（0 = 不重试）
     "retry_count",
     # C4 任务级多目的地（镜像仓 id 列表，JSON 文本；空列表 = 单目的地）
@@ -76,10 +74,7 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "limit_down_kibps": 0,
     "dry_run_pending": 1,  # R-026-08：创建即置 1（首跑须先过 E36 dry-run 预览）
     "last_run_at": None,
-    # C1 钩子（0005 DDL 缺省同口径：空串 = 未配置，不执行）
-    "pre_cmd": "",
-    "post_cmd": "",
-    # C3 重试（0006 DDL 缺省同口径：2 = 首次 + 2 次重试）
+    # C3 重试（0005 DDL 缺省同口径：2 = 首次 + 2 次重试）
     "retry_count": RETRY_COUNT_DEFAULT,
 }
 
@@ -121,9 +116,6 @@ class Task:
     limit_down_kibps: int = 0
     dry_run_pending: bool = False
     last_run_at: str | None = None
-    # C1 任务级前后钩子（空串 = 未配置；不经 shell，见 services/hooks.py）
-    pre_cmd: str = ""
-    post_cmd: str = ""
     # C3 任务级失败重试（仅调度触发；0 = 不重试）
     retry_count: int = RETRY_COUNT_DEFAULT
     # C4 任务级多目的地：备份成功后镜像到的仓库 id 列表（空 = 单目的地）
@@ -213,9 +205,6 @@ class TaskRepo:
             "keep_tags": list(task.keep_tags),
             "limit_up_kibps": task.limit_up_kibps,
             "limit_down_kibps": task.limit_down_kibps,
-            # C1 钩子：JobRunner 在 restic 阶段前后读取（不经 shell，见 services/hooks.py）
-            "pre_cmd": task.pre_cmd,
-            "post_cmd": task.post_cmd,
             # C3 重试预算（JobRunner 据此决定是否自动重试）
             "retry_count": task.retry_count,
             # C4 多目的地（JobRunner 备份成功后据此逐个 copy 到镜像仓）
@@ -371,8 +360,6 @@ def _to_task(row: Any) -> Task:
         limit_down_kibps=int(row["limit_down_kibps"] or 0),
         dry_run_pending=bool(int(row["dry_run_pending"] or 0)),
         last_run_at=None if row["last_run_at"] is None else str(row["last_run_at"]),
-        pre_cmd=str(row["pre_cmd"] or ""),
-        post_cmd=str(row["post_cmd"] or ""),
         retry_count=int(row["retry_count"] if row["retry_count"] is not None else RETRY_COUNT_DEFAULT),
         mirror_repo_ids=_load_list(row["mirror_repo_ids"]),
         created_at=str(row["created_at"] or ""),

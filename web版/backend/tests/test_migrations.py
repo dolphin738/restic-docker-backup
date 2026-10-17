@@ -46,7 +46,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 7
+    assert await db.user_version() == 6
     await db.close()
 
 
@@ -56,7 +56,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 7
+    assert await db.user_version() == 6
     await db.close()
 
 
@@ -69,7 +69,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 7
+    assert await db2.user_version() == 6
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -166,29 +166,8 @@ async def test_0004_new_task_defaults_unset(tmp_path):
     await db.close()
 
 
-async def test_0005_task_hook_columns(tmp_path):
-    """0005（批次 D C1）：backup_tasks 新增 pre_cmd/post_cmd 两列，缺省空串（= 未配置）。"""
-    db = Database(tmp_path / "restic.db")
-    await db.connect()
-    columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
-    assert {"pre_cmd", "post_cmd"} <= columns
-    await db.close()
-
-
-async def test_0005_new_task_hook_defaults_empty(tmp_path):
-    """0005 缺省落地：新建任务不填钩子 → 空串（执行层据此跳过，不产生子进程）。"""
-    db = Database(tmp_path / "restic.db")
-    await db.connect()
-    await db.write(_TASK_INSERT)
-    row = await db.fetch_one("SELECT pre_cmd, post_cmd FROM backup_tasks WHERE tag = 'task-1'")
-    assert row is not None
-    assert str(row["pre_cmd"]) == ""
-    assert str(row["post_cmd"]) == ""
-    await db.close()
-
-
-async def test_0006_task_retry_column(tmp_path):
-    """0006（批次 D C3）：backup_tasks 新增 retry_count，缺省 2（首次 + 2 次重试）。"""
+async def test_0005_task_retry_column(tmp_path):
+    """0005（批次 D C3）：backup_tasks 新增 retry_count，缺省 2（首次 + 2 次重试）。"""
     db = Database(tmp_path / "restic.db")
     await db.connect()
     columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
@@ -196,8 +175,8 @@ async def test_0006_task_retry_column(tmp_path):
     await db.close()
 
 
-async def test_0006_new_task_retry_default(tmp_path):
-    """0006 缺省落地：新建任务不填 retry_count → 2。"""
+async def test_0005_new_task_retry_default(tmp_path):
+    """0005 缺省落地：新建任务不填 retry_count → 2。"""
     db = Database(tmp_path / "restic.db")
     await db.connect()
     await db.write(_TASK_INSERT)
@@ -207,8 +186,8 @@ async def test_0006_new_task_retry_default(tmp_path):
     await db.close()
 
 
-async def test_0007_task_mirror_column(tmp_path):
-    """0007（批次 D C4）：backup_tasks 新增 mirror_repo_ids，缺省 '[]'（= 单目的地）。"""
+async def test_0006_task_mirror_column(tmp_path):
+    """0006（批次 D C4）：backup_tasks 新增 mirror_repo_ids，缺省 '[]'（= 单目的地）。"""
     db = Database(tmp_path / "restic.db")
     await db.connect()
     columns = {str(row["name"]) for row in await db.fetch_all("PRAGMA table_info(backup_tasks)")}
@@ -216,8 +195,8 @@ async def test_0007_task_mirror_column(tmp_path):
     await db.close()
 
 
-async def test_0007_new_task_mirror_default_empty(tmp_path):
-    """0007 缺省落地：新建任务不填镜像仓 → '[]'（执行层据此跳过镜像阶段）。"""
+async def test_0006_new_task_mirror_default_empty(tmp_path):
+    """0006 缺省落地：新建任务不填镜像仓 → '[]'（执行层据此跳过镜像阶段）。"""
     db = Database(tmp_path / "restic.db")
     await db.connect()
     await db.write(_TASK_INSERT)

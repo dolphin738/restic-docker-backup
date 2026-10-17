@@ -1,4 +1,4 @@
--- 0007_task_mirror_repos.sql —— 批次 D C4 任务级多目的地（Duplicati「+ Add another destination」等价物）。
+-- 0006_task_mirror_repos.sql —— 批次 D C4 任务级多目的地（Duplicati「+ Add another destination」等价物）。
 -- 新增一列：
 --   mirror_repo_ids  镜像仓库 id 列表（JSON 数组文本，与 keep_tags 同款存储口径）；
 --                    缺省 '[]' = 不镜像（单目的地，与 0007 之前行为完全一致）
@@ -21,4 +21,4 @@
 
 ALTER TABLE backup_tasks ADD COLUMN mirror_repo_ids TEXT NOT NULL DEFAULT '[]';
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 6;

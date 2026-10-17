@@ -1,4 +1,4 @@
--- 0006_task_retry.sql —— 批次 D C3 任务级失败重试（Duplicati number-of-retries 等价物）。
+-- 0005_task_retry.sql —— 批次 D C3 任务级失败重试（Duplicati number-of-retries 等价物）。
 -- 新增一列：
 --   retry_count  调度触发失败后的**最大重试次数**（0 = 不重试）；缺省 2（RETRY_COUNT_DEFAULT）
 --
@@ -15,4 +15,4 @@
 
 ALTER TABLE backup_tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 2;
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 5;
