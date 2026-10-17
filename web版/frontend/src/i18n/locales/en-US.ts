@@ -151,36 +151,20 @@ export default {
   },
   tier: {
     title: 'Runtime mode',
-    currentTag: 'Current mode',
     user: {
       root: 'root',
       nonRoot: 'non-root',
     },
-    mount: {
-      ro: 'read-only (ro)',
-      rw: 'read-write (rw)',
-    },
-    // Tier names describe the capability shape: visibility (full vs partial) × restore (in-place vs subdir).
+    // A0 convergence: tiers now keyed only by run-as user; backup source root is always /sources,
+    // with remote directories (NFS/SMB/S3/B2...) mapped in via host mounts or rclone mount.
     name: {
-      root: {
-        ro: 'Full view',
-        rw: 'Full access',
-      },
-      nonRoot: {
-        ro: 'Sandbox',
-        rw: 'Restricted',
-      },
+      root: 'Full access',
+      nonRoot: 'Restricted',
     },
-    note: 'The runtime mode is fixed by the deployment: run-as user × /host mount mode. Edit compose and restart the container to change it.',
+    note: 'The runtime mode is fixed by the deployment: the run-as user. The backup source root is always /sources. Edit compose and restart the container to change it.',
     desc: {
-      root: {
-        ro: 'Can read most files; restore is limited to a timestamped subdirectory (no in-place restore).',
-        rw: 'Full capability: can read most files and supports in-place restore (with overwrite confirmation).',
-      },
-      nonRoot: {
-        ro: 'Unreadable files are skipped; restore is limited to a timestamped subdirectory.',
-        rw: 'Unreadable files are skipped; supports in-place restore (with overwrite confirmation).',
-      },
+      root: 'Can read most files; supports in-place restore (with overwrite confirmation).',
+      nonRoot: 'Unreadable files are skipped; supports in-place restore (with overwrite confirmation).',
     },
   },
   task: {
@@ -513,13 +497,11 @@ export default {
     targetTimestamp: 'Timestamped subdirectory (no overwrite)',
     targetTimestampNote: 'Never overwrites: restores into an automatically created timestamped subdirectory; existing files stay untouched.',
     targetInPlace: 'In-place restore (overwrites existing files)',
-    inPlaceRoReason: '/host is mounted read-only; in-place restore is unavailable.',
     stop_services: 'Stop related services that read or write the target directory (databases, application processes) before running in-place restore.',
     inplace: {
       targetTitle: 'In-place restore target directory',
       targetPlaceholder: 'Pick the original directory to write back to',
-      targetHint: 'Only directories backed up by this snapshot can be selected; the server validates the target again (out-of-prefix or read-only mounts are rejected).',
-      modeHint: 'The current run mode is not host (the /host mount); in-place restore is unavailable.',
+      targetHint: 'Only directories backed up by this snapshot can be selected; the server validates the target again (out-of-prefix paths are rejected).',
       noPathHint: 'This snapshot has no locatable original directory; in-place restore is unavailable.',
       runNote: 'In-place restore writes straight back into the target directory (overwriting existing files); progress updates live below.',
     },

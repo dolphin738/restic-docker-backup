@@ -151,8 +151,6 @@ const runningJobsCount = computed(() => activeJobsQuery.data.value?.total ?? 0)
 
 const activeKey = computed(() => String(route.name ?? ''))
 const currentUser = computed(() => ui.me?.user ?? '-')
-const currentMode = computed(() => ui.me?.mode ?? '-')
-const currentMount = computed(() => ui.me?.host_mount ?? '-')
 
 function onMenuSelect(key: string | number): void {
   void router.push({ name: String(key) })
@@ -229,10 +227,6 @@ async function onLogout(): Promise<void> {
             @update:value="onRepoSwitch"
           />
           <n-tag size="small" round type="info">{{ currentUser }}</n-tag>
-          <n-tag size="small" round>{{ currentMode }}</n-tag>
-          <n-tag size="small" round :type="currentMount === 'rw' ? 'success' : 'warning'">
-            {{ currentMount }}
-          </n-tag>
           <n-tooltip v-if="repoStatusTooltip" trigger="hover">
             <template #trigger>
               <n-tag size="small" round :type="repoStatusTagType">{{ repoStatusText }}</n-tag>

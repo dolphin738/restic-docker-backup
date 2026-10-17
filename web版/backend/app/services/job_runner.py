@@ -749,7 +749,9 @@ class JobRunner:
                 # TaskRepo.get_dict 透传；空值不加 flag。值仍走 WhitelistArgs.host
                 # → _assert_safe_value 白名单校验，**不裸拼进 argv**。
                 host=_clean_host(policy.get("host_tag")),
-                one_file_system=bool(policy.get("one_file_system", self._settings.restic_web_mode == "sources")),
+                # A0 模式收敛后 one_file_system 缺省统一为 True（方案 §3.2 四层防线第一层；
+                # 原 host 模式 False 分支已随 host 模式删除）
+                one_file_system=bool(policy.get("one_file_system", True)),
                 compression=str(policy.get("compression") or "auto"),
                 limit_up_kibps=int(policy.get("limit_up_kibps") or 0),
                 limit_down_kibps=int(policy.get("limit_down_kibps") or 0),

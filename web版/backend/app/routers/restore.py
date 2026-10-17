@@ -10,7 +10,7 @@
    该路径的 ``--overwrite=if-changed`` 由 JobRunner 固定注入、界面无入口——
    请求体出现 ``overwrite_mode`` / ``keyword`` 即 **422**。
 2. **原位恢复**（R-015）：请求体带 ``overwrite_mode`` / ``keyword``，目标经
-   **双重锁**（rw 档 ``host_root`` 白名单 + 快照 ``paths`` 交集收紧）与三重确认门
+   **双重锁**（``/sources`` 前缀白名单 + 快照 ``paths`` 交集收紧）与三重确认门
    后端校验（``overwrite_mode == "always"``、``keyword == snapshot_id[:8]``），
    执行 ``--overwrite=always`` 并写审计 ``restore.inplace``。
 
@@ -172,11 +172,10 @@ async def preview_inplace_restore(
     """比对快照内容与目标磁盘现状，返回「将被覆盖文件清单」（只读，游标分页）。
 
     双重目标锁（R-015 Q1 裁决）：① 目标落在 :data:`INPLACE_RESTORE_ALLOWED_PREFIXES`
-    （rw 档 ``host_root``）；② 目标必须是该快照 ``paths`` 命中的目录或其子目录；
-    ro 档 → 403 ``RESTORE_FORBIDDEN``、完全越界 → 400 ``PATH_OUT_OF_PREFIX``
-    （前端据此置灰「原位置」）。
+    （A0 收敛后 = ``/sources``）；② 目标必须是该快照 ``paths`` 命中的目录或其子目录；
+    完全越界 → 400 ``PATH_OUT_OF_PREFIX``（前端据此置灰「原位置」）。
 
-    预览比对的磁盘落点是**真实原位文件**（``/host/etc/nginx/...``）——与执行层
+    预览比对的磁盘落点是**真实原位文件**（``/sources/etc/nginx/...``）——与执行层
     ``--target /`` + 快照内绝对路径的落点一致，故不随执行层参数变化。
 
     预览是敏感留痕动作：写审计 ``restore.preview``（只读，**不属** S6 危险操作清单，
@@ -184,7 +183,7 @@ async def preview_inplace_restore(
 
     Raises:
         PathOutOfPrefixError: 目标完全越界（400）。
-        RestoreForbiddenError: ro 档 / 非快照 paths（403）。
+        RestoreForbiddenError: 非快照 paths（403）。
         ResticFailedError: 快照元数据或文件清单探测失败（500，原因明示）。
     """
     del session
@@ -233,15 +232,15 @@ async def _restore_inplace(payload: RestoreRequest, request: Request, repo_id: s
     """原位恢复分支（R-015 US-P2-14）：双重锁 + 三重确认门后端校验 + 审计。
 
     执行层落点（S7 v1.3「执行层落点纪律」）：restic 的落点是 ``--target`` +
-    快照内绝对路径的**拼接**，快照存的是容器绝对路径（``/host/etc/...``），故
+    快照内绝对路径的**拼接**，快照存的是容器绝对路径（``/sources/etc/...``），故
     ``params.target`` 固定 :data:`INPLACE_RESTORE_TARGET_ROOT`（``/``）——传
-    ``<目标目录>`` 会嵌套成 ``/host/etc/host/etc/...``，一个目标文件都不会被覆盖。
+    ``<目标目录>`` 会嵌套成 ``/sources/etc/sources/etc/...``，一个目标文件都不会被覆盖。
     用户可控范围改由**强制非空**的 ``--include`` 限定（``container_target`` 或其
     与 ``paths`` 的交集）。响应与审计的 ``target`` 仍回用户语义的原位目录。
 
     Raises:
         PathOutOfPrefixError: 目标完全越界（400 PATH_OUT_OF_PREFIX）。
-        RestoreForbiddenError: ro 档 / 非快照 paths（403 RESTORE_FORBIDDEN）。
+        RestoreForbiddenError: 非快照 paths（403 RESTORE_FORBIDDEN）。
         ValidationError: 时间戳子目录路径带覆盖参数；或原位路径的 ``overwrite_mode``
             非 ``always`` / ``keyword`` 不等于快照短 id / ``paths`` 与目标无交集（422）。
     """
@@ -310,9 +309,8 @@ async def _enforce_inplace_lock(
 ) -> tuple[str, list[str]]:
     """原位恢复的**双重目标锁**（R-015 Q1 裁决）：返回（容器形态目标, 快照备份根）。
 
-    ① 前缀白名单：:data:`INPLACE_RESTORE_ALLOWED_PREFIXES`；
-    ② rw 档判定：``settings.host_mount_mode == "rw"``（ro 档 403，前端置灰）；
-    ③ 快照 paths 交集收紧：目标须为该快照 ``paths`` 命中的目录或其子目录。
+    ① 前缀白名单：:data:`INPLACE_RESTORE_ALLOWED_PREFIXES`（A0 收敛后 = ``/sources``）；
+    ② 快照 paths 交集收紧：目标须为该快照 ``paths`` 命中的目录或其子目录。
 
     Args:
         request: 当前请求（取 settings/path_mapper/compare_service）。
@@ -324,12 +322,11 @@ async def _enforce_inplace_lock(
 
     Raises:
         ValidationError: 目标落在时间戳子目录白名单（``/restore``）却带覆盖语义（422）。
-        PathOutOfPrefixError: 目标完全越界（既不在 ``/restore`` 也不在 rw 档
-            ``host_root``）——400 ``PATH_OUT_OF_PREFIX``（PRD US-P2-13 AC2 口径）。
-        RestoreForbiddenError: ro 档 / 目标不在该快照的备份路径内（403）。
+        PathOutOfPrefixError: 目标完全越界（既不在 ``/restore`` 也不在 ``/sources``）
+            ——400 ``PATH_OUT_OF_PREFIX``（PRD US-P2-13 AC2 口径）。
+        RestoreForbiddenError: 目标不在该快照的备份路径内（403）。
         ResticFailedError: 快照元数据探测失败（500，原因明示）。
     """
-    settings: Settings = request.app.state.settings
     mapper: PathMapper = request.app.state.path_mapper
     compare: CompareService = request.app.state.compare_service
 
@@ -342,17 +339,11 @@ async def _enforce_inplace_lock(
                 "（该路径的 --overwrite=if-changed 由服务端固定注入，界面无入口）",
                 data={"target": target},
             ) from exc
-        # 完全越界（既不在 /restore 也不在 rw 档 host_root）→ 400（PRD US-P2-13 AC2 口径）
+        # 完全越界（既不在 /restore 也不在 /sources）→ 400（PRD US-P2-13 AC2 口径）
         allowed = ", ".join(INPLACE_RESTORE_ALLOWED_PREFIXES)
         raise PathOutOfPrefixError(
             f"原位恢复目标不在允许的白名单内（{allowed}）", data={"target": target}
         ) from exc
-
-    if settings.host_mount_mode != "rw":
-        raise RestoreForbiddenError(
-            "当前 /host 为只读挂载（ro 档），原位恢复不可用（请将挂载切换为 rw）",
-            data={"target": target, "host_mount_mode": settings.host_mount_mode},
-        )
 
     roots = await compare.snapshot_roots(snapshot_id)
     if not in_snapshot_paths(roots, container_target):
@@ -478,7 +469,7 @@ def _normalize_include_paths(
 async def _resolve_stem(request: Request, snapshot_id: str, repo_id: str) -> str:
     """解析时间戳子目录的"源目录名"（best-effort，失败回退快照 id 前 8 位）。
 
-    目录名取自快照首个备份路径的**顶层目录名**（快照存容器路径 ``/host/etc/nginx`` →
+    目录名取自快照首个备份路径的**顶层目录名**（快照存容器路径 ``/sources/etc/nginx`` →
     ``/etc/nginx`` → ``etc``，与 §6.3 示例 ``/restore/etc-20261010-0138`` 一致）。
     解析失败**不阻断恢复**：仅回退为 ``<snapshot_id[:8]>`` 并记 WARNING。
 

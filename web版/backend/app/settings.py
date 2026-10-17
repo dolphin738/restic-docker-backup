@@ -1,6 +1,6 @@
 """应用配置：由 pydantic-settings 从环境变量读取（方案 §4.1 部署项 vs 界面项边界）。
 
-字段名即环境变量名的大写形式，例如 ``restic_web_mode`` ← ``RESTIC_WEB_MODE``。
+字段名即环境变量名的大写形式，例如 ``sources_root`` ← ``SOURCES_ROOT``。
 compose 中只保留"容器怎么跑"的部署事实；业务配置一律走 DB（config 表）与 Web 界面。
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,14 +26,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(case_sensitive=False, extra="ignore", env_file=None)
 
     # ---- 部署项（compose 决定，运行期只读）----
-    restic_web_mode: Literal["host", "sources"] = "host"
-    host_mount_mode: Literal["ro", "rw"] = "rw"
     tz: str = "UTC"
 
     # ---- 路径（§1.2 部署拓扑）----
     data_dir: str = "/data"
     cache_dir: str = "/cache/restic"
-    host_root: str = "/host"
+    # 备份源根（A0 模式收敛后唯一形态：只认容器内可见目录树，对齐 Duplicati）。
+    # 远端数据（NFS/SMB/S3/B2…）经宿主机挂载或 rclone mount 映射进本前缀。
     sources_root: str = "/sources"
     restore_root: str = "/restore"
     repo_root: str = "/repo"
@@ -44,10 +42,6 @@ class Settings(BaseSettings):
     # 前端 SPA 静态产物目录（单容器方案 §2：同一端口提供 API 与页面）。
     # 目录不存在时后端不挂载静态路由，`/` 仍返回统一 JSON 404（本地开发由 Vite dev server 提供页面）。
     static_dir: str = "/app/webroot"
-
-    # ---- 内置排除集派生（host 模式防套娃条目的部署目录解析，方案 §3.1）----
-    # 可选：显式指定 compose 部署目录（宿主机绝对路径）；留空则尝试从 /proc/self/mountinfo 反推。
-    restic_web_deploy_dir: str | None = None
 
     # ---- HTTP / TLS ----
     host: str = "0.0.0.0"
@@ -97,8 +91,8 @@ class Settings(BaseSettings):
 
     @property
     def mode_root(self) -> str:
-        """当前模式下备份源的根前缀：host → /host，sources → /sources。"""
-        return self.host_root if self.restic_web_mode == "host" else self.sources_root
+        """备份源的根前缀（A0 收敛后恒为 ``sources_root``，property 名保留供调用点沿用）。"""
+        return self.sources_root
 
     @property
     def run_user(self) -> str:

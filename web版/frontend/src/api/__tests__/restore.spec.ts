@@ -129,7 +129,7 @@ describe('restoreSnapshot — 原位恢复流（R-015）', () => {
 
     const body = lastRequestBody()
     expect(body['snapshot_id']).toBe(SNAPSHOT_ID)
-    expect(body['target']).toBe('/host/etc/nginx')
+    expect(body['target']).toBe('/sources/etc/nginx')
     // 要件③：模式恒为 always，界面无模式选择项
     expect(body['overwrite_mode']).toBe('always')
     // Q2 裁决：keyword = 快照短 id 前 8 位，后端二次校验
@@ -169,7 +169,7 @@ describe('previewRestore — E20 游标分页', () => {
 
     const body = lastRequestBody()
     expect(body['snapshot_id']).toBe(SNAPSHOT_ID)
-    expect(body['target']).toBe('/host/etc')
+    expect(body['target']).toBe('/sources/etc')
     expect(Object.prototype.hasOwnProperty.call(body, 'cursor')).toBe(true)
     expect(body['cursor']).toBeNull()
     expect(body).not.toHaveProperty('limit')
@@ -196,7 +196,7 @@ describe('previewRestore — E20 游标分页', () => {
         truncated: true,
         items: [
           {
-            path: '/host/etc/nginx/nginx.conf',
+            path: '/sources/etc/nginx/nginx.conf',
             display_path: '/etc/nginx/nginx.conf',
             snapshot_mtime: '2026-10-14T23:09:20.702+08:00',
             disk_mtime: '2026-10-15T01:02:03.000+08:00',

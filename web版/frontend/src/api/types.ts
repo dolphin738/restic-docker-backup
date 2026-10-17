@@ -1,7 +1,5 @@
 /** 与后端 app/schemas/api_schemas.py 一一对应的响应类型（§5.0 / §5.1）。 */
 
-export type RunMode = 'host' | 'sources'
-export type HostMountMode = 'ro' | 'rw'
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'interrupted' | 'cancelled'
 export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump'
 
@@ -35,8 +33,6 @@ export interface HealthResponse {
 export interface MeResponse {
   authenticated: boolean
   must_change_password: boolean
-  mode: RunMode
-  host_mount: HostMountMode
   user: string
 }
 
@@ -230,7 +226,6 @@ export interface FsBrowseResponse {
 /** E32 内置排除集（只读）。items/core 为容器前缀形态（wire 兼容保留）；
  * display_items/display_core 是剥好前缀的展示形态，前端只用这俩。 */
 export interface ExclusionsResponse {
-  mode: RunMode
   items: string[]
   core: string[]
   display_items: string[]
@@ -482,7 +477,7 @@ export interface RestoreResponse {
 
 /** E20 覆盖预览条目：同一路径在快照侧与磁盘侧的 mtime / size 双侧对照。
  *
- * `path` 是容器形态（如 /host/etc/nginx），`display_path` 才是原路径语义（如 /etc/nginx）——
+ * `path` 是容器形态（如 /sources/etc/nginx），`display_path` 才是原路径语义（如 /etc/nginx）——
  * 前端一律只用 `display_path`（S1：容器形态路径不直接面向用户）。
  * 时间串为后端直出的 ISO-8601 原文；`snapshot_size` 为 null 表示快照侧未给出大小。
  */

@@ -8,20 +8,6 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-class RunMode(StrEnum):
-    """备份源挂载模式（compose ``RESTIC_WEB_MODE``，方案 §3.1/§3.2）。"""
-
-    HOST = "host"
-    SOURCES = "sources"
-
-
-class HostMountMode(StrEnum):
-    """/host 挂载读写模式（compose ``HOST_MOUNT_MODE``，方案 §3.3 能力四象限）。"""
-
-    RO = "ro"
-    RW = "rw"
-
-
 class JobType(StrEnum):
     """任务类型白名单（E12，方案 §5）。"""
 

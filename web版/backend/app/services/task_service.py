@@ -150,8 +150,8 @@ class TaskService:
     # ---------------------------------------------------------------- 内部实现
 
     def default_one_file_system(self) -> bool:
-        """sources 模式缺省开启 ``--one-file-system``（方案 §3.2 四层防线第一层）。"""
-        return self._settings.restic_web_mode == "sources"
+        """缺省开启 ``--one-file-system``（方案 §3.2 四层防线第一层；A0 收敛后固定 True）。"""
+        return True
 
     def _display_of(self, value: str) -> str:
         """容器形态 → 展示形态（display 派生专用）。
@@ -168,26 +168,26 @@ class TaskService:
 
         归一口径（主理人裁决，P1 最后一处契约对称化）：前端硬约束"请求体只发展示形态"
         ——``/etc/nginx`` 经 ``to_snapshot`` 还原为容器形态；已带容器前缀
-        （``/host`` / ``/sources``）的入参视为已是容器形态，直接按模式根校验
-        （不二次叠加，避免 ``/host/etc`` → ``/host/host/etc`` 与跨模式路径被无害重解释）。
+        （A0 收敛后即 ``/sources``）的入参视为已是容器形态，直接按模式根校验
+        （不二次叠加，避免 ``/sources/etc`` → ``/sources/sources/etc`` 的重解释）。
 
-        白名单**收紧为当前模式根**：host 模式下提交 ``/sources/...`` 当备份源实际
-        指向容器内数据根，语义错误，应尽早 422 显式失败（数据根不能当备份源）。
+        白名单**收敛为模式根**（A0 后恒为 ``/sources``）：越出该根的入参实际指向
+        容器内不可备份面，语义错误，应尽早 422 显式失败。
 
         Raises:
-            ValidationError: 无备份源、路径非法或越出当前模式根（422）。
+            ValidationError: 无备份源、路径非法或越出备份源根（422）。
         """
         if not sources:
             raise ValidationError("任务至少需要一个备份源")
         result: list[str] = []
         seen: set[str] = set()
-        container_prefixes = (ExclusionRules.HOST_PREFIX, ExclusionRules.SOURCES_PREFIX)
+        container_prefixes = (ExclusionRules.SOURCES_PREFIX,)
         mode_root = self._settings.mode_root
         for raw in sources:
             item = str(raw).strip()
             try:
                 if item.startswith(container_prefixes):
-                    # 已是容器形态：不二次叠加模式根，直接按模式根校验（跨模式 → 422）
+                    # 已是容器形态：不二次叠加源根，直接按源根校验（跨形态 → 422）
                     container = self._path_mapper.validate(item, allowed_prefixes=(mode_root,))
                 else:
                     # 展示形态 → 还原为容器形态后校验（normpath 折叠 ../ 防穿越）
@@ -196,7 +196,7 @@ class TaskService:
                     )
             except PathOutOfPrefixError as exc:
                 raise ValidationError(
-                    f"备份源 {item!r} 不在当前模式根范围内", data={"source": item}
+                    f"备份源 {item!r} 不在当前备份源根范围内", data={"source": item}
                 ) from exc
             if container not in seen:
                 seen.add(container)
@@ -207,8 +207,9 @@ class TaskService:
         """用户追加排除归一为容器形态（三分类规则见 :func:`normalize_user_excludes`），
         再剔除与内置集重合的条目（内置集不入库，D8）。
 
-        锚定路径白名单**收紧为当前模式根**（主理人裁决）：host 模式下排除
-        ``/sources/...`` 实际指向容器内数据根，语义错误，应尽早 422 显式失败。
+        锚定路径白名单**收紧为当前备份源根**（主理人裁决）：排除
+        ``/sources/...`` 之外的已挂载远端路径（如残留 ``/host/...``）无对应挂载点，
+        语义错误，应尽早 422 显式失败。
         """
         normalized = normalize_user_excludes(
             list(excludes), self._path_mapper, source_prefixes=(self._settings.mode_root,)

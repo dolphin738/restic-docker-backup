@@ -22,7 +22,7 @@ def _snapshot_line(snapshot_id: str, tags: list[str], time: str) -> str:
         {
             "time": time,
             "tree": "0" * 64,
-            "paths": ["/host/etc"],
+            "paths": ["/sources/etc"],
             "hostname": "nas",
             "username": "root",
             "tags": tags,

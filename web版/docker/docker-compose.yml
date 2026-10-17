@@ -1,17 +1,15 @@
 # restic-docker-backup Web 版 compose 模板（方案 §4 / §4.1）
 #
-# 挂载模式二选一（RESTIC_WEB_MODE）：
-#   host    —— 宿主机整盘挂载到 /host（默认），备份源在 UI 任意勾选，增删零重启
-#   sources —— 单一数据根目录挂载到 /sources（最小暴露面，§3.2）
+# 运行形态（A0 模式收敛，2026-10-17）：只认容器内可见的目录树——宿主机目录挂载到
+# /sources（默认 ./sources，可用 SOURCES_DIR 覆盖），备份源在 UI 里勾选，增删零重启。
+# 远端数据（NFS/SMB/S3/B2/OneDrive…）先在宿主机挂载（rclone mount 通吃 70+ 云），
+# 再把挂载点映射进 /sources 即可当备份源——详见 docs/部署指南.md「远端源挂载」。
 #
 # compose 中剩余项全部是"容器怎么跑"的部署事实（挂载/端口/用户/镜像），
 # 业务配置（仓库、凭据、策略、调度、通知、dump、时区）一律在 Web 界面完成（§4.1）。
 #
-# 注意（compose 插值规则）：卷挂载串里的 ${HOST_MOUNT_MODE} 由"构建/运行 compose 的环境"插值，
-# 不是容器 environment。因此切换 ro/rw 时需两处一致：
-#   1) 在 docker/ 目录建 .env 写入 HOST_MOUNT_MODE=ro（供卷挂载插值使用）；
-#   2) 保留下方 environment 中的同值条目（供应用 E03 me 的 host_mount 字段读取）。
-# sources 模式的 SOURCES_DIR 同理。
+# 注意（compose 插值规则）：卷挂载串里的 ${SOURCES_DIR} 由"构建/运行 compose 的环境"
+# 插值，不是容器 environment。切换挂载读写档时改下面 volumes 行尾的 rw/ro 即可。
 
 name: restic-docker-backup-web
 
@@ -27,10 +25,6 @@ services:
     user: "0:0"
     environment:
       TZ: Asia/Shanghai
-      # host=全盘挂载 / sources=数据根目录
-      RESTIC_WEB_MODE: host
-      # /host 挂载模式：rw（默认，支持原位恢复）/ ro（安全档，仅备份浏览与"恢复到其他位置"）
-      HOST_MOUNT_MODE: rw
       PORT: "8000"
       # SSE 空闲心跳间隔（秒）。反代 idle timeout 明显小于该值时需下调，
       # 否则反代会先于心跳断开长连接，前端误判为断流并重连。
@@ -50,13 +44,13 @@ services:
       # AWS_SECRET_ACCESS_KEY: ""
       # AWS_DEFAULT_REGION: ""
     volumes:
-      # ---- host 模式（RESTIC_WEB_MODE=host）----
-      - /:/host:${HOST_MOUNT_MODE:-rw}
+      # ---- 备份源根（A0 后唯一形态）：宿主机目录 → 容器 /sources ----
+      # 默认 ./sources（compose 文件同级目录）；SOURCES_DIR 可指向任意宿主机目录
+      # （含 NFS/SMB/rclone mount 的挂载点）。rw 支持原位恢复；ro 为安全档
+      # （仅备份浏览与"恢复到其他位置"）。远端源挂载示例见 docs/部署指南.md。
+      - ${SOURCES_DIR:-./sources}:/sources:rw
 
-      # ---- sources 模式（RESTIC_WEB_MODE=sources）：注释上一行，启用下面两行 ----
-      # - ${SOURCES_DIR:-./sources}:/sources:ro
-
-      # 恢复目标（P1 恢复到时间戳子目录；rw 档下也可选 /host 下子目录）
+      # 恢复目标（时间戳子目录落点；sources 卷 rw 档下原位恢复写回 /sources 内路径）
       - /restore:/restore
 
       # 仅"本地路径仓库"需要；s3/b2 等对象存储后端可整行保持注释

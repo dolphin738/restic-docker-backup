@@ -151,36 +151,20 @@ export default {
   },
   tier: {
     title: '运行模式',
-    currentTag: '当前模式',
     user: {
       root: 'root',
       nonRoot: '非 root',
     },
-    mount: {
-      ro: '只读（ro）',
-      rw: '读写（rw）',
-    },
-    // 模式名按「能力形态」取名：视野（能否读全）× 恢复（能否原位）
+    // A0 模式收敛后只按「运行用户」分档：备份源根恒为 /sources，
+    // 远端目录（NFS/SMB/S3/B2 等）经宿主机挂载或 rclone mount 映射进来
     name: {
-      root: {
-        ro: '全览模式',
-        rw: '完整模式',
-      },
-      nonRoot: {
-        ro: '沙盒模式',
-        rw: '受限模式',
-      },
+      root: '完整模式',
+      nonRoot: '受限模式',
     },
-    note: '运行模式由部署形态决定：运行用户 × /host 挂载模式；调整 compose 后重启容器生效。',
+    note: '运行模式由部署形态决定：容器运行用户；备份源根恒为 /sources。调整 compose 后重启容器生效。',
     desc: {
-      root: {
-        ro: '可读绝大多数文件；恢复只能到时间戳子目录，不支持原位恢复。',
-        rw: '能力完整：可读绝大多数文件，支持原位恢复（需覆盖清单确认）。',
-      },
-      nonRoot: {
-        ro: '无权读取的文件会被跳过；恢复只能到时间戳子目录。',
-        rw: '无权读取的文件会被跳过；支持原位恢复（需覆盖清单确认）。',
-      },
+      root: '可读绝大多数文件；支持原位恢复（需覆盖清单确认）。',
+      nonRoot: '无权读取的文件会被跳过；支持原位恢复（需覆盖清单确认）。',
     },
   },
   task: {
@@ -511,13 +495,11 @@ export default {
     targetTimestamp: '时间戳子目录（不覆盖）',
     targetTimestampNote: '永不覆盖：恢复到自动新建的时间戳子目录，既有文件不会被改动。',
     targetInPlace: '原位恢复（覆盖现有文件）',
-    inPlaceRoReason: '/host 为只读挂载，原位恢复不可用。',
     stop_services: '建议先停止正在读写该目录的相关服务（数据库、应用进程等），再执行原位恢复。',
     inplace: {
       targetTitle: '原位恢复目标目录',
       targetPlaceholder: '选择要写回的原目录',
-      targetHint: '仅可选择该快照备份过的目录；服务端会再做一次校验（越界或只读挂载会被拒绝）。',
-      modeHint: '当前运行模式不是 host（/host 挂载），原位恢复不可用。',
+      targetHint: '仅可选择该快照备份过的目录；服务端会再做一次校验（越界路径会被拒绝）。',
       noPathHint: '该快照未记录可定位的原目录，无法原位恢复。',
       runNote: '原位恢复直接写回目标目录（覆盖现有文件），进度区实时刷新。',
     },

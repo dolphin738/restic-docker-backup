@@ -129,7 +129,7 @@ def test_verbose_status_yields_file_record():
 
     rec0 = parser.parse_line(lines[0])
     assert isinstance(rec0, FileRecord)
-    assert rec0.path == "/host/etc/nginx/nginx.conf"
+    assert rec0.path == "/sources/etc/nginx/nginx.conf"
     assert rec0.name == "nginx.conf"
     assert rec0.size == 512
     assert rec0.type == "file"
@@ -189,9 +189,9 @@ def test_parse_snapshot_list_pretty_array():
     assert records[0].snapshot_id == "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
     assert records[0].host == "nas"
     assert records[0].tags == ["auto"]
-    assert records[0].paths == ["/host/etc/nginx"]
+    assert records[0].paths == ["/sources/etc/nginx"]
     assert records[1].snapshot_id == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-    assert records[1].paths == ["/host/var/lib", "/sources/db"]
+    assert records[1].paths == ["/sources/var/lib", "/sources/db"]
 
 
 def test_parse_snapshot_list_line_stream_matches_pretty():
@@ -218,7 +218,7 @@ def test_parse_file_list_line_stream():
     records = parser.parse_file_list(read_fixture("ls_files.ndjson"))
 
     assert len(records) == 4
-    assert records[0].path == "/host/etc"
+    assert records[0].path == "/sources/etc"
     assert records[0].type == "dir"
     assert records[2].name == "nginx.conf"
     assert records[2].size == 512
@@ -229,7 +229,7 @@ def test_parse_file_list_pretty_array():
     parser = OutputParser()
     records = parser.parse_file_list(read_fixture("ls_files_array.json"))
 
-    assert [r.path for r in records] == ["/host/etc/nginx", "/host/etc/nginx/nginx.conf"]
+    assert [r.path for r in records] == ["/sources/etc/nginx", "/sources/etc/nginx/nginx.conf"]
 
 
 def test_parse_file_list_garbage_returns_empty():
@@ -284,7 +284,7 @@ def _forget_group(keep_id: str, remove_id: str) -> dict:
             "time": "2026-10-01T03:00:00+08:00",
             "hostname": "nas",
             "tags": ["task-1"],
-            "paths": ["/host/etc"],
+            "paths": ["/sources/etc"],
         }
 
     return {"keep": [_snapshot(keep_id)], "remove": [_snapshot(remove_id)], "reasons": []}
@@ -326,4 +326,4 @@ def test_parse_forget_groups_garbage_returns_empty():
     assert parser.parse_forget_groups("") == []
     assert parser.parse_forget_groups("not json at all") == []
     # 快照对象（无 keep/remove 键）不构成分组，不误收
-    assert parser.parse_forget_groups('{"id": "a1b2", "paths": ["/host/etc"]}') == []
+    assert parser.parse_forget_groups('{"id": "a1b2", "paths": ["/sources/etc"]}') == []

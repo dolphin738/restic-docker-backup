@@ -36,7 +36,7 @@ from app.settings import Settings
 BACKUP_LINES = [
     '{"message_type":"status","percent_done":0.0,"total_files":2,"files_done":0,"total_bytes":100,"bytes_done":0}',
     '{"message_type":"status","percent_done":1.0,"total_files":2,"files_done":2,"total_bytes":100,"bytes_done":100}',
-    '{"message_type":"error","during":"archival","item":"/host/etc/shadow","error":"permission denied"}',
+    '{"message_type":"error","during":"archival","item":"/sources/etc/shadow","error":"permission denied"}',
     '{"message_type":"summary","total_files_processed":2,"total_bytes_processed":100,'
     '"snapshot_id":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",'
     '"snapshot_time":"2026-10-10T01:38:00Z"}',
@@ -187,7 +187,7 @@ def test_job_status_vocabulary_is_exactly_six():
 async def test_pending_running_success(tmp_path):
     db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
 
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     assert job.status == "pending"
 
     await await_job(runner, job.id)
@@ -219,7 +219,7 @@ async def test_restore_summary_files_skipped_folds_into_job(tmp_path):
     job = await runner.submit(
         "restore",
         snapshot_id="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
-        params={"target": "/", "inplace": True, "overwrite": "always", "include": ["/host/perm2"]},
+        params={"target": "/", "inplace": True, "overwrite": "always", "include": ["/sources/perm2"]},
     )
 
     await await_job(runner, job.id)
@@ -234,7 +234,7 @@ async def test_restore_summary_files_skipped_folds_into_job(tmp_path):
 async def test_nonzero_exit_maps_to_failed(tmp_path):
     db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES, exit_code=3)
 
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
 
     final = await repo.get(job.id)
@@ -249,7 +249,7 @@ async def test_spawn_error_converges_to_failed(tmp_path):
         tmp_path, spawn_error=FileNotFoundError("restic binary missing")
     )
 
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
 
     final = await repo.get(job.id)
@@ -261,7 +261,7 @@ async def test_spawn_error_converges_to_failed(tmp_path):
 
 async def test_scheduled_trigger_runs_normally_when_free(tmp_path):
     db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
-    job = await runner.submit("backup", trigger="scheduled", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", trigger="scheduled", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
     final = await repo.get(job.id)
     assert final.status == "success"
@@ -276,7 +276,7 @@ async def test_manual_submit_conflict_raises_409(tmp_path):
     await insert_job(repo, "existing", "running")
 
     with pytest.raises(JobConflictError) as excinfo:
-        await runner.submit("backup", params={"sources": ["/host/etc"]})
+        await runner.submit("backup", params={"sources": ["/sources/etc"]})
     # E12 契约（选项②）：data 增 running_task_name（运行中 job 无任务关联时为 None）
     assert excinfo.value.data == {"running_job_id": "existing", "running_task_name": None}
     await db.close()
@@ -297,7 +297,7 @@ async def test_scheduled_conflict_records_cancelled_job_and_audit(tmp_path):
     runner._audit = audit
     await insert_job(repo, "active", "running")
 
-    skipped = await runner.submit("backup", trigger="scheduled", params={"sources": ["/host/etc"]})
+    skipped = await runner.submit("backup", trigger="scheduled", params={"sources": ["/sources/etc"]})
     assert skipped.status == "cancelled"
 
     rows, total = await audit.query(action="job.skipped_conflict")
@@ -521,7 +521,7 @@ async def test_on_shutdown_terminates_processes(tmp_path):
 async def test_submit_run_and_cancel_race_is_safe(tmp_path):
     """执行完成后 cancel 同一任务 → 409（终态不可取消），无悬挂任务。"""
     db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
     with pytest.raises(NotCancellableError):
         await runner.cancel(job.id)
@@ -550,7 +550,7 @@ async def test_concurrent_manual_submit_exactly_one_wins(tmp_path):
 
     async def submit_once() -> Job | BaseException:
         try:
-            return await runner.submit("backup", params={"sources": ["/host/etc"]})
+            return await runner.submit("backup", params={"sources": ["/sources/etc"]})
         except BaseException as exc:  # noqa: BLE001 - 收集冲突异常用于断言
             return exc
 
@@ -581,7 +581,7 @@ async def test_concurrent_submit_does_not_duplicate_active_rows(tmp_path):
     db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
 
     results = await asyncio.gather(
-        *(runner.submit("backup", params={"sources": ["/host/etc"]}) for _ in range(4)),
+        *(runner.submit("backup", params={"sources": ["/sources/etc"]}) for _ in range(4)),
         return_exceptions=True,
     )
     successes = [r for r in results if isinstance(r, Job)]
@@ -601,7 +601,7 @@ async def test_concurrent_submit_does_not_duplicate_active_rows(tmp_path):
 async def test_task_submit_lands_task_id_and_uses_task_profile(tmp_path):
     """task_id 提交：jobs 落 task_id、policy_id=NULL；profile 经 task_loader 加载。"""
     db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path, lines=BACKUP_LINES)
-    task = await task_repo.create({"name": "每日全量", "sources": ["/host/srv"], "excludes": []})
+    task = await task_repo.create({"name": "每日全量", "sources": ["/sources/srv"], "excludes": []})
 
     job = await runner.submit("backup", task_id=task.id, trigger="manual")
     assert job.task_id == task.id
@@ -613,7 +613,7 @@ async def test_task_submit_lands_task_id_and_uses_task_profile(tmp_path):
 
     # profile 来自任务而非 params：sources/tag 均取任务值
     args = runner._restic.last_args  # noqa: SLF001 - 测试替身断言（与既有 _tasks/_processes 同风格）
-    assert args.targets == ("/host/srv",)
+    assert args.targets == ("/sources/srv",)
     assert args.tags == (f"task-{task.id}",)
 
     rows, total = await AuditRepo(db).query(action="job.submit")
@@ -631,10 +631,10 @@ async def test_task_submit_profile_fallback_does_not_block(tmp_path):
     本用例校验的是「profile 解析为空时不阻塞」，与「任务不存在」是两件事。
     """
     db, runner, _ = await make_runner(tmp_path, lines=BACKUP_LINES)  # 无 task_loader
-    task = await TaskRepo(db).create({"name": "无回调任务", "sources": ["/host/srv"]})
+    task = await TaskRepo(db).create({"name": "无回调任务", "sources": ["/sources/srv"]})
 
     job = await runner.submit(
-        "backup", task_id=task.id, trigger="manual", params={"sources": ["/host/etc"]}
+        "backup", task_id=task.id, trigger="manual", params={"sources": ["/sources/etc"]}
     )
     assert job.task_id == task.id
 
@@ -647,11 +647,11 @@ async def test_task_submit_profile_fallback_does_not_block(tmp_path):
 async def test_manual_conflict_data_includes_running_task_name(tmp_path):
     """E12 409 data 增 running_task_name（US-026-04 AC2：UI 提示任务名）。"""
     db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path)
-    task = await task_repo.create({"name": "在跑任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "在跑任务", "sources": ["/sources/srv"]})
     await insert_job(repo, "existing", "running", task_id=task.id)
 
     with pytest.raises(JobConflictError) as excinfo:
-        await runner.submit("backup", task_id=task.id, params={"sources": ["/host/etc"]})
+        await runner.submit("backup", task_id=task.id, params={"sources": ["/sources/etc"]})
     data = excinfo.value.data
     assert data["running_job_id"] == "existing"
     assert data["running_task_name"] == "在跑任务"
@@ -661,7 +661,7 @@ async def test_manual_conflict_data_includes_running_task_name(tmp_path):
 async def test_scheduled_conflict_skipped_job_carries_task_id(tmp_path):
     """scheduled 冲突：cancelled 跳过任务带 task_id（调度不排队，下周期再试）。"""
     db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path)
-    task = await task_repo.create({"name": "调度任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "调度任务", "sources": ["/sources/srv"]})
     await insert_job(repo, "active", "running")
 
     skipped = await runner.submit("backup", task_id=task.id, trigger="scheduled")
@@ -683,12 +683,12 @@ async def test_concurrent_task_submit_exactly_one_wins(tmp_path):
     冲突方 data 带出运行中任务名，DB 层同样只应有一条 active 记录。
     """
     db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path, lines=BACKUP_LINES)
-    task = await task_repo.create({"name": "竞速任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "竞速任务", "sources": ["/sources/srv"]})
 
     async def submit_once() -> Job | BaseException:
         try:
             return await runner.submit(
-                "backup", task_id=task.id, params={"sources": ["/host/etc"]}
+                "backup", task_id=task.id, params={"sources": ["/sources/etc"]}
             )
         except BaseException as exc:  # noqa: BLE001 - 收集冲突异常用于断言
             return exc
@@ -730,7 +730,7 @@ async def test_backup_success_invokes_callback_and_clears_pending(tmp_path):
 
     runner._on_task_backup_success = callback  # noqa: SLF001 - 测试注入（构造期参数同款能力）
 
-    task = await task_repo.create({"name": "首跑任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "首跑任务", "sources": ["/sources/srv"]})
     assert task.dry_run_pending is True  # 创建即置 1
 
     job = await runner.submit("backup", task_id=task.id)
@@ -756,7 +756,7 @@ async def test_backup_failure_does_not_invoke_callback(tmp_path):
 
     runner._on_task_backup_success = callback  # noqa: SLF001
 
-    task = await task_repo.create({"name": "失败任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "失败任务", "sources": ["/sources/srv"]})
     job = await runner.submit("backup", task_id=task.id)
     await await_job(runner, job.id)
 
@@ -779,7 +779,7 @@ async def test_cancelled_job_does_not_invoke_callback(tmp_path):
 
     runner._on_task_backup_success = callback  # noqa: SLF001
 
-    task = await task_repo.create({"name": "取消任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "取消任务", "sources": ["/sources/srv"]})
     await insert_job(repo, "job-cancel-x6", "running", task_id=task.id)
 
     cancelled = await runner.cancel("job-cancel-x6")
@@ -800,7 +800,7 @@ async def test_callback_failure_does_not_break_success_terminal(tmp_path):
 
     runner._on_task_backup_success = broken_callback  # noqa: SLF001
 
-    task = await task_repo.create({"name": "回调炸任务", "sources": ["/host/srv"]})
+    task = await task_repo.create({"name": "回调炸任务", "sources": ["/sources/srv"]})
     job = await runner.submit("backup", task_id=task.id)
     await await_job(runner, job.id)
 

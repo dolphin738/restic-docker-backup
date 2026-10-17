@@ -47,7 +47,7 @@ class OverwriteItem:
     """单条将被覆盖的文件（设计 §2.5 响应字段）。
 
     Attributes:
-        path: 磁盘落点（**容器形态**，如 ``/host/etc/nginx/nginx.conf``）——
+        path: 磁盘落点（**容器形态**，如 ``/sources/etc/nginx/nginx.conf``）——
             即快照内绝对路径原样写回的位置；出 API 时由路由层派生
             ``display_path``（S1/A2）。
         snapshot_mtime: 快照侧 mtime（UTC ISO）。

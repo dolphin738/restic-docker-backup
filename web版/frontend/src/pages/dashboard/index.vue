@@ -240,9 +240,9 @@ async function onDeleteConfirmed(): Promise<void> {
         </n-card>
       </n-gi>
 
-      <!-- 运行模式卡：运行用户 × /host 挂载模式，只展示当前模式 -->
+      <!-- 运行模式卡：只展示当前运行用户档位（A0 后 /host 挂载轴已随 host 模式删除） -->
       <n-gi>
-        <TierCard :user="ui.me?.user ?? ''" :host-mount="ui.me?.host_mount ?? 'ro'" />
+        <TierCard :user="ui.me?.user ?? ''" />
       </n-gi>
     </n-grid>
 

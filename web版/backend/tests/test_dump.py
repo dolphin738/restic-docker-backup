@@ -366,7 +366,7 @@ def test_cleanup_symlink_never_followed(tmp_path, monkeypatch):
 async def test_dump_disabled_backup_phase_unchanged(tmp_path):
     """dump.enabled 缺省 off：backup 行为与旧实现逐字节一致（回归保护）。"""
     db, runner, repo, config = await make_dump_runner(tmp_path)
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
 
     final = await repo.get(job.id)
@@ -389,7 +389,7 @@ async def test_dump_phase_sqlite_success_then_backup(tmp_path):
     await config.set(DUMP_TYPE_KEY, "sqlite")
     await config.set(DUMP_DATABASES_KEY, json.dumps([str(db_path)]))
 
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
 
     final = await repo.get(job.id)
@@ -408,7 +408,7 @@ async def test_dump_phase_failure_blocks_backup(tmp_path):
     await config.set(DUMP_TYPE_KEY, "sqlite")
     await config.set(DUMP_DATABASES_KEY, json.dumps([str(tmp_path / "missing.db")]))
 
-    job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, job.id)
 
     final = await repo.get(job.id)
@@ -506,7 +506,7 @@ async def test_dump_failure_still_blocks_backup_and_dump_types(tmp_path):
     db, runner, repo, config = await make_dump_runner(tmp_path)
     await _enable_broken_dump(config, tmp_path)
 
-    backup_job = await runner.submit("backup", params={"sources": ["/host/etc"]})
+    backup_job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
     await await_job(runner, backup_job.id)
     final_backup = await repo.get(backup_job.id)
     assert final_backup is not None and final_backup.status == "failed"

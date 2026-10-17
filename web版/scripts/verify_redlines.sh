@@ -51,7 +51,9 @@ section() {
 section 'S1/A2 路径映射唯一实现点'
 
 # 文件系统前缀字面量只允许出现在：settings.py（根路径定义）、
-# constants.py（白名单常量）、exclusions.py（模式派生输入）、path_mapper.py（校验实现）。
+# constants.py（白名单常量）、exclusions.py（排除集派生）、path_mapper.py（校验实现）。
+# A0 模式收敛（2026-10-17）后白名单只剩 /sources 与 /restore："/host" 已移出扫描模式——
+# 任何位置再出现 "/host" 字面量即视为 host 模式复活，直接报违规。
 # 注：routers/ 下的 "/restore"、"/sources" 是 **API 路由路径**，与文件系统前缀无关。
 out=$(grep -rIn '"/host"\|"/sources"\|"/restore"' backend/app frontend/src --include=*.py \
       | grep -v settings.py | grep -v constants.py | grep -v exclusions.py \
@@ -61,6 +63,17 @@ if [ -n "$out" ]; then
   detail "$out"
 else
   ok 'S1/A2 无越界硬编码前缀'
+fi
+
+# 前端复活探针（A0 补漏 2026-10-17）：上面只扫 .py，而 TS/Vue 用单引号——
+# `INPLACE_TARGET_ROOT = '/host'`（api/restore.ts）曾因此漏过一版，前端原位恢复
+# 全部 400 而单测全绿（spec 锁死了错值）。任何 '/host' 或 "/host" 命中即 host 复活。
+out=$(grep -rIn "'/host'\|\"/host\"" frontend/src --include=*.ts --include=*.vue 2>/dev/null)
+if [ -n "$out" ]; then
+  violation 'S1/A2 前端出现 /host 前缀字面量（host 模式复活）'
+  detail "$out"
+else
+  ok 'S1/A2 前端无 /host 残留'
 fi
 
 # ---------------------------------------------------------------- restic 参数

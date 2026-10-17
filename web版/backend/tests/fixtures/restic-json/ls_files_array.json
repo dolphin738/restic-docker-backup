@@ -2,7 +2,7 @@
   {
     "name": "nginx",
     "type": "dir",
-    "path": "/host/etc/nginx",
+    "path": "/sources/etc/nginx",
     "uid": 0,
     "gid": 0,
     "size": 0,
@@ -14,7 +14,7 @@
   {
     "name": "nginx.conf",
     "type": "file",
-    "path": "/host/etc/nginx/nginx.conf",
+    "path": "/sources/etc/nginx/nginx.conf",
     "uid": 0,
     "gid": 0,
     "size": 512,

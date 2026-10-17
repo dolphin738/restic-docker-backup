@@ -19,7 +19,7 @@ async def test_task_prune_interval_zero_roundtrips(tmp_path):
     repo = TaskRepo(db)
 
     task = await repo.create(
-        {"name": "关闭提示任务", "sources": ["/host/etc"], "prune_interval_days": 0}
+        {"name": "关闭提示任务", "sources": ["/sources/etc"], "prune_interval_days": 0}
     )
     assert task.prune_interval_days == 0  # create 返回值
 
@@ -36,7 +36,7 @@ async def test_task_prune_interval_update_to_zero(tmp_path):
     await db.connect()
     repo = TaskRepo(db)
 
-    task = await repo.create({"name": "先开后关", "sources": ["/host/etc"]})
+    task = await repo.create({"name": "先开后关", "sources": ["/sources/etc"]})
     assert task.prune_interval_days == 7  # 缺省路径不受修复影响
 
     updated = await repo.update(task.id, {"prune_interval_days": 0})

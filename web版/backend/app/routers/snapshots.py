@@ -2,7 +2,7 @@
 
 两条约定：
 
-1. **路径语义**：快照里存的是**容器路径**（``/host/etc/nginx``），两条端点对外一律给
+1. **路径语义**：快照里存的是**容器路径**（``/sources/etc/nginx``），两条端点对外一律给
    ``display_path``（原路径语义 ``/etc/nginx``），转换只走 :class:`PathMapper`（§7.3 唯一实现点）；
    E18 的 ``?path=`` 入参按展示形态接收，服务端用 ``to_snapshot`` 还原为容器内绝对路径。
 2. **探测失败不静默**：restic 非 0 退出或超时 → 500 ``RESTIC_FAILED``，
@@ -193,7 +193,7 @@ def _direct_children(
 
     Args:
         records: ``ls`` 解析出的全部条目（可能递归到多层）。
-        subtree: 容器内规范化的子树路径（如 ``/host/etc``）。
+        subtree: 容器内规范化的子树路径（如 ``/sources/etc``）。
         mapper: 路径映射器（生成 display_path）。
 
     Returns:

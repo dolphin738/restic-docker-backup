@@ -16,7 +16,7 @@ from app.constants import (
     RESTORE_PREVIEW_DEFAULT_LIMIT,
     RESTORE_PREVIEW_MAX_LIMIT,
 )
-from app.schemas.enums import ConfigSource, HostMountMode, JobStatus, JobTrigger, JobType, RunMode
+from app.schemas.enums import ConfigSource, JobStatus, JobTrigger, JobType
 
 T = TypeVar("T")
 
@@ -70,12 +70,10 @@ class LoginRequest(_Base):
 
 
 class MeResponse(_Base):
-    """E03 会话信息（供四象限卡 US-G2）。"""
+    """E03 会话信息（供运行模式卡 US-G2 与前端路由守卫使用；A0 模式收敛后只剩 user 维度）。"""
 
     authenticated: bool = True
     must_change_password: bool = Field(description="首启强制改密标志（admin_account.must_change）")
-    mode: RunMode = Field(description="host=全盘挂载 / sources=数据根目录")
-    host_mount: HostMountMode = Field(description="/host 挂载模式 ro|rw")
     user: str = Field(description="容器内运行用户（root / backup …）")
 
 
@@ -269,7 +267,7 @@ class SourceBrowseResponse(_Base):
 class DryRunRequest(_Base):
     """E31 首备扫描范围预览请求。"""
 
-    sources: list[str] = Field(min_length=1, description="容器内路径（/host 或 /sources 前缀）")
+    sources: list[str] = Field(min_length=1, description="容器内路径（/sources 前缀）")
     excludes: list[str] = Field(default_factory=list, description="用户追加排除规则（内置集自动叠加）")
 
 
@@ -339,7 +337,6 @@ class ExclusionsResponse(_Base):
     ``display_core`` 为剥前缀后的展示形态（前端优先使用，无需自行过 PathMapper）。
     """
 
-    mode: RunMode
     items: list[str] = Field(default_factory=list, description="当前模式完整内置排除集（容器内路径）")
     core: list[str] = Field(default_factory=list, description="语义核心子集（与模式无关，供 UI 分组）")
     display_items: list[str] = Field(default_factory=list, description="items 的展示形态（剥前缀，原路径语义）")

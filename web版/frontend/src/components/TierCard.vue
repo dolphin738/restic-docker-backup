@@ -2,23 +2,19 @@
 import { NCard, NSpace, NTag, NText } from 'naive-ui'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { HostMountMode } from '@/api/types'
 
 const props = defineProps<{
   /** 容器内运行用户（/api/auth/me 的 user）。 */
   user: string
-  /** /host 挂载模式（/api/auth/me 的 host_mount）。 */
-  hostMount: HostMountMode
 }>()
 
 const { t } = useI18n()
 
 /**
- * 运行模式卡：只展示**当前部署形态**对应的模式（运行用户 × /host 挂载模式）。
- * 模式名与说明见 i18n `tier.*`；早先的四象限布局已收敛为单模式展示。
+ * 运行模式卡（A0 模式收敛后）：只按**运行用户**展示当前部署形态。
+ * 模式名与说明见 i18n `tier.*`；早先的「用户 × /host 挂载」两轴与四象限布局均已收敛。
  */
 const userKey = computed<'root' | 'nonRoot'>(() => (props.user === 'root' ? 'root' : 'nonRoot'))
-const mountKey = computed<HostMountMode>(() => props.hostMount)
 </script>
 
 <template>
@@ -26,14 +22,14 @@ const mountKey = computed<HostMountMode>(() => props.hostMount)
     <div class="tier__cell">
       <n-space align="center" :size="8">
         <n-tag size="small" round type="success">
-          {{ t(`tier.name.${userKey}.${mountKey}`) }}
+          {{ t(`tier.name.${userKey}`) }}
         </n-tag>
         <n-text depth="3">
-          {{ t(`tier.user.${userKey}`) }} × {{ t(`tier.mount.${mountKey}`) }}
+          {{ t(`tier.user.${userKey}`) }}
         </n-text>
       </n-space>
       <n-text class="tier__desc" depth="2">
-        {{ t(`tier.desc.${userKey}.${mountKey}`) }}
+        {{ t(`tier.desc.${userKey}`) }}
       </n-text>
       <n-text depth="3" class="tier__note">{{ t('tier.note') }}</n-text>
     </div>

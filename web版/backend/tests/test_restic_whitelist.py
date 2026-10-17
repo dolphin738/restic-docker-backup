@@ -18,9 +18,9 @@ from app.settings import Settings
 SNAPSHOT_ID = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
 
 
-def make_cmd(mode: str = "host") -> ResticCmd:
-    """构造命令器（host 模式：模式根 /host）。"""
-    settings = Settings(data_dir="/tmp/restic-whitelist", restic_web_mode=mode)
+def make_cmd() -> ResticCmd:
+    """构造命令器（A0 模式收敛后唯一形态：备份源根 /sources）。"""
+    settings = Settings(data_dir="/tmp/restic-whitelist")
     return ResticCmd(settings, PathMapper(settings))
 
 
@@ -38,7 +38,7 @@ def test_restore_include_assembled_in_order():
         args=WhitelistArgs(
             snapshot_id=SNAPSHOT_ID,
             target_dir="/restore/etc-20261010-0138",
-            include=("/host/etc", "/host/home/u/x"),
+            include=("/sources/etc", "/sources/home/u/x"),
             overwrite="if-changed",
         ),
     )
@@ -50,9 +50,9 @@ def test_restore_include_assembled_in_order():
         "--target",
         "/restore/etc-20261010-0138",
         "--include",
-        "/host/etc",
+        "/sources/etc",
         "--include",
-        "/host/home/u/x",
+        "/sources/home/u/x",
         "--overwrite=if-changed",
         SNAPSHOT_ID,
     ]
@@ -68,9 +68,12 @@ def test_restore_without_include_has_no_flag():
 
 
 def test_restore_include_out_of_mode_root_rejected():
-    """越界 include（跨模式/非模式根）→ PathOutOfPrefixError（S1 校验点②，纵深防御）。"""
-    cmd = make_cmd("host")
-    for bad in ("/restore/etc", "/sources/etc", "/etc"):
+    """越界 include（非备份源根 /sources）→ PathOutOfPrefixError（S1 校验点②，纵深防御）。
+
+    /host 为已删除的旧模式前缀（A0），残留写法同样越界。
+    """
+    cmd = make_cmd()
+    for bad in ("/restore/etc", "/host/etc", "/etc"):
         with pytest.raises(PathOutOfPrefixError):
             cmd.build(
                 "restore",
@@ -81,8 +84,8 @@ def test_restore_include_out_of_mode_root_rejected():
 
 
 def test_restore_include_respects_sources_mode_root():
-    """sources 模式下白名单前缀随模式根切换（/sources 合法、/host 越界）。"""
-    cmd = make_cmd("sources")
+    """白名单前缀随备份源根收敛（/sources 合法、/host 越界）。"""
+    cmd = make_cmd()
     argv = cmd.build(
         "restore",
         args=WhitelistArgs(
@@ -113,12 +116,12 @@ def test_exclude_flag_injection_rejected():
     """以 '-' 开头的值被拒（禁止注入 flag）。"""
     cmd = make_cmd()
     with pytest.raises(ValidationError):
-        cmd.build("backup", args=WhitelistArgs(targets=("/host/etc",), excludes=("--evil",)))
+        cmd.build("backup", args=WhitelistArgs(targets=("/sources/etc",), excludes=("--evil",)))
 
 
 def test_backup_target_out_of_prefix_rejected():
-    """备份源位置参数越出三前缀白名单（/host /sources /restore 之外）→ 校验失败。"""
-    cmd = make_cmd("host")
+    """备份源位置参数越出白名单（/sources /restore 之外）→ 校验失败。"""
+    cmd = make_cmd()
     with pytest.raises(PathOutOfPrefixError):
         cmd.build("backup", args=WhitelistArgs(targets=("/repo/etc",)))
 
@@ -243,8 +246,8 @@ def test_check_read_data_and_subset_mutually_exclusive():
 def test_restore_inplace_target_is_root_constant():
     """原位开关打开且 target 取 INPLACE_RESTORE_TARGET_ROOT → argv 拼出 ``--target /``。
 
-    restic 落点 = ``--target`` + 快照内绝对路径，快照存容器路径 ``/host/etc/...``，
-    故只有 ``/`` 是真原位（写到 ``/host/etc/...``）。
+    restic 落点 = ``--target`` + 快照内绝对路径，快照存容器路径 ``/sources/etc/...``，
+    故只有 ``/`` 是真原位（写到 ``/sources/etc/...``）。
     """
     cmd = make_cmd()
     argv = cmd.build(
@@ -253,7 +256,7 @@ def test_restore_inplace_target_is_root_constant():
             snapshot_id=SNAPSHOT_ID,
             target_dir=INPLACE_RESTORE_TARGET_ROOT,
             inplace_target=True,
-            include=("/host/etc",),
+            include=("/sources/etc",),
             overwrite="always",
         ),
     )
@@ -268,7 +271,7 @@ def test_restore_inplace_switch_cannot_smuggle_other_target():
         cmd.build(
             "restore",
             args=WhitelistArgs(
-                snapshot_id=SNAPSHOT_ID, target_dir="/host/etc", inplace_target=True
+                snapshot_id=SNAPSHOT_ID, target_dir="/sources/etc", inplace_target=True
             ),
         )
 

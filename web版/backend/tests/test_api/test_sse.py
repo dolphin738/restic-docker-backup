@@ -20,7 +20,7 @@ from app.utils.ulid import new_job_id
 LOG_LINES = [
     '{"message_type":"status","percent_done":0.5,"total_files":2,"files_done":1,"total_bytes":100,"bytes_done":50}',
     "",
-    '{"message_type":"error","during":"archival","item":"/host/etc/shadow","error":"permission denied"}',
+    '{"message_type":"error","during":"archival","item":"/sources/etc/shadow","error":"permission denied"}',
     "restic: plain text log line",
     '{"message_type":"summary","total_bytes_processed":100,"snapshot_id":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2","snapshot_time":"2026-10-10T01:38:00Z"}',
 ]

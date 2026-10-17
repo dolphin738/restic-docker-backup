@@ -294,7 +294,7 @@ async def test_e12_known_task_id_still_accepted(app_client):
     ns = app_client
     await finish_bootstrap(ns)
     task = await ns.app.state.task_repo.create(
-        {"name": "合法任务", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+        {"name": "合法任务", "enabled": 1, "sources": ["/sources/srv"], "excludes": []}
     )
     resp = await ns.client.post(
         "/api/jobs", json={"type": "backup", "task_id": task.id}, headers=ORIGIN
@@ -329,7 +329,7 @@ async def test_e12_manual_backup_books_last_run_at(app_client):
     ns = app_client
     await finish_bootstrap(ns)
     task = await ns.app.state.task_repo.create(
-        {"name": "手动记账", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+        {"name": "手动记账", "enabled": 1, "sources": ["/sources/srv"], "excludes": []}
     )
     assert (await ns.app.state.task_repo.get(task.id)).last_run_at is None
 
@@ -349,7 +349,7 @@ async def test_e12_manual_restore_does_not_book_last_run_at(app_client):
     ns = app_client
     await finish_bootstrap(ns)
     task = await ns.app.state.task_repo.create(
-        {"name": "恢复不记账", "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+        {"name": "恢复不记账", "enabled": 1, "sources": ["/sources/srv"], "excludes": []}
     )
 
     resp = await ns.client.post(

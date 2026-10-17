@@ -441,7 +441,7 @@ def _to_container_path(
     """把 E36 的路径入参还原为容器内路径（与 E31 ``_to_container_path`` 同口径）。
 
     新契约收**展示路径**（``/etc/nginx``）→ ``to_snapshot`` 还原；兼容容器路径形态：
-    入参已带当前模式根前缀（``/host`` / ``/sources``）时原样通过校验（任务存量值即此形态）。
+    入参已带当前模式根前缀（A0 收敛后即 ``/sources``）时原样通过校验（任务存量值即此形态）。
 
     Args:
         mapper: 路径映射器。

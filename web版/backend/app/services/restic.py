@@ -359,7 +359,7 @@ class ResticCmd:
             if args.target_dir:
                 flags.extend(["--target", self._restore_target(args)])
             # B1 --include（R-027）：目录含子树、文件精确匹配；白名单前缀取当前模式根
-            # （host=/host、sources=/sources——与 sources 归一口径一致，
+            # （A0 模式收敛后恒为 /sources——与 sources 归一口径一致，
             # exclusions.py normalize_user_excludes 先例）。S1 校验点②（纵深防御）：
             # 路由层已 display→container 归一，此处再过一次白名单，杜绝绕过路由直拼。
             for include in args.include:
@@ -433,17 +433,17 @@ class ResticCmd:
         """拼装 restore 的 ``--target``（原位恢复走常量的显式放行分支）。
 
         常规恢复（时间戳子目录）的目标照旧过 :meth:`PathMapper.validate`
-        （``/host`` / ``/sources`` / ``/restore`` 白名单，S1）。
+        （A0 收敛后为 ``/sources`` / ``/restore`` 白名单，S1）。
 
         原位恢复（``inplace_target=True``）**只能**取
         :data:`INPLACE_RESTORE_TARGET_ROOT`——restic 落点 = ``--target`` + 快照内
-        绝对路径，快照存的是容器绝对路径（``/host/etc/...``），故只有 ``/`` 是真原位
+        绝对路径，快照存的是容器绝对路径（``/sources/etc/...``），故只有 ``/`` 是真原位
         （规范 §3.1 S7「执行层落点纪律」）。为什么这不破坏 S1/S2：
 
         - 取值来自 constants 单一真源，调用方传的是**布尔开关**而非路径字符串，
           不存在"借该字段塞任意路径"的自由通道（S2）；
         - 值不是用户输入，是执行层落点常量；真正的用户可控范围由**双重锁**
-          （rw 档白名单 + 快照 paths 交集）与强制非空 ``--include`` 共同限定（S1）；
+          （``/sources`` 前缀白名单 + 快照 paths 交集）与强制非空 ``--include`` 共同限定（S1）；
         - 开关打开但值不等于该常量时直接 422，杜绝"借布尔开关夹带别的值"。
 
         Raises:

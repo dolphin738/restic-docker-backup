@@ -19,7 +19,7 @@ from conftest import ORIGIN, finish_bootstrap
 
 _DRY_RUN_LINES = [
     '{"message_type":"status","percent_done":0.0,"total_files":2,"files_done":0,"total_bytes":512,"bytes_done":0}',
-    '{"message_type":"verbose_status","action":"modified","item":"/host/etc/nginx/nginx.conf",'
+    '{"message_type":"verbose_status","action":"modified","item":"/sources/etc/nginx/nginx.conf",'
     '"duration":0,"data_size":512,"size":512,"metadata_time":0,"metadata_size":100}',
 ]
 
@@ -124,7 +124,7 @@ async def test_e35_create_returns_201_with_server_generated_tag(app_client):
     assert body["repo_id"] == "default"
     assert body["tag"] == f"task-{body['id']}"  # 自动生成只读（共享知识 §9.1）
     assert body["enabled"] is True
-    assert body["sources"] == ["/host/etc"]  # 容器形态入库
+    assert body["sources"] == ["/sources/etc"]  # 容器形态入库
     assert body["display_sources"] == ["/etc"]  # display 派生出 API
     assert body["dry_run_pending"] is True  # 创建即置 1（R-026-08）
     assert body["legacy_policy_id"] is None  # greenfield 恒 None
@@ -282,7 +282,7 @@ async def test_e34_detail_returns_full_fields(app_client):
     body = resp.json()
     assert body["id"] == created["id"]
     assert body["keep_daily"] == 7
-    assert body["sources"] == ["/host/etc"]
+    assert body["sources"] == ["/sources/etc"]
     assert body["display_sources"] == ["/etc"]
     assert body["dry_run_pending"] is True
 
@@ -334,7 +334,7 @@ async def test_e35_update_resets_dry_run_pending_on_source_change(app_client):
     )
     assert resp.status_code == 200
     assert resp.json()["dry_run_pending"] is True
-    assert resp.json()["sources"] == ["/host/etc", "/host/home"]
+    assert resp.json()["sources"] == ["/sources/etc", "/sources/home"]
 
     rows, total = await ns.app.state.audit.query(action="task.update")
     assert total == 2
@@ -450,7 +450,7 @@ async def test_e36_dry_run_success_clears_pending(app_client):
 
     # 缺省 body 取任务存量 sources；--dry-run 走 ResticCmd 白名单（S2）
     assert "--dry-run" in argv_log[0]
-    assert "/host/etc" in argv_log[0]
+    assert "/sources/etc" in argv_log[0]
 
     detail = (await ns.client.get(f"/api/repos/default/backup-tasks/{created['id']}")).json()
     assert detail["dry_run_pending"] is False
@@ -488,8 +488,8 @@ async def test_e36_dry_run_body_overrides_task_sources(app_client):
         headers=ORIGIN,
     )
     assert resp.status_code == 200
-    assert "/host/home" in argv_log[0]
-    assert "/host/etc" not in argv_log[0]
+    assert "/sources/home" in argv_log[0]
+    assert "/sources/etc" not in argv_log[0]
 
 
 async def test_e36_dry_run_missing_task_404(app_client):

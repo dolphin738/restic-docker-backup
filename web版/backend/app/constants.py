@@ -25,21 +25,21 @@ REPO_ID_MAX_LENGTH: int = 64
 
 # ---------------------------------------------------------------- 路径白名单（§7.3 PathMapper）
 
-# 可被选为备份源的根前缀（按 RESTIC_WEB_MODE 二选一）
-SOURCE_ALLOWED_PREFIXES: tuple[str, ...] = ("/host", "/sources")
+# 可被选为备份源的根前缀（A0 模式收敛：host 模式已删除，只剩 /sources）
+SOURCE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
 # 恢复目标白名单（P1 仅"恢复到时间戳子目录"，目标限定在可写挂载点）
 RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/restore",)
-# 原位恢复目标白名单（R-015 Q1 裁决）：= rw 档 settings.host_root 的容器前缀。
+# 原位恢复目标白名单（R-015 Q1 裁决，A0 收敛后 = 备份源根 ``/sources``）。
 # 与 RESTORE_ALLOWED_PREFIXES 分离——避免 /restore 的时间戳语义被覆盖语义污染。
-INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/host",)
+INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
 # 原位恢复**执行层**的 --target 固定值（S7 v1.3「执行层落点纪律」）：
 # restic 的落点是「--target + 快照内绝对路径」的拼接（非替换），而本项目快照存的是
-# 容器绝对路径（/host/etc/...），故只有 "/" 才是真原位（写回 /host/etc/...）；
-# 传 <目标目录> 会嵌套成 /host/etc/host/etc/... ——一个目标文件都不会被覆盖。
+# 容器绝对路径（/sources/etc/...），故只有 "/" 才是真原位（写回 /sources/etc/...）；
+# 传 <目标目录> 会嵌套成 /sources/etc/sources/etc/... ——一个目标文件都不会被覆盖。
 # S1：该字面量的唯一出处（ResticCmd 只在显式放行分支里引用它）。
 INPLACE_RESTORE_TARGET_ROOT = "/"
 # E05 目录浏览允许的前缀
-BROWSE_ALLOWED_PREFIXES: tuple[str, ...] = ("/host", "/sources")
+BROWSE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
 
 # ---------------------------------------------------------------- HTTP 方法
 

@@ -2,12 +2,13 @@
 
 断言点（增量设计 §6-T08 验收要点 + §7 测试策略）：
 
-- **双重锁矩阵**：完全越界 → 400 ``PATH_OUT_OF_PREFIX``；ro 档 / 非快照 paths →
+- **双重锁矩阵**：完全越界 → 400 ``PATH_OUT_OF_PREFIX``；非快照 paths →
   403 ``RESTORE_FORBIDDEN``；时间戳分支越界保持既有 403（C7 零回归）；
+  （A0 模式收敛：原 ro 档 host_mount_mode 判定随 host 模式删除，两用例移除）；
 - **门禁 422 矩阵**：时间戳路径带 ``overwrite_mode``、原位路径 ``overwrite_mode``
   非 always、原位路径缺 ``keyword`` / ``keyword`` 错、``paths`` 与目标无交集；
 - **执行层落点（S7 v1.3）**：restic 收到的 argv 中 ``--target`` 为 ``/``、
-  ``--include`` 为原位目标子树（**反证**：``--target`` 绝不为 ``/host/etc``）；
+  ``--include`` 为原位目标子树（**反证**：``--target`` 绝不为 ``/sources/etc``）；
 - **审计**：``restore.preview``（只读留痕）与 ``restore.inplace``（危险清单）各落一条；
 - **时间戳流 argv 零回归**：不带 ``overwrite_mode`` 的 E19 请求 argv 与 R-015 前一致。
 
@@ -32,7 +33,7 @@ from app.utils.time import parse_iso
 
 SNAPSHOT_ID = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
 KEYWORD = SNAPSHOT_ID[:8]
-ROOT = "/host/etc"
+ROOT = "/sources/etc"
 SNAPSHOT_MTIME = "2026-01-03T12:00:00Z"
 # 磁盘侧现状：与快照不同 → 记为待覆盖（mtime 一致、size 差 1）
 DISK_MTIME = "2026-02-04T08:30:00Z"
@@ -239,9 +240,9 @@ async def test_e20_preview_cursor_pagination(app_client, fake_disk):
     assert second.json()["next_cursor"] is None  # 末页
 
 
-@pytest.mark.parametrize("target", ["/sources/etc", "/etc/passwd"])
+@pytest.mark.parametrize("target", ["/host/etc", "/etc/passwd"])
 async def test_e20_target_out_of_prefix_400(app_client, target):
-    """完全越界（既不在 /restore 也不在 rw 档 host_root）→ 400 PATH_OUT_OF_PREFIX。"""
+    """完全越界（既不在 /restore 也不在 /sources 前缀白名单）→ 400 PATH_OUT_OF_PREFIX。"""
     ns = app_client
     await _setup(ns)
 
@@ -257,7 +258,7 @@ async def test_e20_target_out_of_prefix_400(app_client, target):
 async def test_e20_target_not_in_snapshot_paths_403(app_client):
     """快照 paths 交集收紧：目标不在该快照备份路径内 → 403。"""
     ns = app_client
-    await _setup(ns, snapshot_paths=["/host/srv"])
+    await _setup(ns, snapshot_paths=["/sources/srv"])
 
     resp = await ns.client.post(
         "/api/restore/preview",
@@ -265,21 +266,7 @@ async def test_e20_target_not_in_snapshot_paths_403(app_client):
         headers=ORIGIN,
     )
     assert resp.status_code == 403
-    assert resp.json()["data"]["snapshot_paths"] == ["/host/srv"]
-
-
-async def test_e20_ro_mount_403(make_app):
-    """ro 档：/host 只读挂载 → 403（data 带 host_mount_mode，前端据此置灰）。"""
-    ns = await make_app({"HOST_MOUNT_MODE": "ro"})
-    await _setup(ns)
-
-    resp = await ns.client.post(
-        "/api/restore/preview",
-        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT},
-        headers=ORIGIN,
-    )
-    assert resp.status_code == 403
-    assert resp.json()["data"]["host_mount_mode"] == "ro"
+    assert resp.json()["data"]["snapshot_paths"] == ["/sources/srv"]
 
 
 async def test_e20_requires_session(app_client):
@@ -348,7 +335,7 @@ async def test_e19_inplace_keyword_gate_422(app_client, keyword):
 async def test_e19_inplace_out_of_snapshot_paths_403(app_client):
     """原位路径但不在快照 paths 内 → 403（门禁判在 422 之前）。"""
     ns = app_client
-    await _setup(ns, snapshot_paths=["/host/srv"])
+    await _setup(ns, snapshot_paths=["/sources/srv"])
     calls = _patch_submit(ns)
 
     resp = await ns.client.post(
@@ -358,24 +345,6 @@ async def test_e19_inplace_out_of_snapshot_paths_403(app_client):
     )
     assert resp.status_code == 403
     assert calls == []
-
-
-async def test_e19_inplace_ro_mount_403_no_spawn(make_app):
-    """ro 档护栏（E19 执行侧）：/host 只读挂载 → 403，且 restic 未被 spawn。"""
-    ns = await make_app({"HOST_MOUNT_MODE": "ro"})
-    await _setup(ns)
-    argv_log = _patch_spawn(ns)
-    calls = _patch_submit(ns)
-
-    resp = await ns.client.post(
-        "/api/restore",
-        json={"snapshot_id": SNAPSHOT_ID, "target": ROOT, "overwrite_mode": "always", "keyword": KEYWORD},
-        headers=ORIGIN,
-    )
-    assert resp.status_code == 403
-    assert resp.json()["data"]["host_mount_mode"] == "ro"
-    assert calls == []
-    assert argv_log == []  # 未 spawn
 
 
 # ---------------------------------------------------------------- E19 原位执行
@@ -413,8 +382,8 @@ async def test_e19_inplace_submits_always_and_audits(app_client, fake_disk):
 async def test_e19_inplace_argv_target_is_root_with_include(app_client, fake_disk):
     """行为级：restic 收到的 argv --target 为 /、--include 为原位目标子树。
 
-    restic 落点 = ``--target`` + 快照内绝对路径：``/`` + ``/host/etc/...`` →
-    真正覆盖 ``/host/etc/...``；传 ``/host/etc`` 会嵌套成 ``/host/etc/host/etc/...``。
+    restic 落点 = ``--target`` + 快照内绝对路径：``/`` + ``/sources/etc/...`` →
+    真正覆盖 ``/sources/etc/...``；传 ``/sources/etc`` 会嵌套成 ``/sources/etc/sources/etc/...``。
     """
     ns = app_client
     await _setup(ns)
@@ -528,12 +497,12 @@ async def test_e19_timestamp_argv_unchanged(app_client):
 
 
 async def test_e19_inplace_prefix_without_overwrite_mode_still_403(app_client):
-    """回归护栏：target=/host 但不带覆盖参数 → 仍走时间戳分支 → 403（行为不变）。"""
+    """回归护栏：target=/sources 但不带覆盖参数 → 仍走时间戳分支 → 403（行为不变）。"""
     ns = app_client
     await _setup(ns)
 
     resp = await ns.client.post(
-        "/api/restore", json={"snapshot_id": SNAPSHOT_ID, "target": "/host"}, headers=ORIGIN
+        "/api/restore", json={"snapshot_id": SNAPSHOT_ID, "target": "/sources"}, headers=ORIGIN
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "RESTORE_FORBIDDEN"

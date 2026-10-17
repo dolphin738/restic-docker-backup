@@ -224,10 +224,10 @@ async def test_e32_exclusions_read_only(app_client):
     resp = await client.get("/api/exclusions")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mode"] == "host"
+    assert "mode" not in body  # A0 模式收敛：响应不再带 mode 字段
     assert body["total"] == len(body["items"])
-    assert "/host/proc" in body["items"]
-    assert "/host/var/lib/docker" in body["items"]
+    assert "/sources/proc" in body["items"]
+    assert "/sources/var/lib/docker" in body["items"]
     # core 是 items 的子集（模式无关语义核心 8 条）
     assert set(body["core"]) <= set(body["items"])
     assert len(body["core"]) == 8
@@ -243,10 +243,11 @@ async def test_e32_exclusions_read_only(app_client):
     assert resp.status_code == 405
 
 
-async def test_e32_exclusions_mode_query(app_client):
+async def test_e32_exclusions_single_form(app_client):
+    """A0 模式收敛后只有一种运行形态：无 mode 入参、无 mode 响应字段。"""
     await finish_bootstrap(app_client)
-    resp = await app_client.client.get("/api/exclusions", params={"mode": "sources"})
+    resp = await app_client.client.get("/api/exclusions")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mode"] == "sources"
+    assert "mode" not in body
     assert "/sources/proc" in body["items"]

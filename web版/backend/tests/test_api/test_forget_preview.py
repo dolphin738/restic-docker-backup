@@ -29,7 +29,7 @@ def _forget_group_line(keep_ids: list[str], remove_ids: list[str]) -> str:
         return {
             "time": "2026-10-01T03:00:00+08:00",
             "tree": "0" * 64,
-            "paths": ["/host/etc"],
+            "paths": ["/sources/etc"],
             "hostname": "nas",
             "tags": ["task-1"],
             "id": snapshot_id,
@@ -85,7 +85,7 @@ async def test_e21_preview_returns_remove_list(app_client):
     assert body["keep_count"] == 1
     assert body["group_count"] == 1
     assert body["remove"][0]["id"] == SNAPSHOT_B
-    assert body["remove"][0]["paths"] == ["/etc"]  # /host 前缀剥离（E17 同口径）
+    assert body["remove"][0]["paths"] == ["/etc"]  # /sources 前缀剥离（E17 同口径）
     # 参数回显与执行侧消费键同名（tags 是列表），确认提交 E12 后语义一致
     assert body["params"]["tags"] == ["task-1"]
     assert body["params"]["keep_daily"] == 7

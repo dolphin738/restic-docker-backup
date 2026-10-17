@@ -1,6 +1,6 @@
-"""PathMapper（§7.3，R-005）：`/host`|`/sources` 前缀 ↔ 原路径语义的唯一实现点。
+"""PathMapper（§7.3，R-005）：`/sources` 前缀 ↔ 原路径语义的唯一实现点（A0 收敛后唯一形态）。
 
-UI 全程展示**剥掉前缀**的原路径（`/etc/nginx`），存储层恒带容器前缀（`/host/etc/nginx`）；
+UI 全程展示**剥掉前缀**的原路径（`/etc/nginx`），存储层恒带容器前缀（`/sources/etc/nginx`）；
 所有进入 restic 命令或文件系统访问的容器路径必须先过 :meth:`PathMapper.validate`。
 """
 
@@ -29,11 +29,11 @@ class PathMapper:
 
     @property
     def PREFIX(self) -> str:  # noqa: N802 - 与 §7.3 签名保持一致
-        """当前模式的备份源根前缀：host 模式 ``/host``，sources 模式 ``/sources``。"""
+        """备份源根前缀（A0 收敛后恒为 ``/sources``）。"""
         return self._settings.mode_root
 
     def to_snapshot(self, display_path: str) -> str:
-        """展示路径 → 快照内存储路径（``/etc/nginx`` → ``/host/etc/nginx``）。
+        """展示路径 → 快照内存储路径（``/etc/nginx`` → ``/sources/etc/nginx``）。
 
         Args:
             display_path: UI 侧原路径语义。
@@ -50,7 +50,7 @@ class PathMapper:
         return posixpath.join(prefix, normalized.lstrip("/"))
 
     def to_display(self, stored_path: str) -> str:
-        """快照内存储路径 → 展示路径（``/host/etc/nginx`` → ``/etc/nginx``）。
+        """快照内存储路径 → 展示路径（``/sources/etc/nginx`` → ``/etc/nginx``）。
 
         Args:
             stored_path: 带容器前缀的路径。
@@ -61,18 +61,18 @@ class PathMapper:
         if not stored_path:
             return ""
         normalized = self._normalize(stored_path)
-        for prefix in (self._settings.host_root, self._settings.sources_root):
-            if normalized == prefix:
-                return "/"
-            if normalized.startswith(prefix + "/"):
-                return normalized[len(prefix):] or "/"
+        prefix = self._settings.sources_root
+        if normalized == prefix:
+            return "/"
+        if normalized.startswith(prefix + "/"):
+            return normalized[len(prefix):] or "/"
         return normalized
 
     def validate(
         self,
         path: str,
         *,
-        allowed_prefixes: tuple[str, ...] = ("/host", "/sources", "/restore"),
+        allowed_prefixes: tuple[str, ...] = ("/sources", "/restore"),
     ) -> str:
         """规范化路径并校验其落在白名单前缀内（方案 §6 注入防护）。
 
@@ -115,7 +115,7 @@ class PathMapper:
         candidate = path.strip()
         if not candidate.startswith("/"):
             candidate = "/" + candidate
-        # normpath 会把 /host/../etc 折叠为 /etc，随后由前缀校验拦下（防目录穿越）
+        # normpath 会把 /sources/../etc 折叠为 /etc，随后由前缀校验拦下（防目录穿越）
         normalized = posixpath.normpath(candidate)
         if not normalized.startswith("/"):
             raise PathValidationError(f"路径 {path!r} 无法解析为绝对路径")

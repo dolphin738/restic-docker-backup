@@ -28,7 +28,7 @@ from app.utils.cursor import decode_cursor, encode_cursor
 from app.utils.time import parse_iso
 
 SNAPSHOT_ID = "a" * 64
-ROOT = "/host/etc"
+ROOT = "/sources/etc"
 SNAPSHOT_MTIME = "2026-01-03T12:00:00Z"
 SNAPSHOT_SIZE = 512
 
@@ -46,13 +46,13 @@ def _ls_line(path: str, *, size: int, mtime: str, node_type: str = "file") -> st
     )
 
 
-# 快照根 /host/etc 下：一个同级文件 + 一个子目录（子目录内一个文件）+ 目录条目。
+# 快照根 /sources/etc 下：一个同级文件 + 一个子目录（子目录内一个文件）+ 目录条目。
 # restic ls 会把目录一并列出：比对必须只记文件（目录 noise 不是覆盖语义）
 LS_LINES = [
     _ls_line(ROOT, size=0, mtime=SNAPSHOT_MTIME, node_type="dir"),
     _ls_line(f"{ROOT}/nginx.conf", size=SNAPSHOT_SIZE, mtime=SNAPSHOT_MTIME),
 ]
-# target ⊊ 快照根（/host/etc/nginx）场景：target 之外的同级文件 hosts 必须被排除
+# target ⊊ 快照根（/sources/etc/nginx）场景：target 之外的同级文件 hosts 必须被排除
 LS_LINES_NESTED = [
     _ls_line(ROOT, size=0, mtime=SNAPSHOT_MTIME, node_type="dir"),
     _ls_line(f"{ROOT}/hosts", size=64, mtime=SNAPSHOT_MTIME),
@@ -257,7 +257,7 @@ async def test_diff_target_subdir_no_rebasing_and_narrows_scope(monkeypatch):
 
     items = await _collect(service, target=f"{ROOT}/nginx")
 
-    # ① 落点不再重定基点（旧实现会算成 /host/etc/nginx/nginx/nginx.conf）
+    # ① 落点不再重定基点（旧实现会算成 /sources/etc/nginx/nginx/nginx.conf）
     assert [item.path for item in items] == [f"{ROOT}/nginx/nginx.conf"]
     # ② target 之外的同级文件（执行层 --include=<target> 不会写它）不进清单
     assert f"{ROOT}/hosts" not in [item.path for item in items]
@@ -280,7 +280,7 @@ async def test_diff_outside_snapshot_paths_is_empty(monkeypatch):
     """目标不在快照 paths 范围内 → 空清单（越界由路由层 403 拦在前面，此处兜底）。"""
     service, _, _ = _build(monkeypatch, disk={})
 
-    assert await _collect(service, target="/host/other") == []
+    assert await _collect(service, target="/sources/other") == []
 
 
 def test_cursor_roundtrip_and_bounds():

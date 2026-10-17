@@ -430,7 +430,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
 
           <n-text strong>{{ t('wizard.modeCard') }}</n-text>
-          <TierCard :user="ui.me?.user ?? ''" :host-mount="ui.me?.host_mount ?? 'ro'" />
+          <TierCard :user="ui.me?.user ?? ''" />
 
           <n-space align="center" :size="8">
             <n-text depth="3">{{ t('wizard.passfile') }}：</n-text>

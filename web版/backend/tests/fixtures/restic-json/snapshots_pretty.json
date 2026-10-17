@@ -2,7 +2,7 @@
   {
     "time": "2026-10-01T03:00:00.123456+08:00",
     "tree": "1111111111111111111111111111111111111111111111111111111111111111",
-    "paths": ["/host/etc/nginx"],
+    "paths": ["/sources/etc/nginx"],
     "hostname": "nas",
     "username": "root",
     "uid": 0,
@@ -14,7 +14,7 @@
   {
     "time": "2026-10-02T03:00:00.654321+08:00",
     "tree": "2222222222222222222222222222222222222222222222222222222222222222",
-    "paths": ["/host/var/lib", "/sources/db"],
+    "paths": ["/sources/var/lib", "/sources/db"],
     "hostname": "nas",
     "username": "backup",
     "uid": 1000,

@@ -74,8 +74,15 @@ const selectedFiles = ref<Set<string>>(new Set())
 const targetMode = ref<'timestamp' | 'inplace'>('timestamp')
 const isInPlace = computed(() => targetMode.value === 'inplace')
 
-// 与 TierCard（运行模式卡）同源：/api/auth/me 的 host_mount / user
-const isReadOnlyMount = computed(() => ui.me?.host_mount === 'ro')
+/** 原位恢复不可用的原因（空串 = 可用）：快照无原目录。
+ *  后端有双重锁兜底，这里只是提示性限制——原因逐条对应，便于用户知道该改什么。
+ *  （A0 模式收敛：原 ro 档 / 非 host 模式两分支随 host_mount_mode 与 mode 字段删除。） */
+const inPlaceBlockReason = computed(() => {
+  if ((selectedSnapshot.value?.paths.length ?? 0) === 0) {
+    return t('restore.inplace.noPathHint')
+  }
+  return ''
+})
 
 const snapshotsQuery = useQuery({ queryKey: ['snapshots', 'restore-picker'], queryFn: () => listSnapshots(50) })
 
@@ -94,21 +101,6 @@ const snapshotOptions = computed(() =>
 
 const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => snapshot.id === snapshotId.value) ?? null)
 
-/** 原位恢复不可用的原因（空串 = 可用）：ro 档 / 非 host 运行模式 / 快照无原目录。
- *  后端有双重锁兜底，这里只是提示性限制——原因逐条对应，便于用户知道该改什么。 */
-const inPlaceBlockReason = computed(() => {
-  // ro 档原因沿用 P1 既有占位键，不另造同义键
-  if (isReadOnlyMount.value) {
-    return t('restore.inPlaceRoReason')
-  }
-  if (ui.me !== null && ui.me.mode !== 'host') {
-    return t('restore.inplace.modeHint')
-  }
-  if ((selectedSnapshot.value?.paths.length ?? 0) === 0) {
-    return t('restore.inplace.noPathHint')
-  }
-  return ''
-})
 const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
 
 /** 入口被置灰时把模式回落到时间戳流：否则用户会停在必然 403 的非法态，
@@ -129,7 +121,7 @@ const inplaceTargetOptions = computed(() =>
   (selectedSnapshot.value?.paths ?? []).map((path) => ({ label: path, value: path })),
 )
 
-/** 提交给后端的容器形态目标：`/host` + 展示路径（双重锁白名单根，后端再校验一次）。 */
+/** 提交给后端的容器形态目标：`/sources` + 展示路径（双重锁白名单根，后端再校验一次）。 */
 const inplaceTargetFull = computed(() => {
   const display = inplaceTarget.value
   if (!display) {
@@ -459,14 +451,9 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
               </n-radio-button>
             </n-radio-group>
             <n-text depth="3">{{ t('restore.targetTimestampNote') }}</n-text>
-            <!-- 原位恢复不可用时置灰 + 原因（ro 档复用 P1 既有占位键；来源与四象限卡同源） -->
+            <!-- 原位恢复不可用时置灰 + 原因（后端双重锁兜底，前端只做提示性限制） -->
             <n-alert v-if="inPlaceDisabled" type="warning" :show-icon="false">
-              <n-space :size="6" align="center">
-                <n-tag size="tiny" round :type="isReadOnlyMount ? 'warning' : 'default'">
-                  {{ ui.me?.host_mount ?? 'ro' }}
-                </n-tag>
-                <n-text depth="3">{{ inPlaceBlockReason }}</n-text>
-              </n-space>
+              <n-text depth="3">{{ inPlaceBlockReason }}</n-text>
             </n-alert>
             <!-- 原位目标：限该快照 paths 命中的目录（后端双重锁兜底，前端只做提示性限制） -->
             <template v-if="isInPlace">

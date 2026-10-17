@@ -22,7 +22,6 @@ from app.schemas.api_schemas import (
     MeResponse,
     OkResponse,
 )
-from app.schemas.enums import HostMountMode, RunMode
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ async def logout(request: Request, response: Response, _: SessionContext = Depen
 
 @router.get("/auth/me", response_model=MeResponse, summary="E03 会话信息")
 async def me(request: Request, session: SessionContext = Depends(require_session)) -> MeResponse:
-    """E03 会话信息：供仪表盘四象限卡（US-G2）与前端路由守卫使用。
+    """E03 会话信息：供运行模式卡（US-G2）与前端路由守卫使用。
 
     错误：401 UNAUTHORIZED / 403 BOOTSTRAP_REQUIRED（首启未改密）。
     """
@@ -81,8 +80,6 @@ async def me(request: Request, session: SessionContext = Depends(require_session
     return MeResponse(
         authenticated=True,
         must_change_password=False,
-        mode=RunMode(settings.restic_web_mode),
-        host_mount=HostMountMode(settings.host_mount_mode),
         user=settings.run_user,
     )
 

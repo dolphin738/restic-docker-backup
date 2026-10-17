@@ -37,7 +37,7 @@ _JOB_INSERT = (
 
 _TASK_INSERT = (
     "INSERT INTO backup_tasks (name, tag, sources, excludes, dry_run_pending, created_at, updated_at) "
-    "VALUES ('每日全量', 'task-1', '[\"/host/etc\"]', '[]', 1, "
+    "VALUES ('每日全量', 'task-1', '[\"/sources/etc\"]', '[]', 1, "
     "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
 )
 

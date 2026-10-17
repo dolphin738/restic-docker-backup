@@ -5,8 +5,8 @@
   **入参语义修订（团队裁决，文档 §5.1 E05 待同步）**：``path`` / ``sources`` 收**展示路径**
   （``/etc/nginx``），服务端经 :meth:`PathMapper.to_snapshot` 还原为容器路径后再校验——
   响应侧只回 ``display_path``，若入参也收容器路径，前端唯一能拿到容器路径的方式就是自己拼
-  ``/host``，与"前端不存不拼 /host"硬约束冲突。**兼容旧形态**：已带当前模式根前缀
-  （``/host`` / ``/sources``）的入参原样接受，文档示例字面不失效；
+  ``/sources``，与"前端不存不拼 /sources"硬约束冲突。**兼容旧形态**：已带备份源根前缀
+  （``/sources``）的入参原样接受，文档示例字面不失效（A0 收敛后只有一种前缀）；
 - E32（PRD 备份源页"内置排除集（强制生效）"只读展示）：结果直接取 :class:`ExclusionRules`，
   **前端不得自行复制一份规则**（D8 单一事实来源），故本端点与主理人裁决一致提前到 P1；
   ``items``/``core`` 为容器前缀形态（wire 兼容），``display_items``/``display_core`` 为
@@ -45,7 +45,6 @@ from app.schemas.api_schemas import (
     SourceBrowseResponse,
     SourceItem,
 )
-from app.schemas.enums import RunMode
 from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
@@ -70,7 +69,7 @@ async def browse_sources(
     request: Request,
     path: str | None = Query(
         default=None,
-        description="展示路径（如 /etc/nginx）；缺省为模式根；兼容旧示例的 /host 容器路径形态",
+        description="展示路径（如 /etc/nginx）；缺省为模式根；兼容旧示例的 /sources 容器路径形态",
     ),
     cursor: str | None = Query(default=None, description="上一页末条目的不透明游标"),
     limit: int = Query(default=SOURCE_BROWSE_DEFAULT_LIMIT, ge=1, le=SOURCE_BROWSE_MAX_LIMIT),
@@ -117,22 +116,20 @@ async def browse_sources(
 )
 async def list_exclusions(
     request: Request,
-    mode: RunMode | None = Query(default=None, description="host|sources；缺省取当前运行模式"),
     session: SessionContext = Depends(require_session),
 ) -> ExclusionsResponse:
-    """返回指定模式下的内置排除集（强制生效，UI 可追加不可删减）。
+    """返回内置排除集（强制生效，UI 可追加不可删减）。
 
     数据来源是 :class:`ExclusionRules` 本身，避免前端复制一份规则造成 D8 双写漂移。
+    A0 模式收敛后只有一种运行形态，不再有 ``mode`` 入参。
     """
     del session
     settings = request.app.state.settings
     rules: ExclusionRules = request.app.state.exclusions or ExclusionRules(settings)
-    effective = RunMode(mode.value if mode is not None else settings.restic_web_mode)
-    items = rules.built_in(effective.value)
-    core = rules.core(effective.value)
+    items = rules.built_in()
+    core = rules.core()
     mapper: PathMapper = request.app.state.path_mapper
     return ExclusionsResponse(
-        mode=effective,
         items=items,
         core=core,
         display_items=[mapper.to_display(item) for item in items],
@@ -182,7 +179,8 @@ async def dry_run(
         json_output=True,
         dry_run=True,
         verbose=True,
-        one_file_system=settings.restic_web_mode == "sources",
+        # A0 模式收敛后 one_file_system 固定开启（方案 §3.2 四层防线第一层）
+        one_file_system=True,
     )
 
     repos_repo: ReposRepo = request.app.state.repos_repo
@@ -254,7 +252,7 @@ def _to_container_path(
     """把 E05/E31 的路径入参还原为容器内路径（语义修订的单一实现点）。
 
     新契约收**展示路径**（``/etc/nginx``）→ ``to_snapshot`` 还原；兼容文档旧示例的
-    容器路径形态：入参已带当前模式根前缀（``/host`` / ``/sources``）时原样通过校验。
+    容器路径形态：入参已带当前模式根前缀（A0 收敛后即 ``/sources``）时原样通过校验。
 
     Args:
         mapper: 路径映射器。

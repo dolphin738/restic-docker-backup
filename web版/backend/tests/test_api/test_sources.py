@@ -1,6 +1,6 @@
 """API 集成：E05/E31 展示路径契约（语义修订）+ E31 白名单收紧。
 
-Windows 环境无 /host 挂载：文件系统扫描以 monkeypatch ``scan_dir_async`` 替身覆盖
+Windows 环境无 /sources 挂载：文件系统扫描以 monkeypatch ``scan_dir_async`` 替身覆盖
 （架构 §10.1 认可的"restic 子进程 mock 为预录脚本输出"同款手段），路由/映射/白名单
 契约全部走真实代码路径。扫描实现抽到 ``app.services.dir_scan``（与 E33 共用），
 故替身打在路由模块导入的名字上。
@@ -81,13 +81,13 @@ async def test_e05_display_path_200(app_client, monkeypatch):
 
 
 async def test_e05_container_path_still_compat(app_client, monkeypatch):
-    """兼容旧文档示例的容器路径形态（/host/etc）→ 同样 200。"""
+    """兼容旧文档示例的容器路径形态（/sources/etc）→ 同样 200。"""
     import app.routers.sources as sources_module
 
     await finish_bootstrap(app_client)
     monkeypatch.setattr(sources_module, "scan_dir_async", _fake_scan_dir_async([("nginx", "dir")]))
 
-    resp = await app_client.client.get("/api/sources", params={"path": "/host/etc"})
+    resp = await app_client.client.get("/api/sources", params={"path": "/sources/etc"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["path"] == "/etc"
@@ -116,15 +116,15 @@ async def test_e05_traversal_rejected(app_client):
 
 DRY_RUN_LINES = [
     '{"message_type":"status","percent_done":0.0,"total_files":2,"files_done":0,"total_bytes":512,"bytes_done":0}',
-    '{"message_type":"verbose_status","action":"modified","item":"/host/etc/nginx/nginx.conf","duration":0,"data_size":512,"size":512,"metadata_time":0,"metadata_size":100}',
-    '{"message_type":"verbose_status","action":"modified","item":"/host/etc/proc/kcore","duration":0,"data_size":0,"size":0,"metadata_time":0,"metadata_size":0}',
+    '{"message_type":"verbose_status","action":"modified","item":"/sources/etc/nginx/nginx.conf","duration":0,"data_size":512,"size":512,"metadata_time":0,"metadata_size":100}',
+    '{"message_type":"verbose_status","action":"modified","item":"/sources/etc/proc/kcore","duration":0,"data_size":0,"size":0,"metadata_time":0,"metadata_size":0}',
     '{"message_type":"summary","total_files_processed":2,"total_bytes_processed":512}',
 ]
 
 
 async def test_e31_dry_run_display_path(app_client):
     """新契约：E31 收展示路径（/etc）→ 200；items[].display_path 为展示形态；
-    命中伪文件系统目录名出黄色警告；restic 参数全部落在 /host 白名单前缀内。"""
+    命中伪文件系统目录名出黄色警告；restic 参数全部落在 /sources 白名单前缀内。"""
     ns = app_client
     await finish_bootstrap(ns)
 
@@ -136,24 +136,24 @@ async def test_e31_dry_run_display_path(app_client):
     assert body["truncated"] is False
 
     assert [(i["path"], i["display_path"], i["size"]) for i in body["items"]] == [
-        ("/host/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", 512),
-        ("/host/etc/proc/kcore", "/etc/proc/kcore", 0),
+        ("/sources/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", 512),
+        ("/sources/etc/proc/kcore", "/etc/proc/kcore", 0),
     ]
-    assert any(w["type"] == "pseudo_fs_name" and w["path"] == "/host/etc/proc/kcore" for w in body["warnings"])
+    assert any(w["type"] == "pseudo_fs_name" and w["path"] == "/sources/etc/proc/kcore" for w in body["warnings"])
 
-    # 白名单收紧：展示路径 /etc 被还原为容器路径后，targets 恰为 /host/etc（落在白名单内）
+    # 白名单收紧：展示路径 /etc 被还原为容器路径后，targets 恰为 /sources/etc（落在白名单内）
     assert argv_log, "spawn 未被调用"
-    assert "/host/etc" in argv_log[0]
-    assert all(t.startswith("/host/") or t.startswith("/sources/") for t in argv_log[0][-1:])
+    assert "/sources/etc" in argv_log[0]
+    assert all(t.startswith("/sources/") or t.startswith("/sources/") for t in argv_log[0][-1:])
 
 
 async def test_e31_container_path_compat(app_client):
-    """旧容器路径形态（/host/etc）→ dry-run 同样受理。"""
+    """旧容器路径形态（/sources/etc）→ dry-run 同样受理。"""
     ns = app_client
     await finish_bootstrap(ns)
     _patch_restic_spawn(ns, DRY_RUN_LINES, exit_code=0)
 
-    resp = await ns.client.post("/api/sources/dry-run", json={"sources": ["/host/etc"]}, headers=ORIGIN)
+    resp = await ns.client.post("/api/sources/dry-run", json={"sources": ["/sources/etc"]}, headers=ORIGIN)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["items"][0]["display_path"] == "/etc/nginx/nginx.conf"

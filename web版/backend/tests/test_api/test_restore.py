@@ -62,7 +62,7 @@ async def test_e19_paths_normalized_to_container_form(app_client):
     )
     assert resp.status_code == 202
 
-    assert calls[0]["params"]["include"] == ["/host/etc", "/host/home/u/x"]
+    assert calls[0]["params"]["include"] == ["/sources/etc", "/sources/home/u/x"]
 
     import json
 
@@ -110,7 +110,7 @@ async def test_e19_target_out_of_whitelist_403(app_client):
     ns = app_client
     await finish_bootstrap(ns)
     resp = await ns.client.post(
-        "/api/restore", json={"snapshot_id": SNAPSHOT_ID, "target": "/host"}, headers=ORIGIN
+        "/api/restore", json={"snapshot_id": SNAPSHOT_ID, "target": "/sources"}, headers=ORIGIN
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "RESTORE_FORBIDDEN"
