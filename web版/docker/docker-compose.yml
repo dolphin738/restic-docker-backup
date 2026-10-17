@@ -33,6 +33,11 @@ services:
       # 容器日志行首固定带时间戳（取本 TZ，形如 2026-10-12 04:30:27+0800），
       # 访问日志（uvicorn.access）每请求一行，含 30s 一次的健康探测。
       LOG_LEVEL: "INFO"
+      # rclone 万能后端（A1）：restic 对 rclone: 仓库按需拉起 rclone 子进程，
+      # 该变量经容器环境 → restic → rclone 子进程原样传递，指向下方挂载的 conf。
+      # 显式指定而非依赖 rclone 默认路径：默认路径随运行用户变化
+      # （root 档 /root/.config、nonRoot 档 /home/backup/.config），换档即失效。
+      RCLONE_CONFIG: /etc/rclone/rclone.conf
       # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
       # SQLITE_BUSY 可上调；过大则失败延迟变长。
       DB_BUSY_TIMEOUT_MS: "5000"
@@ -57,6 +62,22 @@ services:
       # 启用时：宿主机目录 → 容器 /repo；UI 仓库地址填 /repo（或 /repo/子目录）；首次使用先跑一次 init
       # 注意：restic 跑在容器内，只认容器路径——UI 里填宿主机真实路径会报"仓库不存在或未初始化"
       # - /mnt/backup/restic-repo:/repo
+
+      # rclone 万能后端配置（A1）：宿主机 `rclone config` 生成后挂入（UI 只读探测
+      # remote 清单，不生成、不编辑、不展示 conf 内凭据——OAuth token 永不进 API）。
+      # **必须 :rw**：网盘 OAuth token 过期时 rclone 回写 conf，只读挂载 = 授权静默失效
+      # （R-022 登记的运维约束，A1 升级为硬约束）。sftp/azure/gcs/rest 等原生后端无需此行。
+      # **宿主机文件须先存在**：Docker 对不存在的 bind 源会建目录顶替，rclone 将读不到
+      # conf（状态卡显示"未检测到配置文件"）。首次部署：touch ./rclone/rclone.conf。
+      - ./rclone/rclone.conf:/etc/rclone/rclone.conf:rw
+
+      # sftp 后端（A1）：restic 经系统 ssh 子进程免密登录——挂载私钥与 known_hosts。
+      # root 档（上方 user: "0:0"）挂 /root/.ssh；nonRoot 档（1000:1000）改挂
+      # /home/backup/.ssh。私钥须 0600 且属主匹配运行用户（ssh 拒绝权限过松的密钥）；
+      # known_hosts 预先在宿主机生成（ssh-keyscan host >> known_hosts），否则首次
+      # 连接的 host key 确认会以非交互方式失败。详见 docs/部署指南.md「远端仓库后端」。
+      # - ./ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      # - ./ssh/known_hosts:/root/.ssh/known_hosts:ro
 
       # SQLite + 任务日志 + dump + **仓库密码文件**（属主要求见方案 §4：非 root 档须 chown 1000:1000）
       # 密码文件按 E5 per-repo 布局放在数据卷内：./data/repos/default/password
