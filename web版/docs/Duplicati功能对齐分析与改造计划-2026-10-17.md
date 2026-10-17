@@ -163,9 +163,9 @@ dump 数据库任务、Prometheus 指标、审计日志、多仓库（R-023）+ 
 
 | 项   | 内容                                                                                       | 触及文件                                               |
 | --- | ---------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| B1  | `repair index` / `repair packs`：JobType 增 `repair`，操作卡/审计/ConfirmGate（关键词 REPAIR，不可逆提示）  | `enums.py`、`job_runner.py`、`restic.py`、审计常量、前端任务入口 |
-| B2  | 损坏检测报告：check `--read-data` 输出解析 → blob 级损坏清单（E22 视图扩展）+「一键 repair」建议链；**文件级映射为受限项，如实标注** | `parser.py`（fixture 先行）、`checks.py`、前端 check 详情    |
-| B3  | `recover`（找回未快照数据）与「重建缓存」引导（RecreateDatabase 等价说明落文档）                                    | `restic.py`、ops 端点、部署指南                            |
+| B1  | ✅ 已交付 2026-10-17 —— `repair index` / `repair packs`：JobType 增 `repair`，操作卡/审计/ConfirmGate（关键词 REPAIR，不可逆提示）；前端入口在「仓库配置」状态卡（修复仓库按钮 + index/packs 单选）与任务历史 check 抽屉 | `enums.py`、`constants.py`、`job_runner.py`、`restic.py`、审计常量、前端 repo 页 |
+| B2  | ✅ 已交付 2026-10-17 —— 损坏检测报告：check `--read-data` 输出解析 → blob 级损坏清单（E22 视图，批次 B 已预实现 broken_packs/suggest_repair_index）+「一键修复索引」建议链按钮（任务历史 check 抽屉，内联 ConfirmGate）；**文件级映射为受限项，已在部署指南 §7.1 如实标注** | `parser.py`（fixture 先行）、`checks.py`、前端 check 详情    |
+| B3  | ✅ 已交付 2026-10-17 —— `recover`（找回未快照数据）：JobType 增 `recover`（E12 触发，`recover.run` 审计）+「重建缓存」引导（RecreateDatabase 等价说明落部署指南 §7.1：缓存可弃重建 / repair / recover 三场景对照表 + API 触发示例） | `restic.py`、`enums.py`、`constants.py`、`job_runner.py`、部署指南 |
 
 ### 批次 D：运维与通知（对齐 Modules/Builtin）
 
@@ -207,7 +207,7 @@ owner 已声明本次改造不受现有规范限制，但本仓库红线是机�
 
 ## 6. 里程碑建议
 
-1. P3（R-023/024/025）提交收尾 → **批次 A**（✅ A0 已交付 2026-10-17 → ✅ A7 已交付 2026-10-17（规范 S7 v1.4 先行签署）→ ✅ A1 已交付 2026-10-17 → ✅ A2 已交付 2026-10-17 → ✅ A3 已交付 2026-10-17 → ✅ A8 已交付 2026-10-17；后端 + 规范 §3.1 修订 + 镜像）→ **批次 B**（✅ A4 已交付 2026-10-17 → ✅ A5 已交付 2026-10-17 → ✅ A6 已交付 2026-10-17；纯前端，可与 C/D 并行）→ **批次 C**（自愈）→ **批次 D**（钩子/邮件/重试/多目的地+copy+key）→ **批次 E**（多仓库落地后的配置导入/导出）；
+1. P3（R-023/024/025）提交收尾 → **批次 A**（✅ A0 已交付 2026-10-17 → ✅ A7 已交付 2026-10-17（规范 S7 v1.4 先行签署）→ ✅ A1 已交付 2026-10-17 → ✅ A2 已交付 2026-10-17 → ✅ A3 已交付 2026-10-17 → ✅ A8 已交付 2026-10-17；后端 + 规范 §3.1 修订 + 镜像）→ **批次 B**（✅ A4 已交付 2026-10-17 → ✅ A5 已交付 2026-10-17 → ✅ A6 已交付 2026-10-17；纯前端，可与 C/D 并行）→ **批次 C**（✅ B1 已交付 2026-10-17 → ✅ B2 已交付 2026-10-17 → ✅ B3 已交付 2026-10-17；repair/recover JobType + 审计 + ConfirmGate + 一键修复建议链 + 部署指南 §7.1 RecreateDatabase 等价说明）→ **批次 D**（钩子/邮件/重试/多目的地+copy+key）→ **批次 E**（多仓库落地后的配置导入/导出）；
 2. 每批次独立 PR、独立回归（pytest + 前端三件套 + verify_redlines + 真机 E2E），按特性拆分提交；
 3. 本文结论若被 owner 采纳，蒸馏进《Web版改造方案.md》新章节后归档本文。
 
