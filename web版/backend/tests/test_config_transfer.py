@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 import pytest
+from conftest import ORIGIN, finish_bootstrap
 
 from app.errors import PasswordWrongError, ValidationError
 from app.services.config_transfer import (
@@ -25,7 +26,6 @@ from app.services.config_transfer import (
     parse_export_pack,
     task_values_from_pack,
 )
-from tests.conftest import ORIGIN, finish_bootstrap
 
 PW = "export-pass-123"
 
