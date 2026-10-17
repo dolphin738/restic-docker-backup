@@ -40,7 +40,7 @@ sequenceDiagram
     else 空闲
         JR->>DB: INSERT jobs(pending, task_id=2)
         JR->>JR: _load_profile：task_loader(2) → sources/tag/keep_*/limit_*/host_tag
-        JR->>RE: spawn restic backup --tag task-2 /host/...（凭据 env 注入）
+        JR->>RE: spawn restic backup --tag task-2 /sources/...（凭据 env 注入）
         RE-->>JR: --json 逐行 → 解析/节流落库/SSE（既有链路）
         JR-->>B: SSE progress → done {snapshot_id, skipped_count}
     end
@@ -84,6 +84,6 @@ sequenceDiagram
     RT->>RT: 计算时间戳子目录（既有逻辑）
     RT->>DB: INSERT jobs(restore) + audit restore.run{include_count}
     RT->>JR: submit("restore", params={target, include})
-    JR->>RE: build：restore <id> --target <ts子目录> --include /host/etc --include /host/home/u/x --overwrite=if-changed
+    JR->>RE: build：restore <id> --target <ts子目录> --include /sources/etc --include /sources/home/u/x --overwrite=if-changed
     RE-->>JR: --json 逐行（复用 6.2 解析/SSE 链路）
     JR-->>B: SSE progress → done {restore_target, files_done}

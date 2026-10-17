@@ -33,9 +33,10 @@ bash scripts/verify_redlines.sh
 
 > 括号内为规范 §3.1 的条目编号，**编号即锚点**；`自查：` 行可直接粘贴到终端执行。
 
-1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；文件系统前缀白名单是 **`/host`、`/sources`、`/restore` 三个**（唯一出处是 `app/settings.py` 的 `host_root`/`sources_root`/`restore_root`，**新增前缀只改那里**）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
-   *豁免：文件系统前缀字面量只允许出现在 `settings.py`（根路径定义）、`constants.py`（白名单常量）、`exclusions.py`（模式派生输入）、`path_mapper.py`（校验实现）；路由声明里的 `"/restore"`、`"/sources"` 是 **API 路径**，与此无关。*
+1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；文件系统前缀白名单是 **`/sources`、`/restore` 两个**（A0 模式收敛 2026-10-17：host 模式与 `/host` 前缀已整体退役；根路径定义在 `app/settings.py` 的 `sources_root`/`restore_root`，白名单常量在 `app/constants.py`，**新增前缀只改这两处**）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
+   *豁免：文件系统前缀字面量只允许出现在 `settings.py`（根路径定义）、`constants.py`（白名单常量）、`exclusions.py`（排除集派生）、`path_mapper.py`（校验实现）；路由声明里的 `"/restore"`、`"/sources"` 是 **API 路径**，与此无关。任何位置再出现 `"/host"` 前缀字面量即视为 host 模式复活 = Blocker。*
    自查：`grep -rn '"/host"\|"/sources"\|"/restore"' backend/app frontend/src --include=*.py | grep -v settings.py | grep -v constants.py | grep -v exclusions.py | grep -v path_mapper.py | grep -v routers/`
+   前端附加自查（A0 补漏 2026-10-17：TS/Vue 用单引号，上面的 .py 扫描覆盖不到——`INPLACE_TARGET_ROOT = '/host'` 曾漏过一版）：`grep -rn "'/host'\|\"/host\"" frontend/src --include=*.ts --include=*.vue` —— 应零命中。
 
 2. **[S2] restic 参数只在 `ResticCmd.build` 白名单拼装**（`app/services/restic.py`）——禁止自由字符串透传、禁止 `shell=True`。
    自查：`grep -rn "shell=True\|os.system" backend/app`
@@ -49,7 +50,7 @@ bash scripts/verify_redlines.sh
 5. **[S6] 审计只增不改**——`audit_logs` 代码面只允许 INSERT 与 SELECT（出现 UPDATE/DELETE = Blocker）；**危险操作共 9 项必须埋点**：`forget --prune` / `unlock` / **`cache.clear`** / `config.update` / **`login.failed`** / `restore.run` / **`restore.inplace`（原位恢复）** / **`retention.cleanup`** / **`dump.cleanup`**（动作名一律取 `app/constants.py` 的 `AUDIT_*` 常量）。*`restore.preview` / `forget.preview` 是只读留痕，**不属**危险清单。*
    自查：`grep -rn "UPDATE audit_logs\|DELETE FROM audit" backend/app`
 
-6. **[S7] 覆盖语义仅限「原位恢复（in-place）」路径**（v1.3 修订，owner 2026-10-15 签署）——引入覆盖语义须**四要件齐备**：① 目标经**双重锁**（rw 档 `host_root` 白名单 + 快照 `paths` 交集收紧，实现于 restore 路由）；② 先经 E20 预览 + **三重确认门**（keyword = 快照短 id）；③ `--overwrite` 固定 `always`（`OVERWRITE_MODES` 白名单校验，界面无模式选择项）；④ 执行写审计 `restore.inplace`。**时间戳子目录路径（E19 默认）继续零覆盖语义**：`--overwrite=if-changed` 仅由 `JobRunner` 固定注入、界面无入口，E19 请求体在该路径出现 `overwrite_mode` 即 **422**。除上述两类调用点外，任何覆盖语义参数**不得接任何路由**。
+6. **[S7] 覆盖语义仅限「原位恢复（in-place）」路径**（v1.3 修订，owner 2026-10-15 签署；A0 修订 2026-10-17）——引入覆盖语义须**四要件齐备**：① 目标经**双重锁**（`/sources` 前缀白名单 + 快照 `paths` 交集收紧，实现于 restore 路由；A0 前为「rw 档 `host_root` 白名单」，`host_mount_mode` 随 host 模式删除）；② 先经 E20 预览 + **三重确认门**（keyword = 快照短 id；A7 批次将放松为单次确认，届时再修订）；③ `--overwrite` 固定 `always`（`OVERWRITE_MODES` 白名单校验，界面无模式选择项）；④ 执行写审计 `restore.inplace`。**时间戳子目录路径（E19 默认）继续零覆盖语义**：`--overwrite=if-changed` 仅由 `JobRunner` 固定注入、界面无入口，E19 请求体在该路径出现 `overwrite_mode` 即 **422**。除上述两类调用点外，任何覆盖语义参数**不得接任何路由**。
    自查（区分两类合法调用点，避免误伤时间戳路径既有注入点）：
    `grep -rn "overwrite" backend/app frontend/src --include=*.py --include=*.ts --include=*.vue | grep -v "restic.py\|job_runner.py\|routers/restore.py\|services/compare.py\|constants.py\|locales\|pages/restore/index.vue\|overwrite_mode\|overwrite_count\|overwrite="` —— 应零命中。**末三项是收窄豁免**：请求/响应模型与前端请求出口必然出现 `overwrite_mode` / `overwrite_count` 这两个契约字段名、docstring 必然引用 `--overwrite=if-changed` 写法（均非覆盖能力入口），故只豁免这三个字面——**其他形态的 overwrite 命中仍属违规**（不整文件排除，避免放过真正的越界）；
    辅助断言：`OVERWRITE_MODES` 是模式枚举唯一出处（`restic.py`）；`job_runner.py` 的 overwrite 透传点 ≤2（时间戳固定注入 + 原位 params 透传）。

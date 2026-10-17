@@ -27,7 +27,7 @@ pnpm preview     # 预览构建产物
 - 错误：统一 `{ code, message, data }`；`src/api/http.ts` 转 `AppError`，401 → 登录页、
   `403 BOOTSTRAP_REQUIRED` → 首启引导页，其余弹全局提示。
 - 分页：列表 `limit/offset`，目录树/快照文件用不透明游标，**前端不解析、不拼接游标内容**。
-- 路径：界面一律展示"原路径"（如 `/etc/nginx`），容器前缀 `/host` 由后端处理，前端不存不拼。
+- 路径：界面一律展示"原路径"（如 `/etc/nginx`），容器前缀 `/sources` 由后端处理，前端不存不拼。
 - SSE：`GET /api/jobs/{id}/stream`，事件 `progress|log|done|error`，帧 `id` 即日志行号；
   订阅逻辑集中在 `src/composables/useJobStream.ts`：开流前先回查 E14 取 `last_event_id` 作起始游标
   （已终态则不开流，本地收尾），45s 无数据判定疑似断链 → 回查任务状态 → 按游标续传。
