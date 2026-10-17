@@ -114,7 +114,7 @@ async def make_scheduler(
 
 async def create_task(task_repo: TaskRepo, name: str, **overrides) -> object:
     """直写仓储建任务（绕过 API 校验——兜底测试需要模拟运维直写的坏值）。"""
-    values: dict = {"name": name, "enabled": 1, "sources": ["/host/srv"], "excludes": []}
+    values: dict = {"name": name, "enabled": 1, "sources": ["/sources/srv"], "excludes": []}
     values.update(overrides)
     return await task_repo.create(values)
 
@@ -1076,7 +1076,15 @@ async def test_mount_maintenance_jobs_is_idempotent(tmp_path):
     maintenance = [
         job for job in scheduler._scheduler.get_jobs() if str(job.id).startswith("maintenance-")
     ]
-    assert [str(job.id) for job in maintenance] == ["maintenance-retention", "maintenance-dump-cleanup"]
+    # 只断言集合（排序后清单）：get_jobs 的顺序是 MemoryJobStore 按 next_run_time
+    # 排序的实现细节——两个 cron（03:40 / 03:50 UTC）在每天 03:41–03:50 UTC 之间会因
+    # retention 翻到明天而互换先后；断言固定顺序 = 每天十分钟窗口内必挂的时间依赖
+    # flaky（2026-10-17 实测复现：UTC 03:41 跑全套即挂）。本用例的意图是「恒挂载且
+    # 不堆积」，集合等价即覆盖。
+    assert sorted(str(job.id) for job in maintenance) == [
+        "maintenance-dump-cleanup",
+        "maintenance-retention",
+    ]
 
     await scheduler.shutdown()
     await asyncio.sleep(0)
