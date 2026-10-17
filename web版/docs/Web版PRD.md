@@ -12,6 +12,7 @@
 > 前端基线：Vite + Vue 3.5（组件库选型见 §7，已裁决 Naive UI）
 >
 > **修订记录**：
+> - v1.7（2026-10-17）：**A1 交付并入**——仓库类型扩展为 restic 0.19.1 全部七后端（sftp/azure/gcs/rest/rclone + 既有 s3/b2/本地）：URL 严格校验（Q20）、rclone 只读托管（conf 宿主机挂载 `:rw`，凭据零落库）、E45 `GET /api/rclone/remotes`、镜像装 rclone/openssh-client、凭据 env 表扩展（AZURE_/GOOGLE_/RESTIC_REST_）；US-B1 AC1/AC5 与 R-022/Q14 行更新为已交付。前端类型选择卡 preset 快捷卡随批次 A5 落地。详见《架构设计文档.md》v1.6-A1 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A1。
 > - v1.6（2026-10-16）：P3 批次结论并入——R-023 多仓库/多主机视图**已交付**（P3-C：仓库管理页 + 顶栏切换器 + 快照 `?host=` 筛选；后端 `repos` 表承载 url/host_tag + `X-Repo-Id` 头路由 + 凭据 `cred.{repo_id}.*` 命名空间，config `repo.*` 键退休）；R-024（P3-B）/ R-025（P3-A）同日交付（见 §4 需求池）。技术细节以《架构设计文档.md》§4.7/§5.1/§13 为准。
 > - v1.5（2026-10-16）：Q14 补记——R-022 归期 owner 再确认**维持暂缓**；立项前置讨论结论（sources 模式不支持原位恢复 / rclone 按需子进程生命周期与 token 回写隐患 / Q18 迁移成本评估）蒸馏留档于 `docs/讨论记录-R-022立项前置-2026-10-16.md`（已入文档管理规范 §6 登记表），再立项时吸收进增量 PRD。
 > - v1.3（2026-10-15）：P2 收尾批次结论并入——《增量PRD-P2收尾-2026-10-14.md》（已归档 `docs/archive/`）的用户故事 US-P2-01–15 与验收标准、Q1–Q6 及 G3 DoD 口径裁决吸收为正文（§3 旅程 H / §4 需求池状态 / §5 页面 7·9·11·12 / §8 Q9–Q14 / §9 阶段 P2 DoD）；红线 S7 修订经 owner 2026-10-15 签署（四要件 + 执行层落点纪律），原位恢复正式开放；**R-022 暂缓退出 P2 收尾批次**（owner 2026-10-14「先憋实施，需要讨论」，再立项时重开其 Q17/Q18/Q20）。实现与 QA 证据链见《archive/增量设计-P2收尾-2026-10-14.md》§13/§14 落账与《架构设计文档.md》§14b。
@@ -77,12 +78,13 @@
 ### 旅程 B：仓库配置
 
 **US-B1 配置仓库与凭据**
-> 作为管理员，我希望在界面上选择仓库类型（s3/b2/本地）并配置地址、后端凭据、host 标识，这样无需编辑 env 文件即可接入对象存储。
+> 作为管理员，我希望在界面上选择仓库类型并配置地址、后端凭据、host 标识，这样无需编辑 env 文件即可接入对象存储。
 
-- AC1：仓库类型表单按类型联动（P1 仅 s3/b2/本地三种，sftp/rclone 不出现）；
+- AC1：仓库类型表单按类型联动（**A1 起八种**：s3/b2/sftp/azure/gcs/rest/rclone/本地路径——restic 0.19.1 全部原生后端；rclone 为万能后端，OneDrive/Google Drive 等经宿主机 rclone config 托管；类型选择卡的卡片化重构见批次 A5）；
 - AC2：凭据字段保存后 API 只回脱敏状态（has_value）与"来源"标识（UI 设置 / 环境变量覆盖）；
 - AC3：compose 环境变量已设置的凭据，对应输入框置灰并标注来源；
 - AC4：仓库密码不出现于任何表单/API——仅提示"密码文件挂载状态：已配置/缺失"。
+- AC5（A1）：仓库地址按协议前缀严格校验（sftp 拒密码内嵌/rest 拒 user:pass@/rclone remote 须在册），非法形态 422 不落库；s3/b2/本地不校验（零回归）。
 
 **US-B2 首次备份前 dry-run 确认**
 > 作为管理员，我希望首次正式备份前看到预计扫描范围（含内置排除集生效结果）并确认，这样不会把 proc/docker 目录之类无意义内容写进仓库。
@@ -166,7 +168,7 @@
 
 ### 旅程 H：数据完整性与运维维护（P2 收尾批次，US-P2-01–15，2026-10-15 全部交付）
 
-> 来源：《增量PRD-P2收尾-2026-10-14.md》（已归档 `docs/archive/`），批次 A/B/D 已交付并经 QA 独立复验；批次 C（R-022）暂缓。角色统一为「管理员」。
+> 来源：《增量PRD-P2收尾-2026-10-14.md》（已归档 `docs/archive/`），批次 A/B/D 已交付并经 QA 独立复验；批次 C 即 R-022，**已随 A1 交付（2026-10-17，后端 + 镜像 + 部署；前端 preset 卡见批次 A5）**。角色统一为「管理员」。
 
 | 编号 | 用户故事 | 核心验收标准（定稿口径） |
 |---|---|---|
@@ -180,7 +182,7 @@
 | US-P2-08 | dump 配置与执行（R-019） | `dump.*` 八键配置；**密码三态**（None=不变 / `""`=清除 / 非空=设置，读只回 has_value + source，**零明文**）；PG/MySQL 走镜像内 client，**SQLite 走 Python `sqlite3` backup API**（不新增镜像依赖）；产物落 `/data/dump`；pg 版本不匹配（镜像 client N vs server M）明确提示并给自构建指引；dump 命令白名单拼装、密码仅 env 通道（S2/S3）；失败走结构化失败落 jobs 行 + notifier 告警 |
 | US-P2-09 | dump→backup 调度链（R-019） | dump 为 backup 链**前缀**，同一互斥锁内串行；dump 失败**阻断**同链 backup 并告警；**dump 阶段仅对 backup/dump 两类任务生效**（D2 收窄——QA 揪出初版对全部任务类型生效会阻断 AUTO_UNLOCK 恢复链后定案）；手动触发 backup 同样先走 dump 链 |
 | US-P2-10 | dump 产物保留清理（R-019） | 每次 dump 成功后清理一次 + 调度器每日兜底；仅删 `/data/dump` 内产物文件（符号链接只删链接不跟随，S1）；`retention_days=0` = 不启用清理；清理量写日志、失败不静默 |
-| US-P2-11/12 | REST Server / rclone 仓库支持（R-022） | ⏸️ **暂缓**（owner 2026-10-14）：批次 C 取消，Q17/Q18/Q20 随 R-022 再立项时重开；原方案基线（REST 全量 + rclone 只读托管）留档于归档增量 PRD，不构成本版承诺 |
+| US-P2-11/12 | REST Server / rclone 仓库支持（R-022） | ✅ **已交付（A1，2026-10-17）**：后端八类型 + URL 严格校验（Q20）+ rclone 只读托管（conf 宿主机挂载 `:rw` 硬约束，凭据零落库）+ E45 `GET /api/rclone/remotes`；镜像含 rclone/openssh-client。前端凭据字段已随 A1 补齐（azure/gcs/rest），类型选择卡 preset 快捷卡见批次 A5 |
 | US-P2-13 | 覆盖预览（R-015 · E20） | `POST /api/restore/preview`：CompareService 自研比对（`restic ls --json × os.stat`，mtime 1ms 容差，os.stat 走线程池 C4）；**双重目标锁**——target 须落 `INPLACE_RESTORE_ALLOWED_PREFIXES` 白名单（A0 收敛后 = `/sources`）**且**为该快照 paths 命中的目录或其子目录，非快照 paths 403、完全越界 400；游标分页（与 E18 同源编码）；预览与执行**同基底**（落点 = 快照内绝对路径，清单范围 = target 子树，与执行层 `--include` 一致）；`restore.preview` 只读留痕审计 |
 | US-P2-14 | 原位恢复执行（R-015 · E19 扩展；A7 Duplicati 化 2026-10-17） | **单次确认门**（S7 v1.4）：① E20 已存在文件预览清单 → ② 二次确认红按钮 +「停止相关服务」提示（原三重确认门 keyword = 快照短 id已删除，对齐 Duplicati 无关键词确认）；**覆盖布尔**：请求体 `overwrite_mode` 仅原位路径可传，取值 `never`（默认，跳过已存在文件）/ `always`（覆盖）——时间戳路径传即 422，`if-changed` 是时间戳路径服务端固定注入值、原位分支不接受（语义差异如实标注：Duplicati `--overwrite=false` 冲突时改名另存，restic 无等价能力，取最近似 `never`）；**执行层落点纪律**：`--target` 固定 `/` + 强制非空 `--include` 限定 target 子树（restic 落点为「--target + 快照绝对路径」拼接，传目标目录会嵌套且一文件不覆盖）；`restore.inplace` 审计（detail 含执行前重算 overwrite_count 与 overwrite_mode，S6 只增不改不回填） |
 | US-P2-15 | 非 root 档原位恢复降级（R-015） | 权限失败的部分文件复用 `skipped_count` 机制 + 任务日志列明（US-G2 既有链路），不另建机制；任务完成页 skipped>0 醒目提示 |
@@ -231,7 +233,7 @@
 | R-019 | DB dump 配置 UI                    | PG/MYSQL 全套配置（含密码）、落 /data/dump、保留天数清理、pg_dump 版本探测兜底（镜像始终装最新稳定 client，仅"新 PG GA 与 Alpine 收录"窗口期触发，方案 §4 v2.3.3）失败明确提示                                            | P1  | P2（**已交付 2026-10-15**，见 §3 旅程 H）                 |
 | R-020 | 任务历史与审计日志                        | 任务元数据 + 日志 retention（90 天默认 + 单日志截断）、append-only 审计查询 API                                                                                                         | P1  | P2（**已交付 2026-10-15**，见 §3 旅程 H）                 |
 | R-021 | 缓存维护                             | 缓存占用查看 + 一键清空（提示不丢数据），入审计                                                                                                                                         | P1  | P2（**已交付 2026-10-15**，见 §3 旅程 H）                 |
-| R-022 | sftp / rclone / REST Server 仓库支持 | sftp/rclone：镜像依赖补装、known_hosts 托管、UI 联动表单（**待设计项**）；REST Server：协议即 HTTP、复用凭据模型（归期见方案 §4.2）；Swift/Azure/GCS **明确不接入**（如有需求经 rclone 后端间接使用，随 rclone 归期，方案 §4.2）    | P1  | P2/P3（**暂缓**：owner 2026-10-14 退出 P2 收尾批次，待讨论再立项） |
+| R-022 | sftp / rclone / REST Server 仓库支持 | sftp/rclone：**✅ 已交付（A1，2026-10-17）**——镜像补装 rclone/openssh-client、conf/私钥宿主机托管、URL 严格校验（Q20）、E45 只读探测；REST Server：协议即 HTTP、复用凭据模型（已交付）；Swift/Azure/GCS 经 restic 原生后端接入（A1，env/界面凭据双通道）；OneDrive/Google Drive 等经 rclone 后端间接使用（preset 快捷卡见批次 A5）    | P1  | **已交付（A1，2026-10-17）** |
 | R-023 | 多仓库/多主机视图                        | 多仓库管理界面（**已交付 2026-10-16，P3-C**：仓库管理页（列表/新建/删除/设为当前 + 凭据按 `cred.{repo_id}.*` 命名空间隔离）+ 顶栏仓库切换器（`X-Repo-Id` 头全局生效）+ 快照列表 `?host=` 主机筛选；后端 `repos` 表承载 url/host_tag，config `repo.*` 键退休，见架构 §4.7/§5.1/§13）                                                                                                                               | P2  | P3（**已交付**）                                               |
 | R-024 | Prometheus 指标与报表                 | 指标端点、备份成功率报表                                                                                                                                                      | P2  | P3（**已交付 2026-10-16，P3-B**：`/api/metrics` Bearer 或 session 任一通过 + `/api/reports/backup-success` 时区分桶报表 + 前端报表页） |
 | R-025 | 凭据可选加密存储                         | 密钥源自密码文件派生（§6.1 演进位）                                                                                                                                              | P2  | P3（**已交付 2026-10-16，P3-A**：AES-256-GCM + `enc:v1:` 前缀、列不变无迁移 + 默认开 + 设置页开关；代价=密码文件单点，见部署指南） |
@@ -315,7 +317,7 @@
 | Q11 | ~~非 root 档原位恢复部分失败如何呈现（增量 Q5）~~ **已裁决：复用 `skipped_count` 机制 + 任务日志列明失败文件，不另建新机制** | R-015、R-012 |
 | Q12 | ~~check 触发时机与 AUTO 语义（增量 Q6/Q8）~~ **已裁决：调度器独立触发（抽样每日/每周 + 月度全量），不做每次备份后立即 check（避免占互斥锁）；AUTO_INIT/AUTO_UNLOCK 随批交付，缺省 off** | R-017 |
 | Q13 | ~~retention 日志保留口径（增量 Q12）~~ **已裁决：日志文件默认随 jobs 行一并清理（`retention.jobs_days`）；可选独立键 `retention.logs_days` 支持独立天数；单日志截断正交不变** | R-020 |
-| Q14 | ~~R-022（sftp/rclone/REST Server）归期~~ **暂缓（owner 2026-10-14「先憋实施，需要讨论」）：退出 P2 收尾批次，增量 Q17/Q18/Q20 随再立项重开；原方案基线留档于归档增量 PRD。2026-10-16 owner 再确认维持暂缓，立项前置讨论（sources 模式×原位恢复 / rclone 生命周期 / 归期）已蒸馏留档于 `docs/讨论记录-R-022立项前置-2026-10-16.md`，再立项时吸收** | R-022、P2 范围 |
+| Q14 | ~~R-022（sftp/rclone/REST Server）归期~~ **已交付（A1，2026-10-17）**：立项前置讨论结论（rclone 按需子进程生命周期 / conf token 回写隐患 / Q17 只读托管 / Q18 作废 / Q20 严格校验）全部落入批次 A1（细则见《Duplicati功能对齐分析与改造计划-2026-10-17.md》A1 细则节）；讨论文档已打吸收标注。剩余前端面（类型选择卡 preset 快捷卡）见批次 A5 | R-022、P2 范围 |
 | Q15 | ~~任务↔策略 1:1 与 policies 去留（多备份任务增量 Q1）~~ **裁决链完整记载：2026-10-13「policies 退 legacy 保留只读、E08–E11 仅 legacy 读」→ 2026-10-15 owner 改裁「选删」**——policies 代码面（路由 E08–E11 / PolicyRepo / PolicyService / E12 `policy_id` 提交入口 / PolicyOut·PolicyUpsertRequest 模型 / `AUDIT_POLICY_*` 常量 / `POLICY_WRITE_CLOSED`·`DEFAULT_POLICY_IMMUTABLE` 错误码）全部移除；共享字段校验（三分类归一/cron 5 字段/keep_*/compression 白名单/display 换算）**原样并入 TaskService**（口径逐字保留）；DDL 表与 `jobs.policy_id` 列、JobRunner 兼容形参保留待后续迁移（greenfield 无行）；回归护栏：E12 传 `policy_id` → 422（`extra=forbid`，入口永不重开） | R-026、架构 §4.4 注 |
 | Q16 | ~~备份源页去留（增量 Q2）~~ **已裁决：页面退役**——源选择迁入任务向导步骤 ②；E05 目录浏览 API 保留供向导与仓库路径选择复用；页面不删路由记录，标退役 | R-026、§5 页面 5 |
 | Q17 | ~~tag 生成规则（增量 Q3）~~ **已裁决：自动生成只读 `task-<id>`**（DDL `UNIQUE(tag)`；更新时显式剔除、永不变更；中文任务名不做 slug）——杜绝改 tag 导致 forget `--tag` 误删他任务快照；greenfield 无存量快照归组问题 | R-026、§3 旅程 I |
