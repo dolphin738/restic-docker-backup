@@ -14,6 +14,7 @@
 > **修订记录**：
 > - v1.7（2026-10-17）：**A1 交付并入**——仓库类型扩展为 restic 0.19.1 全部七后端（sftp/azure/gcs/rest/rclone + 既有 s3/b2/本地）：URL 严格校验（Q20）、rclone 只读托管（conf 宿主机挂载 `:rw`，凭据零落库）、E45 `GET /api/rclone/remotes`、镜像装 rclone/openssh-client、凭据 env 表扩展（AZURE_/GOOGLE_/RESTIC_REST_）；US-B1 AC1/AC5 与 R-022/Q14 行更新为已交付。前端类型选择卡 preset 快捷卡随批次 A5 落地。详见《架构设计文档.md》v1.6-A1 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A1。
 > - v1.8（2026-10-17）：**A2 交付并入**——forget 保留档位补齐（Duplicati keep-time / retention-policy 分段的 restic 等价物）：任务保留策略新增时间线档 `keep_within`/`keep_within_{hourly,daily,weekly,monthly,yearly}`（restic duration，如 `1y5m7d2h`）与标签档 `keep_tags`（`--keep-tag`，OR 语义），与既有计数档并列；E21 预览/E12 执行/自动 forget 三处的「至少一个保留规则」兜底门同步扩为三门；duration 形态校验前移（保存即 422）。US-026-01④/US-026-07 保留档位表述同步。详见《架构设计文档.md》v1.6-A2 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A2。
+> - v1.9（2026-10-17）：**A3 交付并入**——**快照版本标签**（Duplicati 版本标签的 restic 等价物）：`VERBS` 增 `tag` 动词；新端点 **E46 `POST /api/snapshots/tag`** 提供 `add[]`/`remove[]` 维度（与 forget/snapshots 的 `--tag` **筛选**维度 `tags` 语义隔离，不复用），目标快照可指定 `snapshot_ids[]` 或按当前 `tag_filter`/`host` 作用全部匹配快照；restic `cmd_tag.go` 源码核验的两道高危约束前移为服务端 422——(1) `add`/`remove` 皆空 → 422（restic "nothing to do!"）；(2) 无 `snapshot_ids` 且无 `tag_filter`/`host` → 422（restic 无 id 即改**全部**匹配快照）。`tag` 动词取独占锁（与备份并发 exit 11 锁冲突由 `failure_reason` 明示「仓库锁残留」）；改标签生成新快照对象（原→新 id）经 `changed[]` 映射回传。审计动作 `tag.update`；快照页新增「快照标签」卡片（打/去标签输入 + 可选目标快照 ID + 应用结果回显 + 成功后自动刷新列表）。新增 US-E2。详见《架构设计文档.md》v1.6-A3 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A3。
 > - v1.6（2026-10-16）：P3 批次结论并入——R-023 多仓库/多主机视图**已交付**（P3-C：仓库管理页 + 顶栏切换器 + 快照 `?host=` 筛选；后端 `repos` 表承载 url/host_tag + `X-Repo-Id` 头路由 + 凭据 `cred.{repo_id}.*` 命名空间，config `repo.*` 键退休）；R-024（P3-B）/ R-025（P3-A）同日交付（见 §4 需求池）。技术细节以《架构设计文档.md》§4.7/§5.1/§13 为准。
 > - v1.5（2026-10-16）：Q14 补记——R-022 归期 owner 再确认**维持暂缓**；立项前置讨论结论（sources 模式不支持原位恢复 / rclone 按需子进程生命周期与 token 回写隐患 / Q18 迁移成本评估）蒸馏留档于 `docs/讨论记录-R-022立项前置-2026-10-16.md`（已入文档管理规范 §6 登记表），再立项时吸收进增量 PRD。
 > - v1.3（2026-10-15）：P2 收尾批次结论并入——《增量PRD-P2收尾-2026-10-14.md》（已归档 `docs/archive/`）的用户故事 US-P2-01–15 与验收标准、Q1–Q6 及 G3 DoD 口径裁决吸收为正文（§3 旅程 H / §4 需求池状态 / §5 页面 7·9·11·12 / §8 Q9–Q14 / §9 阶段 P2 DoD）；红线 S7 修订经 owner 2026-10-15 签署（四要件 + 执行层落点纪律），原位恢复正式开放；**R-022 暂缓退出 P2 收尾批次**（owner 2026-10-14「先憋实施，需要讨论」，再立项时重开其 Q17/Q18/Q20）。实现与 QA 证据链见《archive/增量设计-P2收尾-2026-10-14.md》§13/§14 落账与《架构设计文档.md》§14b。
@@ -126,6 +127,15 @@
 
 - AC1：snapshots 与文件树 API 分页（或流式转发），前端虚拟滚动渲染；
 - AC2：文件树子目录懒加载；路径语义为宿主机原路径。
+
+**US-E2 快照版本标签（A3，Duplicati 版本标签的 restic 等价物）**
+> 作为管理员，我希望在快照列表页直接给快照打标签 / 去标签（如 `prod`/`env`），并能按当前筛选一次性作用于多个匹配快照，这样无需进终端即可给备份做语义分组与后续 forget/筛选，且不会误改全仓库。
+
+- AC1：快照页「快照标签」卡片提供「添加标签 / 移除标签」两组输入（逗号或换行分隔多个），与 forget/snapshots 的 `--tag` 筛选维度**语义隔离**（打/去标签走 `add`/`remove`，筛选走 `tags`），UI 不混用；
+- AC2：目标快照可指定「快照 ID 列表」（精确打/去标签）或留空——留空时按卡片当前 `tag_filter`/`host` 筛选**作用于全部匹配快照**（等价于 Duplicati「对一组快照批量打标签」），但若筛选也为空则直接 422 阻断（避免 restic 无 id 即改全仓库的高危行为）；
+- AC3：`add`/`remove` 两组皆空 → 422（restic 端 "nothing to do!"）；标签值禁 `-` 开头 / NUL / 换行（防注入），快照 id 限 8~64 位小写十六进制；
+- AC4：`tag` 动词取 restic 独占锁——与正在进行的备份并发会触发锁冲突，由 `failure_reason` 明示「仓库锁残留」引导重试，而非静默失败；
+- AC5：成功回显 `changed_count` 与 `changed[]`（原→新快照 id 映射，改标签会生成新快照对象），并自动刷新快照列表；操作全程入审计（`tag.update`）。
 
 ### 旅程 F：恢复
 
