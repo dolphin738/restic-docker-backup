@@ -11,25 +11,39 @@
   error_detail 等）从消息体**直接剔除、不出占位符**，非敏感摘要保留；
   默认 MeoW=true（第三方 SaaS）、webhook=false（自建）；
 - **MeoW 成功判定**：响应 JSON ``status==200``（该服务 HTTP 恒 200）；429 记日志不重试；
-- healthchecks：``GET {url}/start``（on_start）→ 成功 ``GET {url}`` / 失败 ``GET {url}/fail``。
+- healthchecks：``GET {url}/start``（on_start）→ 成功 ``GET {url}`` / 失败 ``GET {url}/fail``；
+- **SMTP 邮件（C2，Duplicati ``SendMail`` 模块等价物）**：与 webhook/MeoW 同为**消息口径**
+  （failed/skipped 超阈值恒发、success 仅 ``notify.on_success`` 开启时发），**不参与
+  healthchecks 的心跳口径**（邮件不适合当心跳：频次高、易被判垃圾邮件）。
 
 配置键（§4.3 notify.*，值统一字符串存储）：``notify.healthchecks_url``（敏感脱敏）、
 ``notify.webhook.url``（敏感脱敏）、``notify.webhook.template``（可选模板，``{var}`` 占位）、
 ``notify.meow.nickname``、``notify.on_success``、``notify.skipped_threshold``、
-``notify.webhook.redact``、``notify.meow.redact``。
+``notify.webhook.redact``、``notify.meow.redact``、
+C2 新增 ``notify.mail.host/port/username/password/from/to/security/redact``
+（``password`` 入 :data:`~app.db.repositories.config_repo.SENSITIVE_EXACT_KEYS`：
+只回 ``mail_password_set``、库内随 R-025 加密）。
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import smtplib
+import ssl
 import time
+from asyncio import to_thread
 from dataclasses import dataclass
+from email.mime.text import MIMEText
 from typing import Any
 
 import httpx
 
 from app.constants import (
+    MAIL_PORT_DEFAULT,
+    MAIL_SECURITY_MODES,
     NOTIFY_HTTP_TIMEOUT_SECONDS,
+    NOTIFY_MAIL_TIMEOUT_SECONDS,
     NOTIFY_SKIPPED_THRESHOLD_DEFAULT,
     NOTIFY_SKIPPED_THRESHOLD_MAX,
 )
@@ -46,11 +60,24 @@ KEY_ON_SUCCESS = "notify.on_success"
 KEY_SKIPPED_THRESHOLD = "notify.skipped_threshold"
 KEY_WEBHOOK_REDACT = "notify.webhook.redact"
 KEY_MEOW_REDACT = "notify.meow.redact"
-KEY_MEOW_REDACT = "notify.meow.redact"
 
-# 渠道级脱敏缺省（架构 §7.6：MeoW=true、自建 webhook=false）
+# C2 SMTP 邮件渠道（与 webhook/MeoW 同属消息口径，不参与 healthchecks 心跳）
+KEY_MAIL_HOST = "notify.mail.host"
+KEY_MAIL_PORT = "notify.mail.port"
+KEY_MAIL_USERNAME = "notify.mail.username"
+KEY_MAIL_PASSWORD = "notify.mail.password"  # 敏感键（ConfigRepo 侧加密，API 只回 _set）
+KEY_MAIL_FROM = "notify.mail.from"
+KEY_MAIL_TO = "notify.mail.to"             # 逗号分隔的收件人清单
+KEY_MAIL_SECURITY = "notify.mail.security"  # none / starttls / tls
+KEY_MAIL_REDACT = "notify.mail.redact"
+
+# 渠道级脱敏缺省（架构 §7.6：MeoW=true、自建 webhook=false；邮件默认 false——
+# 邮件是运维自己的通道，错误摘要对排障有价值）
 DEFAULT_WEBHOOK_REDACT = False
 DEFAULT_MEOW_REDACT = True
+DEFAULT_MAIL_REDACT = False
+# 邮件加密方式缺省：STARTTLS 提交端口形态（与 MAIL_PORT_DEFAULT=587 同源）
+DEFAULT_MAIL_SECURITY = "starttls"
 
 # MeoW 推送端点（架构 §7.6 定稿：POST JSON 至 api.chuckfang.com/{昵称}）
 MEOW_BASE_URL = "https://api.chuckfang.com"
@@ -82,6 +109,91 @@ def _parse_bool(raw: str | None, default: bool) -> bool:
     return default
 
 
+def _parse_recipients(raw: str | None) -> tuple[str, ...]:
+    """解析 ``notify.mail.to``（逗号/分号分隔的收件人清单）；去空白、丢空、保序去重。
+
+    形态校验只做「非空 + 不含空白/逗号」两项——完整 RFC 5322 地址校验交给 SMTP 服务器
+    （本地校验再严也挡不住服务器拒收，报错必须来自真实投递）。
+    """
+    if not raw or not raw.strip():
+        return ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw.replace(";", ",").split(","):
+        address = item.strip()
+        if not address or address in seen:
+            continue
+        seen.add(address)
+        result.append(address)
+    return tuple(result)
+
+
+def _parse_mail_port(raw: str | None) -> int:
+    """解析 ``notify.mail.port``（非法/越界回退缺省 587 并告警）。"""
+    if raw is None or not str(raw).strip():
+        return MAIL_PORT_DEFAULT
+    try:
+        port = int(str(raw).strip())
+    except ValueError:
+        logger.warning("notify.mail.port 配置非法：%r，回退缺省 %s", raw, MAIL_PORT_DEFAULT)
+        return MAIL_PORT_DEFAULT
+    if not (1 <= port <= 65535):
+        logger.warning("notify.mail.port=%s 越界，回退缺省 %s", port, MAIL_PORT_DEFAULT)
+        return MAIL_PORT_DEFAULT
+    return port
+
+
+def _parse_mail_security(raw: str | None) -> str:
+    """解析 ``notify.mail.security``（白名单：none/starttls/tls；非法回退 starttls）。
+
+    fail-safe 方向是**更安全**：非法值回退 starttls（加密）而不是 none（明文）。
+    """
+    if raw is None or not str(raw).strip():
+        return DEFAULT_MAIL_SECURITY
+    candidate = str(raw).strip().lower()
+    if candidate not in MAIL_SECURITY_MODES:
+        logger.warning(
+            "notify.mail.security 配置非法：%r，回退缺省 %s", raw, DEFAULT_MAIL_SECURITY
+        )
+        return DEFAULT_MAIL_SECURITY
+    return candidate
+
+
+def _send_mail_sync(cfg: MailConfig, subject: str, body: str) -> None:
+    """同步投递一封邮件（线程池内执行）；失败抛异常由调用方逐渠道捕获。
+
+    连接形态三选一（``security``）：
+    - ``tls``：``SMTP_SSL`` 直连（465 隐式 TLS）；
+    - ``starttls``：明文连接 → ``starttls()`` 升级（587 提交端口）；
+    - ``none``：明文（仅内网中继场景，UI 须显式选择）。
+
+    收件人清单进 ``To`` 头（便于客户端展示），实际投递仍用 RCPT TO 逐个下发。
+    """
+    message = MIMEText(body, "plain", "utf-8")
+    message["Subject"] = subject
+    message["From"] = cfg.sender
+    message["To"] = ", ".join(cfg.recipients)
+
+    if cfg.security == "tls":
+        server: smtplib.SMTP = smtplib.SMTP_SSL(
+            cfg.host, cfg.port, timeout=NOTIFY_MAIL_TIMEOUT_SECONDS, context=ssl.create_default_context()
+        )
+    else:
+        server = smtplib.SMTP(cfg.host, cfg.port, timeout=NOTIFY_MAIL_TIMEOUT_SECONDS)
+    try:
+        server.ehlo()
+        if cfg.security == "starttls":
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
+        if cfg.username:
+            server.login(cfg.username, cfg.password)
+        server.sendmail(cfg.sender, list(cfg.recipients), message.as_string())
+    finally:
+        # quit() 失败（网络已断）不该掩盖投递结果：吞掉连接关闭异常
+        with contextlib.suppress(Exception):
+            server.quit()
+
+
 def _parse_threshold(raw: str | None) -> int:
     """skipped 阈值解析；非法/越界回退缺省（Q4：0=只要有 skipped 即告警）。"""
     if raw is None or str(raw).strip() == "":
@@ -101,6 +213,25 @@ class ChannelResult:
     channel: str
     ok: bool
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MailConfig:
+    """C2 SMTP 配置快照（读 config 后的内存形态，明文只在本进程内流转）。"""
+
+    host: str
+    port: int = MAIL_PORT_DEFAULT
+    username: str = ""
+    password: str = ""
+    sender: str = ""
+    recipients: tuple[str, ...] = ()
+    security: str = DEFAULT_MAIL_SECURITY
+    redact: bool = DEFAULT_MAIL_REDACT
+
+    @property
+    def enabled(self) -> bool:
+        """启用判定 = 服务器 + 发件人 + 至少一个收件人（用户名/密码对内中继可留空）。"""
+        return bool(self.host and self.sender and self.recipients)
 
 
 class Notifier:
@@ -168,6 +299,7 @@ class Notifier:
         healthchecks_url = ((await self._config.get_value(KEY_HEALTHCHECKS_URL)) or "").strip()
         webhook_url = ((await self._config.get_value(KEY_WEBHOOK_URL)) or "").strip()
         meow_nickname = ((await self._config.get_value(KEY_MEOW_NICKNAME)) or "").strip()
+        mail = await self._load_mail()
 
         if healthchecks_url:
             try:
@@ -187,15 +319,53 @@ class Notifier:
                 results.append(ChannelResult(channel="meow", ok=True))
             except Exception as exc:  # noqa: BLE001
                 results.append(ChannelResult(channel="meow", ok=False, reason=str(exc)[:200]))
+        if mail is not None:
+            # 逐渠道显式：邮件失败（服务器拒收/认证失败）必须带着原因回到 UI，禁止静默
+            try:
+                await self._send_mail(mail, title=title, content=content)
+                results.append(ChannelResult(channel="mail", ok=True))
+            except Exception as exc:  # noqa: BLE001
+                results.append(ChannelResult(channel="mail", ok=False, reason=str(exc)[:200]))
 
         latency_ms = int((time.monotonic() - started) * 1000)
         if not results:
-            return False, latency_ms, results, "未配置任何通知渠道（请先填写 healthchecks / webhook / MeoW 任一）"
+            return (
+                False,
+                latency_ms,
+                results,
+                "未配置任何通知渠道（请先填写 healthchecks / webhook / MeoW / 邮件任一）",
+            )
         ok = all(item.ok for item in results)
         reason = None if ok else "；".join(
             f"{item.channel}: {item.reason}" for item in results if not item.ok
         )
         return ok, latency_ms, results, reason
+
+    # ---------------------------------------------------------------- C2 SMTP 邮件渠道
+
+    async def _load_mail(self) -> MailConfig | None:
+        """读取并装配 SMTP 配置；未启用（缺服务器/发件人/收件人）返回 None。"""
+        host = ((await self._config.get_value(KEY_MAIL_HOST)) or "").strip()
+        sender = ((await self._config.get_value(KEY_MAIL_FROM)) or "").strip()
+        recipients = _parse_recipients(await self._config.get_value(KEY_MAIL_TO))
+        if not (host and sender and recipients):
+            return None
+        return MailConfig(
+            host=host,
+            port=_parse_mail_port(await self._config.get_value(KEY_MAIL_PORT)),
+            username=((await self._config.get_value(KEY_MAIL_USERNAME)) or "").strip(),
+            # S3：明文只在本进程内存中流转，日志/审计/API 一律不落
+            password=(await self._config.get_value(KEY_MAIL_PASSWORD)) or "",
+            sender=sender,
+            recipients=recipients,
+            security=_parse_mail_security(await self._config.get_value(KEY_MAIL_SECURITY)),
+            redact=_parse_bool(await self._config.get_value(KEY_MAIL_REDACT), default=DEFAULT_MAIL_REDACT),
+        )
+
+    @staticmethod
+    async def _send_mail(cfg: MailConfig, *, title: str, content: str) -> None:
+        """投递一封邮件（``to_thread``：smtplib 是阻塞 IO，不得占用事件循环）。"""
+        await to_thread(_send_mail_sync, cfg, title, content)
 
     # ---------------------------------------------------------------- 内部实现
 
@@ -223,7 +393,8 @@ class Notifier:
         healthchecks_url = ((await self._config.get_value(KEY_HEALTHCHECKS_URL)) or "").strip()
         webhook_url = ((await self._config.get_value(KEY_WEBHOOK_URL)) or "").strip()
         meow_nickname = ((await self._config.get_value(KEY_MEOW_NICKNAME)) or "").strip()
-        if not (healthchecks_url or webhook_url or meow_nickname):
+        mail = await self._load_mail()
+        if not (healthchecks_url or webhook_url or meow_nickname or mail):
             return  # 全渠道未配置：零网络调用
 
         # healthchecks：心跳口径——成功/失败都 ping（成功 ping 恒发，见 docstring）
@@ -285,6 +456,16 @@ class Notifier:
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("MeoW 推送失败（job=%s）", getattr(job, "id", "?"), exc_info=True)
+        if mail is not None:
+            try:
+                await self._send_mail(
+                    mail,
+                    title=title,
+                    # 邮件默认不脱敏（运维自有通道）：错误摘要仅在 mail_redact=true 时剔除
+                    content=content + (f"\n摘要：{summary}" if summary and not mail.redact else ""),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("邮件推送失败（job=%s）", getattr(job, "id", "?"), exc_info=True)
 
     def _render(
         self,

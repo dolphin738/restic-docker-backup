@@ -167,6 +167,20 @@ async def test_sensitive_write_encrypted_others_plain(tmp_path) -> None:
     await db.close()
 
 
+async def test_notify_mail_password_encrypted(tmp_path) -> None:
+    """C2：``notify.mail.password`` 入敏感键清单 → 落库密文、读侧透明还原明文。"""
+    db, repo, _state = await _repo(tmp_path)
+    await repo.set("notify.mail.password", "app-password")
+    await repo.set("notify.mail.host", "smtp.example.com")  # 非敏感键：明文
+
+    raw = {row.key: row.value for row in await repo.list_all_raw()}
+    assert raw["notify.mail.password"].startswith(PREFIX)
+    assert raw["notify.mail.host"] == "smtp.example.com"
+
+    assert await repo.get_value("notify.mail.password") == "app-password"
+    await db.close()
+
+
 async def test_migration_enable_disable_idempotent(tmp_path) -> None:
     """存量搬运幂等：明文→密文→再迁 0 条；密文→明文可逆。"""
     db, repo, state = await _repo(tmp_path, enabled=False)

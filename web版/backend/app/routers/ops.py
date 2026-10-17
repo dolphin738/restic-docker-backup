@@ -56,9 +56,18 @@ from app.schemas.api_schemas import (
 from app.schemas.enums import AuditResult
 from app.services.env_sync import load_credentials
 from app.services.notifier import (
+    DEFAULT_MAIL_REDACT,
     DEFAULT_MEOW_REDACT,
     DEFAULT_WEBHOOK_REDACT,
     KEY_HEALTHCHECKS_URL,
+    KEY_MAIL_FROM,
+    KEY_MAIL_HOST,
+    KEY_MAIL_PASSWORD,
+    KEY_MAIL_PORT,
+    KEY_MAIL_REDACT,
+    KEY_MAIL_SECURITY,
+    KEY_MAIL_TO,
+    KEY_MAIL_USERNAME,
     KEY_MEOW_NICKNAME,
     KEY_MEOW_REDACT,
     KEY_ON_SUCCESS,
@@ -68,6 +77,8 @@ from app.services.notifier import (
     KEY_WEBHOOK_URL,
     Notifier,
     _parse_bool,
+    _parse_mail_port,
+    _parse_mail_security,
     _parse_threshold,
 )
 from app.services.path_mapper import PathMapper
@@ -312,6 +323,15 @@ async def get_notify(
         skipped_threshold=_parse_threshold(await config.get_value(KEY_SKIPPED_THRESHOLD)),
         webhook_redact=_parse_bool(await config.get_value(KEY_WEBHOOK_REDACT), default=DEFAULT_WEBHOOK_REDACT),
         meow_redact=_parse_bool(await config.get_value(KEY_MEOW_REDACT), default=DEFAULT_MEOW_REDACT),
+        # C2 SMTP（密码只回 mail_password_set；端口/加密方式回退解析后的合法值）
+        mail_host=((await config.get_value(KEY_MAIL_HOST)) or "").strip(),
+        mail_port=_parse_mail_port(await config.get_value(KEY_MAIL_PORT)),
+        mail_username=((await config.get_value(KEY_MAIL_USERNAME)) or "").strip(),
+        mail_password_set=bool((await config.get_value(KEY_MAIL_PASSWORD)) or ""),
+        mail_from=((await config.get_value(KEY_MAIL_FROM)) or "").strip(),
+        mail_to=((await config.get_value(KEY_MAIL_TO)) or "").strip(),
+        mail_security=_parse_mail_security(await config.get_value(KEY_MAIL_SECURITY)),
+        mail_redact=_parse_bool(await config.get_value(KEY_MAIL_REDACT), default=DEFAULT_MAIL_REDACT),
     )
 
 
@@ -346,6 +366,23 @@ async def put_notify(
         patch[KEY_WEBHOOK_REDACT] = _bool_value(payload.webhook_redact)
     if payload.meow_redact is not None:
         patch[KEY_MEOW_REDACT] = _bool_value(payload.meow_redact)
+    # C2 SMTP（password 三态：None=不变 / ""=清除 / 非空=设置；敏感键不回读）
+    if payload.mail_host is not None:
+        patch[KEY_MAIL_HOST] = payload.mail_host.strip()
+    if payload.mail_port is not None:
+        patch[KEY_MAIL_PORT] = str(int(payload.mail_port))
+    if payload.mail_username is not None:
+        patch[KEY_MAIL_USERNAME] = payload.mail_username.strip()
+    if payload.mail_password is not None:
+        patch[KEY_MAIL_PASSWORD] = payload.mail_password
+    if payload.mail_from is not None:
+        patch[KEY_MAIL_FROM] = payload.mail_from.strip()
+    if payload.mail_to is not None:
+        patch[KEY_MAIL_TO] = payload.mail_to.strip()
+    if payload.mail_security is not None:
+        patch[KEY_MAIL_SECURITY] = payload.mail_security
+    if payload.mail_redact is not None:
+        patch[KEY_MAIL_REDACT] = _bool_value(payload.mail_redact)
     if not patch:
         raise ValidationError("patch 不能为空（至少一个字段待更新）")
 

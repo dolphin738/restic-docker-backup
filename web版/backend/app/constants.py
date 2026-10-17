@@ -199,6 +199,10 @@ TAG_OPERATION_TIMEOUT_SECONDS = 60       # A3 restic tag 独占锁修改快照�
 # ---------------------------------------------------------------- R-018 通知（E23/E24）
 
 NOTIFY_HTTP_TIMEOUT_SECONDS = 10        # 单渠道推送超时（通知绝不阻塞任务链路，超时即放弃）
+# C2 SMTP 邮件渠道（Duplicati SendMail 模块等价物）
+NOTIFY_MAIL_TIMEOUT_SECONDS = 20        # 单次 SMTP 会话超时（比 HTTP 宽：EHLO/STARTTLS/AUTH 多轮往返）
+MAIL_PORT_DEFAULT = 587                 # 提交端口缺省（STARTTLS 提交端口，与 Duplicati 默认一致）
+MAIL_SECURITY_MODES: tuple[str, ...] = ("none", "starttls", "tls")  # 加密方式白名单
 NOTIFY_SKIPPED_THRESHOLD_DEFAULT = 100  # skipped 告警阈值缺省（Q4 裁决：0=只要有 skipped 即告警）
 NOTIFY_SKIPPED_THRESHOLD_MAX = 1_000_000  # 阈值写爆兜底
 

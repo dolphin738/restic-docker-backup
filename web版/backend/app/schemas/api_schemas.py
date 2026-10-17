@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import (
+    MAIL_PORT_DEFAULT,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
     RESTORE_PREVIEW_DEFAULT_LIMIT,
@@ -19,6 +20,10 @@ from app.constants import (
 from app.schemas.enums import ConfigSource, JobStatus, JobTrigger, JobType
 
 T = TypeVar("T")
+
+# C2 SMTP 加密方式（字面量白名单，与 constants.MAIL_SECURITY_MODES 同源；非法值由
+# pydantic 直接 422，不留给运行期回退逻辑兜底）
+MailSecurity = Literal["none", "starttls", "tls"]
 
 
 class _Base(BaseModel):
@@ -596,8 +601,8 @@ class TagSnapshotsResponse(_Base):
 class NotifyConfigResponse(_Base):
     """E23 通知配置读取。
 
-    敏感 URL 字段（healthchecks/webhook，内嵌令牌）只回 ``*_set`` 布尔，不回明文
-    （与 E06 cred.* 同口径）；其余字段回现值（未配置回缺省）。
+    敏感字段（healthchecks/webhook URL 内嵌令牌、SMTP 邮箱密码）只回 ``*_set`` 布尔，
+    不回明文（与 E06 cred.* 同口径）；其余字段回现值（未配置回缺省）。
     """
 
     healthchecks_url_set: bool = False
@@ -608,13 +613,22 @@ class NotifyConfigResponse(_Base):
     skipped_threshold: int = 100
     webhook_redact: bool = False
     meow_redact: bool = True
+    # C2 SMTP 邮件（密码只回 mail_password_set）
+    mail_host: str = ""
+    mail_port: int = MAIL_PORT_DEFAULT
+    mail_username: str = ""
+    mail_password_set: bool = False
+    mail_from: str = ""
+    mail_to: str = ""
+    mail_security: MailSecurity = "starttls"
+    mail_redact: bool = False
 
 
 class NotifyConfigPatch(_Base):
     """E23 通知配置写入。
 
-    敏感 URL 字段三态：``None`` = 不变、``""`` = 清除、非空 = 设置；
-    其余字段 ``None`` = 不变。
+    敏感字段三态（``healthchecks_url`` / ``webhook_url`` / ``mail_password``）：
+    ``None`` = 不变、``""`` = 清除、非空 = 设置；其余字段 ``None`` = 不变。
     """
 
     healthchecks_url: str | None = Field(default=None, max_length=2048)
@@ -625,12 +639,21 @@ class NotifyConfigPatch(_Base):
     skipped_threshold: int | None = Field(default=None, ge=0, le=1_000_000)
     webhook_redact: bool | None = None
     meow_redact: bool | None = None
+    # C2 SMTP 邮件
+    mail_host: str | None = Field(default=None, max_length=255)
+    mail_port: int | None = Field(default=None, ge=1, le=65535)
+    mail_username: str | None = Field(default=None, max_length=255)
+    mail_password: str | None = Field(default=None, max_length=512)
+    mail_from: str | None = Field(default=None, max_length=255)
+    mail_to: str | None = Field(default=None, max_length=2000)
+    mail_security: MailSecurity | None = None
+    mail_redact: bool | None = None
 
 
 class NotifyTestChannel(_Base):
     """E24 单渠道测试结果（禁止静默：失败必须带原因）。"""
 
-    channel: str = Field(description="healthchecks | webhook | meow")
+    channel: str = Field(description="healthchecks | webhook | meow | mail")
     ok: bool
     reason: str | None = None
 

@@ -36,6 +36,8 @@ SENSITIVE_EXACT_KEYS: tuple[str, ...] = (
     "notify.healthchecks_url",
     "notify.webhook.url",
     "metrics.token",
+    # C2 SMTP 邮箱密码（内中继可能留空，有值即与凭据同口径：只回 has_value + 库内加密）
+    "notify.mail.password",
 )
 
 
