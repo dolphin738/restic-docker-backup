@@ -682,7 +682,7 @@ class RestoreRequest(_Base):
     :class:`PathMapper` 白名单校验（越界 400 ``PATH_OUT_OF_PREFIX``）。
 
     R-015（红线 S7 v1.4）：``overwrite_mode`` **仅原位恢复分支可用**——时间戳
-    子目录路径出现即 422（该路径的 ``--overwrite=if-changed`` 由 JobRunner
+    子目录路径出现即 422（该路径的 ``--replace_existing=if-changed`` 由 JobRunner
     固定注入，界面无入口）；原位分支下取值 **``never`` 或 ``always``**
     （A7 Duplicati 布尔勾选：默认不勾 = never 跳过已存在文件，勾选 = always
     覆盖；``if-changed`` 是时间戳路径的服务端注入值，原位分支不接受）。
@@ -941,3 +941,27 @@ class ManualCopyResponse(_Base):
     target_repo_id: str
     exit_code: int
     message: str = ""
+
+
+class ConfigExportRequest(_Base):
+    """批次 E 配置导出：导出口令（至少 10 位，保护加密凭据段）。"""
+
+    password: str = Field(min_length=10, max_length=256)
+
+
+class ConfigImportRequest(_Base):
+    """批次 E 配置导入：完整导出包 + 口令 + 覆盖开关（ConfirmGate 由前端负责）。"""
+
+    pack: dict[str, Any] = Field(description='导出包 JSON 全文')
+    password: str = Field(min_length=1, max_length=256)
+    replace_existing: bool = False
+
+
+class ConfigImportReport(_Base):
+    """批次 E 导入报告（逐项可展示；reason 为用户可读中文）。"""
+
+    repos: dict[str, Any]
+    tasks: dict[str, Any]
+    mirror_warnings: list[dict[str, str]]
+    notify_updated: int
+    creds_imported: int
