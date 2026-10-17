@@ -4,6 +4,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NDataTable,
   NRadioButton,
   NRadioGroup,
@@ -70,9 +71,14 @@ const jobFinished = ref(false)
  *  空集合 = 整快照恢复（E19 缺省行为，回归零影响）。 */
 const selectedFiles = ref<Set<string>>(new Set())
 
-/** 恢复目标模式：timestamp = 时间戳子目录（E19 传统流）；inplace = 原位恢复（R-015）。 */
-const targetMode = ref<'timestamp' | 'inplace'>('timestamp')
+/** 恢复目标模式：inplace = 原位置（A7 起默认，对齐 Duplicati）；
+ *  timestamp = 自定义目录（/restore 下时间戳子目录，零覆盖语义，E19 传统流）。 */
+const targetMode = ref<'timestamp' | 'inplace'>('inplace')
 const isInPlace = computed(() => targetMode.value === 'inplace')
+
+/** A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never（跳过已存在文件）；
+ *  勾选 = always（以快照内容覆盖）。仅原位流有意义。 */
+const overwriteExisting = ref(false)
 
 /** 原位恢复不可用的原因（空串 = 可用）：快照无原目录。
  *  后端有双重锁兜底，这里只是提示性限制——原因逐条对应，便于用户知道该改什么。
@@ -306,13 +312,24 @@ const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
 /** 原位流必须先有预览结果才允许开门（传统流无此约束，保持既有行为）。 */
 const canOpenGate = computed(() => (isInPlace.value ? previewStats.value !== null : true))
 
-const gateKeyword = computed(() =>
-  isInPlace.value ? (snapshotId.value ?? '').slice(0, 8) : 'RESTORE',
-)
+/** 确认门关键词：时间戳流保持既有 RESTORE 关键词门；原位流 A7 起**无关键词**
+ *  （S7 v1.4：三重确认门 → 单次确认，对齐 Duplicati 无关键词确认）。 */
+const gateKeyword = computed(() => (isInPlace.value ? undefined : 'RESTORE'))
 const gateTitle = computed(() =>
   isInPlace.value ? t('restore.confirm.title') : t('restore.gateTitle'),
 )
-const gateDesc = computed(() => (isInPlace.value ? t('restore.confirm.desc') : t('restore.gateDesc')))
+/** 原位流描述随覆盖布尔变化（never = 跳过 / always = 覆盖）。 */
+const gateDesc = computed(() => {
+  if (!isInPlace.value) {
+    return t('restore.gateDesc')
+  }
+  return overwriteExisting.value ? t('restore.confirm.descOverwrite') : t('restore.confirm.descSkip')
+})
+
+/** 预览区策略行：同一份「已存在文件清单」在两种覆盖布尔下的不同归宿。 */
+const previewPolicy = computed(() =>
+  overwriteExisting.value ? t('restore.preview.policyOverwrite') : t('restore.preview.policySkip'),
+)
 
 function goConfirm(): void {
   if (!snapshotId.value) {
@@ -334,7 +351,7 @@ function goConfirm(): void {
 
 /** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。
  *  时间戳流请求体与 P1 逐字一致（无任何覆盖语义字段，零回归）；
- *  原位流额外带 overwrite_mode=always 与 keyword（快照短 id 前 8 位）。 */
+ *  原位流带 overwrite_mode（never/always 布尔，A7 起无 keyword）。 */
 async function onConfirmed(): Promise<void> {
   const id = snapshotId.value
   if (!id) {
@@ -350,7 +367,7 @@ async function onConfirmed(): Promise<void> {
       id,
       target,
       selectedFileList.value,
-      isInPlace.value ? { overwrite_mode: 'always', keyword: id.slice(0, 8) } : {},
+      isInPlace.value ? { overwrite_mode: overwriteExisting.value ? 'always' : 'never' } : {},
     )
     result.value = { jobId: data.job_id, restoreTarget: data.restore_target, filesDone: null, summary: null }
     jobFinished.value = false
@@ -445,12 +462,15 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
           <n-space vertical :size="6">
             <n-text strong>{{ t('restore.targetTitle') }}</n-text>
             <n-radio-group v-model:value="targetMode" size="small">
-              <n-radio-button value="timestamp">{{ t('restore.targetTimestamp') }}</n-radio-button>
+              <!-- A7：原位置为默认选项（对齐 Duplicati）；自定义目录 = 时间戳子目录零覆盖流 -->
               <n-radio-button value="inplace" :disabled="inPlaceDisabled">
                 {{ t('restore.targetInPlace') }}
               </n-radio-button>
+              <n-radio-button value="timestamp">{{ t('restore.targetTimestamp') }}</n-radio-button>
             </n-radio-group>
-            <n-text depth="3">{{ t('restore.targetTimestampNote') }}</n-text>
+            <n-text depth="3">
+              {{ isInPlace ? t('restore.targetInPlaceNote') : t('restore.targetTimestampNote') }}
+            </n-text>
             <!-- 原位恢复不可用时置灰 + 原因（后端双重锁兜底，前端只做提示性限制） -->
             <n-alert v-if="inPlaceDisabled" type="warning" :show-icon="false">
               <n-text depth="3">{{ inPlaceBlockReason }}</n-text>
@@ -464,6 +484,9 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
                 :placeholder="t('restore.inplace.targetPlaceholder')"
               />
               <n-text depth="3">{{ t('restore.inplace.targetHint') }}</n-text>
+              <!-- A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never 跳过已存在文件 -->
+              <n-checkbox v-model:checked="overwriteExisting">{{ t('restore.overwrite.label') }}</n-checkbox>
+              <n-text depth="3">{{ t('restore.overwrite.hint') }}</n-text>
             </template>
           </n-space>
 
@@ -508,6 +531,7 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
                 {{ t('restore.preview.overwriteCount', { n: previewStats.overwriteCount }) }}
                 · {{ t('restore.preview.totalBytes', { size: previewSizeText }) }}
               </n-text>
+              <n-text v-if="previewStats" depth="3">{{ previewPolicy }}</n-text>
               <n-alert v-if="previewStats?.truncated" type="warning" :show-icon="false">
                 {{ t('restore.preview.truncated') }}
               </n-alert>
@@ -584,7 +608,8 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
       </n-space>
     </n-card>
 
-    <!-- 三步确认门：预览 → 输入关键词（原位流 = 快照短 id 前 8 位）→ 红色二次确认 -->
+    <!-- 确认门：时间戳流 = 预览 → 输入 RESTORE → 红色二次确认；
+         原位流（A7）= 预览 → 红色二次确认（无关键词，对齐 Duplicati） -->
     <ConfirmGate
       v-model:show="gateShow"
       :title="gateTitle"
@@ -600,7 +625,7 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
           <n-text>{{ t('restore.gateSnapshot') }}：{{ formatDateTimeOr(selectedSnapshot?.time, selectedSnapshot ? DATETIME_FALLBACK : (snapshotId ?? DATETIME_FALLBACK)) }}</n-text>
           <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
           <n-text>{{ t('restore.gateTarget') }}：{{ isInPlace ? inplaceTargetFull : RESTORE_TARGET_ROOT }}</n-text>
-          <!-- 原位流：停止服务提示 + 覆盖汇总 + 清单摘要（完整清单在步骤 2） -->
+          <!-- 原位流：停止服务提示 + 已存在文件汇总 + 策略行 + 清单摘要（完整清单在步骤 2） -->
           <template v-if="isInPlace">
             <n-alert type="error" :show-icon="false">{{ t('restore.stop_services') }}</n-alert>
             <template v-if="previewStats">
@@ -610,6 +635,7 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
               <n-text depth="3">
                 {{ t('restore.confirm.totalBytes', { size: previewSizeText }) }}
               </n-text>
+              <n-text depth="3">{{ previewPolicy }}</n-text>
             </template>
             <template v-if="previewItems.length > 0">
               <n-text strong>

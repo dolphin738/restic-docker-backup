@@ -3,15 +3,19 @@ import { NAlert, NButton, NCard, NInput, NModal, NStep, NSteps, NSpace, NText } 
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-/** 危险操作三步门（§5 贯穿性安全交互规范）：预览 → 输入确认文本 → 二次确认。
+/** 危险操作确认门（§5 贯穿性安全交互规范）：预览 →（可选）输入确认文本 → 二次确认。
  * 预览区是可插拔插槽（#preview），无预览数据也能工作（只显示 description）。
+ *
+ * keyword 缺省 = **无关键词单次确认**（A7 原位恢复，对齐 Duplicati 无关键词确认）：
+ * 跳过关键词步，预览后直达二次确认；其余危险操作仍走完整三门。
  */
 
 const props = defineProps<{
   show: boolean
   title: string
-  /** 用户必须原样输入的确认文本（建议用大写动作词，如 UNLOCK / RESTORE）。 */
-  keyword: string
+  /** 用户必须原样输入的确认文本（建议用大写动作词，如 UNLOCK / RESTORE）。
+   * 缺省 = 无关键词单次确认（跳过第 2 步）。 */
+  keyword?: string
   description?: string
   /** 确认动作执行中：禁用确认按钮并显示 loading。 */
   loading?: boolean
@@ -26,10 +30,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-/** 1=预览 2=输入确认文本 3=二次确认 */
+/** 1=预览 2=输入确认文本（有关键词时） 3=二次确认 */
 const step = ref(1)
 const typed = ref('')
 
+const hasKeyword = computed(() => typeof props.keyword === 'string' && props.keyword.length > 0)
 const keywordOk = computed(() => typed.value.trim() === props.keyword)
 
 watch(
@@ -57,7 +62,7 @@ function onConfirm(): void {
     <n-card style="width: 560px" :title="title" closable @close="close">
       <n-steps :current="step" size="small">
         <n-step :title="t('confirm.stepPreview')" />
-        <n-step :title="t('confirm.stepKeyword')" />
+        <n-step v-if="hasKeyword" :title="t('confirm.stepKeyword')" />
         <n-step :title="t('confirm.stepFinal')" />
       </n-steps>
 
@@ -68,12 +73,15 @@ function onConfirm(): void {
           <slot name="preview" />
           <n-space justify="end">
             <n-button quaternary @click="close">{{ t('common.cancel') }}</n-button>
-            <n-button type="primary" @click="step = 2">{{ t('confirm.next') }}</n-button>
+            <!-- 无关键词（A7 原位恢复）：预览后直达二次确认 -->
+            <n-button type="primary" @click="hasKeyword ? (step = 2) : (step = 3)">
+              {{ t('confirm.next') }}
+            </n-button>
           </n-space>
         </template>
 
-        <!-- 第 2 步：输入确认文本 -->
-        <template v-else-if="step === 2">
+        <!-- 第 2 步：输入确认文本（仅有关键词时） -->
+        <template v-else-if="step === 2 && hasKeyword">
           <n-text depth="3">{{ t('confirm.keywordHint', { keyword }) }}</n-text>
           <n-input v-model:value="typed" :placeholder="keyword" />
           <n-space justify="end">
@@ -88,7 +96,7 @@ function onConfirm(): void {
         <template v-else>
           <n-alert type="warning" :show-icon="false">{{ t('confirm.finalHint') }}</n-alert>
           <n-space justify="end">
-            <n-button @click="step = 2">{{ t('confirm.back') }}</n-button>
+            <n-button @click="hasKeyword ? (step = 2) : (step = 1)">{{ t('confirm.back') }}</n-button>
             <n-button type="error" :loading="loading" @click="onConfirm">
               {{ props.confirmLabel ?? t('confirm.confirmBtn') }}
             </n-button>

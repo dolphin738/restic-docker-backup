@@ -3,8 +3,8 @@
  *
  * R-015 原位恢复（E20 预览 + E19 扩展）同在本文件出口：
  * - target 落 `/restore`（时间戳白名单）→ 传统流，不带任何覆盖语义参数（零回归）；
- * - target 落 `/sources` 白名单内的原目录 → 原位流，必须带 `overwrite_mode="always"` 与
- *   `keyword`（快照短 id 前 8 位）。两条路径的判定由页面按所选模式决定，后端再兜底校验。
+ * - target 落 `/sources` 白名单内的原目录 → 原位流，带 `overwrite_mode`（never/always，
+ *   A7 Duplicati 布尔勾选，无 keyword）。两条路径的判定由页面按所选模式决定，后端再兜底校验。
  *   （A0 模式收敛 2026-10-17：原 rw 档 `host_root` / `/host` 前缀已随 host 模式整体退役。）
  */
 
@@ -25,12 +25,12 @@ export interface RestorePreviewOptions {
   cursor?: string | null
 }
 
-/** R-015 原位流的两个可选字段；两者只在原位路径下传，时间戳路径下传会被后端 422 拒绝。 */
+/** R-015 原位流的覆盖布尔（A7/S7 v1.4：Duplicati 布尔勾选，不再有 keyword）。
+ * 只在原位路径下传，时间戳路径下传会被后端 422 拒绝。 */
 export interface RestoreInPlaceOptions {
-  /** 固定 'always'（Q3 裁决：界面无模式选择项，比对职责在预览层）。 */
-  overwrite_mode?: 'always'
-  /** 确认关键词 = 快照短 id 前 8 位（Q2 裁决），后端校验。 */
-  keyword?: string
+  /** never = 跳过已存在文件（默认不勾，对齐 Duplicati --overwrite=false 的最近似语义）；
+   *  always = 以快照内容覆盖。if-changed 是时间戳路径的服务端固定注入值，原位分支不接受。 */
+  overwrite_mode?: 'never' | 'always'
 }
 
 /** E20 覆盖预览（只读）：快照内容 × 目标磁盘现状的比对清单，游标分页。 */
@@ -65,7 +65,6 @@ export function restoreSnapshot(
       // 全不选 = 整快照：空数组不下传，走服务端缺省分支
       ...(paths && paths.length > 0 ? { paths } : {}),
       ...(options.overwrite_mode === undefined ? {} : { overwrite_mode: options.overwrite_mode }),
-      ...(options.keyword === undefined ? {} : { keyword: options.keyword }),
     },
   })
 }

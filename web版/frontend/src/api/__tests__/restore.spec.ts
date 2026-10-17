@@ -108,7 +108,7 @@ describe('restoreSnapshot — 时间戳子目录流（零覆盖语义）', () =>
   })
 })
 
-describe('restoreSnapshot — 原位恢复流（R-015）', () => {
+describe('restoreSnapshot — 原位恢复流（R-015 / A7 Duplicati 布尔）', () => {
   beforeEach(() => {
     requestMock.mockResolvedValue(restoreResponse() as never)
   })
@@ -117,10 +117,9 @@ describe('restoreSnapshot — 原位恢复流（R-015）', () => {
     vi.clearAllMocks()
   })
 
-  it('固定 overwrite_mode=always 且 keyword = 快照短 id 前 8 位', async () => {
+  it('默认 overwrite_mode=never（不覆盖，跳过已存在文件）', async () => {
     await restoreSnapshot(SNAPSHOT_ID, `${INPLACE_TARGET_ROOT}/etc/nginx`, undefined, {
-      overwrite_mode: 'always',
-      keyword: SNAPSHOT_ID.slice(0, 8),
+      overwrite_mode: 'never',
     })
 
     const [path, options] = requestMock.mock.calls[0]!
@@ -130,24 +129,41 @@ describe('restoreSnapshot — 原位恢复流（R-015）', () => {
     const body = lastRequestBody()
     expect(body['snapshot_id']).toBe(SNAPSHOT_ID)
     expect(body['target']).toBe('/sources/etc/nginx')
-    // 要件③：模式恒为 always，界面无模式选择项
-    expect(body['overwrite_mode']).toBe('always')
-    // Q2 裁决：keyword = 快照短 id 前 8 位，后端二次校验
-    expect(body['keyword']).toBe(SNAPSHOT_ID.slice(0, 8))
-    expect(body['keyword']).toBe('a1b2c3d4')
+    // A7/S7 v1.4：never = 跳过已存在文件（对齐 Duplicati --overwrite=false 最近似语义）
+    expect(body['overwrite_mode']).toBe('never')
+    // 否定性契约：keyword 字段已随三重确认门删除，出现即后端 422
+    expect(body).not.toHaveProperty('keyword')
     expect(body).not.toHaveProperty('paths')
+  })
+
+  it('勾选覆盖时 overwrite_mode=always', async () => {
+    await restoreSnapshot(SNAPSHOT_ID, `${INPLACE_TARGET_ROOT}/etc/nginx`, undefined, {
+      overwrite_mode: 'always',
+    })
+
+    const body = lastRequestBody()
+    expect(body['overwrite_mode']).toBe('always')
+    expect(body).not.toHaveProperty('keyword')
+  })
+
+  it('不传覆盖参数时请求体没有任何覆盖语义字段（不默认注入）', async () => {
+    await restoreSnapshot(SNAPSHOT_ID, `${INPLACE_TARGET_ROOT}/etc/nginx`)
+
+    const body = lastRequestBody()
+    expect(body).not.toHaveProperty('overwrite_mode')
+    expect(body).not.toHaveProperty('keyword')
+    expect(Object.keys(body).sort()).toEqual(['snapshot_id', 'target'])
   })
 
   it('原位流下 paths 与覆盖字段可共存（B1 勾选文件后仍走原位写回）', async () => {
     await restoreSnapshot(SNAPSHOT_ID, `${INPLACE_TARGET_ROOT}/etc/nginx`, ['/etc/nginx/conf.d'], {
       overwrite_mode: 'always',
-      keyword: SNAPSHOT_ID.slice(0, 8),
     })
 
     const body = lastRequestBody()
     expect(body['paths']).toEqual(['/etc/nginx/conf.d'])
     expect(body['overwrite_mode']).toBe('always')
-    expect(body['keyword']).toBe('a1b2c3d4')
+    expect(body).not.toHaveProperty('keyword')
   })
 })
 
