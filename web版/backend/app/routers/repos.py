@@ -42,6 +42,7 @@ from app.schemas.api_schemas import (
     RcloneRemotesOut,
     RepoCapacity,
     RepoCreateRequest,
+    RepoIdSuggestion,
     RepoOut,
     RepoPasswordRequest,
     RepoPasswordResponse,
@@ -52,6 +53,7 @@ from app.schemas.api_schemas import (
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.utils.ulid import new_ulid
 
 router = APIRouter(prefix="/api", tags=["repos"])
 
@@ -75,6 +77,35 @@ def _validate_repo_id(repo_id: str) -> str:
             f"仓库标识非法：仅允许字母、数字、下划线与连字符（1-{REPO_ID_MAX_LENGTH} 字符，且以字母或数字开头）"
         )
     return repo_id
+
+
+# ---------------------------------------------------------------- A8 仓库标识自动生成
+#
+# owner 2026-10-17 07:37 立项：POST /repos 的 id 由必填改为可选，缺省服务端生成
+# ``repo-<小写 ULID>``（26 位、全局唯一、按时间有序，天然满足 REPO_ID_PATTERN 与
+# 64 长度上限）。ULID 小写化仍保持时间序可比较（同集合内大小写一致即可）。
+# 落库前 exists 查重 + 重试（碰撞概率极低，重试只是形式化兜底）。
+
+def _new_repo_id() -> str:
+    """生成一个候选仓库标识（``repo-<小写 ULID>``）。"""
+    return f"repo-{new_ulid().lower()}"
+
+
+async def _resolve_repo_id(repos_repo: ReposRepo, provided: str | None) -> str:
+    """A8：解析新建仓库的标识。
+
+    - 显式提供（非空）→ 原样返回，落库时再由 ``ReposRepo.create`` 做形态 + 存在性校验；
+    - 留空 → 服务端生成 ``repo-<小写 ULID>``，生成前 exists 查重，碰撞重试（上限 10 次）。
+    """
+    candidate = (provided or "").strip()
+    if candidate:
+        return candidate
+    for _ in range(10):
+        generated = _new_repo_id()
+        if not await repos_repo.exists(generated):
+            return generated
+    # 理论不可达：ULID 碰撞概率极低；兜底抛错避免无限循环
+    raise ValidationError("无法生成唯一仓库标识，请稍后重试或显式指定 id", data={})
 
 
 def _to_out(repo: Repo, passfile: str) -> RepoOut:
@@ -271,10 +302,26 @@ async def create_repo(
     """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
+    repo_id = await _resolve_repo_id(repos_repo, payload.id)
     if payload.url:
         await _validate_repo_url(payload.url, request.app.state.rclone_probe)
-    repo = await repos_repo.create(payload.id, payload.name, url=payload.url, host_tag=payload.host_tag)
+    repo = await repos_repo.create(repo_id, payload.name, url=payload.url, host_tag=payload.host_tag)
     return _to_out(repo, passfile_status(request.app.state.settings, repo.id))
+
+
+@router.get(
+    "/repos/_new_id",
+    response_model=RepoIdSuggestion,
+    summary="A8 返回服务端生成的候选仓库标识（repo-<小写 ULID>）",
+    dependencies=_PROTECTED,
+)
+async def suggest_repo_id() -> RepoIdSuggestion:
+    """供新建仓库向导预填标识（对齐 Duplicati 新建备份自动起名体验）。
+
+    不落库；用户可改可不改。留空提交时 ``POST /api/repos`` 仍会服务端生成（见 A8）。
+    声明在 ``/repos/{repo_id}`` 之前，避免被路径参数捕获。
+    """
+    return RepoIdSuggestion(id=_new_repo_id())
 
 
 @router.get(
