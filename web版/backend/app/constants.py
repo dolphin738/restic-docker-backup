@@ -131,6 +131,7 @@ AUDIT_TASK_UPDATE = "task.update"
 AUDIT_TASK_DELETE = "task.delete"
 AUDIT_RETENTION_CLEANUP = "retention.cleanup"  # R-020 每日维护：任务历史/日志清理（调度器触发）
 AUDIT_DUMP_CLEANUP = "dump.cleanup"  # R-019 每日维护兜底：dump 产物清理（调度器触发）
+AUDIT_TAG_UPDATE = "tag.update"  # A3 快照版本标签修改（打/去标签）
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 
@@ -178,6 +179,7 @@ SNAPSHOT_FILES_MAX_LIMIT = 1000
 # ---------------------------------------------------------------- E21 forget 预览（R-016）
 
 FORGET_PREVIEW_TIMEOUT_SECONDS = 60     # forget --dry-run 扫描快照超时（大仓库比 snapshots 慢）
+TAG_OPERATION_TIMEOUT_SECONDS = 60       # A3 restic tag 独占锁修改快照超时（打/去标签）
 
 # ---------------------------------------------------------------- R-018 通知（E23/E24）
 

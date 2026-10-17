@@ -25,17 +25,27 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_TAG_UPDATE,
     SNAPSHOT_FILES_DEFAULT_LIMIT,
     SNAPSHOT_FILES_MAX_LIMIT,
     SNAPSHOT_FILES_MAX_OFFSET,
     SNAPSHOT_FILES_TIMEOUT_SECONDS,
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
+    TAG_OPERATION_TIMEOUT_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import ReposRepo
 from app.dependencies import current_repo_id
-from app.errors import ResticFailedError
-from app.schemas.api_schemas import Page, SnapshotFileOut, SnapshotFilesResponse, SnapshotOut
+from app.errors import ResticFailedError, ValidationError
+from app.schemas.api_schemas import (
+    Page,
+    SnapshotFileOut,
+    SnapshotFilesResponse,
+    SnapshotOut,
+    TagChanged,
+    TagSnapshotsRequest,
+    TagSnapshotsResponse,
+)
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser, SnapshotRecord
 from app.services.path_mapper import PathMapper
@@ -43,6 +53,15 @@ from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 from app.utils.cursor import decode_cursor, encode_cursor
 
 logger = logging.getLogger(__name__)
+
+# 快照 id 格式约束（与 restic 小写十六进制形态一致；A3 端点用于打/去标签的目标校验）
+_SNAPSHOT_ID_CHARS = frozenset("0123456789abcdef")
+
+
+def _is_snapshot_id(value: str) -> bool:
+    """快照 id 合法性（8~64 位小写十六进制）。"""
+    return bool(value) and 8 <= len(value) <= 64 and set(value) <= _SNAPSHOT_ID_CHARS
+
 
 router = APIRouter(prefix="/api", tags=["snapshots"])
 
@@ -168,6 +187,117 @@ async def list_snapshot_files(
         next_cursor=encode_cursor(start + limit) if has_more else None,
         truncated=probe.truncated,
     )
+
+
+@router.post(
+    "/snapshots/tag",
+    response_model=TagSnapshotsResponse,
+    summary="A3 快照打/去标签（restic tag --add/--remove）",
+    dependencies=_PROTECTED,
+)
+async def tag_snapshots(
+    payload: TagSnapshotsRequest,
+    request: Request,
+    repo_id: str = Depends(current_repo_id),
+    session: SessionContext = Depends(require_session),
+) -> TagSnapshotsResponse:
+    """``restic tag --add/--remove`` → 改标签的快照新旧 id 映射（独占锁修改）。
+
+    设计要点（restic 0.19.1 ``cmd_tag.go`` 源码核验）：
+    - 至少须 ``add``/``remove`` 之一，否则 restic 端 "nothing to do!"——拼装层已前移拒 422；
+    - 无 ``snapshot_ids`` 且又无 ``tag_filter``/``host`` 时，restic 会**改仓库内全部快照**
+      （高危），强制拒 422；
+    - ``tag`` 取独占锁，与备份并发会失败（exit 11 锁冲突），由 :func:`failure_reason`
+      明示「仓库锁残留」文案，不静默。
+    """
+    del session
+    add = [tag.strip() for tag in (payload.add or []) if tag and tag.strip()]
+    remove = [tag.strip() for tag in (payload.remove or []) if tag and tag.strip()]
+    if not add and not remove:
+        raise ValidationError(
+            "至少需要指定 add 或 remove 中的一个标签",
+            data={"add": payload.add, "remove": payload.remove},
+        )
+
+    snapshot_ids = [sid.strip() for sid in (payload.snapshot_ids or []) if sid and sid.strip()]
+    if not snapshot_ids and not (payload.tag_filter or payload.host):
+        raise ValidationError(
+            "必须指定目标快照（snapshot_ids）或过滤条件（tag_filter/host），否则将修改仓库内全部快照",
+            data={"snapshot_ids": snapshot_ids, "tag_filter": payload.tag_filter, "host": payload.host},
+        )
+    for sid in snapshot_ids:
+        if not _is_snapshot_id(sid):
+            raise ValidationError("快照 id 非法（须为 8~64 位小写十六进制）", data={"snapshot_id": sid})
+
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    audit = request.app.state.audit
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    if not repo_url:
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
+
+    args = WhitelistArgs(
+        tags=tuple(payload.tag_filter or []),
+        host=payload.host,
+        tag_add=tuple(add),
+        tag_remove=tuple(remove),
+        extra_positionals=tuple(snapshot_ids),
+    )
+    argv = restic.build("tag", args=args)
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    probe = await restic.run_json(argv, env=env, timeout_seconds=TAG_OPERATION_TIMEOUT_SECONDS)
+    if probe.exit_code != 0:
+        reason = failure_reason(probe.exit_code, probe.lines, TAG_OPERATION_TIMEOUT_SECONDS)
+        logger.warning("快照打/去标签失败：%s", reason)
+        raise ResticFailedError(reason, exit_code=probe.exit_code)
+
+    changed_count = 0
+    changed: list[TagChanged] = []
+    for line in probe.lines:
+        parsed = _try_json(line)
+        if not parsed:
+            continue
+        if parsed.get("message_type") == "changed":
+            changed.append(
+                TagChanged(
+                    old_snapshot_id=str(parsed.get("old_snapshot_id", "")),
+                    new_snapshot_id=str(parsed.get("new_snapshot_id", "")),
+                )
+            )
+        elif parsed.get("message_type") == "summary":
+            changed_count = int(parsed.get("changed_snapshots", 0) or 0)
+
+    await audit.record(
+        AUDIT_TAG_UPDATE,
+        target="snapshot",
+        detail={
+            "add": add,
+            "remove": remove,
+            "target_count": len(snapshot_ids),
+            "tag_filter": payload.tag_filter,
+            "host": payload.host,
+            "changed_count": changed_count,
+        },
+        result="ok",
+    )
+    return TagSnapshotsResponse(changed_count=changed_count, changed=changed, truncated=probe.truncated)
+
+
+def _try_json(line: str) -> dict | None:
+    """尝试把输出行解析为 JSON 对象；失败（如 restic 进度/警告文本）返回 None。"""
+    line = line.strip()
+    if not line or not line.startswith("{"):
+        return None
+    try:
+        import json
+
+        return json.loads(line)
+    except (ValueError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------- 内部实现

@@ -551,6 +551,39 @@ class ForgetPreviewResponse(_Base):
     truncated: bool = False
 
 
+# ---------------------------------------------------------------- A3 快照版本标签（restic tag）
+
+class TagSnapshotsRequest(_Base):
+    """A3 快照打/去标签请求（restic ``tag --add/--remove``）。
+
+    ``snapshot_ids`` 与 ``tag_filter``/``host`` 二选一提供目标范围——两者皆空会命中
+    仓库内**全部**快照（restic ``tag`` 无 ID 即按过滤条件改全部），属高危操作，
+    路由层强制拒 422；``add``/``remove`` 至少给一个（restic 端 "nothing to do!"，
+    拼装层前移拒 422）。
+    """
+
+    snapshot_ids: list[str] = Field(default_factory=list, description="目标快照 ID 列表（与 tag/host 过滤二选一）")
+    add: list[str] = Field(default_factory=list, description="要添加的标签（打标签；逗号分隔或数组）")
+    remove: list[str] = Field(default_factory=list, description="要移除的标签（去标签；逗号分隔或数组）")
+    tag_filter: list[str] | None = Field(default=None, description="按现有 tag 过滤目标快照（--tag 选择语义，可多选）")
+    host: str | None = Field(default=None, description="按 host 过滤目标快照（--host）")
+
+
+class TagChanged(_Base):
+    """单条被改标签的快照：旧 id → 新 id（restic ``tag`` 改标签会生成新快照对象）。"""
+
+    old_snapshot_id: str
+    new_snapshot_id: str
+
+
+class TagSnapshotsResponse(_Base):
+    """A3 打/去标签响应：改动条数 + 逐条新旧 id 映射（restic ``tag`` 的 changed/summary 输出）。"""
+
+    changed_count: int = 0
+    changed: list[TagChanged] = Field(default_factory=list)
+    truncated: bool = False
+
+
 # ---------------------------------------------------------------- E23/E24 通知（R-018）
 
 

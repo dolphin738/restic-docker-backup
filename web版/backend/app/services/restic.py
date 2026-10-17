@@ -27,7 +27,7 @@ from app.settings import Settings, get_settings
 
 # verb 白名单（§7.1 九类 + 批次 3 为 E30 容量探测新增只读 verb ``stats``）
 VERBS: tuple[str, ...] = (
-    "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats",
+    "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats", "tag",
 )
 
 # 允许注入子进程的环境变量：精确名 + 前缀（凭据走各后端官方前缀，restic 自身走 RESTIC_*）。
@@ -108,6 +108,12 @@ class WhitelistArgs:
     # A2 --keep-tag（restic TagLists：每次出现一个 tag 列表；本项目每元素一条 flag，
     # 多值间 OR 语义——命中任一的快照保留）。空 tuple = 未启用。
     keep_tags: tuple[str, ...] = ()
+    # A3 快照版本标签修改（restic `tag` 子命令；Duplicati 版本标签的 restic 等价物）。
+    # --add / --remove 各一条 flag（与 --tag 同款 _assert_safe_value 校验防注入）；
+    # 二者均空 = 无操作（restic 端 "nothing to do!"，拼装层前移拒 422）。
+    # 注意：本字段是「标签操作」，与 `tags`（forget/snapshots 的 --tag **筛选**维度）语义不同。
+    tag_add: tuple[str, ...] = ()
+    tag_remove: tuple[str, ...] = ()
     one_file_system: bool = False
     compression: str | None = None
     limit_up_kibps: int = 0
@@ -239,7 +245,7 @@ class ResticCmd:
         argv.extend(self._global_flags(args))
         argv.append(verb)
         argv.extend(self._verb_flags(verb, args))
-        if verb in ("backup", "restore", "ls", "snapshots", "cat"):
+        if verb in ("backup", "restore", "ls", "snapshots", "cat", "tag"):
             argv.extend(self._positionals(verb, args))
         return argv
 
@@ -472,6 +478,21 @@ class ResticCmd:
             if mode not in STATS_MODES:
                 raise ValidationError(f"stats 模式非法：{mode}", data={"allowed": list(STATS_MODES)})
             flags.extend(["--mode", mode])
+            return flags
+
+        if verb == "tag":
+            # A3 打/去标签：--add / --remove 各一条 flag（与 --tag 同款 _assert_safe_value
+            # 防 flag 注入）；restic 端约束（"nothing to do!" / "--set 与 --add/--remove 互斥"）
+            # 由路由层校验前移——本层只负责把白名单字段拼成 argv，不重复判定业务语义。
+            if not args.tag_add and not args.tag_remove:
+                raise ValidationError(
+                    "tag 操作至少需要 --add 或 --remove 之一",
+                    data={"tag_add": args.tag_add, "tag_remove": args.tag_remove},
+                )
+            for tag in args.tag_add:
+                flags.extend(["--add", _assert_safe_value(tag, "tag_add")])
+            for tag in args.tag_remove:
+                flags.extend(["--remove", _assert_safe_value(tag, "tag_remove")])
             return flags
 
         if verb == "unlock" or verb == "init" or verb == "snapshots":
