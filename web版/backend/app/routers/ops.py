@@ -21,7 +21,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -29,11 +33,16 @@ from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
     AUDIT_CACHE_CLEAR,
+    AUDIT_COPY_RUN,
     AUDIT_FORGET_PREVIEW,
+    AUDIT_KEY_ROTATE,
     AUDIT_NOTIFY_TEST,
     AUDIT_NOTIFY_UPDATE,
     FORGET_PREVIEW_TIMEOUT_SECONDS,
     HISTORY_QUERY_MAX_LIMIT,
+    KEY_OPERATION_TIMEOUT_SECONDS,
+    MANUAL_COPY_TIMEOUT_SECONDS,
+    PASSFILE_STATUS_CONFIGURED,
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
@@ -47,14 +56,18 @@ from app.schemas.api_schemas import (
     ForgetPreviewRequest,
     ForgetPreviewResponse,
     ForgetPreviewSnapshot,
+    KeyRotateResponse,
+    ManualCopyRequest,
+    ManualCopyResponse,
     NotifyConfigPatch,
     NotifyConfigResponse,
     NotifyTestChannel,
     NotifyTestResponse,
     OkResponse,
+    RepoKeyRotateRequest,
 )
 from app.schemas.enums import AuditResult
-from app.services.env_sync import load_credentials
+from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.notifier import (
     DEFAULT_MAIL_REDACT,
     DEFAULT_MEOW_REDACT,
@@ -82,7 +95,13 @@ from app.services.notifier import (
     _parse_threshold,
 )
 from app.services.path_mapper import PathMapper
-from app.services.restic import ResticCmd, WhitelistArgs, _normalize_duration, failure_reason
+from app.services.restic import (
+    ResticCmd,
+    WhitelistArgs,
+    _normalize_duration,
+    failure_reason,
+    secondary_repo_env,
+)
 from app.utils.time import parse_utc_bound
 
 logger = logging.getLogger(__name__)
@@ -291,6 +310,189 @@ async def preview_forget(
         group_count=len(groups),
         params=echo_params,  # type: ignore[arg-type]
         truncated=probe.truncated,
+    )
+
+
+# ---------------------------------------------------------------- C4 密钥轮换 + 手动 copy（搬家）
+
+async def _run_restic_copy(
+    restic: ResticCmd,
+    *,
+    source_url: str,
+    source_repo_id: str,
+    target_url: str,
+    target_passfile: Path,
+    tags: tuple[str, ...],
+    config_repo: ConfigRepo,
+    timeout_seconds: float,
+) -> tuple[int, str]:
+    """执行一次 restic copy（源→目标），返回 (退出码, 最后一条输出)。
+
+    copy 无 JSON 输出，逐行消费落临时日志 + 取末行作失败线索；超时按中断处理
+    （restic copy 增量可续传，下次运行补齐，无需手工补）。目的仓的 url 与口令文件
+    **绝不进 argv**——与源仓同口径走 env（见 :func:`secondary_repo_env`）。
+    """
+    env_extras = await load_credentials(config_repo, source_repo_id)
+    env_extras.update(secondary_repo_env(target_url, target_passfile))
+    args = WhitelistArgs(json_output=False, tags=tags)
+    argv = restic.build("copy", args=args, env_extras=env_extras)
+    env = restic.build_env(repo_url=source_url, repo_id=source_repo_id, env_extras=env_extras)
+    fd, log_path = tempfile.mkstemp(prefix="restic-copy-", suffix=".log")
+    os.close(fd)
+    try:
+        proc = await restic.spawn(argv, log_path, env=env)
+        last_line = ""
+        async for line in proc.lines():
+            last_line = line
+        try:
+            exit_code = await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return -1, last_line or "copy 超时"
+        return exit_code, last_line
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(log_path)
+
+
+@router.post(
+    "/repos/rotate-key",
+    response_model=KeyRotateResponse,
+    summary="C4 仓库密钥轮换（restic key passwd）",
+    dependencies=_PROTECTED,
+)
+async def rotate_repo_key(
+    payload: RepoKeyRotateRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> KeyRotateResponse:
+    """在旧密码仍有效时把仓库密码改为新密码（restic key passwd）。
+
+    流程：新密码写入临时文件 → restic key passwd --new-password-file <tmp>（旧密码
+    由当前口令文件经 env 提供）→ 成功后重写口令文件为新密码 → 审计 key.rotate。
+    新密码只经本次请求体，不落库、不回显（S3）。
+    """
+    del session
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    audit = request.app.state.audit
+    settings = request.app.state.settings
+
+    repo = await repos_repo.get(payload.repo_id)
+    if repo is None or not (repo.url or "").strip():
+        raise ValidationError("目标仓库不存在或未配置地址", data={"repo_id": payload.repo_id})
+    if passfile_status(settings, payload.repo_id) != PASSFILE_STATUS_CONFIGURED:
+        raise ValidationError("目标仓库未设置密码（请先设置仓库密码）", data={"repo_id": payload.repo_id})
+
+    # 新密码只落临时文件，绝不进 argv / 日志 / 审计（S3）
+    fd, pw_path = tempfile.mkstemp(prefix="restic-keypass-", suffix=".tmp")
+    os.write(fd, payload.new_password.encode("utf-8"))
+    os.close(fd)
+    _, log_path = tempfile.mkstemp(prefix="restic-keyrun-", suffix=".log")
+    os.close(_)
+    try:
+        env = restic.build_env(
+            repo_url=repo.url,
+            repo_id=payload.repo_id,
+            env_extras=await load_credentials(config_repo, payload.repo_id),
+        )
+        args = WhitelistArgs(json_output=False, key_target="passwd", new_password_file=pw_path)
+        argv = restic.build("key", args=args, env_extras={})
+        proc = await restic.spawn(argv, log_path, env=env)
+        last_line = ""
+        async for line in proc.lines():
+            last_line = line
+        try:
+            exit_code = await asyncio.wait_for(proc.wait(), timeout=KEY_OPERATION_TIMEOUT_SECONDS)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            exit_code = -1
+    finally:
+        for path in (pw_path, log_path):
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    if exit_code != 0:
+        reason = failure_reason(exit_code, [last_line]) if exit_code != -1 else "密钥轮换超时"
+        logger.warning("仓库 %s 密钥轮换失败：%s", payload.repo_id, reason)
+        raise ResticFailedError(f"密钥轮换失败：{reason}", exit_code=exit_code)
+
+    # restic 已用新密码重写仓库密钥 → 同步口令文件，后续访问用新密码
+    passfile_path(settings, payload.repo_id).write_text(payload.new_password, encoding="utf-8")
+    await audit.record(
+        AUDIT_KEY_ROTATE,
+        target=payload.repo_id,
+        detail={"repo_id": payload.repo_id, "result": "ok"},
+        result="ok",
+    )
+    return KeyRotateResponse(ok=True, repo_id=payload.repo_id)
+
+
+@router.post(
+    "/copy",
+    response_model=ManualCopyResponse,
+    summary="C4 手动 copy（搬家场景）",
+    dependencies=_PROTECTED,
+)
+async def manual_copy(
+    payload: ManualCopyRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> ManualCopyResponse:
+    """把源仓库快照原样复制到目标仓库（增量）。搬家 / 建异地副本场景。
+
+    源=源仓库(env)，目的=目标仓库(secondary_repo_env)；两仓地址与密码须已配置，
+    否则 422。copy 无 JSON 输出，逐行消费；中断安全（restic copy 增量可续传）。
+    """
+    del session
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    audit = request.app.state.audit
+
+    if payload.source_repo_id == payload.target_repo_id:
+        raise ValidationError("源仓库与目标仓库不能相同", data={"repo_ids": [payload.source_repo_id]})
+
+    src = await repos_repo.get(payload.source_repo_id)
+    dst = await repos_repo.get(payload.target_repo_id)
+    for rid, repo in ((payload.source_repo_id, src), (payload.target_repo_id, dst)):
+        if repo is None or not (repo.url or "").strip():
+            raise ValidationError("仓库不存在或未配置地址", data={"repo_id": rid})
+
+    exit_code, last_line = await _run_restic_copy(
+        restic,
+        source_url=src.url,
+        source_repo_id=payload.source_repo_id,
+        target_url=dst.url,
+        target_passfile=passfile_path(request.app.state.settings, payload.target_repo_id),
+        tags=tuple(str(t).strip() for t in payload.tags if str(t).strip()),
+        config_repo=config_repo,
+        timeout_seconds=MANUAL_COPY_TIMEOUT_SECONDS,
+    )
+
+    ok = exit_code == 0
+    await audit.record(
+        AUDIT_COPY_RUN,
+        target=payload.source_repo_id,
+        detail={
+            "type": "manual",
+            "source_repo": payload.source_repo_id,
+            "target_repo": payload.target_repo_id,
+            "status": "ok" if ok else "failed",
+            "exit_code": exit_code,
+        },
+        result="ok" if ok else "failed",
+    )
+    message = "" if ok else failure_reason(exit_code, [last_line])
+    return ManualCopyResponse(
+        ok=ok,
+        source_repo_id=payload.source_repo_id,
+        target_repo_id=payload.target_repo_id,
+        exit_code=exit_code,
+        message=message,
     )
 
 

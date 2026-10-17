@@ -77,6 +77,23 @@ async def _require_repo(request: Request, repo_id: str) -> None:
         raise RepoNotFoundError(repo_id)
 
 
+async def _validate_mirror_ids(request: Request, repo_id: str, mirror_ids: list[str]) -> None:
+    """C4 多目的地：镜像仓须存在且不能与主仓库相同（422）。
+
+    运行期 JobRunner 也会对缺失/自指做优雅降级（标失败或跳过），但路由层前置拒绝
+    能给前端即时反馈，避免「保存成功但某个镜像仓其实根本没收到数据」的静默陷阱。
+    """
+    if not mirror_ids:
+        return
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    for mid in mirror_ids:
+        if mid == repo_id:
+            raise ValidationError("镜像仓不能与主仓库相同", data={"mirror_repo_id": mid})
+        repo = await repos_repo.get(mid)
+        if repo is None or not (repo.url or "").strip():
+            raise ValidationError("镜像仓不存在或未配置地址", data={"mirror_repo_id": mid})
+
+
 async def _reload_scheduler(request: Request) -> None:
     """保存/删除后动态重载调度触发器（US-026-02 AC1：保存即生效，无需重启容器）。
 
@@ -178,6 +195,7 @@ async def create_task(
 
     values = service.normalize(payload.model_dump())
     values["repo_id"] = repo_id  # 任务归属路径作用域仓库（E7）
+    await _validate_mirror_ids(request, repo_id, values.get("mirror_repo_ids") or [])
     task = await task_repo.create(values)
     await request.app.state.audit.record(
         AUDIT_TASK_CREATE, target=str(task.id), detail={"name": task.name, "tag": task.tag}, result="ok"
@@ -212,6 +230,7 @@ async def update_task(
         raise NotFoundError("任务不存在")
 
     values = service.normalize(payload.model_dump())
+    await _validate_mirror_ids(request, repo_id, values.get("mirror_repo_ids") or [])
     # US-026-02 AC2：sources/excludes 与库中现值不同 → 重新出现 dry-run 门
     if values["sources"] != existing.sources or values["excludes"] != existing.excludes:
         values["dry_run_pending"] = 1

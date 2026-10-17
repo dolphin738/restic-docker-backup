@@ -35,6 +35,8 @@ _COLUMNS = (
     "pre_cmd", "post_cmd",
     # C3 任务级失败重试（0 = 不重试）
     "retry_count",
+    # C4 任务级多目的地（镜像仓 id 列表，JSON 文本；空列表 = 单目的地）
+    "mirror_repo_ids",
     "created_at", "updated_at",
 )
 _SELECT = "SELECT " + ", ".join(_COLUMNS) + " FROM backup_tasks"
@@ -61,6 +63,8 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "keep_within_monthly": "",
     "keep_within_yearly": "",
     "keep_tags": [],
+    # C4 多目的地：缺省不镜像（与 0007 DDL 缺省 '[]' 同口径）
+    "mirror_repo_ids": [],
     "group_by": "host,paths,tags",
     "cron": None,
     "one_file_system": 0,
@@ -122,6 +126,8 @@ class Task:
     post_cmd: str = ""
     # C3 任务级失败重试（仅调度触发；0 = 不重试）
     retry_count: int = RETRY_COUNT_DEFAULT
+    # C4 任务级多目的地：备份成功后镜像到的仓库 id 列表（空 = 单目的地）
+    mirror_repo_ids: list[str] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
 
@@ -212,6 +218,8 @@ class TaskRepo:
             "post_cmd": task.post_cmd,
             # C3 重试预算（JobRunner 据此决定是否自动重试）
             "retry_count": task.retry_count,
+            # C4 多目的地（JobRunner 备份成功后据此逐个 copy 到镜像仓）
+            "mirror_repo_ids": list(task.mirror_repo_ids),
         }
 
     # ---------------------------------------------------------------- 写
@@ -366,6 +374,7 @@ def _to_task(row: Any) -> Task:
         pre_cmd=str(row["pre_cmd"] or ""),
         post_cmd=str(row["post_cmd"] or ""),
         retry_count=int(row["retry_count"] if row["retry_count"] is not None else RETRY_COUNT_DEFAULT),
+        mirror_repo_ids=_load_list(row["mirror_repo_ids"]),
         created_at=str(row["created_at"] or ""),
         updated_at=str(row["updated_at"] or ""),
     )

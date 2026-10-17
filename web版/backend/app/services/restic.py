@@ -31,6 +31,8 @@ from app.settings import Settings, get_settings
 VERBS: tuple[str, ...] = (
     "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats", "tag",
     "repair", "recover",
+    # C4 多目的地：copy（跨仓库复制快照）+ key（仓库密钥管理，两级子命令）
+    "copy", "key",
 )
 
 # 允许注入子进程的环境变量：精确名 + 前缀（凭据走各后端官方前缀，restic 自身走 RESTIC_*）。
@@ -53,6 +55,10 @@ ENV_ALLOWED_PREFIXES: tuple[str, ...] = (
 
 COMPRESSION_MODES: tuple[str, ...] = ("auto", "off", "max")
 OVERWRITE_MODES: tuple[str, ...] = ("if-changed", "always", "never")
+# C4 密钥轮换：restic key 的子命令白名单（v0.19.1 cmd_key.go 注册顺序为
+# add / list / passwd / remove）。**本项目不用 passwd**（见 key 轮换服务注释：
+# 它会在我们落地新口令文件之前就删掉旧密钥）。
+KEY_TARGETS: tuple[str, ...] = ("add", "list", "remove", "passwd")
 # stats --mode 白名单（只读探测，用于 E30 仓库容量）
 STATS_MODES: tuple[str, ...] = ("raw-data", "restore-size", "blobs-per-file", "files-per-contents")
 SNAPSHOT_ID_PATTERN = frozenset("0123456789abcdef")
@@ -140,6 +146,14 @@ class WhitelistArgs:
     # B1 自愈：restic repair 的子命令（"index" / "packs"），经白名单校验——
     # repair 是两级命令（restic repair index），子命令走具名字段而非自由位置参数（S2）。
     repair_target: str | None = None
+    # C4 密钥轮换：restic key 的两级子命令（add / list / remove / passwd），与
+    # repair 同款——子命令是白名单枚举值，不是自由位置参数（S2）。
+    key_target: str | None = None
+    # key remove 的位置参数（key id），格式校验与快照 id 同为 restic.ID。
+    key_id: str | None = None
+    # key add / key passwd 的 --new-password-file（**路径**，不是口令本身——
+    # 口令绝不进 argv，S3）。
+    new_password_file: str | None = None
 
 
 class ResticProcess:
@@ -524,6 +538,39 @@ class ResticCmd:
             # 输出为人类可读文本（json_output 置 False）。
             return flags
 
+        if verb == "copy":
+            # C4 多目的地：restic copy（源 = 全局仓库，目的 = 次级仓库 env）。
+            # 目的仓库的 url 与口令文件**绝不进 argv**——与源仓库同口径走 env
+            # （见 :func:`secondary_repo_env`），argv 上只有过滤条件（S3）。
+            # 输出为人类可读文本（cmd_copy.go 硬编码 NewProgressPrinter(false, …)，
+            # --json 对它无效），json_output 由调用方置 False。
+            # --exclude 是 backup 专属 flag，copy 段没有它——本层显式拒，避免上层
+            # 复用 WhitelistArgs 时误带进来变成 restic 端「unknown flag」。
+            if args.excludes:
+                raise ValidationError("copy 不接受 --exclude", data={"excludes": args.excludes})
+            return flags
+
+        if verb == "key":
+            # C4 密钥轮换：restic key 是两级命令，子命令走具名字段（与 repair 同款，S2）。
+            target = args.key_target
+            if target not in KEY_TARGETS:
+                raise ValidationError(
+                    "key 子命令仅支持 add / list / remove / passwd", data={"key_target": target}
+                )
+            flags.append(target)
+            if target in ("add", "passwd") and args.new_password_file:
+                # 值是**路径**不是口令：口令本体在文件里，argv 上只有位置（S3）
+                flags.extend(
+                    ["--new-password-file", _assert_safe_value(args.new_password_file, "new_password_file")]
+                )
+            if target == "remove":
+                # restic 端要求且仅接受 1 个 key id（cmd_key_remove.go：len(args) != 1
+                # → "key remove expects one argument as the key id"），前移到本层 422。
+                if not args.key_id:
+                    raise ValidationError("key remove 需要 key_id", data={"key_target": target})
+                flags.append(_assert_key_id(args.key_id))
+            return flags
+
         return flags
 
     def _restore_target(self, args: WhitelistArgs) -> str:
@@ -681,6 +728,32 @@ def _assert_snapshot_id(snapshot_id: str) -> str:
     if not (8 <= len(candidate) <= 64) or not set(candidate) <= SNAPSHOT_ID_PATTERN:
         raise ValidationError("快照 id 非法（须为 8~64 位小写十六进制）", data={"snapshot_id": snapshot_id})
     return candidate
+
+
+def _assert_key_id(key_id: str) -> str:
+    """校验 key id（C4 密钥轮换）。
+
+    key id 与快照 id 同为 ``restic.ID``（64 位小写十六进制，短形态 8 位起），
+    故直接复用 :func:`_assert_snapshot_id` 的正则——不复制第二套格式约束。
+    """
+    return _assert_snapshot_id(key_id)
+
+
+def secondary_repo_env(url: str, password_file: str | Path) -> dict[str, str]:
+    """C4 ``copy`` 的次级仓库（**目的**仓库）env 片段——方向经源码级核验。
+
+    v0.19.1 事实（``cmd_copy.go`` + ``internal/global/secondary_repo.go``）：
+
+    - 次级仓库有两组写法：``--from-*``（源）与已弃用的 ``--repo2`` 组（目的）；
+    - ``FillGlobalOpts`` 里 ``isFromRepo`` 为**真**时才交换 src/dst，因此走
+      ``RESTIC_REPOSITORY2`` 这组时**默认方向**是：全局 ``RESTIC_REPOSITORY`` = 源、
+      本函数两个变量 = 目的；
+    - 两组互斥（同时给 restic 直接 Fatal），本项目只用第二组——源仓库沿用既有
+      注入（``build_env``），零改动且不触碰方向语义。
+
+    值只给**口令文件路径**而非口令本身：口令绝不进 argv（S3），与源仓库同口径。
+    """
+    return {"RESTIC_REPOSITORY2": url, "RESTIC_PASSWORD_FILE2": str(password_file)}
 
 
 def _validate_read_data_subset(value: str) -> str:

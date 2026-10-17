@@ -21,7 +21,11 @@ import logging
 import os
 from pathlib import Path
 
-from app.constants import AUDIT_ENV_SYNC
+from app.constants import (
+    AUDIT_ENV_SYNC,
+    PASSFILE_STATUS_CONFIGURED,
+    PASSFILE_STATUS_MISSING,
+)
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
@@ -71,8 +75,14 @@ def passfile_path(settings: Settings | None = None, repo_id: str = DEFAULT_REPO_
 
 
 def passfile_status(settings: Settings | None = None, repo_id: str = DEFAULT_REPO_ID) -> str:
-    """派生密码文件挂载状态：``configured`` 或 ``missing``（只读、不落库）。"""
-    return "configured" if passfile_path(settings, repo_id).is_file() else "missing"
+    """派生密码文件挂载状态：``configured`` 或 ``missing``（只读、不落库）。
+
+    字面量取 :data:`~app.constants.PASSFILE_STATUS_*`（单一来源，与 API 契约、
+    C4 镜像阶段共用——避免三处字符串各自漂移）。
+    """
+    if passfile_path(settings, repo_id).is_file():
+        return PASSFILE_STATUS_CONFIGURED
+    return PASSFILE_STATUS_MISSING
 
 
 async def load_credentials(config_repo: ConfigRepo, repo_id: str = DEFAULT_REPO_ID) -> dict[str, str]:

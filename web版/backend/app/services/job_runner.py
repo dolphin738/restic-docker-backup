@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections import OrderedDict
@@ -22,6 +23,7 @@ from typing import Any
 
 from app.constants import (
     ACTIVE_JOB_STATUSES,
+    AUDIT_COPY_RUN,
     AUDIT_HOOK_RUN,
     AUDIT_JOB_CANCEL,
     AUDIT_JOB_FINISHED,
@@ -33,6 +35,8 @@ from app.constants import (
     BEHAVIOR_AUTO_INIT_KEY,
     BEHAVIOR_AUTO_UNLOCK_KEY,
     JOB_TYPES,
+    MIRROR_REPO_IDS_MAX,
+    PASSFILE_STATUS_CONFIGURED,
     REPO_PROBE_TIMEOUT_SECONDS,
     RETRY_BASE_DELAY_SECONDS,
     RETRY_COUNT_MAX,
@@ -46,10 +50,17 @@ from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.errors import JobConflictError, NotCancellableError, NotFoundError, ValidationError
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
-from app.services.env_sync import load_credentials
+from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.hooks import HOOK_PHASE_POST, HOOK_PHASE_PRE, HookOutcome, run_hook
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
-from app.services.restic import ResticCmd, ResticProcess, WhitelistArgs, _normalize_duration
+from app.services.restic import (
+    ResticCmd,
+    ResticProcess,
+    WhitelistArgs,
+    _normalize_duration,
+    failure_reason,
+    secondary_repo_env,
+)
 from app.settings import Settings, get_settings
 from app.utils.time import utc_iso
 from app.utils.ulid import new_job_id
@@ -70,6 +81,28 @@ CHECK_PARAMS_MEMORY_MAX = 200
 # 否则 dump.enabled=1 且 DB 配置故障时会阻断 AUTO_UNLOCK 等启动恢复链，
 # 仓库锁残留无法自愈（设计 §3.2/§5 的「backup 任务链」意图）。
 DUMP_PHASE_JOB_TYPES: tuple[str, ...] = ("backup", "dump")
+
+# C4 多目的地：镜像阶段只服务「任务关联 + backup 类型」的 job——
+# 独立提交的 backup（无 task_id）没有任务级镜像配置，也没有 task-<id> 标签可过滤。
+MIRROR_PHASE_JOB_TYPES: tuple[str, ...] = ("backup",)
+
+# 镜像失败的日志行前缀（与 [retry] / [hook] 同款：阶段留痕进任务日志，SSE 可见）
+MIRROR_LOG_PREFIX = "[copy]"
+
+
+@dataclass(frozen=True)
+class MirrorOutcome:
+    """C4 单个镜像仓库的 copy 结果（含跳过原因）。
+
+    三种终局：成功（ok=True）、失败（ok=False 且 reason 非空）、
+    **跳过**（skipped=True：镜像仓就是源仓库 / 仓不存在 / 未设密码——
+    配置问题不算执行失败，与执行失败分开记账）。
+    """
+
+    repo_id: str
+    ok: bool = True
+    reason: str = ""
+    skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -431,6 +464,21 @@ class JobRunner:
                 status = "success" if exit_code == 0 else "failed"
                 # C3 记账：重试次数进摘要（UI 一眼看到「这次是重试后成的」）
                 retry_note = f"；重试 {phase.attempt - 1} 次后成功" if phase.attempt > 1 else ""
+                # C4 多目的地：镜像阶段在**主备份成功后**才跑（主仓失败就没有新快照
+                # 可复制，跑 copy 只会把上一次的旧快照再传一遍）；
+                # 镜像失败不翻转 status——主仓数据已落好，标 failed 是谎报。
+                mirror_note = ""
+                if (
+                    status == "success"
+                    and job.type in MIRROR_PHASE_JOB_TYPES
+                    and job.task_id is not None
+                ):
+                    mirror_ids = _as_mirror_ids(profile.get("mirror_repo_ids"))
+                    if mirror_ids:
+                        line_no, mirrors = await self._run_mirror_phase(
+                            job, mirror_ids, log_path=Path(job.log_path), start_line_no=line_no
+                        )
+                        mirror_note = _mirror_note(mirrors)
                 # C1 后置钩子：仅**成功后**执行；失败把终态翻转为 failed（钩子是任务
                 # 契约的一部分，静默吞掉会让运维以为后续动作已完成）。
                 hook_note = ""
@@ -448,7 +496,10 @@ class JobRunner:
                     job.id,
                     status,
                     exit_code=exit_code,
-                    summary=self._summarize(status, aggregate, exit_code) + retry_note + hook_note,
+                    summary=self._summarize(status, aggregate, exit_code)
+                    + retry_note
+                    + mirror_note
+                    + hook_note,
                     bytes_done=aggregate.bytes_done,
                     files_done=aggregate.files_done,
                     skipped_count=aggregate.skipped_count,
@@ -669,6 +720,141 @@ class JobRunner:
             delay = _retry_delay(attempt)
             await self._log_retry(job, log_path, attempt=attempt, attempts=attempts, delay=delay)
             await asyncio.sleep(delay)
+
+    # ---------------------------------------------------------------- C4 多目的地镜像
+
+    async def _run_mirror_phase(
+        self,
+        job: Job,
+        mirror_ids: tuple[str, ...],
+        *,
+        log_path: Path,
+        start_line_no: int,
+    ) -> tuple[int, list[MirrorOutcome]]:
+        """备份成功后把本任务的新快照**增量**复制到各镜像仓（逐个串行）。
+
+        设计取舍（逐条对应《Duplicati功能对齐分析与改造计划》批次 D C4）：
+
+        - **串行而非并行**：copy 要读源仓索引再写目的仓，并行 N 份会让 IO 与带宽
+          同时翻 N 倍；串行还保证日志顺序可读（并行输出会互相穿插）。
+        - **失败隔离**：某个镜像失败不影响其它镜像继续，也**不降级主目的地终态**——
+          主仓数据已经落好了，标 failed 是谎报（Q4 静默防线的反面：不许报假）。
+        - **增量由 restic 保证**：``--tag task-<id>`` 过滤本任务快照，restic 侧按
+          快照 Original 字段跳过目的仓已有的（cmd_copy.go collectAllSnapshots），
+          重复运行只传新快照，且上一次失败的会在下一次补齐（自愈，无需手工补）。
+        - 数量上限 :data:`~app.constants.MIRROR_REPO_IDS_MAX`（写侧已钳，此处再兜）。
+
+        Returns:
+            ``(最新行号, 各镜像结果列表)``——行号用于续接后续阶段的事件 id。
+        """
+        line_no = start_line_no
+        outcomes: list[MirrorOutcome] = []
+        for mirror_id in mirror_ids[:MIRROR_REPO_IDS_MAX]:
+            outcome, line_no = await self._mirror_copy(job, mirror_id, log_path, line_no)
+            outcomes.append(outcome)
+        return line_no, outcomes
+
+    async def _mirror_copy(
+        self,
+        job: Job,
+        mirror_id: str,
+        log_path: Path,
+        start_line_no: int,
+    ) -> tuple[MirrorOutcome, int]:
+        """单个镜像仓的 copy：跳过条件全部显式记账（绝不静默跳过）。
+
+        三个前置检查都在 spawn 之前完成——缺口令文件/仓不存在这类配置问题不该
+        变成一次必然失败的 restic 调用（还会污染日志与审计）。
+        """
+        if mirror_id == job.repo_id:
+            # 自指也走 _finish_mirror 记账（日志+审计 skipped），绝不静默返回
+            outcome = MirrorOutcome(mirror_id, skipped=True, reason="与源仓库相同（已跳过）")
+            return await self._finish_mirror(job, outcome, log_path, start_line_no, exit_code=0)
+        mirror = await self._repos.get(mirror_id)
+        if mirror is None or not (mirror.url or "").strip():
+            outcome = MirrorOutcome(
+                mirror_id, ok=False, reason=f"镜像仓 {mirror_id} 不存在或未配置仓库地址"
+            )
+            return await self._finish_mirror(job, outcome, log_path, start_line_no, exit_code=-1)
+        if passfile_status(self._settings, mirror_id) != PASSFILE_STATUS_CONFIGURED:
+            outcome = MirrorOutcome(mirror_id, ok=False, reason=f"镜像仓 {mirror_id} 未设置仓库密码")
+            return await self._finish_mirror(job, outcome, log_path, start_line_no, exit_code=-1)
+
+        src_url = await self._repo_url(job.repo_id)
+        env_extras = await self._load_credentials(job.repo_id)
+        # 目的仓的 url 与口令文件都走 env（与源仓同口径），argv 上干干净净（S3）
+        env_extras.update(secondary_repo_env(mirror.url, passfile_path(self._settings, mirror_id)))
+        args = WhitelistArgs(json_output=False, tags=(f"task-{job.task_id}",))
+        argv = self._restic.build("copy", args=args, env_extras=env_extras)
+        env = self._restic.build_env(repo_url=src_url, repo_id=job.repo_id, env_extras=env_extras)
+        line_no, exit_code, last_line = await self._consume_copy(
+            job, argv, env, log_path, start_line_no
+        )
+        outcome = MirrorOutcome(
+            mirror_id,
+            ok=exit_code == 0,
+            reason="" if exit_code == 0 else failure_reason(exit_code, [last_line]),
+        )
+        return await self._finish_mirror(job, outcome, log_path, line_no, exit_code=exit_code)
+
+    async def _finish_mirror(
+        self,
+        job: Job,
+        outcome: MirrorOutcome,
+        log_path: Path,
+        line_no: int,
+        *,
+        exit_code: int,
+    ) -> tuple[MirrorOutcome, int]:
+        """镜像结果落三处：任务日志（SSE 可见）+ 审计 + 返回值。"""
+        verb = "跳过" if outcome.skipped else ("成功" if outcome.ok else "失败")
+        tail = f"：{outcome.reason}" if outcome.reason else ""
+        line = f"{MIRROR_LOG_PREFIX} → {outcome.repo_id} {verb}{tail}"
+        logger.info("任务 %s %s", job.id, line)
+        try:
+            await asyncio.to_thread(_append_log_sync, log_path, line)
+            line_no += 1
+        except OSError:  # 日志写失败不应打断镜像链
+            logger.warning("任务 %s 镜像日志写入失败", job.id)
+        await self._audit.record(
+            AUDIT_COPY_RUN,
+            target=job.id,
+            detail={
+                "type": job.type,
+                "source_repo": job.repo_id,
+                "target_repo": outcome.repo_id,
+                "status": "skipped" if outcome.skipped else ("ok" if outcome.ok else "failed"),
+                "exit_code": exit_code,
+            },
+            result="ok" if outcome.ok or outcome.skipped else "failed",
+        )
+        return outcome, line_no
+
+    async def _consume_copy(
+        self,
+        job: Job,
+        argv: list[str],
+        env: dict[str, str],
+        log_path: Path,
+        start_line_no: int,
+    ) -> tuple[int, int, str]:
+        """执行 copy 子进程并消费输出（返回行号 / 退出码 / 最后一行非空输出）。
+
+        与 :meth:`_spawn_and_consume` 的差异：copy **没有 JSON 输出**（cmd_copy.go
+        硬编码 ``NewProgressPrinter(false, …)``，``--json`` 对它无效），故不进
+        OutputParser——逐行只做 tee 落盘与行号递增，最后一行留作失败原因线索。
+        循环必须跑完：``ResticProcess.lines()`` 兼做落盘，半途退出会堵住 stdout。
+        """
+        proc = await self._restic.spawn(argv, log_path, env=env)
+        self._processes[job.id] = proc
+        line_no = start_line_no
+        last_line = ""
+        async for line in proc.lines():
+            line_no += 1
+            if line.strip():
+                last_line = line.strip()
+        exit_code = await proc.wait()
+        return line_no, exit_code, last_line
 
     async def _spawn_and_consume(
         self,
@@ -1162,6 +1348,44 @@ def _as_within_rule(value: Any, field_name: str) -> str | None:
     零 JSON 产出，执行层没有兜底机会（§7.1 V4 事实 3 同型）。
     """
     return _normalize_duration(str(value) if value is not None else None, field_name)
+
+
+def _as_mirror_ids(value: Any) -> tuple[str, ...]:
+    """C4 镜像仓 id 归一：JSON 文本（DB 形态）或 list（API 形态）→ 保序去重 tuple。
+
+    数量钳 :data:`~app.constants.MIRROR_REPO_IDS_MAX` 在此**再兜一次**：写侧
+    （TaskService）已钳过，此处防的是历史脏数据与直改库的行——运行期拿到超限清单
+    不能照单全跑（每多一个镜像就多一次全链路 copy）。
+    """
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except (TypeError, ValueError):
+            logger.warning("mirror_repo_ids 非合法 JSON，按未配置处理")
+            return ()
+        items = loaded if isinstance(loaded, list) else []
+    elif isinstance(value, list | tuple):
+        items = list(value)
+    else:
+        return ()
+    result: list[str] = []
+    for raw in items:
+        item = str(raw).strip()
+        if item and item not in result:
+            result.append(item)
+    return tuple(result[:MIRROR_REPO_IDS_MAX])
+
+
+def _mirror_note(outcomes: list[MirrorOutcome]) -> str:
+    """C4 镜像结果摘要（逐个带原因，禁止只说「有镜像失败」）。
+
+    只记真失败：跳过项（如镜像仓就是源仓）是配置口径，不该混进失败提示。
+    """
+    failed = [item for item in outcomes if not item.ok and not item.skipped]
+    if not failed:
+        return ""
+    detail = "、".join(f"{item.repo_id}（{item.reason}）" for item in failed)
+    return f"；镜像同步失败：{detail}"
 
 
 def _as_keep_tags(value: Any) -> tuple[str, ...]:

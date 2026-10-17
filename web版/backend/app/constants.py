@@ -308,3 +308,16 @@ RETRY_COUNT_MAX = 5
 # 指数退避：delay = min(base * 2 ** (attempt - 1), max)（attempt 从 1 计）
 RETRY_BASE_DELAY_SECONDS = 30
 RETRY_MAX_DELAY_SECONDS = 900
+
+# ---------------------------------------------------------------- 批次 D：C4 copy + key + 多目的地
+
+# 单任务的镜像仓数量上限：每个镜像都要独立走一遍 copy 全链路（下载去重索引 + 上传
+# 包），无上限会让单次备份被镜像阶段拖到超过调度周期，后续周期全部撞仓库锁冲突。
+MIRROR_REPO_IDS_MAX = 3
+# 仓库口令文件状态字面量（单一来源：env_sync 派生、API 契约、C4 镜像阶段三处共用）
+PASSFILE_STATUS_CONFIGURED = "configured"
+PASSFILE_STATUS_MISSING = "missing"
+# restic key 系列操作超时（add 取追加锁、remove/passwd 取独占锁，与 A3 tag 同口径）
+KEY_OPERATION_TIMEOUT_SECONDS = 60
+# 手动 copy（搬家场景）超时：全量首传可能很慢，给足余量；中断安全（restic copy 增量可续传）
+MANUAL_COPY_TIMEOUT_SECONDS = 3600

@@ -25,10 +25,11 @@ policies 遗留面（路由 E08–E11 / PolicyRepo / 测试）一并移除，该
 
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from typing import Any
 
-from app.constants import RETRY_COUNT_DEFAULT, RETRY_COUNT_MAX
+from app.constants import MIRROR_REPO_IDS_MAX, RETRY_COUNT_DEFAULT, RETRY_COUNT_MAX
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
@@ -105,6 +106,8 @@ class TaskService:
             "post_cmd": task.post_cmd,
             # C3 任务级失败重试（0 = 不重试）
             "retry_count": task.retry_count,
+            # C4 多目的地：备份成功后镜像到的仓库 id 列表（空 = 单目的地）
+            "mirror_repo_ids": list(task.mirror_repo_ids),
             # greenfield：无 legacy 策略可继承，DDL 无此列，恒 None（wire 兼容占位）
             "legacy_policy_id": None,
             "created_at": task.created_at,
@@ -172,6 +175,9 @@ class TaskService:
         values["post_cmd"] = _normalize_cmd(payload.get("post_cmd"), "post_cmd")
         # C3 重试次数：钳 [0, RETRY_COUNT_MAX]（写侧 fail-fast，不留给运行期静默截断）
         values["retry_count"] = _retry_count(payload.get("retry_count", RETRY_COUNT_DEFAULT))
+        # C4 多目的地：镜像仓 id 只做形态归一（去重/上限），存在性与自指由路由层
+        # 校验（需要 repos 表，TaskService 不持有跨仓储依赖）。
+        values["mirror_repo_ids"] = _normalize_mirror_ids(payload.get("mirror_repo_ids"))
         # tag 由服务端生成（task-<id>），客户端提交一律忽略（共享知识 §9.1）；
         # 注意 tag 不出现在 values 中——TaskRepo.create 负责插入后回写。
         return values
@@ -368,6 +374,43 @@ def _retry_count(value: Any) -> int:
     """
     number = _non_negative_int(value, "retry_count")
     return min(number, RETRY_COUNT_MAX)
+
+
+def _normalize_mirror_ids(value: Any) -> list[str]:
+    """C4 镜像仓 id 归一：去空白、丢空、保序去重、钳 :data:`~app.constants.MIRROR_REPO_IDS_MAX`。
+
+    钳上限的理由（与 C3 retry_count 同口径）：每个镜像都要独立走一遍 copy 全链路，
+    无上限会让单次备份被镜像阶段拖到超过调度周期。写侧钳好，运行期
+    (:func:`job_runner._as_mirror_ids`) 只再兜一次防脏数据。
+
+    Raises:
+        ValidationError: 形态非列表/JSON 数组（422）。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("mirror_repo_ids 须为字符串数组", data={"field": "mirror_repo_ids"}) from exc
+        if not isinstance(loaded, list):
+            raise ValidationError("mirror_repo_ids 须为字符串数组", data={"field": "mirror_repo_ids"})
+        value = loaded
+    if not isinstance(value, list | tuple):
+        raise ValidationError("mirror_repo_ids 须为字符串数组", data={"field": "mirror_repo_ids"})
+    result: list[str] = []
+    for raw in value:
+        item = str(raw).strip()
+        if item and item not in result:
+            result.append(item)
+    if len(result) > MIRROR_REPO_IDS_MAX:
+        # 与 C3 retry_count 不同：数量超限**必须报错**而非钳断——静默截掉第 4 个
+        # 镜像仓，用户会以为异地副本在跑，实际那个仓从没收到过数据。
+        raise ValidationError(
+            f"镜像仓数量超过上限（最多 {MIRROR_REPO_IDS_MAX} 个）",
+            data={"field": "mirror_repo_ids", "count": len(result)},
+        )
+    return result
 
 
 def _normalize_cmd(value: Any, field_name: str) -> str:

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import (
     MAIL_PORT_DEFAULT,
+    MIRROR_REPO_IDS_MAX,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
     RESTORE_PREVIEW_DEFAULT_LIMIT,
@@ -404,6 +405,8 @@ class TaskOut(_Base):
     post_cmd: str = ""
     # C3 调度触发失败后的最大重试次数
     retry_count: int = RETRY_COUNT_DEFAULT
+    # C4 多目的地：备份成功后镜像到的仓库 id（空列表 = 单目的地）
+    mirror_repo_ids: list[str] = Field(default_factory=list)
     legacy_policy_id: int | None = None   # greenfield 恒 None（无 legacy_policy_id 列）
     created_at: str
     updated_at: str
@@ -472,6 +475,8 @@ class TaskUpsertRequest(_Base):
     post_cmd: str = ""
     # C3 调度触发失败后的最大重试次数（0 = 不重试；手动触发恒不重试）
     retry_count: int = RETRY_COUNT_DEFAULT
+    # C4 多目的地：镜像仓 id 列表（数量上限由 pydantic 直接 422；存在性/自指由路由层校验）
+    mirror_repo_ids: list[str] = Field(default_factory=list, max_length=MIRROR_REPO_IDS_MAX)
 
 
 # ---------------------------------------------------------------- E17/E18 快照
@@ -902,3 +907,43 @@ class RepoUpdateRequest(_Base):
     name: str | None = None
     url: str | None = None
     host_tag: str | None = None
+
+
+class RepoKeyRotateRequest(_Base):
+    """C4 仓库密钥轮换（restic key passwd）：在旧密码仍有效时改为新密码。
+
+    - ``repo_id``：目标仓库（其口令文件须已配置，否则 422）；
+    - ``new_password``：新密码（明文只经本次请求体，响应不回显）。
+    """
+
+    repo_id: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=1, max_length=512)
+
+
+class KeyRotateResponse(_Base):
+    """C4 密钥轮换结果（new_password 不回显，敏感）。"""
+
+    ok: bool
+    repo_id: str
+
+
+class ManualCopyRequest(_Base):
+    """C4 手动 copy（搬家场景）：把源仓库快照原样复制到目标仓库（增量，只传新快照）。
+
+    - ``source_repo_id`` / ``target_repo_id`` 须为已存在且已配置地址与密码的仓库；
+    - ``tags``：可选过滤（仅复制带这些标签的快照），与任务级镜像同口径。
+    """
+
+    source_repo_id: str = Field(min_length=1)
+    target_repo_id: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+
+
+class ManualCopyResponse(_Base):
+    """C4 手动 copy 结果。"""
+
+    ok: bool
+    source_repo_id: str
+    target_repo_id: str
+    exit_code: int
+    message: str = ""
