@@ -277,7 +277,7 @@
 | **P2 · 布局与顶栏重组**（2026-10-18 已实施：三步回归全绿 + 视觉走查 33/33 含中英/移动，待提交） | `BasicLayout` 分组 + 232px + 顶栏两区 + 主题控件改造 | §4、**§10 PV-1/PV-3 的落地** | P0 结论 | ≈300 行 |
 | **P3a · StatusTag 基建**（2026-10-18 已实施：三步回归全绿 + 走查 10/10，待提交） | 新建 `StatusTag.vue` + 替换 `BasicLayout` / `TaskCard` | §6、**§10 PV-2（第 1 批）** | P2（顶栏先稳定，避免同文件冲突） | ≈150 行 |
 | **P3b · 特殊语义收口**（2026-10-18 已实施：三步回归全绿 + 走查 18/18，待提交） | `jobs`（含 `cancelled`）+ `audit`（含无 type） | **§10 PV-2（第 2 批）** | P3a | ≈150 行 |
-| **P3c · 剩余收口** | `repo` / `settings` / `notifications` / `TierCard` / `JobProgress` / `dashboard` | **§10 PV-2（第 3 批）** | P3b | ≤400 行（若超则再拆 P3d） |
+| **P3c · 剩余收口**（2026-10-19 已实施：三步回归全绿 + 走查 29/29，待提交） | `repo` / `settings` / `notifications` / `TierCard` / `JobProgress` / `dashboard` | **§10 PV-2（第 3 批）** | P3b | ≤400 行（若超则再拆 P3d） |
 | **P4 · 页面级** | 仪表盘 KPI 状态带 + 数字 count-up；`taskWizard` 步骤条；`settings` 锚点+吸底；`jobs` 日志抽屉 | §5、**§11 AB-2** | P3a（StatusTag 可用） | ≈350 行 |
 | **P5 · 可选增强**（可无限期推迟） | ⌘K 命令面板 | **§11 AB-3** | **PRD 先增补需求条目** | 250–350 行 |
 
@@ -304,6 +304,12 @@
 #### P3a–P3c · StatusTag 收口（拆批依据见 §10 PV-2）
 
 新建 `components/StatusTag.vue`，逐处等价替换散落的 `NTag type` 判定；**只做等价替换，不合并语义差异**。三批顺序与归属见 §9.1，每批单独 typecheck + vitest + 一次视觉走查。
+
+> **P3c 落地补记（2026-10-19）**：
+> - 实际替换 23 处（repo 9 / settings 7 / notifications 2 / TierCard 1 / JobProgress 1 / dashboard 2），另补收 **BasicLayout 顶栏「运行中」tag**（info 态）——该处不在 §9.1 批次表文件清单内，但属 §6「剩余散落 NTag」语义，漏收则全站状态语言不闭环；
+> - `StatusTag` 增加可选 `size` prop（`tiny`/`small`，默认 small）：repo 密集表格/凭据区原为 tiny 档，等价替换要求保留信息密度（NTag 的 size 只产 `--n-height` 变量、不产类名）；
+> - repo 页挂载点跳转 chips（可点击导航）**不属状态表达**，保留原 `NTag`，不加圆点；
+> - settings 有 4 处原为非 round 形态，按 §6 统一为 pill（色/文案不变，形态统一）。
 
 #### P4 · 页面级（含 §11 AB-2）
 
