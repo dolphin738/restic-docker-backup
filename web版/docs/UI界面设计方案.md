@@ -278,7 +278,7 @@
 | **P3a · StatusTag 基建**（2026-10-18 已实施：三步回归全绿 + 走查 10/10，待提交） | 新建 `StatusTag.vue` + 替换 `BasicLayout` / `TaskCard` | §6、**§10 PV-2（第 1 批）** | P2（顶栏先稳定，避免同文件冲突） | ≈150 行 |
 | **P3b · 特殊语义收口**（2026-10-18 已实施：三步回归全绿 + 走查 18/18，待提交） | `jobs`（含 `cancelled`）+ `audit`（含无 type） | **§10 PV-2（第 2 批）** | P3a | ≈150 行 |
 | **P3c · 剩余收口**（2026-10-19 已实施：三步回归全绿 + 走查 29/29，待提交） | `repo` / `settings` / `notifications` / `TierCard` / `JobProgress` / `dashboard` | **§10 PV-2（第 3 批）** | P3b | ≤400 行（若超则再拆 P3d） |
-| **P4 · 页面级** | 仪表盘 KPI 状态带 + 数字 count-up；`taskWizard` 步骤条；`settings` 锚点+吸底；`jobs` 日志抽屉 | §5、**§11 AB-2** | P3a（StatusTag 可用） | ≈350 行 |
+| **P4 · 页面级**（2026-10-19 已实施：三步回归全绿 + 走查 30/30，待提交） | 仪表盘 KPI 状态带 + 数字 count-up；`taskWizard` 草稿持久化；`settings` 锚点目录 + dump 吸底保存条 | §5、**§11 AB-2** | P3a（StatusTag 可用） | ≈350 行 |
 | **P5 · 可选增强**（可无限期推迟） | ⌘K 命令面板 | **§11 AB-3** | **PRD 先增补需求条目** | 250–350 行 |
 
 ### 9.2 逐批改动明细
@@ -320,6 +320,18 @@
 | `pages/settings/index.vue` | 锚点目录 + 吸底保存条 |
 | `pages/jobs/index.vue` | 日志弹窗改抽屉 |
 
+> **P4 落地补记（2026-10-19）**：
+> - **`taskWizard` 步骤条**：`TaskWizard.vue` 早在增量设计 §5.3 即用 `NSteps` 五步，**无「拆壳」空间**；本批改为交付 **新建向导草稿持久化**（localStorage `restic-web:wizard-draft:v1`，500ms 防抖写入）。设计取舍：① **只对新建模式**生效——编辑态有服务端权威值，草稿回填会与 `hydrated` 预填互踩；② 草稿**只提示不自动回填**（自动覆盖用户正在填的内容更糟），提示条给「恢复 / 丢弃」两动作；③ 落库成功即清草稿，避免下次新建误提示已完成草稿。
+> - **`jobs` 日志抽屉**：E27 已实现（`jobs/index.vue:639` 日志抽屉 + `:545` check 详情抽屉），P4 不重复改造。
+> - **KPI 状态带**：原「仓库状态卡 + 运行模式卡 + 2×`NStatistic`」四块合成一条 4 格带（仓库状态 / 快照数 / 运行模式 / 最近备份），窄屏 2×2；`TierCard.vue` **保留**（`TaskWizard` 步骤①仍在用），仅从仪表盘摘除；仓库告警（`last_error` / 加载失败）由卡内上提为整宽告警行。
+> - **count-up（AB-2）**：新建 `composables/useCountUp.ts`。两个必须的细节——① 首帧用 `firstRun` 标志跳过播放，否则 `immediate` 首次触发就会把 `played` 置位，数据后到时反而不播；② `prefers-reduced-motion` 直切终值；组件卸载/值重入时 `cancelAnimationFrame`，不与 15s 轮询抢帧（轮询只改目标值，动画一次性）。
+> - **任务卡「7 天未跑」**：`TaskCard.vue` 派生 `stale`（启用中且有 `last_run_at` 且超 7 天），追加 warning 态 `StatusTag`；从未运行的任务由 `never_run` 徽章表达，不重复标记。
+> - **settings 锚点目录**：8 区块（dump / behavior / credential / metrics / cache / timezone / password / transfer）吸顶横条，文案复用各卡 `title` 键（零新增目录文案）；高亮判定线取 `clamp(140, 45% 视口, 520)`——固定小判定线（120px）在「页面已滚到底、末尾区块推不到顶」时失效（实测点「管理员改密」高亮仍停在「缓存维护」）；点击后 1.2s 高亮锁定，避免平滑滚动途中被途经区块刷走。
+> - **settings 吸底保存条**：仅 dump 表单（8 键 + 密码三态、页面最长）；其余 6 个区块各自独立保存动作，做统一底栏会出现「一条底栏对应多个保存目标」的歧义，故不做。
+> - **两个实测坑（已修，改这类样式/网格前必读）**：
+>   1. **`n-grid` 的 `responsive="screen"` 只认命名断点**（`xs/s/m/l/xl/xxl`）。`cols="2 900:4"` 这种数字断点**静默不生效**（`responsiveQuery` 传的是断点布尔集，不是像素宽度）→ 1440 宽仍停在基础值 2 列。本批修正 dashboard（`2 l:4`）与 repo 页（`1 l:2`，原 `1 1100:2` 同样失效），并在走查里加「1440 实测 4 列」护栏。
+>   2. **Naive 没有 `--n-body-color` / `--n-card-color`**：common 的 `bodyColor` 暴露为 **`--n-color`**（由 `n-el` 提供），组件级（`.n-card`）也是 `--n-color`（= `cardColor`）。写成前两个变量会**静默回落 `#fff`**，暗色主题下 sticky 条留一条白带。定案：锚点条用 `n-el` 承载 + `var(--n-color)`；保存条**不包 `n-el`**（会把变量重置成 body 色），直接继承所在卡片的 `--n-color`。
+
 #### P5 · 可选增强（AB-3，默认不做）
 
 **开工闸门**：PRD 需求池先增补命令面板条目（`文档管理规范.md:40`），否则不开工。首版只做只读动作（页面跳转 / 任务定位 / 仓库切换），不得把「立即运行」等写操作放进面板（§11 AB-3 第 2 条）。**该批不阻塞 P0–P4 任何一步。**
@@ -327,7 +339,7 @@
 ### 全局回归清单（每批必跑）
 
 1. `pnpm run typecheck` → `pnpm run test` → `pnpm run build` 三步分别确认；
-2. `src/__tests__/i18n-parity.spec.ts`（中英键集合必须一致，当前各 909 键）；
+2. `src/__tests__/i18n-parity.spec.ts`（中英键集合必须一致；数量随批次增长，以 spec 实测为准，不在此硬编码）；
 3. `src/__tests__/naive-imports.spec.ts`（新增 `.vue` 内 `n-*` 标签必须在同文件具名导入）；
 4. `src/components/__tests__/VirtualTree.spec.ts`（7 例 DOM 结构护栏：`.vtree__row` / `.vtree__caret` / `.vtree__name` / `.vtree__row--selected` / `.vtree__error`）；
 5. `bash scripts/verify_redlines.sh` 零命中；
@@ -398,6 +410,8 @@
 - **做什么**：KPI 状态带数字进入视口时滚动到位（一次性）。
 - **边界**：仅 KPI 首屏数字；`prefers-reduced-motion` 时直切；不阻塞首屏渲染、不与 15s 轮询刷新冲突（刷新只更新目标值，不重放动画）。
 - **成本**：一段 `requestAnimationFrame` 逻辑，无新依赖。**随 P4 仪表盘批次交付**（见 §9.1）。
+
+> **落地情况（P4，2026-10-19）**：`composables/useCountUp.ts`——`useCountUp(target: Ref<number>): Ref<number>`，`ease-out` 缓动、一次性播放；首帧不播（避免数据后到时已置位 `played`）、`prefers-reduced-motion` 直切、卸载即 `cancelAnimationFrame`。已接入仪表盘「仓库容量」「快照数」两处；走查断言两者收敛为终值（320.0 GiB / 142）。
 
 ### AB-3 · ⌘K 命令面板（**需先立项**）
 
