@@ -16,6 +16,7 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NDynamicTags,
+  NEl,
   NForm,
   NFormItem,
   NInput,
@@ -26,7 +27,7 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { changePassword } from '@/api/auth'
 import { getConfig } from '@/api/config'
@@ -450,12 +451,95 @@ async function doImport(): Promise<void> {
     importing.value = false
   }
 }
+
+// ---------------------------------------------------------------- 锚点目录（P4：长页 8 区块导航）
+
+/** 区块 id 与卡片标题键一一对应（复用既有 title 键 → 语言切换自动跟随，零新增目录文案）。 */
+const SECTIONS = [
+  { id: 'dump', title: 'settings.dump.title' },
+  { id: 'behavior', title: 'settings.behavior.title' },
+  { id: 'credential', title: 'settings.credential.title' },
+  { id: 'metrics', title: 'settings.metrics.title' },
+  { id: 'cache', title: 'settings.cache.title' },
+  { id: 'timezone', title: 'settings.timezone.title' },
+  { id: 'password', title: 'settings.password.title' },
+  { id: 'transfer', title: 'settings.transfer.title' },
+] as const
+
+type SectionId = (typeof SECTIONS)[number]['id']
+
+/** 目录项：文案经 computed 派生，保证切换语言后即时刷新。 */
+const sectionLinks = computed(() =>
+  SECTIONS.map((item) => ({ id: item.id, anchor: `sec-${item.id}`, label: t(item.title) })),
+)
+
+const activeSection = ref<SectionId>('dump')
+
+/** 点击后短暂锁定高亮（1.2s，覆盖平滑滚动全程）：
+ *  否则滚动途中的中间态会把高亮刷成途经区块，出现「点了 A 却高亮 B」。 */
+let pinnedUntil = 0
+
+/** 跳转并立即高亮。 */
+function scrollToSection(id: SectionId): void {
+  activeSection.value = id
+  pinnedUntil = Date.now() + 1200
+  document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/** 滚动跟随高亮：scroll 事件不冒泡，须在 window 捕获阶段（capture:true）接收内层滚动容器的滚动。
+ *
+ * 判定线按视口高度自适应（0.45×视口，夹在 140–520px）：固定小判定线（如 120px）在
+ * 「页面滚到底、末尾区块无法再推到顶部」时失效——末尾两三个区块永远越不过线，高亮会
+ * 卡在中间某个区块（实测点「管理员改密」后高亮仍停在「缓存维护」）。 */
+let rafPending = false
+function onScrollCapture(): void {
+  if (rafPending) {
+    return
+  }
+  rafPending = true
+  requestAnimationFrame(() => {
+    rafPending = false
+    if (Date.now() < pinnedUntil) {
+      return
+    }
+    const line = Math.min(Math.max(140, window.innerHeight * 0.45), 520)
+    let current: SectionId = SECTIONS[0].id
+    for (const item of SECTIONS) {
+      const el = document.getElementById(`sec-${item.id}`)
+      if (el && el.getBoundingClientRect().top <= line) {
+        current = item.id
+      }
+    }
+    activeSection.value = current
+  })
+}
+
+onMounted(() => window.addEventListener('scroll', onScrollCapture, true))
+onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
 </script>
 
 <template>
   <n-space vertical :size="16">
+    <!-- P4：锚点目录（8 区块长页导航；吸顶常驻，窄屏横向滚动）。
+         用 n-el 承载：naive 把 bodyColor 暴露为 --n-color，只在自渲染元素上定义；
+         普通 div 取不到该变量，暗色下背景会回落成白条。 -->
+    <n-el class="settings__anchor">
+      <n-space :size="6" :wrap="false" class="settings__anchor-inner">
+        <n-button
+          v-for="item in sectionLinks"
+          :key="item.id"
+          size="tiny"
+          :type="activeSection === item.id ? 'primary' : 'default'"
+          :secondary="activeSection !== item.id"
+          @click="scrollToSection(item.id)"
+        >
+          {{ item.label }}
+        </n-button>
+      </n-space>
+    </n-el>
+
     <!-- DB dump（批次 B 实装：dump.* 八键 + 密码三态） -->
-    <n-card :title="t('settings.dump.title')" size="small">
+    <n-card id="sec-dump" :title="t('settings.dump.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.dump.desc') }}</n-text>
         <n-alert v-if="showPgVersionNote" type="warning" :show-icon="false">
@@ -526,17 +610,21 @@ async function doImport(): Promise<void> {
               class="settings__number"
             />
           </n-form-item>
-          <n-space justify="end">
+          <!-- P4：吸底保存条（dump 表单最长，保存动作常驻视口底部；校验不通过时同处给出原因） -->
+          <div class="settings__savebar">
+            <n-text depth="3" class="settings__hint">
+              {{ dumpFormValid ? t('settings.dump.unsavedHint') : t('settings.dump.needRetention') }}
+            </n-text>
             <n-button type="primary" :loading="savingDump" :disabled="!dumpFormValid" @click="onSaveDump">
               {{ t('common.save') }}
             </n-button>
-          </n-space>
+          </div>
         </n-form>
       </n-space>
     </n-card>
 
     <!-- 行为开关（批次 B 实装：behavior.* 五键） -->
-    <n-card :title="t('settings.behavior.title')" size="small">
+    <n-card id="sec-behavior" :title="t('settings.behavior.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.behavior.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
@@ -608,7 +696,7 @@ async function doImport(): Promise<void> {
     </n-card>
 
     <!-- 凭据加密（R-025 / P3-A：密钥源自仓库密码文件，默认开） -->
-    <n-card :title="t('settings.credential.title')" size="small">
+    <n-card id="sec-credential" :title="t('settings.credential.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.credential.desc') }}</n-text>
         <n-alert v-if="!credEncryptionAvailable" type="warning" :show-icon="false">
@@ -629,7 +717,7 @@ async function doImport(): Promise<void> {
     </n-card>
 
     <!-- Prometheus 指标（R-024 / P3-B：抓取令牌三态 + 端点提示） -->
-    <n-card :title="t('settings.metrics.title')" size="small">
+    <n-card id="sec-metrics" :title="t('settings.metrics.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
@@ -667,7 +755,7 @@ async function doImport(): Promise<void> {
     </n-card>
 
     <!-- 缓存维护（E25） -->
-    <n-card :title="t('settings.cache.title')" size="small">
+    <n-card id="sec-cache" :title="t('settings.cache.title')" size="small">
       <template #header-extra>
         <n-space :size="8">
           <n-button size="small" secondary :loading="cacheQuery.isFetching.value" @click="cacheQuery.refetch()">
@@ -701,7 +789,7 @@ async function doImport(): Promise<void> {
     </n-card>
 
     <!-- 时区（既有键只读展示） -->
-    <n-card :title="t('settings.timezone.title')" size="small">
+    <n-card id="sec-timezone" :title="t('settings.timezone.title')" size="small">
       <n-space vertical :size="8">
         <n-space align="center" :size="8">
           <n-text depth="2">{{ t('settings.timezone.current') }}</n-text>
@@ -715,7 +803,7 @@ async function doImport(): Promise<void> {
     </n-card>
 
     <!-- 管理员改密（E28） -->
-    <n-card :title="t('settings.password.title')" size="small">
+    <n-card id="sec-password" :title="t('settings.password.title')" size="small">
       <n-form label-placement="top" class="settings__password-form">
         <n-form-item :label="t('settings.password.oldPassword')">
           <n-input
@@ -764,7 +852,7 @@ async function doImport(): Promise<void> {
       @confirm="onConfirmClear"
     />
     <!-- 批次 E 配置迁移：导出（口令加密凭据段）+ 导入（跳过/覆盖 + 报告） -->
-    <n-card :title="t('settings.transfer.title')" size="small">
+    <n-card id="sec-transfer" :title="t('settings.transfer.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.transfer.desc') }}</n-text>
         <n-space align="center" :size="8" wrap>
@@ -878,6 +966,39 @@ async function doImport(): Promise<void> {
 </template>
 
 <style scoped>
+/* P4：锚点目录吸顶条——背景跟随主题；窄屏横向滚动（不换行，避免占满两行挤压内容）。
+   背景必须用 --n-color：naive 把 common.bodyColor 暴露为 --n-color（外层由 n-el 提供），
+   --n-body-color / --n-card-color 并不存在——写成它们会静默回落 #fff，暗色下留一条白带（实测）。 */
+.settings__anchor {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px 0;
+  margin: -8px 0 0;
+  background: var(--n-color, #fff);
+}
+
+.settings__anchor-inner {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+/* P4：dump 吸底保存条——表单最长（8 键 + 密码三态），保存动作常驻视口底部。
+   背景继承所在 NCard 的 --n-color（= cardColor），故此处不能包 n-el（会把变量重置成 bodyColor）。 */
+.settings__savebar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0 2px;
+  background: var(--n-color, #fff);
+  border-top: 1px solid var(--n-border-color, rgba(125, 133, 152, 0.28));
+}
+
 .settings__form {
   max-width: 560px;
 }

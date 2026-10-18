@@ -48,6 +48,7 @@ import SourcesPicker from '@/components/task/SourcesPicker.vue'
 import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
 import TierCard from '@/components/TierCard.vue'
 import { useUiStore } from '@/stores/ui'
+import { formatDateTime } from '@/utils/datetime'
 
 const props = defineProps<{
   /** 编辑模式的任务 id；缺省 = 新建。 */
@@ -118,6 +119,93 @@ function defaultForm(): TaskFormState {
 }
 
 const form = reactive<TaskFormState>(defaultForm())
+
+// ---------------------------------------------------------------- 草稿持久化（P4：仅新建模式）
+/** 新建任务要连过五步、中途离开即全丢——本地续填（localStorage）。
+ *  编辑模式不参与：库里有权威态，草稿回填会与服务端值混淆（且 hydrated 预填会覆盖草稿）。 */
+const DRAFT_KEY = 'restic-web:wizard-draft:v1'
+
+interface DraftEnvelope {
+  step: number
+  form: TaskFormState
+  savedAt: string
+}
+
+/** 待决草稿：只提示、不自动回填（自动覆盖用户正在填的内容更糟，交由用户点「恢复」）。 */
+const draftPending = ref<DraftEnvelope | null>(null)
+
+function readDraft(): DraftEnvelope | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) {
+      return null
+    }
+    const envelope = parsed as Partial<DraftEnvelope>
+    return typeof envelope.form === 'object' && envelope.form !== null ? (envelope as DraftEnvelope) : null
+  } catch {
+    // 坏草稿 / 隐私模式禁写：静默忽略，不打断向导
+    return null
+  }
+}
+
+if (!isEdit.value) {
+  draftPending.value = readDraft()
+}
+
+/** 恢复：先整份重置再套用草稿，避免旧草稿缺字段时留下半新半旧状态。 */
+function restoreDraft(): void {
+  const draft = draftPending.value
+  if (!draft) {
+    return
+  }
+  Object.assign(form, defaultForm(), draft.form)
+  step.value = Math.min(5, Math.max(1, Number(draft.step) || 1))
+  draftPending.value = null
+}
+
+function discardDraft(): void {
+  try {
+    localStorage.removeItem(DRAFT_KEY)
+  } catch {
+    // 忽略：无法写入不影响继续填写
+  }
+  draftPending.value = null
+}
+
+function clearDraft(): void {
+  discardDraft()
+}
+
+/** 防抖写盘（500ms）：reactive 深度监听；草稿待决期间不写，避免覆盖用户尚未决定的那份。 */
+let draftTimer: ReturnType<typeof setTimeout> | undefined
+watch(
+  form,
+  () => {
+    if (isEdit.value || draftPending.value) {
+      return
+    }
+    clearTimeout(draftTimer)
+    draftTimer = setTimeout(() => {
+      const envelope: DraftEnvelope = {
+        step: step.value,
+        form: { ...form } as TaskFormState,
+        savedAt: new Date().toISOString(),
+      }
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(envelope))
+      } catch {
+        // 配额/隐私模式：静默降级为不持久化
+      }
+    }, 500)
+  },
+  { deep: true },
+)
+
+onUnmounted(() => clearTimeout(draftTimer))
 
 /** 编辑预填时的源集合快照：用于「变更后需重新预览」的本地提示。 */
 const originalSources = ref<string[]>([])
@@ -349,6 +437,8 @@ function buildPayload(): TaskUpsertRequest {
 }
 
 async function afterSaved(): Promise<void> {
+  // 落库成功 → 草稿作废（留着会让下次新建误提示一份已完成的草稿）
+  clearDraft()
   await queryClient.invalidateQueries({ queryKey: ['backup-tasks'] })
   void router.push({ name: 'dashboard' })
 }
@@ -476,6 +566,21 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
       <n-alert v-if="isEdit && taskLoadFailed" type="error" :show-icon="false">
         {{ t('dashboard.loadFailed', { message: taskLoadFailed }) }}
+      </n-alert>
+
+      <!-- P4：草稿续填提示（仅新建；不自动回填，交由用户点「恢复」） -->
+      <n-alert v-if="draftPending" type="info" :show-icon="false" class="wizard__draft">
+        <n-space align="center" :size="8">
+          <n-text depth="2">
+            {{ t('wizard.draftFound', { time: formatDateTime(draftPending.savedAt) }) }}
+          </n-text>
+          <n-button size="tiny" type="primary" secondary @click="restoreDraft">
+            {{ t('wizard.draftRestore') }}
+          </n-button>
+          <n-button size="tiny" quaternary @click="discardDraft">
+            {{ t('wizard.draftDiscard') }}
+          </n-button>
+        </n-space>
       </n-alert>
 
       <n-space vertical :size="14" class="wizard__body">
@@ -670,6 +775,10 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
 .wizard__body {
   margin-top: 16px;
+}
+
+.wizard__draft {
+  margin-top: 12px;
 }
 
 .wizard__hint {
