@@ -14,7 +14,6 @@ import {
   NGrid,
   NSpace,
   NStatistic,
-  NTag,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -27,6 +26,7 @@ import { cancelJob, createJob } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import TierCard from '@/components/TierCard.vue'
 import { useUiStore } from '@/stores/ui'
@@ -199,23 +199,22 @@ async function onDeleteConfirmed(): Promise<void> {
 
           <n-space vertical :size="10">
             <n-space align="center" :size="8">
-              <!-- L3（UI 方案）：未配置（warning）与连接失败（error）分色，不再同为一个红叉 -->
-              <n-tag
-                size="small"
-                round
-                :type="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
-              >
-                {{
+              <!-- L3（UI 方案）：未配置（warning）与连接失败（error）分色，不再同为一个红叉。
+                   P3c 收口为 StatusTag：三态条件链原样保留（success / warning / error） -->
+              <StatusTag
+                :kind="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
+                :label="
                   repoStatus?.connected
                     ? t('dashboard.repoConnected')
                     : repoStatus?.configured === false
                       ? t('dashboard.repoNotConfigured')
                       : t('dashboard.repoDisconnected')
-                }}
-              </n-tag>
-              <n-tag size="small" round :type="repoStatus?.locked ? 'warning' : 'default'">
-                {{ repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked') }}
-              </n-tag>
+                "
+              />
+              <StatusTag
+                :kind="repoStatus?.locked ? 'warning' : 'default'"
+                :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
+              />
             </n-space>
 
             <n-space :size="24">

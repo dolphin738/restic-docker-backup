@@ -23,7 +23,6 @@ import {
   NSelect,
   NSpace,
   NSwitch,
-  NTag,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -36,6 +35,7 @@ import { hasCode, isAppError } from '@/api/http'
 import type { ConfigExportPack, ConfigImportReport } from '@/api/types'
 import { clearCache, getCacheUsage, saveDumpBehaviorConfig } from '@/api/settings'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
@@ -483,12 +483,12 @@ async function doImport(): Promise<void> {
           <n-form-item :label="t('settings.dump.password')">
             <n-space vertical :size="6" class="settings__full">
               <n-space align="center" :size="8">
-                <n-tag size="small" round :type="dumpPasswordSet ? 'success' : 'default'">
-                  {{ dumpPasswordSet ? t('settings.dump.passwordSet') : t('settings.dump.passwordUnset') }}
-                </n-tag>
-                <n-tag v-if="dumpPasswordSource === 'env'" size="small" type="warning">
-                  {{ t('settings.timezone.envNote') }}
-                </n-tag>
+                <!-- P3c 收口：口令已设/未设 + env 来源（色/文案不变，形态统一 pill） -->
+                <StatusTag
+                  :kind="dumpPasswordSet ? 'success' : 'default'"
+                  :label="dumpPasswordSet ? t('settings.dump.passwordSet') : t('settings.dump.passwordUnset')"
+                />
+                <StatusTag v-if="dumpPasswordSource === 'env'" kind="warning" :label="t('settings.timezone.envNote')" />
                 <n-button
                   v-if="dumpPasswordSet"
                   size="tiny"
@@ -635,8 +635,9 @@ async function doImport(): Promise<void> {
         <n-form label-placement="top" class="settings__form">
           <n-space align="center" :size="8">
             <n-text>{{ t('settings.metrics.token') }}</n-text>
-            <n-tag v-if="metricsTokenSet" size="small" type="success">{{ t('settings.metrics.tokenSet') }}</n-tag>
-            <n-tag v-else size="small">{{ t('settings.metrics.tokenUnset') }}</n-tag>
+            <!-- P3c 收口：抓取令牌三态（原 success / 无 type 两形态统一） -->
+            <StatusTag v-if="metricsTokenSet" kind="success" :label="t('settings.metrics.tokenSet')" />
+            <StatusTag v-else kind="default" :label="t('settings.metrics.tokenUnset')" />
           </n-space>
           <n-form-item :label="t('settings.metrics.newToken')">
             <n-input
@@ -687,7 +688,8 @@ async function doImport(): Promise<void> {
           <n-descriptions-item :label="t('settings.cache.size')">
             <n-space align="center" :size="6">
               {{ formatBytes(usage.size_bytes) }}
-              <n-tag v-if="usage.truncated" size="small" type="warning">{{ t('settings.cache.truncated') }}</n-tag>
+              <!-- P3c 收口：du 截断提示（warning） -->
+              <StatusTag v-if="usage.truncated" kind="warning" :label="t('settings.cache.truncated')" />
             </n-space>
           </n-descriptions-item>
           <n-descriptions-item :label="t('settings.cache.items')">{{ usage.items_count }}</n-descriptions-item>
@@ -703,12 +705,9 @@ async function doImport(): Promise<void> {
       <n-space vertical :size="8">
         <n-space align="center" :size="8">
           <n-text depth="2">{{ t('settings.timezone.current') }}</n-text>
-          <n-tag v-if="timezoneItem" size="small" round>
-            {{ timezoneItem.value ?? t('settings.timezone.unset') }}
-          </n-tag>
-          <n-tag v-if="timezoneItem?.source === 'env'" size="small" type="warning">
-            {{ t('settings.timezone.envNote') }}
-          </n-tag>
+          <!-- P3c 收口：当前时区值（原无 type）+ env 来源提示（warning） -->
+          <StatusTag v-if="timezoneItem" kind="default" :label="timezoneItem.value ?? t('settings.timezone.unset')" />
+          <StatusTag v-if="timezoneItem?.source === 'env'" kind="warning" :label="t('settings.timezone.envNote')" />
           <n-text v-if="!timezoneItem" depth="3">{{ t('settings.timezone.unset') }}</n-text>
         </n-space>
         <n-text depth="3">{{ t('settings.timezone.note') }}</n-text>

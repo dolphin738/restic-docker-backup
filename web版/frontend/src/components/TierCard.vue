@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { NCard, NSpace, NTag, NText } from 'naive-ui'
+import { NCard, NSpace, NText } from 'naive-ui'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import StatusTag from '@/components/StatusTag.vue'
 
 const props = defineProps<{
   /** 容器内运行用户（/api/auth/me 的 user）。 */
@@ -21,9 +22,8 @@ const userKey = computed<'root' | 'nonRoot'>(() => (props.user === 'root' ? 'roo
   <n-card :title="t('tier.title')" size="small">
     <div class="tier__cell">
       <n-space align="center" :size="8">
-        <n-tag size="small" round type="success">
-          {{ t(`tier.name.${userKey}`) }}
-        </n-tag>
+        <!-- P3c 收口：运行模式徽章（success，语义不变） -->
+        <StatusTag kind="success" :label="t(`tier.name.${userKey}`)" />
         <n-text depth="3">
           {{ t(`tier.user.${userKey}`) }}
         </n-text>

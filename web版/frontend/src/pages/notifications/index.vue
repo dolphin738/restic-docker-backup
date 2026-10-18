@@ -11,7 +11,6 @@ import {
   NSelect,
   NSpace,
   NSwitch,
-  NTag,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -19,6 +18,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getNotifyConfig, testNotify, updateNotifyConfig } from '@/api/notify'
 import type { NotifyTestResponse } from '@/api/types'
+import StatusTag from '@/components/StatusTag.vue'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -306,14 +306,16 @@ async function runTest(): Promise<void> {
         <!-- E24 逐渠道结果（失败必须带原因，禁止静默） -->
         <n-space v-if="testResult" vertical :size="6">
           <n-space align="center" :size="8">
-            <n-tag size="small" round :type="testResult.ok ? 'success' : 'error'">
-              {{ testResult.ok ? t('notify.testOk') : t('notify.testFailed') }}
-            </n-tag>
+            <!-- P3c 收口：总体 + 逐渠道结果（success/error 映射不变） -->
+            <StatusTag
+              :kind="testResult.ok ? 'success' : 'error'"
+              :label="testResult.ok ? t('notify.testOk') : t('notify.testFailed')"
+            />
             <n-text depth="3" class="notify__hint">{{ testResult.latency_ms }} ms</n-text>
           </n-space>
           <template v-for="channel in testResult.channels" :key="channel.channel">
             <n-space align="center" :size="8">
-              <n-tag size="small" round :type="channel.ok ? 'success' : 'error'">{{ channel.channel }}</n-tag>
+              <StatusTag :kind="channel.ok ? 'success' : 'error'" :label="channel.channel" />
               <n-text v-if="channel.reason" depth="2" class="notify__hint">{{ channel.reason }}</n-text>
             </n-space>
           </template>

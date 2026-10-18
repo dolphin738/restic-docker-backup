@@ -8,13 +8,13 @@ import {
   NLog,
   NProgress,
   NSpace,
-  NTag,
   NText,
 } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { JobDonePayload, JobProgressPayload } from '@/api/types'
 import { useJobStream, type JobStreamState } from '@/composables/useJobStream'
+import StatusTag from '@/components/StatusTag.vue'
 
 const props = defineProps<{
   jobId: string
@@ -147,7 +147,8 @@ defineExpose({
     <n-space align="center" justify="space-between">
       <n-text strong>{{ title || jobId }}</n-text>
       <n-space align="center" :size="6">
-        <n-tag size="small" round :type="stateTagType">{{ t(`job.state.${stream.state.value}`) }}</n-tag>
+        <!-- P3c 收口：SSE 连接态（stateTagType 六态映射不变） -->
+        <StatusTag :kind="stateTagType" :label="t(`job.state.${stream.state.value}`)" />
         <n-button size="tiny" quaternary @click="drawerOpen = true">{{ t('job.viewLog') }}</n-button>
       </n-space>
     </n-space>

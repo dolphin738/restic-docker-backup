@@ -55,6 +55,7 @@ import type {
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
@@ -288,13 +289,13 @@ const columns = computed<DataTableColumns<RepoOut>>(() => [
       h(NSpace, { align: 'center', size: 6 }, () => [
         row.id,
         row.id === 'default'
-          ? h(NTag, { size: 'tiny', type: 'warning', round: true }, () => t('repo.defaultTag'))
+          ? h(StatusTag, { kind: 'warning', label: t('repo.defaultTag'), size: 'tiny' })
           : null,
         row.id === ui.currentRepoId
-          ? h(NTag, { size: 'tiny', type: 'success', round: true }, () => t('repo.currentTag'))
+          ? h(StatusTag, { kind: 'success', label: t('repo.currentTag'), size: 'tiny' })
           : null,
       ]),
-  },
+    },
   { title: t('repo.colName'), key: 'name' },
   { title: t('repo.colType'), key: 'type', render: (row) => typeLabel(row.type) },
   { title: t('repo.colUrl'), key: 'url', render: (row) => row.url ?? '—' },
@@ -303,14 +304,14 @@ const columns = computed<DataTableColumns<RepoOut>>(() => [
     title: t('repo.colPassfile'),
     key: 'passfile_status',
     render: (row) =>
-      h(
-        NTag,
-        { size: 'tiny', round: true, type: row.passfile_status === 'configured' ? 'success' : 'warning' },
-        () =>
+      h(StatusTag, {
+        kind: row.passfile_status === 'configured' ? 'success' : 'warning',
+        label:
           row.passfile_status === 'configured'
             ? t('repo.passfileConfigured')
             : t('repo.passfileMissingShort'),
-      ),
+        size: 'tiny',
+      }),
   },
   {
     title: '',
@@ -725,12 +726,9 @@ function formatBytes(value: number): string {
               <n-form-item :label="t('repo.type')">
                 <n-space vertical :size="4" class="repo__cred">
                   <n-space align="center" :size="6">
-                    <n-tag size="small" round :type="repoType === 'local' ? 'default' : 'info'">
-                      {{ typeLabel(repoType) }}
-                    </n-tag>
-                    <n-tag v-if="repo?.url_source === 'env'" size="tiny" round type="warning">
-                      {{ t('repo.credSourceEnv') }}
-                    </n-tag>
+                    <!-- P3c 收口：类型描述 / env 来源提示（size 沿用原值 tiny/small） -->
+                    <StatusTag size="small" :kind="repoType === 'local' ? 'default' : 'info'" :label="typeLabel(repoType)" />
+                    <StatusTag v-if="repo?.url_source === 'env'" size="tiny" kind="warning" :label="t('repo.credSourceEnv')" />
                   </n-space>
                   <n-text depth="3">{{ t('repo.typeReadonlyNote') }}</n-text>
                 </n-space>
@@ -829,21 +827,18 @@ function formatBytes(value: number): string {
                 >
                   <n-space vertical :size="4" class="repo__cred">
                     <n-space align="center" :size="6">
-                      <n-tag
+                      <!-- P3c 收口：凭据已设/未设 + env 覆盖提示（tiny 档，密集表单） -->
+                      <StatusTag
                         size="tiny"
-                        round
-                        :type="itemOf(field.suffix)?.has_value ? 'success' : 'default'"
-                      >
-                        {{ itemOf(field.suffix)?.has_value ? t('repo.credSet') : t('repo.credUnset') }}
-                      </n-tag>
-                      <n-tag
+                        :kind="itemOf(field.suffix)?.has_value ? 'success' : 'default'"
+                        :label="itemOf(field.suffix)?.has_value ? t('repo.credSet') : t('repo.credUnset')"
+                      />
+                      <StatusTag
                         v-if="itemOf(field.suffix)?.source === 'env'"
                         size="tiny"
-                        round
-                        type="warning"
-                      >
-                        {{ t('repo.credSourceEnv') }}
-                      </n-tag>
+                        kind="warning"
+                        :label="t('repo.credSourceEnv')"
+                      />
                     </n-space>
                     <n-tooltip v-if="itemOf(field.suffix)?.source === 'env'" trigger="hover">
                       <template #trigger>
@@ -900,12 +895,15 @@ function formatBytes(value: number): string {
           </template>
           <n-space vertical :size="10">
             <n-space align="center" :size="8">
-              <n-tag size="small" round :type="repoStatus?.connected ? 'success' : 'error'">
-                {{ repoStatus?.connected ? t('dashboard.repoConnected') : t('dashboard.repoDisconnected') }}
-              </n-tag>
-              <n-tag size="small" round :type="repoStatus?.locked ? 'warning' : 'default'">
-                {{ repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked') }}
-              </n-tag>
+              <!-- P3c 收口：连接态 / 锁定态（映射不变） -->
+              <StatusTag
+                :kind="repoStatus?.connected ? 'success' : 'error'"
+                :label="repoStatus?.connected ? t('dashboard.repoConnected') : t('dashboard.repoDisconnected')"
+              />
+              <StatusTag
+                :kind="repoStatus?.locked ? 'warning' : 'default'"
+                :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
+              />
             </n-space>
             <n-space :size="24">
               <n-statistic :label="t('dashboard.repoCapacity')" :value="capacityText" />

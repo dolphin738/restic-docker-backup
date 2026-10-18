@@ -22,11 +22,16 @@ defineProps<{
   kind: StatusTagKind
   /** 展示文案（调用方负责 i18n）。 */
   label: string
+  /**
+   * 尺寸档：沿用被替换处的原值（等价替换—— dense 表格用 tiny、卡片区用 small，默认 small）。
+   * 形态（圆角 pill + 圆点）按 §6 统一，不随 size 变化。
+   */
+  size?: 'tiny' | 'small'
 }>()
 </script>
 
 <template>
-  <n-tag size="small" round :type="kind" class="status-tag">
+  <n-tag :size="size ?? 'small'" round :type="kind" class="status-tag">
     <span class="status-tag__dot" aria-hidden="true" />
     {{ label }}
   </n-tag>

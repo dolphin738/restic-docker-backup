@@ -13,7 +13,6 @@ import {
   NMenu,
   NSelect,
   NSpace,
-  NTag,
   NText,
   NTooltip,
   useDialog,
@@ -338,9 +337,12 @@ async function onLogout(): Promise<void> {
             {{ repoStatusTooltip }}
           </n-tooltip>
           <StatusTag v-else :kind="repoStatusTagType" :label="repoStatusText" />
-          <n-tag v-if="runningJobsCount > 0 && !isMobile" size="small" round type="info">
-            {{ t('header.runningJobs', { n: runningJobsCount }) }}
-          </n-tag>
+          <!-- 运行中任务（P3c 收口：info 态 + 圆点，与全站状态语言统一） -->
+          <StatusTag
+            v-if="runningJobsCount > 0 && !isMobile"
+            kind="info"
+            :label="t('header.runningJobs', { n: runningJobsCount })"
+          />
           <!-- 主题三态：NDropdown（P0 定稿），图标按钮 + 直接选择 + 勾选当前值 -->
           <n-dropdown :options="themeOptions" trigger="click" @select="onThemeSelect">
             <n-button size="small" quaternary :aria-label="themeAriaLabel">
