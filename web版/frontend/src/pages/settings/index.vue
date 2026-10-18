@@ -38,6 +38,8 @@ import { clearCache, getCacheUsage, saveDumpBehaviorConfig } from '@/api/setting
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
+// G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
+import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -380,6 +382,36 @@ const replace_existing = ref(false)
 const importing = ref(false)
 const gateShowImport = ref(false)
 const report = ref<ConfigImportReport | null>(null)
+
+// ---------------------------------------------------------------- G4 导出口令强度条
+/** 当前口令强度（0 = 未达 10 位门槛；1–4 = 弱→强）。用于四段式强度条与文案分级。 */
+const exportStrength = computed(() => estimatePasswordStrength(exportPassword.value))
+
+/** 强度条配色：红（弱）→ 橙 → 绿（强），沿用主题语义色基准值（暗色档同色系）。 */
+const strengthColors = ['#B91C1C', '#DC2626', '#B45309', '#15803D', '#15803D']
+
+function strengthColor(index: number): string {
+  const score = exportStrength.value.score
+  return index < score ? strengthColors[score] : 'rgba(128, 128, 140, 0.24)'
+}
+
+const strengthLabelKey = computed(() => {
+  const score = exportStrength.value.score
+  if (exportPassword.value.length === 0) {
+    return 'settings.transfer.strengthEmpty'
+  }
+  if (score === 0) {
+    return 'settings.transfer.strengthTooShort'
+  }
+  return `settings.transfer.strength${score}`
+})
+
+/** 生成强随机口令（crypto 随机源，20 位必然落在「强」档）；生成后可直接导出。 */
+function onGenerateExportPassword(): void {
+  exportPassword.value = generateStrongPassword()
+}
+
+// ---------------------------------------------------------------- 导出动作
 
 /** 导出：拿包对象 → 本地 Blob 下载（文件名带日期，凭据在包内为加密形态）。 */
 async function onExport(): Promise<void> {
@@ -871,6 +903,10 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
             :placeholder="t('settings.transfer.exportPassword')"
             class="settings__transfer-pw"
           />
+          <!-- G4：生成强随机口令（对齐 Duplicati export.component.html 的口令区） -->
+          <n-button size="small" secondary @click="onGenerateExportPassword">
+            {{ t('settings.transfer.generatePassword') }}
+          </n-button>
           <n-button
             size="small"
             type="primary"
@@ -881,6 +917,19 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
           >
             {{ t('settings.transfer.exportBtn') }}
           </n-button>
+        </n-space>
+
+        <!-- G4 强度条：四段式 + 文案分级；aria-live 让改口令时的等级变化被读出 -->
+        <n-space :size="8" align="center" class="settings__strength">
+          <div class="settings__strength-bar" role="presentation">
+            <span
+              v-for="index in 4"
+              :key="index"
+              class="settings__strength-seg"
+              :style="{ background: strengthColor(index - 1) }"
+            />
+          </div>
+          <n-text depth="3" aria-live="polite">{{ t(strengthLabelKey) }}</n-text>
         </n-space>
         <n-space align="center" :size="8" wrap>
           <input
@@ -1049,6 +1098,24 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
 
 .settings__transfer-pw {
   width: 260px;
+}
+
+/* G4 强度条：四段等宽，颜色由 JS 按分档给出（语义色沿用主题基准值） */
+.settings__strength {
+  flex-wrap: wrap;
+}
+
+.settings__strength-bar {
+  display: flex;
+  gap: 4px;
+  width: 160px;
+}
+
+.settings__strength-seg {
+  flex: 1 1 0;
+  height: 4px;
+  border-radius: 2px;
+  transition: background 0.15s;
 }
 
 .settings__file-input {
