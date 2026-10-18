@@ -214,6 +214,9 @@ const THEME_ICONS: Record<ThemePreference, Component> = {
   light: IconSun,
   auto: IconMonitor,
 }
+/* 图标工厂先于引用它的 computed 声明（审查 💭①）：不依赖 computed 惰性求值躲 TDZ */
+const themeCheckIcon: () => VNodeChild = () =>
+  h(NIcon, { size: 16 }, { default: () => h(IconCheck) })
 const themeOptions = computed<DropdownOption[]>(() =>
   (['dark', 'light', 'auto'] as ThemePreference[]).map((pref) => ({
     label: t(`theme.${pref}`),
@@ -221,8 +224,6 @@ const themeOptions = computed<DropdownOption[]>(() =>
     icon: ui.themePreference === pref ? themeCheckIcon : undefined,
   })),
 )
-const themeCheckIcon: () => VNodeChild = () =>
-  h(NIcon, { size: 16 }, { default: () => h(IconCheck) })
 const currentThemeIcon = computed(() => THEME_ICONS[ui.themePreference])
 const themeAriaLabel = computed(() =>
   t('header.themeAria', { mode: t(`theme.${ui.themePreference}`) }),
@@ -238,11 +239,12 @@ function onToggleLocale(): void {
 /** 用户菜单（设计方案 §4.3）：登出自独立 NPopconfirm 并入下拉，二次确认走 dialog
  * （App.vue 已挂 NDialogProvider；下拉内不宜再嵌 popconfirm，会与选项点击抢手势）。 */
 const dialog = useDialog()
+/* 图标工厂先于引用它的 computed 声明（审查 💭①） */
+const userLogoutIcon: () => VNodeChild = () =>
+  h(NIcon, { size: 16 }, { default: () => h(IconLogout) })
 const userMenuOptions = computed<DropdownOption[]>(() => [
   { label: t('nav.logout'), key: 'logout', icon: userLogoutIcon },
 ])
-const userLogoutIcon: () => VNodeChild = () =>
-  h(NIcon, { size: 16 }, { default: () => h(IconLogout) })
 function onUserMenuSelect(key: string | number): void {
   if (String(key) !== 'logout') {
     return

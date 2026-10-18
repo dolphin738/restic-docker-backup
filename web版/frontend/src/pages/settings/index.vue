@@ -475,15 +475,23 @@ const sectionLinks = computed(() =>
 
 const activeSection = ref<SectionId>('dump')
 
-/** 点击后短暂锁定高亮（1.2s，覆盖平滑滚动全程）：
- *  否则滚动途中的中间态会把高亮刷成途经区块，出现「点了 A 却高亮 B」。 */
+/** 点击后短暂锁定高亮，覆盖平滑滚动全程：
+ *  否则滚动途中的中间态会把高亮刷成途经区块，出现「点了 A 却高亮 B」。
+ *  锁定时长按滚动距离估算（审查 💭③）：固定 1.2s 在超长页（如 dump→改密，滚动 >1.2s）会被
+ *  scroll 处理器提前接管；smooth scroll 速度约 2500–3500px/s，取 0.4ms/px + 300ms 底数，
+ *  夹在 [1.2s, 2s]——短距离维持原 1.2s 行为，超长页给足全程。 */
 let pinnedUntil = 0
 
 /** 跳转并立即高亮。 */
 function scrollToSection(id: SectionId): void {
   activeSection.value = id
-  pinnedUntil = Date.now() + 1200
-  document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const el = document.getElementById(`sec-${id}`)
+  if (!el) {
+    return
+  }
+  const distance = Math.abs(el.getBoundingClientRect().top)
+  pinnedUntil = Date.now() + Math.min(2000, Math.max(1200, 300 + distance * 0.4))
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 /** 滚动跟随高亮：scroll 事件不冒泡，须在 window 捕获阶段（capture:true）接收内层滚动容器的滚动。

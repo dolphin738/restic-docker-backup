@@ -70,7 +70,8 @@ const lastBackupText = computed(() => {
   if (successes.length === 0) {
     return t('common.none')
   }
-  const latest = successes.reduce((a, b) => (a.last_run_at! > b.last_run_at! ? a : b))
+  // 时间戳取 Date.parse 数值比较（审查 💭②）：不依赖 ISO 字符串字典序与后端格式完全统一的隐含约定
+  const latest = successes.reduce((a, b) => (Date.parse(b.last_run_at!) > Date.parse(a.last_run_at!) ? b : a))
   return formatDateTimeOr(latest.last_run_at, t('common.none'))
 })
 
