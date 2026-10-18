@@ -221,6 +221,7 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
         <!-- 数据表：行展开展示 detail（JSON 美化），主表无删除/编辑操作列 -->
         <n-data-table
           size="small"
+          :scroll-x="720"
           :columns="columns"
           :data="rows"
           :loading="auditQuery.isFetching.value"
@@ -250,6 +251,8 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
 
 .audit__range {
   width: 360px;
+  /* 移动端走查：390px 视口内容宽 ~342px，固定宽会溢出裁切；max-width 只在窄屏生效 */
+  max-width: 100%;
 }
 
 /* detail 展开区：等宽字体 + 横向滚动，长 JSON 不撑破表格 */

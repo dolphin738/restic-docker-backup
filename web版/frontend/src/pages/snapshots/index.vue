@@ -380,6 +380,7 @@ async function applyTag(): Promise<void> {
       <template v-else>
         <n-data-table
           size="small"
+          :scroll-x="860"
           :columns="columns"
           :data="snapshots"
           :loading="snapshotsQuery.isFetching.value"
@@ -403,7 +404,7 @@ async function applyTag(): Promise<void> {
       </template>
       <n-space vertical :size="10">
         <n-alert type="warning" :show-icon="false">{{ t('snapshot.forget.desc') }}</n-alert>
-        <n-space align="center" :size="10" :wrap="false" class="snapshots__forget-form">
+        <n-space align="center" :size="10" class="snapshots__forget-form">
           <n-select
             v-model:value="forgetTag"
             :options="tagOptions.filter((option) => option.value !== '')"
@@ -535,6 +536,7 @@ async function applyTag(): Promise<void> {
           <template v-else>
             <n-data-table
               size="small"
+              :scroll-x="560"
               :columns="removeColumns"
               :data="forgetPreview?.remove ?? []"
               :max-height="260"

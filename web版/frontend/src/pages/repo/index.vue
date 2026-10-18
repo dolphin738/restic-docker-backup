@@ -804,6 +804,7 @@ function formatBytes(value: number): string {
       </template>
       <n-data-table
         size="small"
+        :scroll-x="760"
         :columns="columns"
         :data="reposQuery.data.value ?? []"
         :loading="reposQuery.isFetching.value"

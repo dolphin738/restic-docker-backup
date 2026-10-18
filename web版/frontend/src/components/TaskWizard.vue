@@ -938,6 +938,16 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
   border-radius: 6px;
 }
 
+/* 移动端走查：5 步在 390px 放不下，横向滚动优于裁切。
+   ⚠️ 不能无条件加 overflow-x:auto——滚动容器会「收住」子元素外边距（不再与父级折叠），
+   实测桌面端 steps 导航高度 22→30、下方整体下移 8px（像素 diff 抓出）。
+   故只在移动断点启用；桌面保持原盒模型。 */
+@media (max-width: 960px) {
+  .wizard__steps-nav {
+    overflow-x: auto;
+  }
+}
+
 .wizard__steps-nav:focus-visible {
   outline: 2px solid var(--n-color-target, #2080f0);
   outline-offset: 2px;

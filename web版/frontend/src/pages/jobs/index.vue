@@ -530,6 +530,7 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
 
           <n-data-table
             size="small"
+            :scroll-x="900"
             :columns="historyColumns"
             :data="historyRows"
             :loading="historyQuery.isFetching.value"
