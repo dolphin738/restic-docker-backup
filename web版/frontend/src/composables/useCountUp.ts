@@ -8,7 +8,7 @@
  * - 不阻塞首屏：动画在 rAF 中进行，首帧直接渲染起始值。
  */
 
-import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
+import { onScopeDispose, ref, watch, type Ref } from 'vue'
 
 /** 滚动时长（方案 §7：页面级动效 250–400ms 量级，取 400ms 稳重档）。 */
 const DURATION_MS = 400
@@ -79,9 +79,4 @@ export function useCountUp(target: Ref<number>): Ref<number> {
   onScopeDispose(stop)
 
   return display
-}
-
-/** 便捷形态：目标为「可空数字」——空值不参与动画，由调用方回落占位文案。 */
-export function useCountUpNullable(target: Ref<number | null>): Ref<number> {
-  return useCountUp(computed(() => target.value ?? 0))
 }
