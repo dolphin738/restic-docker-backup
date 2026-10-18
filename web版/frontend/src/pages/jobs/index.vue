@@ -79,7 +79,9 @@ async function onCancel(jobId: string): Promise<void> {
 
 // ================================================================ 全量历史视图（E13 完整版）
 
-const JOB_TYPES: JobType[] = ['backup', 'restore', 'forget', 'check', 'unlock', 'init', 'dump']
+/** 与后端 constants.JOB_TYPES 白名单逐项对齐（G2：此前漏 repair/recover 两类，
+ *  导致这两类历史任务在筛选下拉里选不到——只能靠「全部」混看）。 */
+const JOB_TYPES: JobType[] = ['backup', 'restore', 'forget', 'check', 'unlock', 'init', 'dump', 'repair', 'recover']
 const JOB_STATUSES: JobStatus[] = ['running', 'pending', 'success', 'failed', 'interrupted', 'cancelled']
 
 const HISTORY_PAGE_SIZE = 50

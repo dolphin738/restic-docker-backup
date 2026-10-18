@@ -29,6 +29,9 @@ import { useI18n } from 'vue-i18n'
 import { browseFs } from '@/api/fs'
 import { getConfig, putConfig } from '@/api/config'
 import { createJob } from '@/api/jobs'
+// E25 缓存端点已在 api/settings.ts（GET /api/cache、POST /api/cache/clear），
+// 设置页有专区；维护区复用同一对函数，避免第二套路径（/api/ops/cache 并不存在）。
+import { clearCache, getCacheUsage } from '@/api/settings'
 import {
   createRepo,
   deleteRepo,
@@ -43,7 +46,7 @@ import {
   testRepo,
   updateRepo,
 } from '@/api/repo'
-import { isAppError } from '@/api/http'
+import { hasCode, isAppError } from '@/api/http'
 import type {
   ConfigItem,
   RcloneRemotesOut,
@@ -229,15 +232,22 @@ function typeLabel(ty: string): string {
 const passwordShow = ref(false)
 const passwordSaving = ref(false)
 const passwordInput = ref('')
-/** 生成场景的一次性明文：仅在弹窗内展示，关闭即丢弃（不落库、不落日志）。 */
+/** 生成场景的一次性明文：仅在展开面板存活期展示，收起即丢弃（不落库、不落日志）。 */
 const generatedPassword = ref<string | null>(null)
 
 const passfileMissing = computed(() => (repo.value?.passfile_status ?? 'missing') !== 'configured')
 
+/** E4：行内展开的开关（再点一次按钮 = 收起）。展开/收起都清掉一次性明文与自填草稿。 */
 function openPassword(): void {
+  passwordShow.value = !passwordShow.value
   passwordInput.value = ''
   generatedPassword.value = null
-  passwordShow.value = true
+}
+
+function closePassword(): void {
+  passwordShow.value = false
+  passwordInput.value = ''
+  generatedPassword.value = null
 }
 
 async function generatePassword(): Promise<void> {
@@ -393,10 +403,13 @@ watch(
   { immediate: true },
 )
 
-// 切换仓库时清空凭据输入与浏览态，避免残留
+// 切换仓库时清空凭据输入与浏览态，避免残留；连接结论同样作废（仓库已换）
 watch(currentRepoId, () => {
   clearCredInput()
   urlMode.value = 'manual'
+  repoTestState.value = 'idle'
+  testResult.value = null
+  verifyRequired.value = false
 })
 
 // ---------------------------------------------------------------- 凭据（按仓库命名空间）
@@ -467,6 +480,11 @@ const repairShow = ref(false)
 const repairing = ref(false)
 const repairJobId = ref('')
 const repairTarget = ref<'index' | 'packs'>('index')
+// B3 自愈：找回丢失快照（restic recover），危险操作 ConfirmGate 关键词 RECOVER。
+// 后端早已支持（constants.py JOB_TYPES + job_runner 埋 AUDIT_RECOVER_RUN），此前前端零入口——G1 补齐。
+const recoverShow = ref(false)
+const recovering = ref(false)
+const recoverJobId = ref('')
 
 // ---------------------------------------------------------------- C4 密钥轮换 + 手动 copy（搬家）
 const rotateShow = ref(false)
@@ -483,6 +501,16 @@ const rotateReady = computed(
     rotatePw.value.length >= 10 &&
     rotatePw.value === rotatePwConfirm.value,
 )
+
+// E25 本地缓存：占用查询（服务端 30s 缓存，前端 5 分钟不重取）+ 清空（S6 危险操作）
+const cacheQuery = useQuery({
+  queryKey: ['ops', 'cache'],
+  queryFn: getCacheUsage,
+  staleTime: 300_000,
+  refetchOnWindowFocus: false,
+})
+const cacheShow = ref(false)
+const cacheClearing = ref(false)
 
 /** copy 目标候选：其它仓库中已配地址与密码的（否则后端 422）。 */
 const copyOptions = computed(() =>
@@ -610,6 +638,10 @@ async function onSave(): Promise<void> {
     }
     message.success(t('repo.saved'))
     clearCredInput()
+    // E1：配置已变 → 旧的连接结论作废，强制复验后才放行不可逆动作
+    repoTestState.value = 'idle'
+    testResult.value = null
+    verifyRequired.value = true
     await Promise.all([repoQuery.refetch(), configQuery.refetch()])
     void statusQuery.refetch()
   } finally {
@@ -623,11 +655,27 @@ function clearCredInput(): void {
   }
 }
 
+/** E1 连接验证状态机：idle（未验证/结论已作废）→ success / error。
+ *
+ *  与向导同构，但**门禁形态不同**：后端 `testRepo` 读的是**已落库**的仓库配置，
+ *  因此「先测后存」在架构上不成立——凭据必须先保存才能被测到，若把「保存」也挡在
+ *  测试之后，用户将永远无法录入第一组凭据（死锁）。等价强门禁取而代之：
+ *  任何 URL/凭据变更后，旧结论立即作废（idle），并强制复验后才放行不可逆动作（init）。
+ */
+const repoTestState = ref<'idle' | 'success' | 'error'>('idle')
+/** 配置已保存但尚未复验：此时禁用不可逆的 init（在错误地址上 init 会凭空建出新仓库）。
+ *  测试成功即解除；切仓即清零（新仓库是新的验证对象）。 */
+const verifyRequired = ref(false)
+
 async function onTest(): Promise<void> {
   testing.value = true
   testResult.value = null
   try {
     testResult.value = await testRepo(currentRepoId.value)
+    repoTestState.value = testResult.value.ok ? 'success' : 'error'
+    if (testResult.value.ok) {
+      verifyRequired.value = false
+    }
   } finally {
     testing.value = false
   }
@@ -681,8 +729,54 @@ async function onRepair(): Promise<void> {
   }
 }
 
+/** B3 自愈：找回丢失快照（restic recover 无子命令、无额外参数），动作入审计 recover.run。 */
+async function onRecover(): Promise<void> {
+  recovering.value = true
+  try {
+    const created = await createJob('recover')
+    recoverJobId.value = created.id
+    message.success(t('repo.recoverSubmitted'))
+    void statusQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    recovering.value = false
+  }
+}
+
+/** E25 清空本地缓存：与设置页同口径——409 JOB_CONFLICT 单独提示（有任务在跑不能清），
+ *  其余错误交给全局提示（clearCache 是 silent 请求，不会双重 toast）。 */
+async function onClearCache(): Promise<void> {
+  cacheClearing.value = true
+  try {
+    await clearCache()
+    message.success(t('settings.cache.cleared'))
+    cacheShow.value = false
+    await cacheQuery.refetch()
+  } catch (error) {
+    if (hasCode(error, 'JOB_CONFLICT')) {
+      message.warning(t('settings.cache.conflict'))
+    } else if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    cacheClearing.value = false
+  }
+}
+
 // ---------------------------------------------------------------- 展示辅助
 const repoStatus = computed(() => statusQuery.data.value ?? null)
+
+/** 缓存占用一行文案（truncated 时值仍可用，标注为「部分统计」即可，后端不 5xx）。 */
+const cacheUsageText = computed(() => {
+  const usage = cacheQuery.data.value
+  if (!usage) {
+    return t('repo.cacheUnknown')
+  }
+  return t('repo.cacheUsage', { size: formatBytes(usage.size_bytes), n: usage.items_count })
+})
 
 const capacityText = computed(() => {
   const size = repoStatus.value?.capacity.size
@@ -866,9 +960,15 @@ function formatBytes(value: number): string {
               </template>
             </n-form>
 
-            <n-space>
+            <n-space align="center">
               <n-button type="primary" :loading="saving" @click="onSave">{{ t('repo.save') }}</n-button>
               <n-button secondary :loading="testing" @click="onTest">{{ t('repo.testBtn') }}</n-button>
+              <!-- E1 验证态一眼可见：未验证/已通过/失败（替代原先「只有点过测试才有反馈」） -->
+              <StatusTag
+                :kind="repoTestState === 'success' ? 'success' : repoTestState === 'error' ? 'error' : 'warning'"
+                :label="repoTestState === 'success' ? t('repo.testVerified') : repoTestState === 'error' ? t('repo.testFail') : t('repo.testPending')"
+                size="tiny"
+              />
             </n-space>
 
             <n-alert v-if="testResult?.ok" type="success" :show-icon="false">
@@ -876,6 +976,10 @@ function formatBytes(value: number): string {
             </n-alert>
             <n-alert v-else-if="testResult && !testResult.ok" type="error" :show-icon="false">
               {{ testResult.reason || t('repo.testFail') }}
+            </n-alert>
+            <!-- E1：改过配置但未复验 → 明确告知并挡住不可逆动作（init） -->
+            <n-alert v-if="verifyRequired" type="warning" :show-icon="false">
+              {{ t('repo.verifyRequired') }}
             </n-alert>
 
             <n-text depth="3">{{ t('repo.passfileStatus') }}：
@@ -923,116 +1027,215 @@ function formatBytes(value: number): string {
             <n-button v-if="passfileMissing" size="small" type="primary" @click="openPassword">
               {{ t('repo.passwordSetBtn') }}
             </n-button>
-            <template v-if="repoStatus && !repoStatus.connected">
-              <n-tooltip v-if="passfileMissing" trigger="hover">
-                <template #trigger>
-                  <n-button size="small" type="warning" disabled>
-                    {{ t('repo.initBtn') }}
+            <!--
+              E4：设置仓库密码为**行内展开面板**（原 NModal → 卡内展开，API 不变）。
+              对齐 Duplicati 向导 Step1 的行内形态——密码缺失本就发生在读当前状态卡的语境里，
+              弹窗会打断「看到问题 → 当场处理」的动线；行内展开保留同样的两段式流程
+              （生成→复制 / 自填），一次性明文仍只在面板存活期可见，关闭即丢弃。
+            -->
+            <div
+              v-if="passwordShow"
+              class="repo__password-panel"
+              role="region"
+              :aria-label="t('repo.passwordTitle')"
+            >
+              <n-text strong>{{ t('repo.passwordTitle') }}</n-text>
+              <template v-if="generatedPassword">
+                <n-alert type="success" :show-icon="false">{{ t('repo.passwordGeneratedHint') }}</n-alert>
+                <n-input :value="generatedPassword" readonly class="repo__password-out" />
+                <n-space justify="end" class="repo__password-actions">
+                  <n-button size="small" secondary @click="copyGenerated">
+                    {{ t('repo.passwordCopy') }}
                   </n-button>
-                </template>
-                {{ t('repo.initBlockedByPassfile') }}
-              </n-tooltip>
-              <n-button
-                v-else
-                size="small"
-                type="warning"
-                :loading="initializing"
-                @click="initShow = true"
-              >
-                {{ t('repo.initBtn') }}
-              </n-button>
-              <n-text depth="3" class="repo__note">{{ t('repo.initHint') }}</n-text>
-            </template>
-            <template v-if="repoStatus?.locked">
-              <n-alert type="warning" :show-icon="false">{{ t('repo.lockedNote') }}</n-alert>
-              <n-button size="small" type="warning" @click="unlockShow = true">
-                {{ t('repo.unlockBtn') }}
-              </n-button>
-            </template>
-            <!-- B1 自愈：修复仓库（重建索引/卷一致性）；仅已连接仓库可操作（无连接则修复无意义） -->
-            <template v-if="repoStatus?.connected">
-              <n-button size="small" type="error" :loading="repairing" @click="repairShow = true">
-                {{ t('repo.repairBtn') }}
-              </n-button>
-              <n-text depth="3" class="repo__note">{{ t('repo.repairHint') }}</n-text>
-
-              <!-- C4 密钥轮换 + 手动 copy -->
-              <n-space :size="8">
-                <n-button
-                  size="small"
-                  secondary
-                  :disabled="passfileMissing"
-                  @click="rotateShow = true"
-                >
-                  {{ t('repo.rotateBtn') }}
-                </n-button>
-                <n-button size="small" secondary @click="openCopy">
-                  {{ t('repo.copyBtn') }}
-                </n-button>
-              </n-space>
-            </template>
-            <n-text depth="3" class="repo__note">{{ t('dashboard.repoCacheNote') }}</n-text>
-
-            <template v-if="initJobId">
-              <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" />
-            </template>
-            <template v-if="unlockJobId">
-              <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
-            </template>
-            <template v-if="repairJobId">
-              <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" />
-            </template>
+                  <n-button size="small" type="primary" @click="closePassword">
+                    {{ t('repo.passwordSavedClose') }}
+                  </n-button>
+                </n-space>
+              </template>
+              <template v-else>
+                <n-alert type="warning" :show-icon="false">{{ t('repo.passwordIntro') }}</n-alert>
+                <n-form label-placement="top" size="small" class="repo__password-form">
+                  <n-form-item :label="t('repo.passwordCustomLabel')">
+                    <n-input
+                      v-model:value="passwordInput"
+                      type="password"
+                      show-password-on="click"
+                      :placeholder="t('repo.passwordCustomPlaceholder')"
+                    />
+                  </n-form-item>
+                </n-form>
+                <n-space justify="end" class="repo__password-actions">
+                  <n-button size="small" secondary @click="closePassword">
+                    {{ t('common.cancel') }}
+                  </n-button>
+                  <n-button
+                    size="small"
+                    :disabled="!passwordInput.trim()"
+                    :loading="passwordSaving"
+                    @click="submitPassword({ password: passwordInput })"
+                  >
+                    {{ t('repo.passwordUseCustom') }}
+                  </n-button>
+                  <n-button size="small" type="primary" :loading="passwordSaving" @click="generatePassword">
+                    {{ t('repo.passwordGenerate') }}
+                  </n-button>
+                </n-space>
+              </template>
+            </div>
+            <!-- 锁残留属状态信号（留在状态卡）；对应动作按钮已收进下方「仓库维护」分区 -->
+            <n-alert v-if="repoStatus?.locked" type="warning" :show-icon="false">
+              {{ t('repo.lockedNote') }}
+            </n-alert>
           </n-space>
         </n-card>
       </n-gi>
     </n-grid>
 
-    <!-- 设置仓库密码：生成（一次性回显）或自填 -->
-    <n-modal
-      v-model:show="passwordShow"
-      :title="t('repo.passwordTitle')"
-      preset="card"
-      style="width: 520px"
-    >
-      <n-alert v-if="!generatedPassword" type="warning" :show-icon="false">
-        {{ t('repo.passwordIntro') }}
-      </n-alert>
-      <template v-if="generatedPassword">
-        <n-alert type="success" :show-icon="false">{{ t('repo.passwordGeneratedHint') }}</n-alert>
-        <n-input :value="generatedPassword" readonly class="repo__password-out" />
-        <n-space justify="end" class="repo__password-actions">
-          <n-button size="small" secondary @click="copyGenerated">
-            {{ t('repo.passwordCopy') }}
+    <!--
+      仓库维护（G6：对齐 Duplicati `backup/database` 的 Maintenance 分区范式——
+      「先解释风险，再给动作」：分区标题 → 风险说明段 → 动作行）。
+      原散落在状态卡内的 init / unlock / repair 与 C4 轮换、copy 统一收进本分区，
+      状态卡回归纯展示；并补上 B3 recover（G1：后端早已支持、前端此前零入口）与
+      E25 清空缓存（设置页已有专区的第二入口，复用 api/settings 的同一对函数）。
+      危险动作一律走 ConfirmGate 关键词确认。
+    -->
+    <n-card :title="t('repo.maintenanceTitle')" size="small">
+      <n-space vertical :size="12">
+        <n-text depth="3" class="repo__note">{{ t('repo.maintenanceIntro') }}</n-text>
+
+        <!-- 动作行 1：解锁（仅锁残留时有意义） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.unlockBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.unlockHint') }}</n-text>
+          </div>
+          <n-button
+            size="small"
+            type="warning"
+            :disabled="!repoStatus?.locked"
+            :loading="unlocking"
+            @click="unlockShow = true"
+          >
+            {{ t('repo.unlockBtn') }}
           </n-button>
-          <n-button size="small" type="primary" @click="passwordShow = false">
-            {{ t('repo.passwordSavedClose') }}
+        </div>
+
+        <!-- 动作行 2：修复索引/卷（B1，仅已连接可操作） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.repairBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.repairHint') }}</n-text>
+          </div>
+          <n-button
+            size="small"
+            type="error"
+            :disabled="!repoStatus?.connected"
+            :loading="repairing"
+            @click="repairShow = true"
+          >
+            {{ t('repo.repairBtn') }}
           </n-button>
-        </n-space>
-      </template>
-      <template v-else>
-        <n-form label-placement="top" size="small">
-          <n-form-item :label="t('repo.passwordCustomLabel')">
-            <n-input
-              v-model:value="passwordInput"
-              type="password"
-              show-password-on="click"
-              :placeholder="t('repo.passwordCustomPlaceholder')"
-            />
-          </n-form-item>
-        </n-form>
-        <n-space justify="end" class="repo__password-actions">
-          <n-button size="small" secondary @click="passwordShow = false">
-            {{ t('common.cancel') }}
+        </div>
+
+        <!-- 动作行 3：找回丢失快照（B3，G1 新增入口） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.recoverBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.recoverHint') }}</n-text>
+          </div>
+          <n-button
+            size="small"
+            type="error"
+            :disabled="!repoStatus?.connected"
+            :loading="recovering"
+            @click="recoverShow = true"
+          >
+            {{ t('repo.recoverBtn') }}
           </n-button>
-          <n-button size="small" :disabled="!passwordInput.trim()" :loading="passwordSaving" @click="submitPassword({ password: passwordInput })">
-            {{ t('repo.passwordUseCustom') }}
+        </div>
+
+        <!-- 动作行 4：初始化（仅未连接时可操作；密码文件缺失时禁用并给原因） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.initBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.initHint') }}</n-text>
+          </div>
+          <n-tooltip v-if="passfileMissing" trigger="hover">
+            <template #trigger>
+              <n-button size="small" type="warning" disabled>{{ t('repo.initBtn') }}</n-button>
+            </template>
+            {{ t('repo.initBlockedByPassfile') }}
+          </n-tooltip>
+          <n-tooltip v-else-if="verifyRequired" trigger="hover">
+            <template #trigger>
+              <n-button size="small" type="warning" disabled>{{ t('repo.initBtn') }}</n-button>
+            </template>
+            {{ t('repo.initBlockedByUnverified') }}
+          </n-tooltip>
+          <n-button
+            v-else
+            size="small"
+            type="warning"
+            :disabled="!!repoStatus?.connected"
+            :loading="initializing"
+            @click="initShow = true"
+          >
+            {{ t('repo.initBtn') }}
           </n-button>
-          <n-button size="small" type="primary" :loading="passwordSaving" @click="generatePassword">
-            {{ t('repo.passwordGenerate') }}
+        </div>
+
+        <!-- 动作行 5/6：C4 密钥轮换 + 手动 copy（搬迁自状态卡，逻辑不变） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.rotateBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.rotateHint') }}</n-text>
+          </div>
+          <n-button
+            size="small"
+            secondary
+            :disabled="passfileMissing"
+            @click="rotateShow = true"
+          >
+            {{ t('repo.rotateBtn') }}
           </n-button>
-        </n-space>
-      </template>
-    </n-modal>
+        </div>
+
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.copyBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.copyHint') }}</n-text>
+          </div>
+          <n-button size="small" secondary @click="openCopy">
+            {{ t('repo.copyBtn') }}
+          </n-button>
+        </div>
+
+        <!-- 动作行 7：E25 清空本地缓存（后端 S6 危险操作，有活跃任务时 409） -->
+        <div class="repo__maint-row">
+          <div class="repo__maint-text">
+            <n-text strong>{{ t('repo.cacheBtn') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ t('repo.cacheHint') }}</n-text>
+            <n-text depth="3" class="repo__note">{{ cacheUsageText }}</n-text>
+          </div>
+          <n-button size="small" secondary :loading="cacheClearing" @click="cacheShow = true">
+            {{ t('repo.cacheBtn') }}
+          </n-button>
+        </div>
+
+        <template v-if="initJobId">
+          <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" />
+        </template>
+        <template v-if="unlockJobId">
+          <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
+        </template>
+        <template v-if="repairJobId">
+          <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" />
+        </template>
+        <template v-if="recoverJobId">
+          <JobProgress :job-id="recoverJobId" :title="t('repo.recoverJobTitle')" />
+        </template>
+      </n-space>
+    </n-card>
 
     <!-- 新建仓库 -->
     <n-modal
@@ -1156,6 +1359,35 @@ function formatBytes(value: number): string {
       </template>
     </ConfirmGate>
 
+    <!-- B3 自愈：找回丢失快照——三步确认门（关键词 RECOVER，restic recover 无子命令、无额外参数，
+         但会改写仓库元数据，故与 repair 同规格留痕：审计 recover.run） -->
+    <ConfirmGate
+      v-model:show="recoverShow"
+      :title="t('repo.recoverBtn')"
+      :keyword="'RECOVER'"
+      :description="t('repo.recoverDesc')"
+      :loading="recovering"
+      @confirm="onRecover"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.recoverPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
+    <!-- E25 清空本地缓存：三步确认门（关键词 CLEAR）。仅删缓存目录内容，不触碰仓库数据 -->
+    <ConfirmGate
+      v-model:show="cacheShow"
+      :title="t('repo.cacheBtn')"
+      :keyword="'CLEAR'"
+      :description="t('repo.cacheDesc')"
+      :loading="cacheClearing"
+      @confirm="onClearCache"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.cachePreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
     <!-- 删除仓库：三步确认门 -->
     <ConfirmGate
       v-model:show="deleteShow"
@@ -1275,6 +1507,55 @@ function formatBytes(value: number): string {
 
 .repo__id-input {
   flex: 1 1 200px;
+}
+
+/* G6 维护分区动作行：左「标题 + 风险说明」，右动作按钮（对齐 Duplicati Maintenance 的
+   「先解释再给动作」范式；窄屏纵向堆叠，保证按钮不被说明文字挤压变形）。 */
+.repo__maint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--n-divider-color, rgba(128, 128, 140, 0.16));
+}
+
+.repo__maint-row:first-of-type {
+  border-top: none;
+}
+
+.repo__maint-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .repo__maint-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+/* E4 密码行内展开面板：嵌在状态卡 passfile 告警与按钮之后的次级面板
+   （1px 边框 + 弱分隔底色，与卡片内容区分层；不再使用模态弹窗）。 */
+.repo__password-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--n-border-color, rgba(128, 128, 140, 0.24));
+  border-radius: 8px;
+  background: var(--n-action-color, transparent);
+}
+
+.repo__password-form {
+  margin: 0;
+}
+
+.repo__password-actions {
+  margin-top: 2px;
 }
 
 /* A5 目的地类型卡片网格 */
