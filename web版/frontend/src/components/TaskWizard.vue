@@ -26,9 +26,9 @@ import {
   NTooltip,
   useMessage,
 } from 'naive-ui'
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import {
   createBackupTask,
   dryRunBackupTask,
@@ -46,6 +46,7 @@ import ScheduleRetentionForm, {
 } from '@/components/task/ScheduleRetentionForm.vue'
 import SourcesPicker from '@/components/task/SourcesPicker.vue'
 import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
+import StatusTag from '@/components/StatusTag.vue'
 import TierCard from '@/components/TierCard.vue'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'
@@ -120,6 +121,16 @@ function defaultForm(): TaskFormState {
 
 const form = reactive<TaskFormState>(defaultForm())
 
+// ---------------------------------------------------------------- E2 离开保护的脏判定基线
+/** 表单基线快照：预填完成 / 草稿恢复 / 保存成功后刷新，用于「是否有未保存改动」判定。
+ *  用快照比对而非 deep watch 标志位——预填与草稿恢复都是批量赋值，deep watch 会误判为脏。 */
+const formBaseline = ref(JSON.stringify(defaultForm()))
+const dirty = computed(() => JSON.stringify(form) !== formBaseline.value)
+
+function markClean(): void {
+  formBaseline.value = JSON.stringify(form)
+}
+
 // ---------------------------------------------------------------- 草稿持久化（P4：仅新建模式）
 /** 新建任务要连过五步、中途离开即全丢——本地续填（localStorage）。
  *  编辑模式不参与：库里有权威态，草稿回填会与服务端值混淆（且 hydrated 预填会覆盖草稿）。 */
@@ -165,6 +176,7 @@ function restoreDraft(): void {
   Object.assign(form, defaultForm(), draft.form)
   step.value = Math.min(5, Math.max(1, Number(draft.step) || 1))
   draftPending.value = null
+  markClean()
 }
 
 function discardDraft(): void {
@@ -261,6 +273,8 @@ watch(
     form.mirror_repo_ids = [...task.mirror_repo_ids]
     originalSources.value = [...task.display_sources]
     originalExcludes.value = [...task.display_excludes]
+    // 预填是一次批量赋值，不构成「用户改动」→ 立刻刷新脏判定基线（E2）
+    markClean()
   },
   { immediate: true },
 )
@@ -321,12 +335,102 @@ function goNext(): void {
   if (!validateStep(step.value)) {
     return
   }
+  // G3/E1 强门禁：新建流程第③步必须先通过连接测试（无逃生门）。
+  // 与 Duplicati `next()` 同口径——逐个目的地顺序验证，失败即停在当前步。
+  if (step3Blocked.value) {
+    message.warning(t('wizard.testRequired'))
+    void onTestConnection()
+    return
+  }
   step.value = Math.min(5, step.value + 1)
 }
 
 function goPrev(): void {
   step.value = Math.max(1, step.value - 1)
 }
+
+// ---------------------------------------------------------------- E3/G7 步骤条跳步
+/** 跳步规则：向后随意（不丢数据）；向前须逐级通过校验（含第③步连接测试门禁），
+ *  首个不通过的步即为落点——与「提交时回流首个未过步骤」同一套判定，避免两处口径漂移。 */
+function onStepJump(target: number): void {
+  if (target === step.value) {
+    return
+  }
+  if (target < step.value) {
+    step.value = target
+    return
+  }
+  for (let cursor = step.value; cursor < target; cursor += 1) {
+    if (!validateStep(cursor)) {
+      step.value = cursor
+      return
+    }
+    if (cursor === 3 && !isEdit.value && !testPassed.value) {
+      message.warning(t('wizard.testRequired'))
+      step.value = 3
+      return
+    }
+  }
+  step.value = target
+}
+
+/** 键盘可达（修复模版步骤条 tabindex=-1 的缺陷）：←/→ 前后翻步，数字键 1–5 直达。
+ *  焦点挂在包裹 nav 上——naive 的步骤节点是 div（不可聚焦），容器级键盘导航是最小改动解。 */
+function onStepsKeydown(event: KeyboardEvent): void {
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    goPrev()
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    goNext()
+    return
+  }
+  if (/^[1-5]$/.test(event.key)) {
+    event.preventDefault()
+    onStepJump(Number(event.key))
+  }
+}
+
+/** G7：提交前串行校验 ①–③，失败则**回流到首个未通过的步骤**
+ *  （原先只在第⑤步弹一句「请填写任务名」，用户还要自己猜是哪一步出错）。 */
+function focusFirstInvalidStep(): boolean {
+  for (let cursor = 1; cursor <= 3; cursor += 1) {
+    if (!validateStep(cursor)) {
+      step.value = cursor
+      return false
+    }
+  }
+  if (!isEdit.value && !testPassed.value) {
+    message.warning(t('wizard.testRequired'))
+    step.value = 3
+    return false
+  }
+  return true
+}
+
+// ---------------------------------------------------------------- E2 离开保护
+/** 路由级离开确认（侧栏导航、浏览器后退均覆盖）。 */
+onBeforeRouteLeave(() => {
+  if (!dirty.value) {
+    return true
+  }
+  // 原生确认：无需新增弹窗组件，且不打断 naive 的消息队列
+  return window.confirm(t('wizard.leaveConfirm'))
+})
+
+/** 关闭标签页/刷新：浏览器只认 preventDefault + returnValue，文案由浏览器提供。 */
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!dirty.value) {
+    return
+  }
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 
 // ---------------------------------------------------------------- dry-run 预览门
 const dryRunLoading = ref(false)
@@ -439,14 +543,16 @@ function buildPayload(): TaskUpsertRequest {
 async function afterSaved(): Promise<void> {
   // 落库成功 → 草稿作废（留着会让下次新建误提示一份已完成的草稿）
   clearDraft()
+  // 已落库 → 不再是「未保存改动」，放行离开（E2 的 confirm 不应在成功跳转后再弹一次）
+  markClean()
   await queryClient.invalidateQueries({ queryKey: ['backup-tasks'] })
   void router.push({ name: 'dashboard' })
 }
 
 /** 仅保存：不触发 dry-run 门（首跑前的预览拦截由仪表盘 Start 按钮负责）。 */
 async function onSaveOnly(): Promise<void> {
-  if (!validateStep(1) || form.sources.length === 0) {
-    message.warning(t('wizard.needSources'))
+  // G7：失败时回流到首个未通过的步骤，而不是停在第⑤步空弹一句
+  if (!focusFirstInvalidStep()) {
     return
   }
   saving.value = true
@@ -466,8 +572,7 @@ async function onSaveOnly(): Promise<void> {
 
 /** 确认并立即首跑：先过 dry-run 预览门，再保存并提交 backup job（R-026-08）。 */
 async function onSaveAndRun(): Promise<void> {
-  if (!validateStep(1) || form.sources.length === 0) {
-    message.warning(t('wizard.needSources'))
+  if (!focusFirstInvalidStep()) {
     return
   }
   if (!dryRunOk.value) {
@@ -498,17 +603,54 @@ async function onSaveAndRun(): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- 测试连接（E29）
-const testing = ref(false)
+// ---------------------------------------------------------------- 测试连接（E29 + G3/E1 强门禁）
+/** 测试状态机（对齐 Duplicati `destination.component.ts:325-352` 的 testStates 顺序验证）：
+ *  idle → testing → success | error。success 会**绑定仓库标识**缓存（切仓即失效），
+ *  用于「已验证则跳过重测」——同一仓库不必为前进反复打一次网络请求。 */
+type TestState = 'idle' | 'testing' | 'success' | 'error'
+const testState = ref<TestState>('idle')
 const testResult = ref<RepoTestResponse | null>(null)
+/** success 缓存归属的仓库（切仓/改址后必须重测，避免拿旧结论放行）。 */
+const testedRepoId = ref<string | null>(null)
+
+const testing = computed(() => testState.value === 'testing')
+
+/** 当前仓库是否已通过连接测试（仓库标识一致才算数）。 */
+const testPassed = computed(
+  () => testState.value === 'success' && testedRepoId.value === ui.currentRepoId,
+)
+
+/** 是否拦在第③步：仅新建任务（isEdit=false）走强门禁——编辑时仓库已验收过，无需重测
+ *  （与 Duplicati `next()` 的 `isNew()` 分支同口径）。无逃生门：不提供「仍然继续」。 */
+const step3Blocked = computed(() => step.value === 3 && !isEdit.value && !testPassed.value)
+
+// 切换仓库 → 旧结论作废（配置信息已变，缓存不可复用）
+watch(
+  () => ui.currentRepoId,
+  () => {
+    testState.value = 'idle'
+    testResult.value = null
+    testedRepoId.value = null
+  },
+)
 
 async function onTestConnection(): Promise<void> {
-  testing.value = true
+  testState.value = 'testing'
   testResult.value = null
   try {
-    testResult.value = await testRepo(ui.currentRepoId)
+    const result = await testRepo(ui.currentRepoId)
+    testResult.value = result
+    testedRepoId.value = ui.currentRepoId
+    testState.value = result.ok ? 'success' : 'error'
+  } catch (error) {
+    testState.value = 'error'
+    if (!isAppError(error)) {
+      throw error
+    }
   } finally {
-    testing.value = false
+    if (testState.value === 'testing') {
+      testState.value = 'error'
+    }
   }
 }
 
@@ -556,13 +698,22 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 <template>
   <n-space vertical :size="16">
     <n-card :title="isEdit ? t('task.edit') : t('wizard.submitCreate')" size="small">
-      <n-steps :current="step" size="small" class="wizard__steps">
-        <n-step :title="t('wizard.step1')" />
-        <n-step :title="t('wizard.step2')" />
-        <n-step :title="t('wizard.step3')" />
-        <n-step :title="t('wizard.step4')" />
-        <n-step :title="t('wizard.step5')" />
-      </n-steps>
+      <!-- E3：步骤条可点击跳步（naive 在提供 @update:current 时自动加 --clickable 态）+ 键盘可达
+           （←/→ 翻步、数字键 1–5 直达）。nav 承载键盘焦点与 aria 语义。 -->
+      <nav
+        class="wizard__steps-nav"
+        :aria-label="t('wizard.stepsNavLabel')"
+        tabindex="0"
+        @keydown="onStepsKeydown"
+      >
+        <n-steps :current="step" size="small" class="wizard__steps" @update:current="onStepJump">
+          <n-step :title="t('wizard.step1')" />
+          <n-step :title="t('wizard.step2')" />
+          <n-step :title="t('wizard.step3')" />
+          <n-step :title="t('wizard.step4')" />
+          <n-step :title="t('wizard.step5')" />
+        </n-steps>
+      </nav>
 
       <n-alert v-if="isEdit && taskLoadFailed" type="error" :show-icon="false">
         {{ t('dashboard.loadFailed', { message: taskLoadFailed }) }}
@@ -647,17 +798,26 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
             <n-text depth="3">{{ t('dashboard.repoCacheNote') }}</n-text>
           </n-space>
 
+          <!-- G3/E1：测试连接状态机（idle/testing/success/error），成功结果按仓库缓存 -->
           <n-space align="center" :size="8">
             <n-button size="small" secondary :loading="testing" @click="onTestConnection">
               {{ t('wizard.testConnection') }}
             </n-button>
-            <n-text v-if="testResult?.ok" type="success" depth="3">
-              {{ t('wizard.testOk', { n: testResult.latency_ms }) }}
-            </n-text>
+            <StatusTag
+              v-if="testState === 'success'"
+              kind="success"
+              :label="t('wizard.testOk', { n: testResult?.latency_ms ?? 0 })"
+            />
+            <StatusTag v-else-if="testState === 'error'" kind="error" :label="t('wizard.testFail')" />
+            <StatusTag v-else kind="warning" :label="t('wizard.testPending')" />
           </n-space>
           <n-alert v-if="testResult && !testResult.ok" type="error" :show-icon="false">
             {{ testResult.reason || t('wizard.testFail') }}
           </n-alert>
+          <!-- 门禁提示（aria-live：屏幕阅读器在点「继续」时也能听到拦截原因） -->
+          <n-text v-if="step3Blocked" depth="3" class="wizard__note" aria-live="polite">
+            {{ t('wizard.testRequired') }}
+          </n-text>
 
           <!-- C4 多目的地镜像（主备份成功后增量复制） -->
           <n-space vertical :size="4">
@@ -743,25 +903,29 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </template>
         </template>
 
-        <n-space justify="end">
+        <!-- G7：页脚两端对齐（返回← 在左 / 继续→ 在右），对齐 Duplicati form-actions 形态 -->
+        <n-space justify="space-between" align="center" class="wizard__footer">
           <n-button v-if="step > 1" quaternary @click="goPrev">{{ t('confirm.back') }}</n-button>
-          <n-button v-if="step < 5" type="primary" @click="goNext">{{ t('confirm.next') }}</n-button>
-          <template v-else>
-            <n-button quaternary :loading="saving" @click="onSaveOnly">
-              {{ isEdit ? t('wizard.submitUpdate') : t('wizard.save_only') }}
-            </n-button>
-            <n-tooltip v-if="!dryRunOk" trigger="hover">
-              <template #trigger>
-                <n-button type="primary" disabled>
-                  {{ t('wizard.dry_run_confirm') }}
-                </n-button>
-              </template>
-              {{ dryRunBlockHint }}
-            </n-tooltip>
-            <n-button v-else type="primary" :loading="saving" @click="onSaveAndRun">
-              {{ t('wizard.dry_run_confirm') }}
-            </n-button>
-          </template>
+          <n-space v-else />
+          <n-space align="center" :size="8">
+            <n-button v-if="step < 5" type="primary" @click="goNext">{{ t('confirm.next') }}</n-button>
+            <template v-else>
+              <n-button quaternary :loading="saving" @click="onSaveOnly">
+                {{ isEdit ? t('wizard.submitUpdate') : t('wizard.save_only') }}
+              </n-button>
+              <n-tooltip v-if="!dryRunOk" trigger="hover">
+                <template #trigger>
+                  <n-button type="primary" disabled>
+                    {{ t('wizard.dry_run_confirm') }}
+                  </n-button>
+                </template>
+                {{ dryRunBlockHint }}
+              </n-tooltip>
+              <n-button v-else type="primary" :loading="saving" @click="onSaveAndRun">
+                {{ t('wizard.dry_run_confirm') }}
+              </n-button>
+            </template>
+          </n-space>
         </n-space>
       </n-space>
     </n-card>
@@ -769,8 +933,23 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 </template>
 
 <style scoped>
+/* E3：步骤条容器承载键盘焦点——焦点环只在此容器上出现，避免与按钮焦点态混淆 */
+.wizard__steps-nav {
+  border-radius: 6px;
+}
+
+.wizard__steps-nav:focus-visible {
+  outline: 2px solid var(--n-color-target, #2080f0);
+  outline-offset: 2px;
+}
+
 .wizard__steps {
   margin-bottom: 8px;
+}
+
+/* G7：页脚与表单主体分开一行，返回/继续分列两端 */
+.wizard__footer {
+  margin-top: 8px;
 }
 
 .wizard__body {
@@ -782,6 +961,12 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 }
 
 .wizard__hint {
+  display: block;
+  font-size: 12px;
+}
+
+/* G3/E1 门禁说明：与 wizard__hint 同规格（12px 辅助文本），单独类名便于定位 */
+.wizard__note {
   display: block;
   font-size: 12px;
 }

@@ -171,6 +171,57 @@ const monthOptions = computed(() =>
   Array.from({ length: 12 }, (_, i) => ({ label: `${i + 1} 月`, value: i + 1 })),
 )
 
+// ---------------------------------------------------------------- G5 调度摘要（aria-live 实时播报）
+/** 星期名的键序（与 cron 标准语义一致：0=周日 … 6=周六）。 */
+const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** 把当前调度态翻译成一句人话（简单模式按频率逐档翻译；高级模式回显原文，避免臆读语义）。
+ *  Duplicati `schedule.component.html:23-76` 的摘要区即此范式；这里补 aria-live 播报，
+ *  使改动能被屏幕阅读器即时读出（模版未做，属超越层）。 */
+const scheduleSummary = computed(() => {
+  if (cronMode.value === 'none') {
+    return t('wizard.summaryManual')
+  }
+  if (cronMode.value === 'advanced') {
+    return t('wizard.summaryCron', { cron: advCron.value.trim() || '—' })
+  }
+  const time = `${pad2(simple.hour)}:${pad2(simple.minute)}`
+  switch (simple.frequency) {
+    case 'hourly':
+      return t('wizard.summaryHourly', { minute: pad2(simple.minute) })
+    case 'every_n_hours':
+      return t('wizard.summaryEveryNHours', { n: simple.intervalHours, minute: pad2(simple.minute) })
+    case 'daily':
+      return t('wizard.summaryDaily', { time })
+    case 'every_n_days':
+      return t('wizard.summaryEveryNDays', { n: simple.intervalDays, time })
+    case 'weekly': {
+      const days = simple.daysOfWeek.length
+        ? [...simple.daysOfWeek].sort((a, b) => a - b).map((d) => t(`wizard.dow.${DOW_KEYS[d]}`)).join(', ')
+        : t('wizard.summaryNoDay')
+      return t('wizard.summaryWeekly', { days, time })
+    }
+    case 'monthly': {
+      const days = simple.daysOfMonth.length
+        ? [...simple.daysOfMonth].sort((a, b) => a - b).join(', ')
+        : t('wizard.summaryNoDay')
+      return t('wizard.summaryMonthly', { days, time })
+    }
+    case 'yearly': {
+      const days = simple.daysOfMonth.length
+        ? [...simple.daysOfMonth].sort((a, b) => a - b).join(', ')
+        : t('wizard.summaryNoDay')
+      return t('wizard.summaryYearly', { month: simple.month, days, time })
+    }
+    default:
+      return t('wizard.summaryCron', { cron: simpleToCron(simple) })
+  }
+})
+
 /** 是否需要「时间点（时/分）」控件（hourly/every_n_hours 仅用分钟）。 */
 const needsTime = computed(() =>
   ['daily', 'weekly', 'monthly', 'yearly', 'every_n_days'].includes(simple.frequency),
@@ -341,6 +392,12 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
         {{ t('task.manual_only') }}
       </n-text>
       <n-text depth="3" class="schedule-form__note">{{ t('wizard.jitterNote') }}</n-text>
+
+      <!-- G5 调度摘要：一句话回读当前计划（aria-live 让屏幕阅读器即时播报改动） -->
+      <n-space :size="6" align="center" class="schedule-form__summary">
+        <n-text depth="3">{{ t('wizard.scheduleSummary') }}：</n-text>
+        <n-text strong aria-live="polite">{{ scheduleSummary }}</n-text>
+      </n-space>
     </n-space>
 
     <!-- 保留策略 -->
@@ -393,6 +450,12 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 <style scoped>
 .schedule-form__note {
   display: block;
+  font-size: 12px;
+}
+
+/* G5 摘要行：与提示文案同字号，单独一行便于定位；随控件变化实时更新（aria-live） */
+.schedule-form__summary {
+  flex-wrap: wrap;
   font-size: 12px;
 }
 
