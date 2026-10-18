@@ -52,6 +52,9 @@ def _mini_pack(password: str = PW) -> dict[str, Any]:
                 "retry_count": 2,
                 "last_run_at": "2026-01-01T00:00:00Z",
                 "dry_run_pending": 0,
+                # host_tag 是 repos 表字段，被 TaskRepo.get_dict 契约带进包——
+                # 落库前必须剔除（真机 E2E 2026-10-18：漏剔则 create 路径 500）
+                "host_tag": "nas",
             }
         ],
         config_rows=[
@@ -115,7 +118,10 @@ def test_mirror_ids_rules():
 
 def test_task_values_drops_cross_machine_columns():
     values = task_values_from_pack(_mini_pack()["data"]["tasks"][0], "default", ["mir"])
-    for dropped in ("id", "tag", "created_at", "updated_at", "last_run_at", "dry_run_pending"):
+    for dropped in (
+        "id", "tag", "created_at", "updated_at", "last_run_at",
+        "dry_run_pending", "host_tag",
+    ):
         assert dropped not in values
     assert values["repo_id"] == "default"
     assert values["mirror_repo_ids"] == ["mir"]

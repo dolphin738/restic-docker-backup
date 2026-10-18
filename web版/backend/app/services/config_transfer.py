@@ -270,10 +270,17 @@ def task_values_from_pack(task: dict[str, Any], repo_id: str, mirror_ids: list[s
 
     剔除：``id``/``tag``（目标机自增+回写）、``created_at``/``updated_at``、
     ``last_run_at``（目标机无对应执行历史，带回会谎报「上次备份时间」）、
-    ``dry_run_pending``（恒 0——导入不是待确认的新建草稿）。``repo_id`` 用
-    导入侧解析值显式设置（以仓匹配结果为准，不信任包内归属）。
+    ``dry_run_pending``（恒 0——导入不是待确认的新建草稿）、``host_tag``
+    （repos 表字段，被导出契约带进包；``backup_tasks`` 无此列，落库前必须剔除，
+    否则 ``TaskRepo.create`` 的 ``_assert_columns`` 抛键校验错 = 导入 500——
+    真机 E2E 2026-10-18 实证：update 路径不校验故覆盖导入能过，create 路径
+    （异地导入/新任务名）必炸）。``repo_id`` 用导入侧解析值显式设置（以仓匹配
+    结果为准，不信任包内归属）。
     """
-    drop = {"id", "tag", "repo_id", "created_at", "updated_at", "last_run_at", "dry_run_pending"}
+    drop = {
+        "id", "tag", "repo_id", "created_at", "updated_at", "last_run_at",
+        "dry_run_pending", "host_tag",
+    }
     values = {k: v for k, v in task.items() if k not in drop}
     values["repo_id"] = repo_id
     values["mirror_repo_ids"] = list(mirror_ids)
