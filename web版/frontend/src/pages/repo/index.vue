@@ -1261,7 +1261,8 @@ function formatBytes(value: number): string {
 /* 一次性密码展示：等宽字体便于人工抄录，只读态由 n-input 的 readonly 提供 */
 .repo__password-out {
   margin-top: 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽常量收口：theme/tokens.ts fontFamilyMono（经 --font-family-mono 全局变量） */
+  font-family: var(--font-family-mono);
 }
 
 .repo__password-actions {

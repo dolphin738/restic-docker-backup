@@ -7,14 +7,15 @@
     <link rel="icon" href="/favicon.ico" sizes="64x64" />
     <title>restic 备份控制台</title>
     <style>
-      /* 深色为默认主题：先铺底，避免首屏白闪 */
+      /* 深色为默认主题：先铺底，避免首屏白闪。
+         底色与暗色令牌 bodyColor（theme/tokens.ts #14161C）保持一致（PV-3 既有缺陷收敛）。 */
       html,
       body,
       #app {
         margin: 0;
         height: 100%;
-        background: #101014;
-        color: #e0e0e6;
+        background: #14161C;
+        color: #eef1f8;
       }
     </style>
   </head>

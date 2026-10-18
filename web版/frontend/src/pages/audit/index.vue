@@ -257,7 +257,8 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
   padding: 8px 12px;
   max-width: 640px;
   overflow: auto;
-  font-family: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  /* 等宽常量收口：theme/tokens.ts fontFamilyMono（经 --font-family-mono 全局变量） */
+  font-family: var(--font-family-mono);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;

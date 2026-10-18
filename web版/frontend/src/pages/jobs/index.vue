@@ -705,7 +705,9 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
   max-height: 200px;
   overflow: auto;
   padding: 8px 12px;
-  font-family: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  /* 等宽常量收口：theme/tokens.ts fontFamilyMono（经 --font-family-mono 全局变量）。
+     本区块渲染于 n-drawer（portal），v-bind 方案在此断继承，故用全局 CSS 变量。 */
+  font-family: var(--font-family-mono);
   font-size: 12px;
   line-height: 1.6;
   word-break: break-all;

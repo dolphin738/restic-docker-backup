@@ -410,6 +410,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
 .schedule-form__cron {
   flex: 1 1 280px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 等宽常量收口：theme/tokens.ts fontFamilyMono（经 --font-family-mono 全局变量） */
+  font-family: var(--font-family-mono);
 }
 </style>

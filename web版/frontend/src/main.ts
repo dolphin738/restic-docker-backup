@@ -6,6 +6,12 @@ import { setAuthHandlers } from './api/http'
 import { i18n } from './i18n'
 import { router } from './router'
 import { useUiStore } from './stores/ui'
+import { fontFamilyMono } from './theme/tokens'
+
+// 等宽字体常量（tokens.ts 单一来源）落成 documentElement 级 CSS 变量：
+// 页面/抽屉/弹层等 portal 内容同样可继承——SFC style 内 v-bind() 只作用于组件根元素，
+// 对 n-drawer/n-modal 的 portal 子树会断继承（jobs 日志抽屉实证），故不走 v-bind。
+document.documentElement.style.setProperty('--font-family-mono', fontFamilyMono)
 
 const app = createApp(App)
 
