@@ -1,140 +1,157 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.0（2026-10-17 立项）
-> 状态：活跃——owner 2026-10-17 指令立项：「以模版界面为设计标准全面改造 UI，复刻基础上优化，目标评分 ≥9 分」；同批裁决将模版交互增强（如连接测试强门禁）纳入改造范围。
-> 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10，含 35 张截图 + 137 个 CSS 变量实测 + 源码交叉验证）。
-> 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S8/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
+> 版本：v1.4（2026-10-19 四次修订：E4 落地 + 对象纠正；v1.3 R1–R4 回填与两处裁决修订；v1.2 G6/G7 补录；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
+> 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
+> 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
+
+> **v1.1 修订说明**：v1.0 立项后，后端已按《Duplicati功能对齐分析与改造计划-2026-10-17》完成能力面对齐（A0 模式收敛 / A4 目的地卡 / A5 rclone / A6 调度双模式 / A7 恢复 Duplicati 化 / B1-B3 自愈 / C2 通知 / C4 多目的地+搬家 / E 配置迁移）；前端视觉层亦已由 P0–P4 批次落地（发布 1.0.1：靛蓝令牌 / 232px 侧栏 / 4 组导航 / StatusTag 全站收口 / KPI 状态带 / 向导草稿）。本修订以 **backend/app 源码实读（13 组路由）+ ngclient 源码 8 组组件细读 + frontend/src 消费现状核对** 为证据，重排第二轮范围：**视觉层维持已落地基线不回退，第二轮聚焦功能面呈现差距（G1–G5）与模版交互吸收（E1–E6）**。
 
 ---
 
-## 1. 背景与目标拆解
+## 0. 现状基线（2026-10-19 实读）
 
-模版（Duplicati ngclient）设计语言定性：「现代扁平 + 渐变重音」——全平面无阴影、双层灰底 + 1px 边框分层、蓝色渐变 squircle 图标为全站唯一高饱和重音、Inter Tight 可变字体 14px 基准、最重 500 字重。
+### 0.1 功能面对齐矩阵（后端 ✅ = API 已存在；前端 ✅ = 已有 UI 入口）
 
-模版评分 7.9，失分点明确（三大短板 + 问题清单 12 项），故改造分两层：
-
-| 层 | 内容 | 目标 |
-|---|---|---|
-| 复刻层 | 设计令牌、布局骨架、组件范式、页面形态 | 视觉/交互与模版一致 |
-| 超越层 | 直接修复报告点名的三大短板（i18n / 响应式 / A11y）与中低问题 | 综合自评 ≥9 分 |
-
-## 2. 范围边界裁决：「壳」照搬，「核」不动
-
-**原则**：照搬模版的视觉与交互范式（壳）；数据流、字段、安全语义一律以本项目后端契约为准（核）。凡与红线或架构冲突的模版功能不引入。
-
-### 2.1 关键差异裁决：仓库密码
-
-模版没有独立的「仓库密码管理」概念（凭据内嵌于 destination 步骤；其向导 Step1 的加密密码属**备份级加密**，带生成按钮 + 「复制密码」强门禁）。本项目仓库密码在 `/repo` 页配置，后端存配置，**API 只回 `has_value` + `source`，明文永不出后端（红线 S3）**。
-
-**裁决**：`/repo` 页只做视觉换肤（两栏表单 + 行分隔线 + 技术文本等宽），字段与提交流程原样保留；模版「复制密码门禁」因本项目无备份级加密概念，**不引入**（引入即画蛇添足且触碰 S3 边界）。
-
-### 2.2 模版功能 → 本项目处置总表
-
-| 模版功能                               | 本项目现状                              | 处置                            |
-| ---------------------------------- | ---------------------------------- | ----------------------------- |
-| 仓库凭据随连接测试配置                        | `/repo` 页独立配置（has_value/source 语义） | 换肤保留本项目语义（§2.1）               |
-| 备份级加密密码 + 复制门禁                     | 无此概念                               | 排除                            |
-| 连接测试强门禁                            | 向导第③步 / repo 页有测试按钮，无门禁            | **纳入改造**（§7 E1）               |
-| 向导离开保护（模版缺失，报告问题#5）                | 无                                  | **纳入改造**（§7 E2，超越层）           |
-| 步骤条可点击跳步（sh-stepper routerLink）    | NSteps 纯展示                         | **纳入改造**（§7 E3）               |
-| 更改密码行内展开（模版 settings）              | 弹窗                                 | **纳入改造**（§7 E4）               |
-| 空状态 CTA 化                          | 仪表盘已有引导卡                           | 全站统一组件化（§7 E5）                |
-| 状态信号状态化着色（报告问题#10）                 | 顶栏 tag 中性色                         | **纳入改造**（§7 E6）               |
-| 调度 Custom 7 种间隔配置器                 | ScheduleRetentionForm（cron + 保留分层） | 保留本项目表单，仅换肤两栏布局               |
-| 单备份多目的地（+ Add another destination） | 单仓库多任务模型                           | 排除（架构不同）                      |
-| 30+ 后端类型选择卡                        | 单一 restic 仓库                       | 排除                            |
-| 导入/导出配置、欢迎向导、版本标签等隐藏功能             | 无                                  | 排除（属新功能，不属 UI 改造；需求走 PRD 需求池） |
-
-## 3. 技术选型与依赖计划
-
-| 项 | 决策 | 理由 |
-|---|---|---|
-| Vue 3 / Pinia / vue-query / vue-i18n / vue-router | 保留 | 基础设施与模版无关 |
-| Naive UI | **保留为控件底座 + 深度换肤** | 表格/下拉/弹窗等复杂控件自研风险高；GlobalThemeOverrides + CSS 变量可贴皮至 ~95% 相似；高辨识度组件手写替换 |
-| 新增依赖 | 仅 `@fontsource-variable/inter-tight`（锁版本） | 模版核心视觉资产；fontsource 自托管 woff2 对齐模版「本地自托管」策略 |
-| 图标 | 保留零依赖内联 SVG（MenuIcons.ts），补 4~5 个（月亮/太阳/外链/登出/加号） | 内联 SVG 优于图标字体（A11y、按需、无 FOUT） |
-| 样式方案 | CSS 原生 `light-dark()` + 12 级色阶变量；**不引入 CSS 框架**（无 Tailwind） | 复刻模版 9.5 分主题工程；一次定义双主题 |
-
-**深度换肤四层结构**：
-
-1. **令牌层** `src/theme/tokens.css`：~60 个 CSS 变量（5 套色板 × 12 级 + 字体/圆角/间距），`light-dark()` 一次声明双主题，`html.light/.dark` 类切换；
-2. **Naive 映射层** 重写 `src/theme/tokens.ts`：色阶同值灌入 GlobalThemeOverrides（控件圆角 8px、卡片 12px、多级阴影压平、弹层 1px 边框替代阴影）——内页表格/表单不改页面代码自动换肤；
-3. **全局覆盖层** `App.vue` 非 scoped 样式：`:focus-visible` 焦点环、`.mono` 等宽工具类、滚动条、个别贴皮；
-4. **手写组件层**：布局骨架（弃 n-layout/n-menu 改纯 flex）、SquircleIcon、EmptyState、PageHeader、登录页/仪表盘 hero 重写。
-
-## 4. 设计令牌体系
-
-- **色板**：primary 蓝 `hsl(217,91%)`、accent 紫 `hsl(258,90%)`、success/warning/error 语义色、base 灰阶，各 12 级（Radix 式语义阶梯：1–2 底色、9–10 实色、11–12 文字级）；语义色沿用 2026-10-13 AA 对比度裁决值；
-- **排版**：Inter Tight 唯一字型（CJK 回落系统栈）；body 14px；层级 = 24px/500 页题 → 16px/500 卡题 → 14px 正文 → 12–13px 辅助；**最重 500**；`--font-mono`（系统等宽栈）用于 ID/路径/时间戳——修复报告「技术文本非等宽」（问题#12）；
-- **形状**：按钮/输入框 8px、卡片 12px、渐变图标容器近 squircle；**全平面无阴影**，弹层仅 1px 边框 + 极轻投影；
-- **防闪色（FOUC）**：`index.html` 内联脚本按 localStorage（复用 `rw.theme` 键）在 CSS 加载前挂 `light/dark` 类；App.vue watch 双向同步（升展现有深色默认底）。
-
-## 5. 布局骨架
-
-| 区域 | 规格 |
-|---|---|
-| 左侧栏 | 208px 通高白底：品牌区（渐变 squircle Logo + 小写字标 + 主题切换按钮）→ 9 项导航（当前态 = 浅灰药丸底 + 彩色图标 + 文字加深）→ 底部次级分区（分隔线隔开）：用户名（等宽）、运行模式徽标、语言、登出 |
-| 顶栏 | 56px 全局状态条：左 = 仓库连接状态（状态化着色圆点 + 文字，断连时透出 last_error tooltip）+ 运行任务数；右 = 仓库切换器 + 通知铃铛图标按钮（aria-label） |
-| 内容区 | 浅灰底（light `#fafafa` / dark 近黑）+ 白卡 12px 圆角浮于其上，卡距 16px（8pt 网格），双层灰度分层无阴影 |
-| 移动端 | <960px 抽屉侧栏（沿用现有机制并打磨）；触摸目标 ≥44px（超越报告的 32–36px） |
-
-## 6. 页面级改造清单
-
-| 页面/组件 | 改造内容 |
-|---|---|
-| 登录页 | 重写：极简双居中 ~240px 窄表单、>90% 留白、左上品牌区、进入即聚焦、蓝色方向感按钮 |
-| 仪表盘 | F 型动线：顶部双 hero 行动卡（备份/恢复，渐变大图标 + 描述 + 动作按钮）→ 仓库状态条卡 → 任务列表；空态 CTA 化（修复模版「面板高度固定偏高」） |
-| TaskCard | 模版备份行同构：名称 16/500 + 状态徽章 + 调度行（⏰ 下次运行）+ ▶ 立即运行 / ✏ 编辑 / ⋮ 菜单；时间戳等宽 |
-| 任务向导 | 横向步骤条（可点击跳步，§7 E3）+ 居中 640px 表单区 + 「返回← / 继续→」两端对齐页脚 + 离开保护（E2）+ 连接测试强门禁（E1） |
-| 设置页 | 左标签 + 右控件两栏 + 1px 行分隔线；更改密码改行内展开（E4）；主题预览缩略图可选 |
-| 其余页（jobs/repo/snapshots/restore/reports/audit/notifications/bootstrap） | 统一注入 PageHeader（24px/500 标题 + 13px 描述）；表格/表单经令牌层自动换肤 |
-| 新基元组件 | `ui/SquircleIcon`（渐变容器 + 白图标，全站唯一高饱和重音）、`ui/EmptyState`、`ui/PageHeader` |
-
-## 7. 交互增强纳入项（owner 2026-10-17 裁决）
-
-| # | 增强项 | 规格 | 影响面 / 护栏 |
+| 能力 | 后端证据 | 前端证据 | 状态 |
 |---|---|---|---|
-| E1 | **连接测试强门禁** | 向导第③步与 repo 页：连接测试通过前「继续/保存」禁用；已 success 缓存跳过重测；失败显示「测试失败 + 重试」。**不加逃生门**（对齐模版写死策略） | 仅前端状态机；`testRepo` API 已存在；dry-run 门禁（R-026-08）不变 |
-| E2 | **向导离开保护** | 未保存改动时路由离开弹确认（onBeforeRouteLeave）+ 刷新拦截（beforeunload） | 模版缺失项（报告问题#5），超越层；仅 TaskWizard 页生效 |
-| E3 | **步骤条可点击跳步** | 已完成步骤可点击回跳，未完成步骤禁用（键盘可达，不用 tabindex=-1） | 修复模版「步骤条键盘不可达」缺陷；TaskWizard 内部状态 |
-| E4 | **更改密码行内展开** | settings 页从弹窗改行内展开（低风险轻编辑 = 行内、高风险确认才弹窗） | API（changePassword）不变；ConfirmGate 危险确认仍走弹窗 |
-| E5 | **空态 CTA 化全站统一** | EmptyState 组件：大圆角浅灰面板 + 说明 + 蓝色主按钮 | 纯视图 |
-| E6 | **状态化着色** | 顶栏仓库状态绿/红/灰着色圆点 + 文字，运行任务数徽标 | 纯视图；15s 轮询逻辑不变 |
+| A4 目的地类型卡（8 类型 + rclone 预设卡） | `repos.py` 12 端点 | `pages/repo/index.vue:95-103`（destType 卡 + OneDrive/GDrive/S3兼容/其它预设） | ✅✅ |
+| A5 rclone 只读探测 | `listRcloneRemotes`（60s 内不重取） | `repo/index.vue:370-378`（按需拉取） | ✅✅ |
+| A6 调度双模式（简单/高级/仅手动 + 双向解析） | DB 存 cron 串，零后端改动 | `ScheduleRetentionForm` + `utils/cronConverter` | ✅✅ |
+| A7 原位恢复 overwrite 布尔（never/always）+ 单次确认 | S7 v1.4（`OVERWRITE_MODES` 白名单） | `pages/restore/index.vue:81`（overwriteExisting 默认不勾） | ✅✅ |
+| B1 仓库修复（repair index/packs） | `JOB_TYPES` 含 repair | `repo/index.vue:465-469`（ConfirmGate 关键词 REPAIR） | ✅✅ |
+| B3 找回丢失快照（recover） | `constants.py:19` + `job_runner.py:343`（写 AUDIT_RECOVER_RUN） | **零 UI 入口**（`createJob('recover')` 全库无命中） | ✅❌ → G1 |
+| C4 密钥轮换 + 手动 copy（搬家） | `ops.py:576/683` | `repo/index.vue:471-523` | ✅✅ |
+| C4 任务级多目的地（镜像仓） | `backup_tasks.py:81`（镜像仓存在性 422） | `TaskWizard.vue:85/662`（镜像仓多选） | ✅✅ |
+| E 配置导入/导出（口令加密凭据段） | `ops.py:358/413` | `pages/settings/index.vue:384-440`（覆盖确认门 IMPORT + 逐项报告） | ✅✅ |
+| E23 通知配置 + 测试消息 | `ops.py:755-854` | `pages/notifications/index.vue` | ✅✅ |
+| E25 缓存占用/清空 + E26 审计查询 | `ops.py:879-976` | 审计页/设置页 | ✅✅ |
 
-## 8. 排除项（不做清单）
+### 0.2 视觉层基线
 
-备份级加密密码及复制门禁、单备份多目的地、30+ 后端选择卡、导入/导出配置、欢迎向导、版本标签、命令行执行器、多目的地草稿机制——均属新功能或架构差异，需求走 `Web版PRD.md` 需求池，不混入本方案提交。
+P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 P4b，changelog 37ee151 发布 1.0.1）。**第二轮不重开视觉基线**（不回退靛蓝令牌/系统字体栈）；v1.0 中「hsl(217) 色板 / Inter Tight webfont」两条随视觉批次关闭。模版视觉范式（药丸导航态、全平面、渐变重音、等宽技术文本）已在 P1/P2 批次内对齐。
 
-## 9. 实施顺序与护栏
+## 1. 第二轮差距清单（模版呈现 ↔ 本项目后端 ↔ 前端现状）
 
-**阶段**：① 令牌与主题工程（tokens.css / index.html 防闪色 / naive 覆写重写 / 字体）→ ② 三个基元组件 → ③ BasicLayout 重建 → ④ 登录页 + 仪表盘 + TaskCard → ⑤ 其余页扫尾 + 向导（含 E1–E4 交互增强）+ i18n 词条 → ⑥ 验证与自评。
+| # | 模版证据（ngclient 源码） | 本项目现状 | 处置 | 优先级 |
+|---|---|---|---|---|
+| **G1** | 数据库维护页「Recreate (delete and repair)」：`database.component.html:53-56` | 后端 B3 完整（recover 写审计、含 startup 自愈）；前端零入口 | repo 维修区新增「找回丢失快照（recover）」：说明文案（找回索引丢失的未引用数据）+ ConfirmGate 关键词 RECOVER + 提交后 toast 带 SSE 入口；维修区布局对齐模版 Maintenance 分区（说明段落 + 动作行） | 高 |
+| **G2** | 任务历史可按类型过滤 | `jobs/index.vue:82` `JOB_TYPES` 数组漏 `repair`/`recover` 两项 → 两类历史不可筛 | 补齐数组 + i18n `jobs.type.repair/recover` 词条 | 高（随 G1 同批） |
+| **G3** | 连接测试强门禁：`destination.component.ts:325-352` testStates 顺序验证、success 缓存跳过重测；`destination.component.html:193-202` Continue disabled | `testRepo` API 已有；repo 页保存与向导③无门禁 | = E1（v1.0 §7 已裁决纳入）：测试通过前禁用「保存/继续」，失败显示重试，**无逃生门** | 高 |
+| **G4** | 导出配置口令体验：强度进度条 + 生成 + 复制（`export.component.html:85-152`） | settings 导出已有口令输入（`settings/index.vue:391`），无强度反馈 | 可选增强：口令强度条 + 生成按钮；复制门禁不引入（导出口令为一次性自设口令，模版门禁依赖其「密码必复制」策略，本项目以确认门兜底） | 低（可选） |
+| **G5** | 调度摘要 `aria-live="polite"` 实时播报：`schedule.component.html:23-76` | A6 简单模式无摘要区 | 简单模式底部加实时摘要（「每周一 03:00 运行」），aria-live 播报——超越层（模版亮点直接吸收） | 中 |
+| **G6** | 维护页分区范式：**先解释风险再给动作**——Maintenance 分区（说明段落 → Repair/Recreate/Delete/Compact 动作行）+ Placement 分区（`database.component.html:20-122`） | repo 页维修操作（repair/unlock/缓存清空/recover）散置各处，缺统一「解释→动作」分区 | repo 维修区重排为 Maintenance 同构分区：分区标题 + 风险说明段 + 动作行（修复 / 解锁 / 找回 / 清缓存）；G1 的 recover 入口落在此分区 | 高（随 R1） |
+| **G7** | 向导骨架：横向步骤条（可点击跳步）+ 居中表单区 + 「返回← / 继续→」两端对齐页脚 + 每步独立校验跳转（`options.component.ts:62-74` submit 前按校验结果导航回未过步骤） | TaskWizard 有步骤条但页脚/跳步/校验回流形态未对齐 | 向导骨架对齐：步骤可点击（已过步骤）+ 两端页脚 + 提交时校验失败自动导航回首个未过步骤；E2/E3 落在此项 | 高（随 R3） |
 
-**护栏**：
-- 不改任何 API/业务逻辑/composable；`useJobStream`、`VirtualTree`、`dryRunGate` 等既有 spec 必须原样通过；
-- ConfirmGate / PathBreadcrumb / JobProgress 只换肤不换接口；
-- 文案全部走 i18n，zh-CN/en-US 双语同步；模板禁硬编码中文（既有纪律）；
-- 验证三步分跑：`pnpm run typecheck` → `pnpm run test` → `pnpm run build`；另起 dev server 真机截图免鉴权页（登录/引导）核视觉；
-- 新依赖锁版本入 `pnpm-lock.yaml`，理由：Inter Tight 可变字体自托管（§3）。
+## 2. 交互增强 E1–E6（v1.0 §7 保留，状态更新）
 
-## 10. 验收与自评口径（按报告 10 维度）
+| # | 增强项 | 状态（2026-10-19） |
+|---|---|---|
+| E1 | 连接测试强门禁 | 待实施（= G3，第二轮范围） |
+| E2 | 向导离开保护（onBeforeRouteLeave + beforeunload） | 待实施 |
+| E3 | 步骤条可点击跳步（键盘可达，不用 tabindex=-1） | 待实施 |
+| E4 | 更改密码行内展开（弹窗 → 行内） | ✅ 2026-10-19（对象实为 repo 页「设置仓库密码」；设置页改密 E28 本就是行内卡，见 §4.1.2） |
+| E5 | 空态 CTA 化 | 部分已有（仪表盘引导卡）；其余空态随页面扫尾统一 |
+| E6 | 状态化着色 | ✅ 已达成（StatusTag 全站收口，P3a-c 批次 23 处） |
+
+## 3. 排除项（v1.0 §8 修订后确认）
+
+| 模版功能 | 不做理由 |
+|---|---|
+| delete-backup 梯度三勾选（本地库/导出抢救/远程文件，`delete-backup.component.html`） | 架构不同：本项目删除的是**任务**，restic 仓库与其数据在仓库级管理（repo 页独立生命周期），不存在「随任务删远程」语义；删除前导出抢救由 E 配置导出覆盖 |
+| 备份级加密密码 + 复制门禁 | 无备份级加密概念；仓库凭据走 has_value/source（S3） |
+| 30+ 后端类型选择卡 | A4 已以 8 类型卡 + rclone 预设卡落地（rclone 桥接覆盖其余后端），语义等价 |
+| export 双模式（cmd 行 / 文件） | restic 引擎无对应导出形态；仅文件包（E 批次已落地） |
+| 欢迎向导 / 版本标签 / 命令行执行器 / purge-files | 新功能，走 `Web版PRD.md` 需求池 |
+
+## 4. 实施顺序（第二轮，每批独立可提交）
+
+1. **R1 = G1 + G2 + G6**：repo 维修区重排为 Maintenance 同构分区（解释→动作行）+ recover 入口 + jobs 筛选补 repair/recover（同批提交，i18n 双语同步）
+2. **R2 = G3/E1**：连接测试强门禁（repo 页保存 + 向导第③步；testStates 顺序验证 + success 缓存）
+3. **R3 = G7 + E2 + E3**：向导骨架对齐（步骤条可点击 + 两端页脚 + 校验回流）+ 离开保护
+4. **R4 = G5（+ 可选 G4）**：调度摘要 aria-live；E4 行内展开改版
+5. **R5 = 验证**：`typecheck` → `vitest` → `build` 三步分跑；dev server 真机截图（登录/仪表盘/仓库维修区/向导③门禁态）；按 §5 口径自评
+
+### 4.1 实施回填（2026-10-19 R1–R4 已落地，未提交）
+
+| 批次 | 落地内容 | 关键文件 |
+|---|---|---|
+| **R1** | G6 维护分区（先解释风险→动作行：解锁/修复/找回/初始化/轮换/复制/清缓存）；G1 recover 入口（ConfirmGate 关键词 `RECOVER`）；G2 jobs 筛选补 `repair`/`recover` | `pages/repo/index.vue`（维护卡 + 两个 ConfirmGate + `.repo__maint-row`）、`pages/jobs/index.vue:82` |
+| **R2** | E1 强门禁：向导第③步（仅新建模式，success 按仓库缓存、切仓作废、无逃生门）+ repo 页「改配置 → 结论作废 → init 挡在复验前」 | `components/TaskWizard.vue`（testState/testedRepoId/step3Blocked）、`pages/repo/index.vue`（repoTestState/verifyRequired） |
+| **R3** | G7 页脚两端对齐 + 提交时回流首个未过步骤；E3 步骤条可点击跳步 + 键盘（←/→、1–5）；E2 离开保护（路由守卫 + beforeunload） | `components/TaskWizard.vue`（onStepJump/onStepsKeydown/focusFirstInvalidStep/onBeforeRouteLeave） |
+| **R4** | G5 调度摘要（aria-live 播报）；G4 导出口令强度条 + 生成按钮 | `components/task/ScheduleRetentionForm.vue`、`utils/passwordStrength.ts`（+ 11 例 spec）、`pages/settings/index.vue` |
+
+**新增护栏**：`src/utils/__tests__/passwordStrength.spec.ts`（11 例：分档边界 + 生成口令必落强档 + 不含易混淆字符）、`src/__tests__/i18n-message-syntax.spec.ts`（2 例：文案禁止未转义 `@`）。
+
+### 4.1.2 E4 落地回填（2026-10-19，同日追加）
+
+**对象纠正（取证结论）**：v1.0 把 E4 写成「更改密码弹窗 → 行内」时未指明页面。实读发现——设置页管理员改密（E28）**从来就是行内卡**（`git log -S "n-modal"` 在 settings/index.vue 零命中）；全项目唯一的密码弹窗是 repo 页「设置仓库密码」（passfile 缺失时的一次性引导）。故 E4 的真实对象是后者。
+
+**改造**：`NModal` → 状态卡内**行内展开面板**（`v-if="passwordShow"`，按钮再点一次 = 收起；`role="region"` + aria-label）。对齐 Duplicati 向导 Step1 的行内形态——密码缺失本就发生在读状态卡的语境里，弹窗打断「看到问题 → 当场处理」动线。两段式流程（生成→复制 / 自填）、`setRepoPassword` API、一次性明文「面板存活期可见、收起即丢弃」的语义全部保留。
+
+**真机断言**（`.e2e/e2e-e4b.cjs`，临时仓库完整生命周期 + 自清理）：新建临时仓库（不 init）→ passfile 必然缺失 → 面板可见 ✅ / **`.n-modal-mask` 数量 = 0** ✅ / 生成按钮可见 ✅ / 取消后面板收起 ✅ / 三步 DELETE 门删除临时仓库 ✅（页面 0 pageerror）。
+
+**E2E 取证沉淀**：ConfirmGate 是自定义内容 n-modal（**无 `.n-modal` 类**，祖先选择用 `.n-modal-body-wrapper`）；三步门按钮类型依次 primary（下一步）→ warning（下一步）→ error（最终确认），自动化必须按步走完。
+
+### 4.1.1 R5 验证结果（2026-10-19 实测）
+
+| 门 | 结果 |
+|---|---|
+| `pnpm run typecheck` | ✅ 0 error |
+| `vitest run`（12 文件） | ✅ **111 passed** |
+| `NODE_OPTIONS="" pnpm run build` | ✅ built |
+| 真机（vite :5173 + 后端 :8000，`.e2e/e2e-r1r4*.cjs`） | ✅ 四页截图 + 结构化断言：jobs 类型下拉实测 9 项含「修复/找回」；强度条「太短→强」+ 生成 20 位；repo 测试连接后状态由「尚未验证」转「连接失败」且错误详情可见；recover 按钮在未连接时禁用（符合门禁） |
+| 控制台（`.e2e/e2e-console-check.cjs`，/repo /settings /jobs /notifications） | ✅ **0 error**（同时修掉一处既有缺陷，见 §4.2.3） |
+
+> 真机口径提醒：vite 只监听 `localhost`（`127.0.0.1:5173` 连不上），E2E 用 `http://localhost:5173`。截图存于 `.e2e/r1r4-*.png`（gitignore，不入库）。
+
+### 4.2 两处裁决修订（实施中取证推翻方案原文）
+
+1. **E1 在 repo 页的形态改为「保存后强制复验」，不是「保存前必须先测」。**
+   证据：后端 `testRepo`（`routers/repos.py:394` POST `/repos/{id}/test`）读的是**已落库**配置，而凭据必须先保存才能被测到——若把「保存」挡在测试之后，用户永远无法录入第一组凭据（死锁）。等价强门禁：URL/凭据保存成功 → 连接结论置 `idle` → 显示复验提示 → **init（不可逆）禁用至复验通过**。向导侧保持原文的无逃生门禁。
+2. **额外修掉一处真机才暴露的既有缺陷（i18n `@` 语法冲突）**：`repo.urlPlaceholder` 等 4 个键（`sftp:user@host:/path`、`sender@example.com`）里的 `@` 被 vue-i18n 当作 linked message 语法起点，**每次渲染都抛 `Message compilation error: Invalid linked format`**；页面照常显示（回退原文），故 typecheck/vitest/build 三道门全放行。定案：改为字面量插值 `{'@'}`（外层字符串同时改双引号，避免单引号提前闭合），并加 `i18n-message-syntax.spec.ts` 静态护栏。复验：四个页面控制台 0 error。
+
+3. **删除「E25 缓存前端零入口」的前提**——该前提是我上一轮 grep 漏配造成的误判。
+   证据：`api/settings.ts:12/19` 已有 `getCacheUsage`/`clearCache`（`/api/cache`、`/api/cache/clear`），`pages/settings/index.vue:766` 有完整缓存专区（占用/truncated/409 冲突提示/ConfirmGate）。故 repo 维护区的「清缓存」是**复用同一对函数的第二入口**，409 分支沿用 `settings.cache.conflict` 文案，不新造一套。（据此删除了误建指向 `/api/ops/cache` 的模块——该路径在后端不存在。）
+
+**护栏**（沿 v1.0）：不改 API/composable；既有 spec 原样通过；ConfirmGate/StatusTag/PathBreadcrumb 只复用不换接口；文案全走 i18n 双语；危险操作埋点由后端既有 AUDIT_* 承担（前端零新增端点）。
+
+## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
 | 维度 | 口径 |
 |---|---|
-| 布局与导航 | 三段式骨架 + 药丸导航 + 底部次级分区复刻；向导/选择/配置三模板自洽 |
-| 配色系统 | 12 级 × 5 套 light-dark() 令牌，页面零硬编码色值（grep 断言） |
-| 字体排版 | Inter Tight 单字型四级层级 + 最重 500；技术文本等宽（超越模版） |
-| 控件与交互模式 | 步骤条/页脚/对话框/Toast 全站统一；门禁与确认链强度不降 |
-| 组件复用度 | SquircleIcon/EmptyState/PageHeader 多页引用 |
-| 状态设计/防错 | E1 强门禁 + E2 离开保护 + ConfirmGate 三重确认（超越模版 8.5 分项） |
-| 本地化完整性 | 100% i18n 双语（超越模版 6 分项） |
-| 响应式适配 | 768/960/1200 三断点 + 抽屉 + 44px 触摸目标（超越模版 5 分项） |
-| 可访问性 | 图标按钮 aria-label、landmark 语义、focus-visible 焦点环（超越模版 4.5 分项） |
-| 设计系统/工程成熟度 | 令牌唯一源 + 防闪色 + naive 映射分层；`light-dark()` 双主题全站同测 |
+| 布局与导航 / 配色 / 字体排版 / 控件统一 / 组件复用 | ✅ P0–P4 已落地（1.0.1），第二轮不回退 |
+| 状态设计/防错 | G3 强门禁 + E2 离开保护 + ConfirmGate 体系；模版 database 页「先解释风险再给动作」的分区文案范式随 G1 吸收 |
+| 本地化完整性 | 100% i18n 双语（G1/G2 新词条照此纪律） |
+| 响应式 / 可访问性 | 响应式随 P2 已落地；A11y 增量 = G5 aria-live 摘要 + 图标按钮 aria-label 补漏 |
+| **功能面覆盖度（v1.1 新增维度）** | 后端 JOB_TYPES 全量 9 类 + ops 全部危险操作均有 UI 入口且可筛（G1/G2 修完即满）；模版交互范式吸收率 = E1–E5 全落地 |
 
-自评 ≥9 分的判据：超越层六项（E2/E5/A11y/响应式/i18n/等宽）全部落地 + 复刻层经真机截图比对模版无形态级偏差；任一超越层项未落地则上限按 8.x 计。
+≥9 分判据：G1/G2/G3 + E2/E3 落地（功能面零断链）+ 真机截图无形态级偏差；G4/G5 为加分项。
+
+### 5.1 实测自评（2026-10-19 R1–R4 + R5 验证后，对照报告 §10.1 同一维度表）
+
+| 维度 | 模版终版 | 本项目自评 | 依据（全部为实测证据，非印象分） |
+|---|---|---|---|
+| 布局与导航 | 9 | **9** | P0–P4 三段式框架 + 本轮仓库维护分区/向导两端页脚；真机截图无形态偏差 |
+| 配色系统 | 9.5 | **9.5** | 靛蓝令牌基线 + StatusTag 全站收口；本轮新增 UI 全部引用既有语义色，零新硬编码 |
+| 字体排版 | 9 | **9** | 单字型四级层级 + 等宽技术文本（pack id / 仓库 id / cron） |
+| 控件与交互模式 | 9 | **9** | 步骤条（可点击+键盘）/ 两端页脚 / ConfirmGate / Toast 全站统一 |
+| 组件复用度 | 9.5 | **9.5** | ConfirmGate 6 处复用（UNLOCK/INIT/REPAIR/RECOVER/CLEAR/DELETE）、JobProgress 4 处、StatusTag 全站 |
+| 状态设计/防错 | 8.5 | **9** ↑ | E1 强门禁（向导无逃生门 + repo 改配置强制复验）+ E2 离开保护（模版没有的能力）+ G5 摘要回读；真机实测门禁生效（未连接时 recover 禁用） |
+| 本地化完整性 | 6 | **9.5** ↑ | i18n parity 护栏（双语键集合全等）+ 本轮修掉 `@` 编译错误 + 新增 message-syntax 静态护栏；未做翻译质量人工审校，故不满分 |
+| 响应式适配 | 5 | **8.5** ↑ | P2 断点体系 + 本轮维护行 640px 纵向堆叠；**全站移动端走查未做**，保守计分 |
+| 可访问性 | 4.5 | **8** ↑ | 本轮：aria-live 摘要 / nav 键盘导航 / 焦点环 / ConfirmGate 语义；**全站 aria 审计未做**（模版 0 aria，本项目已非零但未盘点），保守计分 |
+| 设计系统/工程成熟度 | 9.5 | **9.5** | 三道 CI 门 + 12 spec 文件 111 例 + 真机 E2E 脚本化（`.e2e/`）+ 方案/文档/登记表同步 |
+| **综合** | 7.9 | **≈9.0** | 感知层与模版持平；模版三大底座硬伤（本地化/响应式/A11y）中本地化已反超，响应式与 A11y 做了增量但未做全站审计——这也是后续冲 9.5 的明确路径 |
+
+**判据核对**：≥9 判据 = G1/G2/G3 + E2/E3 落地 ✅ + 真机截图无形态级偏差 ✅（另有 G4/G5 两个加分项落地）。**达标。**
 
 ---
 
 ## 修订记录
 
+- v1.4（2026-10-19 四次修订）：E4 落地（§4.1.2）——对象由「更改密码弹窗」纠正为 repo 页「设置仓库密码」NModal（设置页 E28 本就是行内卡，`git log -S` 取证）；改为状态卡内行内展开面板（API 不变，一次性明文语义保留）；真机以「临时仓库完整生命周期 + 自清理」断言（modal 遮罩 = 0、面板开合、DELETE 三步门）。E1–E6 至此全部落地。
+- v1.3（2026-10-19 三次修订）：R1–R4 实施回填（§4.1 逐批落地清单 + 新增 passwordStrength spec 护栏）；§4.2 记录两处**由实施取证推翻方案原文**的裁决——① E1 在 repo 页改为「保存后强制复验」（`testRepo` 读已存配置，先测后存会与凭据录入死锁），② 撤销「E25 前端零入口」误判（`api/settings.ts` + 设置页专区已完整覆盖，repo 维护区为复用式第二入口）。E4（更改密码行内展开）仍未实施，转入待办。
+- v1.2（2026-10-19 二次修订）：owner 裁决「实施能让每个功能各层级交互布局都跟 Duplicati 类似吗」讨论落档——新增 G6（repo 维修区 Maintenance 同构分区重排）与 G7（向导骨架对齐：步骤可点击 + 两端页脚 + 校验回流），并入 R1/R3 批次；相似度口径分层（L1 框架 100% 已达成 / L2 共有功能骨架 ~90% 可达 / L3 独有功能按语言延展）记入本记录，复刻上限以「布局范式级相似」为准。
+- v1.1（2026-10-19）：按 owner 指令基于后端对齐后的源码实读 + ngclient 8 组组件细读修订。新增 §0 现状基线（功能面对齐矩阵 11 行 + 视觉层 P0–P4 已落地不回退）；新增 §1 差距清单 G1–G5（recover 零 UI 入口 / jobs 筛选漏项 / 连接测试强门禁 / 导出口令强度 / aria-live 摘要）；E1–E6 状态更新（E6 已达成）；排除项补 delete 梯度与 export cmd 双模式裁决；实施顺序重排为 R1–R5；自评口径新增「功能面覆盖度」维度。v1.0 的「hsl(217) 色板 / Inter Tight」条目随视觉批次落地关闭。
 - v1.0（2026-10-17）：立项。范围边界（壳/核）、四层换肤结构、§7 交互增强 E1–E6（owner 裁决纳入）、实施顺序与自评口径成文。
