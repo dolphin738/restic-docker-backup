@@ -92,6 +92,7 @@ export default {
       unknown: 'Repo status unknown',
     },
     runningJobs: '{n} job(s) running',
+    openMenu: 'Open navigation menu',
   },
   login: {
     title: 'Sign in',

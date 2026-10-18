@@ -303,7 +303,7 @@ async function onLogout(): Promise<void> {
         <!-- 左 · 上下文区：页面标题（仓库切换等全局态移右区，§4.3） -->
         <n-space class="header__left" align="center" :size="12" wrap>
           <!-- 移动态菜单入口：汉堡按钮滑出抽屉 -->
-          <n-button v-if="isMobile" quaternary size="small" @click="drawerShow = true">
+          <n-button v-if="isMobile" quaternary size="small" :aria-label="t('header.openMenu')" @click="drawerShow = true">
             <n-icon :size="20"><IconMenu /></n-icon>
           </n-button>
           <n-text strong class="header__title">

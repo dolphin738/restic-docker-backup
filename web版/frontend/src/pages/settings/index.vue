@@ -587,7 +587,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
         </n-alert>
         <n-form label-placement="top" class="settings__form">
           <n-space align="center" :size="8">
-            <n-switch v-model:value="dumpEnabled" size="small" />
+            <n-switch v-model:value="dumpEnabled" size="small" :aria-label="t('settings.dump.enabled')" />
             <n-text>{{ t('settings.dump.enabled') }}</n-text>
           </n-space>
           <n-form-item :label="t('settings.dump.type')">
@@ -671,21 +671,21 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
           <n-space vertical :size="12">
             <n-space vertical :size="2">
               <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorAutoInit" size="small" />
+                <n-switch v-model:value="behaviorAutoInit" size="small" :aria-label="t('settings.behavior.autoInit')" />
                 <n-text>{{ t('settings.behavior.autoInit') }}</n-text>
               </n-space>
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoInitHint') }}</n-text>
             </n-space>
             <n-space vertical :size="2">
               <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorAutoUnlock" size="small" />
+                <n-switch v-model:value="behaviorAutoUnlock" size="small" :aria-label="t('settings.behavior.autoUnlock')" />
                 <n-text>{{ t('settings.behavior.autoUnlock') }}</n-text>
               </n-space>
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoUnlockHint') }}</n-text>
             </n-space>
             <n-space vertical :size="2">
               <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorCheckEnabled" size="small" />
+                <n-switch v-model:value="behaviorCheckEnabled" size="small" :aria-label="t('settings.behavior.checkEnabled')" />
                 <n-text>{{ t('settings.behavior.checkEnabled') }}</n-text>
               </n-space>
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.checkEnabledHint') }}</n-text>
@@ -745,6 +745,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
         <n-space align="center" :size="8">
           <n-switch
             :value="credEncryption"
+            :aria-label="t('settings.credential.enabled')"
             size="small"
             :loading="savingCredEncryption"
             :disabled="!credEncryptionAvailable"

@@ -747,7 +747,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
 
           <n-space align="center" :size="8">
-            <n-switch v-model:value="form.enabled" size="small" />
+            <n-switch v-model:value="form.enabled" size="small" :aria-label="t('wizard.enabled')" />
             <n-text depth="3">{{ t('wizard.enabled') }}</n-text>
           </n-space>
 

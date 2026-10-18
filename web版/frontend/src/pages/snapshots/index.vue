@@ -446,7 +446,7 @@ async function applyTag(): Promise<void> {
             :placeholder="t('snapshot.forget.keepTags')"
           />
           <n-space align="center" :size="6" :wrap="false">
-            <n-switch v-model:value="forgetPrune" size="small" />
+            <n-switch v-model:value="forgetPrune" size="small" :aria-label="t('snapshot.forget.prune')" />
             <n-text depth="2" class="snapshots__forget-note">{{ t('snapshot.forget.prune') }}</n-text>
           </n-space>
           <n-button

@@ -260,14 +260,14 @@ async function runTest(): Promise<void> {
 
           <n-form-item :label="t('notify.mailRedact')">
             <n-space align="center" :size="8">
-              <n-switch v-model:value="mailRedact" size="small" />
+              <n-switch v-model:value="mailRedact" size="small" :aria-label="t('notify.redactHint')" />
               <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
             </n-space>
           </n-form-item>
 
           <n-form-item :label="t('notify.onSuccess')">
             <n-space align="center" :size="8">
-              <n-switch v-model:value="onSuccess" size="small" />
+              <n-switch v-model:value="onSuccess" size="small" :aria-label="t('notify.onSuccessHint')" />
               <n-text depth="3" class="notify__hint">{{ t('notify.onSuccessHint') }}</n-text>
             </n-space>
           </n-form-item>
@@ -281,14 +281,14 @@ async function runTest(): Promise<void> {
 
           <n-form-item :label="t('notify.webhookRedact')">
             <n-space align="center" :size="8">
-              <n-switch v-model:value="webhookRedact" size="small" />
+              <n-switch v-model:value="webhookRedact" size="small" :aria-label="t('notify.redactHint')" />
               <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
             </n-space>
           </n-form-item>
 
           <n-form-item :label="t('notify.meowRedact')">
             <n-space align="center" :size="8">
-              <n-switch v-model:value="meowRedact" size="small" />
+              <n-switch v-model:value="meowRedact" size="small" :aria-label="t('notify.redactHint')" />
               <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
             </n-space>
           </n-form-item>

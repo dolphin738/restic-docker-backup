@@ -93,6 +93,7 @@ export default {
       unknown: '仓库状态未知',
     },
     runningJobs: '{n} 个任务进行中',
+    openMenu: '打开导航菜单',
   },
   login: {
     title: '登录',
