@@ -70,7 +70,7 @@ export default {
     mailPassword: 'SMTP 密码',
     mailPasswordPlaceholder: '邮箱密码或授权码',
     mailFrom: '发件人',
-    mailFromPlaceholder: 'sender@example.com',
+    mailFromPlaceholder: "sender{'@'}example.com",
     mailTo: '收件人',
     mailToPlaceholder: '多个收件人用逗号分隔',
     mailSecurity: '加密方式',
@@ -256,6 +256,24 @@ export default {
     testConnection: '测试连接',
     testOk: '连接正常（{n} ms）',
     testFail: '连接失败',
+    // G3/E1 连接测试强门禁（对齐 Duplicati destination.component.ts 顺序验证，无逃生门）
+    testPending: '尚未验证',
+    testRequired: '请先点「测试连接」并验证通过，才能进入下一步。',
+    // G5 调度摘要（aria-live 实时播报，吸收 Duplicati schedule.component.html:23 的摘要范式）
+    scheduleSummary: '运行计划',
+    summaryManual: '不自动调度，仅手动触发',
+    summaryCron: 'cron 表达式：{cron}',
+    summaryHourly: '每小时的第 {minute} 分运行',
+    summaryEveryNHours: '每 {n} 小时的第 {minute} 分运行',
+    summaryDaily: '每天 {time} 运行',
+    summaryEveryNDays: '每 {n} 天的 {time} 运行',
+    summaryWeekly: '每周 {days} 的 {time} 运行',
+    summaryMonthly: '每月 {days} 日的 {time} 运行',
+    summaryYearly: '每年 {month} 月 {days} 日的 {time} 运行',
+    summaryNoDay: '（未选择具体日期）',
+    // E2 离开保护 + E3 步骤条可达（G7 骨架对齐）
+    stepsNavLabel: '向导步骤导航（←/→ 翻步，数字键 1–5 直达）',
+    leaveConfirm: '有未保存的修改，确定离开当前向导吗？',
     // C1 任务级前后钩子 + C3 失败重试
     retryCount: '失败重试次数',
     retryHint: '调度触发失败后自动重试的最大次数（0 = 不重试）',
@@ -379,8 +397,8 @@ export default {
     typeRclone: 'rclone（万能后端）',
     typeReadonlyNote: '只读派生键：由服务端根据仓库地址自动维护，不可直接修改',
     url: '仓库地址',
-    urlPlaceholder: '如 /backup/repo、s3:…、b2:…、sftp:user@host:/path、gs:bucket:/、rclone:remote:path',
-    urlHintSftp: 'sftp 地址形如 sftp:user@host:/srv/repo。restic 经系统 ssh 免密登录（不支持密码）——请按部署指南把 SSH 私钥与 known_hosts 挂载进容器。',
+    urlPlaceholder: "如 /backup/repo、s3:…、b2:…、sftp:user{'@'}host:/path、gs:bucket:/、rclone:remote:path",
+    urlHintSftp: "sftp 地址形如 sftp:user{'@'}host:/srv/repo。restic 经系统 ssh 免密登录（不支持密码）——请按部署指南把 SSH 私钥与 known_hosts 挂载进容器。",
     urlHintRclone: 'rclone 地址形如 rclone:远端名:路径（如 rclone:myremote:mybucket/restic）。远端在宿主机 rclone config 中配置、conf 挂载进容器；界面只读探测可用远端，不生成、不编辑、不展示凭据。',
     rcloneConfOk: 'rclone 配置已就绪，可用远端：{list}',
     rcloneConfMissing: '未检测到 rclone 配置文件：请在宿主机执行 rclone config 添加远端，并把 conf 挂载到容器（见部署指南）。',
@@ -405,7 +423,7 @@ export default {
       b2Placeholder: '如 b2:mybucket:/path',
       b2Note: 'Backblaze B2 对象存储；凭据在仓库配置页填写。',
       sftp: 'SFTP',
-      sftpPlaceholder: '如 sftp:user@host:/srv/repo',
+      sftpPlaceholder: "如 sftp:user{'@'}host:/srv/repo",
       sftpNote: 'SFTP 经系统 ssh 免密登录（不支持密码）；请按部署指南把 SSH 私钥与 known_hosts 挂载进容器。',
       azure: 'Azure Blob',
       azurePlaceholder: '如 azure:mycontainer:/path',
@@ -477,6 +495,34 @@ export default {
     repairTargetPacks: '修复损坏卷（repair packs）',
     repairSubmitted: '修复任务已提交，进度见下方卡片',
     repairJobTitle: '修复仓库任务',
+    // G6 维护分区（对齐 Duplicati Maintenance 范式：先解释风险，再给动作）
+    maintenanceTitle: '仓库维护',
+    maintenanceIntro:
+      '以下动作会改写仓库元数据、轮换密钥或删除本地缓存，仅在其他手段无法恢复时使用。执行期间请勿并发读写同一仓库；每个动作都会写入审计日志。',
+    unlockHint: '移除 restic 仓库锁；仅在确认没有任务正在运行时执行。',
+    rotateHint: '轮换仓库密码（restic key passwd）；旧密码立即作废，请确保新密码已备份。',
+    copyHint: '把快照增量复制到另一个仓库，用于搬家或建立异地副本。',
+    // B3 自愈：找回丢失快照（restic recover），G1 补齐前端入口
+    recoverBtn: '找回丢失快照',
+    recoverHint:
+      '当快照因索引条目丢失而不可见时使用；restic recover 会把孤立数据重新纳入索引。会改写仓库元数据，属不可逆维护动作。',
+    recoverDesc:
+      'recover 会扫描仓库中未被索引引用的数据并重新生成快照条目。该操作会改写仓库元数据，执行期间请勿并发读写。',
+    recoverPreview: '将以手动触发方式执行一次 restic recover，动作入审计日志（recover.run）。',
+    recoverSubmitted: '找回任务已提交，进度见下方卡片',
+    recoverJobTitle: '找回丢失快照任务',
+    // E25 本地缓存（此前前端零入口）
+    cacheBtn: '清空本地缓存',
+    cacheHint: '清空 restic 本地缓存目录（可安全重建）；有任务正在运行时后端会拒绝。',
+    cacheDesc: '将删除缓存目录下的全部内容，仅影响本地缓存，不触碰仓库数据。',
+    cachePreview: '清空后首次备份/校验需重新读取仓库，可能明显变慢。',
+    cacheUsage: '当前占用 {size}（{n} 项）',
+    cacheUnknown: '缓存占用未知',
+    // G3/E1 连接验证态（repo 页：改配置 → 结论作废 → 复验后才放行 init）
+    testPending: '尚未验证',
+    testVerified: '连接已验证',
+    verifyRequired: '配置已保存但尚未复验：请先点「测试连接」验证通过，再执行初始化等不可逆动作。',
+    initBlockedByUnverified: '配置已修改但未复验：请先点「测试连接」确认地址确实不可达，再初始化。',
     // R-023 多仓库管理
     switchPlaceholder: '切换仓库',
     manageTitle: '仓库管理',
@@ -595,6 +641,9 @@ export default {
       unlock: '解锁',
       init: '初始化',
       dump: '数据库导出',
+      // G2：后端 JOB_TYPES 白名单已有，此前筛选下拉缺这两类
+      repair: '修复',
+      recover: '找回',
     },
     status: {
       running: '运行中',
@@ -837,6 +886,14 @@ export default {
       title: '配置迁移（导入 / 导出）',
       desc: '把仓库清单、任务、通知配置与凭据打包成一个文件带走（凭据经导出口令加密，文件泄漏不含明文凭据）。备份数据本身不在导出范围。导入时同 id 仓库/同仓同名任务默认跳过并出报告；勾选覆盖则整体替换（不可逆）。',
       exportPassword: '导出口令（至少 10 位）',
+      // G4 口令强度条（强度只按长度与字符类别本地估算，不查字典、不上传）
+      generatePassword: '生成强随机口令',
+      strengthEmpty: '尚未输入口令',
+      strengthTooShort: '太短：至少 10 位（长度是决定因素）',
+      strength1: '弱：建议再加长度并混入大写、数字或符号',
+      strength2: '一般：再混入更多字符类别可显著提升',
+      strength3: '较强',
+      strength4: '强',
       exportBtn: '导出配置文件',
       exportOk: '已生成导出文件（凭据已加密）',
       pickFile: '选择导出文件…',
