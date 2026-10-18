@@ -47,6 +47,15 @@ const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'err
 const isActive = computed(() => props.task.status === 'running' || props.task.status === 'pending')
 const runningJobId = computed(() => props.task.running_job_id)
 
+/** P4「7 天未跑」提示（方案 §5.1：备份工具最高频的隐性焦虑）：
+ *  启用中的任务超过 7 天没有运行记录即标记（从未运行的任务由 status=never_run 徽章表达，不重复标记）。 */
+const stale = computed(() => {
+  if (!props.task.enabled || !props.task.last_run_at) {
+    return false
+  }
+  return Date.now() - new Date(props.task.last_run_at).getTime() > 7 * 24 * 60 * 60 * 1000
+})
+
 /** 上次运行：ISO 原始串收口为本地可读时间；无记录时回落「无」。 */
 const lastRunText = computed(() => formatDateTimeOr(props.task.last_run_at, t('common.none')))
 
@@ -100,6 +109,8 @@ function openLogs(): void {
         <n-text strong class="task-card__name">{{ task.name }}</n-text>
         <!-- P3a 收口为 StatusTag：圆点 + 文案，type 由 statusTagType 透传（同色同文案） -->
         <StatusTag :kind="statusTagType" :label="t(`task.status.${task.status}`)" />
+        <!-- P4：「7 天未跑」琥珀提示（启用中任务超 7 天无运行记录） -->
+        <StatusTag v-if="stale" kind="warning" :label="t('task.stale7d')" />
         <n-tooltip v-if="task.prune_due" trigger="hover">
           <template #trigger>
             <StatusTag kind="warning" :label="t('task.pruneDue')" />

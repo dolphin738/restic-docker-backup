@@ -718,7 +718,9 @@ function formatBytes(value: number): string {
     </n-card>
 
     <!-- 当前仓库配置（R-023） -->
-    <n-grid cols="1 1100:2" :x-gap="16" :y-gap="16" responsive="screen">
+    <!-- 响应式断点只能用命名档（s/m/l/xl/xxl）：naive 的 responsive="screen" 查询的是断点布尔集，
+         数字形式（如 "1100:2"）永不命中 → 永远单列（P4 实测修正，原写法静默失效）。 -->
+    <n-grid cols="1 l:2" :x-gap="16" :y-gap="16" responsive="screen">
       <n-gi>
         <n-card :title="t('repo.currentConfigTitle')" size="small">
           <n-space vertical :size="12">

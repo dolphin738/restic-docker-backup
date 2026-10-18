@@ -13,7 +13,6 @@ import {
   NGi,
   NGrid,
   NSpace,
-  NStatistic,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -28,8 +27,9 @@ import type { TaskCard as TaskCardModel } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
-import TierCard from '@/components/TierCard.vue'
+import { useCountUp } from '@/composables/useCountUp'
 import { useUiStore } from '@/stores/ui'
+import { formatDateTimeOr } from '@/utils/datetime'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -60,14 +60,29 @@ const repoError = computed(() => toText(repoQuery.error.value))
 const tasks = computed<TaskCardModel[]>(() => tasksQuery.data.value?.items ?? [])
 const tasksError = computed(() => toText(tasksQuery.error.value))
 
+// ---------------------------------------------------------------- KPI 状态带（P4：三卡合一）
+/** 运行用户档位（A0 后只按运行用户分档；与 TierCard 同口径，仪表盘以 KPI 单元格呈现）。 */
+const userKey = computed<'root' | 'nonRoot'>(() => (ui.me?.user === 'root' ? 'root' : 'nonRoot'))
+
+/** 最近一次成功备份：任务列表派生（无专用端点；§13.1 零后端改动）。 */
+const lastBackupText = computed(() => {
+  const successes = tasks.value.filter((task) => task.last_result === 'success' && task.last_run_at)
+  if (successes.length === 0) {
+    return t('common.none')
+  }
+  const latest = successes.reduce((a, b) => (a.last_run_at! > b.last_run_at! ? a : b))
+  return formatDateTimeOr(latest.last_run_at, t('common.none'))
+})
+
+/** count-up（§11 AB-2）：一次性；空值不动画，回落占位文案。 */
+const capacityBytes = computed(() => repoStatus.value?.capacity.size ?? null)
+const snapsCount = computed(() => repoStatus.value?.capacity.snaps ?? null)
+const capacityCount = useCountUp(computed(() => capacityBytes.value ?? 0))
+const snapsDisplay = useCountUp(computed(() => snapsCount.value ?? 0))
 const capacityText = computed(() =>
-  repoStatus.value?.capacity.size ? formatBytes(repoStatus.value.capacity.size) : t('common.none'),
+  capacityBytes.value === null ? t('common.none') : formatBytes(capacityCount.value),
 )
-const snapsText = computed(() =>
-  repoStatus.value?.capacity.snaps === null || repoStatus.value?.capacity.snaps === undefined
-    ? t('common.none')
-    : String(repoStatus.value.capacity.snaps),
-)
+const snapsText = computed(() => (snapsCount.value === null ? t('common.none') : String(snapsDisplay.value)))
 
 // ---------------------------------------------------------------- 虚拟滚动（固定卡片骨架）
 const CARD_HEIGHT = 260
@@ -187,63 +202,83 @@ async function onDeleteConfirmed(): Promise<void> {
 
 <template>
   <n-space vertical :size="16">
-    <n-grid cols="1 900:2" :x-gap="16" :y-gap="16" responsive="screen">
-      <!-- 仓库状态卡 -->
+    <!-- KPI 状态带（P4）：原「仓库状态卡 + 运行模式卡 + 2×NStatistic」三卡合一，
+         四格（仓库状态 / 快照数 / 运行模式 / 最近备份），窄屏 2×2。
+         任务卡虚拟滚动常量（CARD_HEIGHT 260 / ITEM_HEIGHT 272）不动。 -->
+    <!-- 响应式断点只能用命名档（s/m/l/xl/xxl）：naive 的 responsive="screen" 查询的是断点布尔集，
+         数字形式（原 "2 900:4"）永不命中 → 一直停在基础值 2 列（P4 实测修正）。 -->
+    <n-grid cols="2 l:4" :x-gap="12" :y-gap="12" responsive="screen">
+      <!-- ① 仓库状态：L3 三态（success/warning/error）+ 容量 -->
       <n-gi>
-        <n-card :title="t('dashboard.repoCard')" size="small">
-          <template #header-extra>
+        <n-card size="small" class="kpi">
+          <n-space justify="space-between" align="center">
+            <n-text depth="3" class="kpi__label">{{ t('dashboard.repoCard') }}</n-text>
             <n-button size="tiny" secondary :loading="repoLoading" @click="repoQuery.refetch()">
               {{ t('common.refresh') }}
             </n-button>
-          </template>
-
-          <n-space vertical :size="10">
-            <n-space align="center" :size="8">
-              <!-- L3（UI 方案）：未配置（warning）与连接失败（error）分色，不再同为一个红叉。
-                   P3c 收口为 StatusTag：三态条件链原样保留（success / warning / error） -->
-              <StatusTag
-                :kind="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
-                :label="
-                  repoStatus?.connected
-                    ? t('dashboard.repoConnected')
-                    : repoStatus?.configured === false
-                      ? t('dashboard.repoNotConfigured')
-                      : t('dashboard.repoDisconnected')
-                "
-              />
-              <StatusTag
-                :kind="repoStatus?.locked ? 'warning' : 'default'"
-                :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
-              />
-            </n-space>
-
-            <n-space :size="24">
-              <n-statistic :label="t('dashboard.repoCapacity')" :value="capacityText" />
-              <n-statistic :label="t('dashboard.repoSnapshots')" :value="snapsText" />
-            </n-space>
-
-            <n-alert
-              v-if="repoStatus?.last_error"
-              :type="repoStatus.configured === false ? 'warning' : 'error'"
-              :show-icon="false"
-            >
-              {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
-            </n-alert>
-
-            <n-alert v-if="repoError" type="error" :show-icon="false">
-              {{ t('dashboard.loadFailed', { message: repoError }) }}
-            </n-alert>
-
-            <n-text depth="3" class="dashboard__note">{{ t('dashboard.repoCacheNote') }}</n-text>
           </n-space>
+          <n-space align="center" :size="8" class="kpi__tags">
+            <StatusTag
+              :kind="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
+              :label="
+                repoStatus?.connected
+                  ? t('dashboard.repoConnected')
+                  : repoStatus?.configured === false
+                    ? t('dashboard.repoNotConfigured')
+                    : t('dashboard.repoDisconnected')
+              "
+            />
+            <StatusTag
+              :kind="repoStatus?.locked ? 'warning' : 'default'"
+              :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
+            />
+          </n-space>
+          <n-text depth="2" class="kpi__value tabular-nums">{{ capacityText }}</n-text>
+          <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCapacity') }}</n-text>
         </n-card>
       </n-gi>
 
-      <!-- 运行模式卡：只展示当前运行用户档位（A0 后 /host 挂载轴已随 host 模式删除） -->
+      <!-- ② 快照数：count-up（AB-2 一次性） -->
       <n-gi>
-        <TierCard :user="ui.me?.user ?? ''" />
+        <n-card size="small" class="kpi">
+          <n-text depth="3" class="kpi__label">{{ t('dashboard.repoSnapshots') }}</n-text>
+          <n-text class="kpi__num tabular-nums">{{ snapsText }}</n-text>
+          <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCacheNote') }}</n-text>
+        </n-card>
+      </n-gi>
+
+      <!-- ③ 运行模式（原 TierCard 内容并入；组件保留给任务向导） -->
+      <n-gi>
+        <n-card size="small" class="kpi">
+          <n-text depth="3" class="kpi__label">{{ t('tier.title') }}</n-text>
+          <n-text strong class="kpi__num">{{ t(`tier.name.${userKey}`) }}</n-text>
+          <n-text depth="3" class="kpi__sub">{{ t(`tier.user.${userKey}`) }}</n-text>
+        </n-card>
+      </n-gi>
+
+      <!-- ④ 最近备份：任务列表派生（零后端改动） -->
+      <n-gi>
+        <n-card size="small" class="kpi">
+          <n-text depth="3" class="kpi__label">{{ t('dashboard.lastBackup') }}</n-text>
+          <n-text strong class="kpi__value tabular-nums">{{ lastBackupText }}</n-text>
+          <n-text depth="3" class="kpi__sub">{{ t('dashboard.tasksAutoNote') }}</n-text>
+        </n-card>
       </n-gi>
     </n-grid>
+
+    <!-- 运行告警行（原状态卡内 alerts 上提为整宽） -->
+    <n-space vertical :size="8">
+      <n-alert
+        v-if="repoStatus?.last_error"
+        :type="repoStatus.configured === false ? 'warning' : 'error'"
+        :show-icon="false"
+      >
+        {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
+      </n-alert>
+      <n-alert v-if="repoError" type="error" :show-icon="false">
+        {{ t('dashboard.loadFailed', { message: repoError }) }}
+      </n-alert>
+    </n-space>
 
     <!-- 备份任务卡片列表（主内容） -->
     <n-card :title="t('task.card.title')" size="small">
@@ -301,6 +336,38 @@ async function onDeleteConfirmed(): Promise<void> {
 </template>
 
 <style scoped>
+/* KPI 状态带单元格（P4）：标签 12px 辅助 / 主值 20px / 大数字 28px（方案 §3.1 字号阶梯） */
+.kpi__label {
+  font-size: 12px;
+}
+
+.kpi__tags {
+  margin-top: 8px;
+  min-height: 22px;
+}
+
+.kpi__value {
+  display: block;
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.kpi__num {
+  display: block;
+  margin-top: 8px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.kpi__sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 .dashboard__note {
   display: block;
   margin-top: 10px;
