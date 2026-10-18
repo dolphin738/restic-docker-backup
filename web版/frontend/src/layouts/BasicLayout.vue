@@ -3,6 +3,7 @@ import { useMediaQuery } from '@vueuse/core'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import {
   NButton,
+  NDropdown,
   NDrawer,
   NIcon,
   NLayout,
@@ -10,15 +11,14 @@ import {
   NLayoutHeader,
   NLayoutSider,
   NMenu,
-  NPopconfirm,
-  NRadioButton,
-  NRadioGroup,
   NSelect,
   NSpace,
   NTag,
   NText,
   NTooltip,
+  useDialog,
   useMessage,
+  type DropdownOption,
   type MenuOption,
 } from 'naive-ui'
 import { computed, h, onUnmounted, ref, watch, type Component, type VNodeChild } from 'vue'
@@ -30,14 +30,20 @@ import { getRepoStatus, listRepos } from '@/api/repo'
 import {
   IconAudit,
   IconBell,
+  IconCheck,
   IconDashboard,
   IconJobs,
+  IconLogout,
   IconMenu,
+  IconMonitor,
+  IconMoon,
   IconReports,
   IconRepo,
   IconRestore,
   IconSettings,
   IconSnapshots,
+  IconSun,
+  IconUser,
 } from '@/components/icons/MenuIcons'
 import logoSrc from '@/assets/restic-logo.png'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
@@ -70,18 +76,57 @@ function withNIcon(icon: Component): () => VNodeChild {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
-/** 菜单项（R-026/Q2 退役备份源/策略页；P2 批次 A 增设系统设置 + 审计日志，共 8 项）。 */
-const menuOptions = computed<MenuOption[]>(() => [
-  { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
-  { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
-  { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
-  { label: t('nav.reports'), key: 'reports', icon: withNIcon(IconReports) },
-  { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
-  { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
-  { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
-  { label: t('nav.settings'), key: 'settings', icon: withNIcon(IconSettings) },
-  { label: t('nav.audit'), key: 'audit', icon: withNIcon(IconAudit) },
+/** 九个导航项（key = route.name，不得改名；R-026/Q2 退役备份源/策略；P2 批次 A 增设系统设置 + 审计日志）。 */
+const navItems = computed<Record<string, MenuOption>>(() => ({
+  dashboard: { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
+  repo: { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
+  jobs: { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
+  reports: { label: t('nav.reports'), key: 'reports', icon: withNIcon(IconReports) },
+  snapshots: { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
+  restore: { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
+  notifications: { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
+  settings: { label: t('nav.settings'), key: 'settings', icon: withNIcon(IconSettings) },
+  audit: { label: t('nav.audit'), key: 'audit', icon: withNIcon(IconAudit) },
+}))
+
+/** 展开态四组（设计方案 §4.2：看全局 / 备份跑了没 / 找回数据 / 低频管理）。 */
+const groupedMenuOptions = computed<MenuOption[]>(() => [
+  {
+    type: 'group',
+    label: t('nav.group.overview'),
+    key: 'group-overview',
+    children: [navItems.value.dashboard],
+  },
+  {
+    type: 'group',
+    label: t('nav.group.backup'),
+    key: 'group-backup',
+    children: [navItems.value.jobs, navItems.value.reports],
+  },
+  {
+    type: 'group',
+    label: t('nav.group.data'),
+    key: 'group-data',
+    children: [navItems.value.snapshots, navItems.value.restore],
+  },
+  {
+    type: 'group',
+    label: t('nav.group.admin'),
+    key: 'group-admin',
+    children: [
+      navItems.value.repo,
+      navItems.value.notifications,
+      navItems.value.settings,
+      navItems.value.audit,
+    ],
+  },
 ])
+
+/** P0 实证结论（设计方案 §10 PV-1 候选 1）：折叠态组标题会以文字残留 64px 窄栏，
+ * 故数据源按 collapsed 派生两套——折叠用扁平一维（与已 QA 复验行为逐点一致），展开用四组。 */
+const menuOptions = computed<MenuOption[]>(() =>
+  collapsed.value ? Object.values(navItems.value) : groupedMenuOptions.value,
+)
 
 // 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。
 // 查询键带 header 后缀 + 当前仓库 id，与页面级查询（['repo','status'] / ['jobs','active']）隔离，
@@ -162,12 +207,55 @@ function onDrawerMenuSelect(key: string | number): void {
   drawerShow.value = false
 }
 
-function onThemeChange(value: string | number): void {
-  ui.setThemePreference(String(value) as ThemePreference)
+/** 主题三态控件（设计方案 §4.3 + §10 PV-3 定稿 NDropdown）：图标按钮触发 + 三选项直接选择，
+ * 当前值以勾选图标标记；aria-label 带当前值供读屏。 */
+const THEME_ICONS: Record<ThemePreference, Component> = {
+  dark: IconMoon,
+  light: IconSun,
+  auto: IconMonitor,
+}
+const themeOptions = computed<DropdownOption[]>(() =>
+  (['dark', 'light', 'auto'] as ThemePreference[]).map((pref) => ({
+    label: t(`theme.${pref}`),
+    key: pref,
+    icon: ui.themePreference === pref ? themeCheckIcon : undefined,
+  })),
+)
+const themeCheckIcon: () => VNodeChild = () =>
+  h(NIcon, { size: 16 }, { default: () => h(IconCheck) })
+const currentThemeIcon = computed(() => THEME_ICONS[ui.themePreference])
+const themeAriaLabel = computed(() =>
+  t('header.themeAria', { mode: t(`theme.${ui.themePreference}`) }),
+)
+function onThemeSelect(key: string | number): void {
+  ui.setThemePreference(String(key) as ThemePreference)
 }
 
 function onToggleLocale(): void {
   ui.setLocalePreference(ui.locale === 'zh-CN' ? 'en-US' : 'zh-CN')
+}
+
+/** 用户菜单（设计方案 §4.3）：登出自独立 NPopconfirm 并入下拉，二次确认走 dialog
+ * （App.vue 已挂 NDialogProvider；下拉内不宜再嵌 popconfirm，会与选项点击抢手势）。 */
+const dialog = useDialog()
+const userMenuOptions = computed<DropdownOption[]>(() => [
+  { label: t('nav.logout'), key: 'logout', icon: userLogoutIcon },
+])
+const userLogoutIcon: () => VNodeChild = () =>
+  h(NIcon, { size: 16 }, { default: () => h(IconLogout) })
+function onUserMenuSelect(key: string | number): void {
+  if (String(key) !== 'logout') {
+    return
+  }
+  dialog.warning({
+    title: t('nav.logout'),
+    content: t('nav.logoutConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void onLogout()
+    },
+  })
 }
 
 async function onLogout(): Promise<void> {
@@ -183,14 +271,14 @@ async function onLogout(): Promise<void> {
 
 <template>
   <n-layout has-sider style="height: 100vh">
-    <!-- 桌面态（≥960px）：常驻可折叠 sider，200px ↔ 64px -->
+    <!-- 桌面态（≥960px）：常驻可折叠 sider，232px ↔ 64px（P2 起展开态四组导航） -->
     <n-layout-sider
       v-if="!isMobile"
       bordered
       show-trigger
       collapse-mode="width"
       :collapsed-width="64"
-      :width="200"
+      :width="232"
       :native-scrollbar="false"
       v-model:collapsed="collapsed"
     >
@@ -210,6 +298,7 @@ async function onLogout(): Promise<void> {
 
     <n-layout>
       <n-layout-header bordered class="header">
+        <!-- 左 · 上下文区：页面标题（仓库切换等全局态移右区，§4.3） -->
         <n-space class="header__left" align="center" :size="12" wrap>
           <!-- 移动态菜单入口：汉堡按钮滑出抽屉 -->
           <n-button v-if="isMobile" quaternary size="small" @click="drawerShow = true">
@@ -218,51 +307,71 @@ async function onLogout(): Promise<void> {
           <n-text strong class="header__title">
             {{ t(route.meta.titleKey ?? 'common.appName') }}
           </n-text>
-          <n-select
-            :value="ui.currentRepoId"
-            :options="repoOptions"
-            size="small"
-            class="header__repo-select"
-            :placeholder="t('repo.switchPlaceholder')"
-            @update:value="onRepoSwitch"
-          />
-          <n-tag size="small" round type="info">{{ currentUser }}</n-tag>
+        </n-space>
+
+        <!-- 右 · 全局区：仓库切换 → 状态 → 主题 → 语言 → 用户（§4.3）
+             移动态（<960px）紧凑化：仓库切换器移入抽屉（导航枢纽）、运行中 tag 隐藏
+             （仪表盘可见）、间距 12→8、用户按钮只留图标——保证 390px 不撑破 56px 顶栏 -->
+        <n-space
+          class="header__right"
+          :class="{ 'header__right--mobile': isMobile }"
+          align="center"
+          :size="isMobile ? 8 : 12"
+        >
+          <span v-if="!isMobile" class="header__repo-switch">
+            <n-icon class="header__zone-icon" :size="16"><IconRepo /></n-icon>
+            <n-select
+              :value="ui.currentRepoId"
+              :options="repoOptions"
+              size="small"
+              class="header__repo-select"
+              :placeholder="t('repo.switchPlaceholder')"
+              @update:value="onRepoSwitch"
+            />
+          </span>
+          <!-- 状态 tag：绿/红/灰点 + 文案；点取 currentColor 继承语义色（零硬编码色值） -->
           <n-tooltip v-if="repoStatusTooltip" trigger="hover">
             <template #trigger>
-              <n-tag size="small" round :type="repoStatusTagType">{{ repoStatusText }}</n-tag>
+              <n-tag size="small" round :type="repoStatusTagType">
+                <span class="header__dot" aria-hidden="true" />
+                {{ repoStatusText }}
+              </n-tag>
             </template>
             {{ repoStatusTooltip }}
           </n-tooltip>
-          <n-tag v-else size="small" round :type="repoStatusTagType">{{ repoStatusText }}</n-tag>
-          <n-tag v-if="runningJobsCount > 0" size="small" round type="info">
+          <n-tag v-else size="small" round :type="repoStatusTagType">
+            <span class="header__dot" aria-hidden="true" />
+            {{ repoStatusText }}
+          </n-tag>
+          <n-tag v-if="runningJobsCount > 0 && !isMobile" size="small" round type="info">
             {{ t('header.runningJobs', { n: runningJobsCount }) }}
           </n-tag>
-        </n-space>
-
-        <n-space align="center" :size="12">
-          <n-radio-group size="small" :value="ui.themePreference" @update:value="onThemeChange">
-            <n-radio-button value="dark">{{ t('theme.dark') }}</n-radio-button>
-            <n-radio-button value="light">{{ t('theme.light') }}</n-radio-button>
-            <n-radio-button value="auto">{{ t('theme.auto') }}</n-radio-button>
-          </n-radio-group>
+          <!-- 主题三态：NDropdown（P0 定稿），图标按钮 + 直接选择 + 勾选当前值 -->
+          <n-dropdown :options="themeOptions" trigger="click" @select="onThemeSelect">
+            <n-button size="small" quaternary :aria-label="themeAriaLabel">
+              <n-icon :size="18"><component :is="currentThemeIcon" /></n-icon>
+            </n-button>
+          </n-dropdown>
           <n-button size="small" quaternary @click="onToggleLocale">
             {{ t(ui.locale === 'zh-CN' ? 'common.languageEn' : 'common.languageZh') }}
           </n-button>
-          <n-popconfirm @positive-click="onLogout">
-            <template #trigger>
-              <n-button size="small" quaternary>{{ t('nav.logout') }}</n-button>
-            </template>
-            {{ t('nav.logoutConfirm') }}
-          </n-popconfirm>
+          <!-- 用户菜单：登出并入（dialog 二次确认） -->
+          <n-dropdown :options="userMenuOptions" trigger="click" @select="onUserMenuSelect">
+            <n-button size="small" quaternary>
+              <n-icon :size="16"><IconUser /></n-icon>
+              <span class="header__user-name">{{ currentUser }}</span>
+            </n-button>
+          </n-dropdown>
         </n-space>
       </n-layout-header>
 
-      <n-layout-content content-style="padding: 20px;" :native-scrollbar="false">
+      <n-layout-content content-style="padding: 24px;" :native-scrollbar="false">
         <router-view />
       </n-layout-content>
     </n-layout>
 
-    <!-- 移动态（<960px）：抽屉式菜单，标题区为品牌 logo + 应用名 -->
+    <!-- 移动态（<960px）：抽屉式菜单（240px，非折叠 → 用分组数据源），标题区为品牌 logo + 应用名。
+         仓库切换器随抽屉提供（顶栏 390px 放不下全套全局控件，移入导航枢纽） -->
     <n-drawer v-model:show="drawerShow" placement="left" :width="240">
       <template #header>
         <div class="drawer-brand">
@@ -270,7 +379,16 @@ async function onLogout(): Promise<void> {
           <n-text strong>{{ t('common.appName') }}</n-text>
         </div>
       </template>
-      <n-menu :options="menuOptions" :value="activeKey" @update:value="onDrawerMenuSelect" />
+      <n-select
+        v-if="isMobile"
+        :value="ui.currentRepoId"
+        :options="repoOptions"
+        size="small"
+        class="drawer__repo-select"
+        :placeholder="t('repo.switchPlaceholder')"
+        @update:value="onRepoSwitch"
+      />
+      <n-menu :options="groupedMenuOptions" :value="activeKey" @update:value="onDrawerMenuSelect" />
     </n-drawer>
   </n-layout>
 </template>
@@ -326,8 +444,53 @@ async function onLogout(): Promise<void> {
   white-space: nowrap;
 }
 
+/* 右区全局态：不收缩，极端窄宽下优雅截断而不撑破 56px 顶栏 */
+.header__right {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.header__repo-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header__zone-icon {
+  flex: 0 0 auto;
+}
+
 .header__repo-select {
   flex: 0 0 auto;
   max-width: 200px;
+}
+
+/* 状态点：背景取 currentColor = 标签语义色（success/error/default），亮/暗与主题令牌同源 */
+.header__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.header__user-name {
+  max-width: 120px;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 移动态紧凑：用户按钮只留图标（仓库切换器已移入抽屉，运行中 tag 已隐藏） */
+.header__right--mobile .header__user-name {
+  display: none;
+}
+
+/* 抽屉内仓库切换器（移动态导航枢纽） */
+.drawer__repo-select {
+  margin-bottom: 12px;
 }
 </style>

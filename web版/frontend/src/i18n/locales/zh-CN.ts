@@ -25,6 +25,12 @@ export default {
     auto: '跟随系统',
   },
   nav: {
+    group: {
+      overview: '总览',
+      backup: '备份任务',
+      data: '数据',
+      admin: '管理',
+    },
     dashboard: '仪表盘',
     repo: '仓库配置',
     jobs: '任务历史',
@@ -80,6 +86,7 @@ export default {
     saved: '通知配置已保存',
   },
   header: {
+    themeAria: '主题：{mode}',
     repoStatus: {
       connected: '仓库已连接',
       disconnected: '仓库未连接',

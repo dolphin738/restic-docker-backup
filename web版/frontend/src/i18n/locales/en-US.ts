@@ -25,6 +25,12 @@ export default {
     auto: 'System',
   },
   nav: {
+    group: {
+      overview: 'Overview',
+      backup: 'Backup',
+      data: 'Data',
+      admin: 'Admin',
+    },
     dashboard: 'Dashboard',
     repo: 'Repository',
     jobs: 'Jobs',
@@ -79,6 +85,7 @@ export default {
     saved: 'Notification settings saved',
   },
   header: {
+    themeAria: 'Theme: {mode}',
     repoStatus: {
       connected: 'Repo connected',
       disconnected: 'Repo disconnected',

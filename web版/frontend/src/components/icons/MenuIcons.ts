@@ -1,6 +1,6 @@
-/** 菜单图标：零依赖内联 SVG（24×24 线性图标，stroke=currentColor）。
+/** 内联 SVG 图标集：零依赖（24×24 线性图标，stroke=currentColor）。
  * 裁决依据：docs/archive/UI视觉对齐Duplicati设计方案.md §4.2-2 —— Naive UI 无内置图标集，不新增 @vicons 依赖。
- * 前 5 个对应导航项（R-026/Q2 退役备份源/策略后 7→5），IconMenu（汉堡）供 <960px 顶栏菜单按钮使用。
+ * 导航项 9 个 + 汉堡（<960px 抽屉入口）+ 顶栏控件 6 个（主题三态 / 用户 / 勾选 / 登出，P2 新增）。
  */
 
 import { h, type FunctionalComponent, type SVGAttributes } from 'vue'
@@ -97,4 +97,49 @@ export const IconReports: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M6 20V10' }),
     h('path', { d: 'M12 20V4' }),
     h('path', { d: 'M18 20v-6' }),
+  ])
+
+/** 浅色主题：太阳（feather sun 线稿；顶栏主题下拉）。 */
+export const IconSun: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 12, cy: 12, r: 4 }),
+    h('path', { d: 'M12 2v2' }),
+    h('path', { d: 'M12 20v2' }),
+    h('path', { d: 'M4.93 4.93l1.41 1.41' }),
+    h('path', { d: 'M17.66 17.66l1.41 1.41' }),
+    h('path', { d: 'M2 12h2' }),
+    h('path', { d: 'M20 12h2' }),
+    h('path', { d: 'M6.34 17.66l-1.41 1.41' }),
+    h('path', { d: 'M19.07 4.93l-1.41 1.41' }),
+  ])
+
+/** 深色主题：月亮（feather moon 线稿；顶栏主题下拉）。 */
+export const IconMoon: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [h('path', { d: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z' })])
+
+/** 跟随系统主题：显示器（feather monitor 线稿；顶栏主题下拉）。 */
+export const IconMonitor: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('rect', { x: 2, y: 3, width: 20, height: 14, rx: 2 }),
+    h('path', { d: 'M8 21h8' }),
+    h('path', { d: 'M12 17v4' }),
+  ])
+
+/** 当前用户：头像 + 肩（feather user 线稿；顶栏用户菜单触发按钮）。 */
+export const IconUser: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2' }),
+    h('circle', { cx: 12, cy: 7, r: 4 }),
+  ])
+
+/** 勾选：对勾（feather check 线稿；主题下拉当前值标记）。 */
+export const IconCheck: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [h('path', { d: 'M20 6 9 17l-5-5' })])
+
+/** 登出：出门箭头（feather log-out 线稿；用户菜单登出项）。 */
+export const IconLogout: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4' }),
+    h('path', { d: 'M16 17l5-5-5-5' }),
+    h('path', { d: 'M21 12H9' }),
   ])
