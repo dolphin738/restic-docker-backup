@@ -55,10 +55,20 @@ const CHAR_CLASSES = [
 ]
 const ALL_CHARS = CHAR_CLASSES.join('')
 
-function randomChar(alphabet: string): string {
+/** 无偏随机下标（rejection sampling，审查💭③）：`getRandomValues % bound` 在 2^32 不整除
+ *  bound 时头部若干下标多一次命中（约 1e-8 相对偏差）——对本用途可忽略，但拒绝采样代价
+ *  几乎为零（期望重试 <1 次），直接做对。 */
+function randomIndex(bound: number): number {
+  const limit = Math.floor(0x100000000 / bound) * bound
   const buffer = new Uint32Array(1)
-  crypto.getRandomValues(buffer)
-  return alphabet[buffer[0] % alphabet.length]
+  do {
+    crypto.getRandomValues(buffer)
+  } while (buffer[0] >= limit)
+  return buffer[0] % bound
+}
+
+function randomChar(alphabet: string): string {
+  return alphabet[randomIndex(alphabet.length)]
 }
 
 /** 生成强随机口令（G4：与强度条配套的「生成」按钮）。
@@ -76,9 +86,7 @@ export function generateStrongPassword(length = 20): string {
     chars.push(randomChar(ALL_CHARS))
   }
   for (let i = chars.length - 1; i > 0; i -= 1) {
-    const buffer = new Uint32Array(1)
-    crypto.getRandomValues(buffer)
-    const j = buffer[0] % (i + 1)
+    const j = randomIndex(i + 1)
     const tmp = chars[i]
     chars[i] = chars[j]
     chars[j] = tmp
