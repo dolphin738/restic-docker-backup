@@ -676,6 +676,10 @@ async function onTest(): Promise<void> {
     if (testResult.value.ok) {
       verifyRequired.value = false
     }
+  } catch {
+    // AppError 已由 http 层全局副作用提示（网络错误也包装为 AppError）；本页状态机须落 error，
+    // 否则验证态卡在旧值、E1 复验门禁拿不到「已复验」信号（审查💭②：原先无 catch，异常直接外抛）
+    repoTestState.value = 'error'
   } finally {
     testing.value = false
   }

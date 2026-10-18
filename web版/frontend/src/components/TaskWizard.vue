@@ -642,11 +642,10 @@ async function onTestConnection(): Promise<void> {
     testResult.value = result
     testedRepoId.value = ui.currentRepoId
     testState.value = result.ok ? 'success' : 'error'
-  } catch (error) {
+  } catch {
+    // http 层保证只抛 AppError（网络错误也包装，api/http.ts 统一出口）；全局副作用已提示，
+    // 本页状态机落 error 即可——不再 rethrow（void 调用链上无人接，只会变成 unhandled rejection）
     testState.value = 'error'
-    if (!isAppError(error)) {
-      throw error
-    }
   } finally {
     if (testState.value === 'testing') {
       testState.value = 'error'
