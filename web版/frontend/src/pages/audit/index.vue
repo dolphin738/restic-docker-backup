@@ -15,7 +15,6 @@ import {
   NDatePicker,
   NSelect,
   NSpace,
-  NTag,
   NText,
   type DataTableColumns,
 } from 'naive-ui'
@@ -23,6 +22,7 @@ import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { queryAudit } from '@/api/audit'
 import type { AuditOut, AuditResult } from '@/api/types'
+import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const PAGE_SIZE = 50
@@ -153,18 +153,19 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
     title: t('audit.colAction'),
     key: 'action',
     width: 170,
-    render: (row) => h(NTag, { size: 'small', round: true }, () => row.action),
+    // P3b 收口：动作名标签（原无 type）→ StatusTag default；原文案 row.action 不动
+    render: (row) => h(StatusTag, { kind: 'default', label: row.action }),
   },
   {
     title: t('audit.colResult'),
     key: 'result',
     width: 100,
+    // P3b 收口：ok→success / denied→warning / failed→error 映射不变，只换渲染
     render: (row) =>
-      h(
-        NTag,
-        { size: 'small', round: true, type: resultTagType(row.result) },
-        () => t(`audit.result.${row.result}`),
-      ),
+      h(StatusTag, {
+        kind: resultTagType(row.result),
+        label: t(`audit.result.${row.result}`),
+      }),
   },
   {
     title: t('audit.colTarget'),

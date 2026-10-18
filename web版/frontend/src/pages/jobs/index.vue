@@ -27,7 +27,6 @@ import {
   NSpace,
   NTabPane,
   NTabs,
-  NTag,
   NText,
   useMessage,
   type DataTableColumns,
@@ -41,6 +40,7 @@ import { useUiStore } from '@/stores/ui'
 import { isAppError } from '@/api/http'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
@@ -190,18 +190,19 @@ const historyColumns = computed<DataTableColumns<JobOut>>(() => [
     title: t('jobs.colType'),
     key: 'type',
     width: 110,
-    render: (row) => h(NTag, { size: 'small', round: true }, () => t(`jobs.type.${row.type}`)),
+    // P3b 收口：类别标签（无语义态）→ StatusTag default
+    render: (row) => h(StatusTag, { kind: 'default', label: t(`jobs.type.${row.type}`) }),
   },
   {
     title: t('jobs.colStatus'),
     key: 'status',
     width: 100,
+    // P3b 收口：状态映射（含 cancelled→warning）不变，只换渲染
     render: (row) =>
-      h(
-        NTag,
-        { size: 'small', round: true, type: jobStatusTagType(row.status) },
-        () => t(`jobs.status.${row.status}`),
-      ),
+      h(StatusTag, {
+        kind: jobStatusTagType(row.status),
+        label: t(`jobs.status.${row.status}`),
+      }),
   },
   { title: t('jobs.colTask'), key: 'task_id', width: 80, render: (row) => row.task_id ?? '—' },
   {
@@ -444,10 +445,9 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
             <n-space vertical :size="10">
               <n-space align="center" justify="space-between">
                 <n-space align="center" :size="8">
-                  <n-tag size="small" round>{{ t(`jobs.type.${job.type}`) }}</n-tag>
-                  <n-tag size="small" round :type="jobStatusTagType(job.status)">
-                    {{ t(`jobs.status.${job.status}`) }}
-                  </n-tag>
+                  <!-- P3b 收口：类别 default + 状态（cancelled→warning 语义不动） -->
+                  <StatusTag kind="default" :label="t(`jobs.type.${job.type}`)" />
+                  <StatusTag :kind="jobStatusTagType(job.status)" :label="t(`jobs.status.${job.status}`)" />
                   <n-text depth="3">{{ formatDateTime(job.created_at) }}</n-text>
                 </n-space>
                 <n-space :size="6">
@@ -583,9 +583,8 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
 
           <n-descriptions v-if="checkView" :column="2" size="small" bordered>
             <n-descriptions-item :label="t('jobs.check.errorCount')">
-              <n-tag size="small" round :type="checkHasErrors ? 'error' : 'success'">
-                {{ checkView.error_count }}
-              </n-tag>
+              <!-- P3b 收口：check 结果计数（error/success 二态） -->
+              <StatusTag :kind="checkHasErrors ? 'error' : 'success'" :label="String(checkView.error_count)" />
             </n-descriptions-item>
             <n-descriptions-item :label="t('jobs.check.summaryNumErrors')">
               {{ checkView.num_errors }}
