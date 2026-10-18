@@ -45,6 +45,7 @@ import {
   IconSun,
   IconUser,
 } from '@/components/icons/MenuIcons'
+import StatusTag from '@/components/StatusTag.vue'
 import logoSrc from '@/assets/restic-logo.png'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
 
@@ -329,20 +330,14 @@ async function onLogout(): Promise<void> {
               @update:value="onRepoSwitch"
             />
           </span>
-          <!-- 状态 tag：绿/红/灰点 + 文案；点取 currentColor 继承语义色（零硬编码色值） -->
+          <!-- 状态 tag：绿/红/灰点 + 文案（P3a 收口为 StatusTag；点取 currentColor 继承语义色） -->
           <n-tooltip v-if="repoStatusTooltip" trigger="hover">
             <template #trigger>
-              <n-tag size="small" round :type="repoStatusTagType">
-                <span class="header__dot" aria-hidden="true" />
-                {{ repoStatusText }}
-              </n-tag>
+              <StatusTag :kind="repoStatusTagType" :label="repoStatusText" />
             </template>
             {{ repoStatusTooltip }}
           </n-tooltip>
-          <n-tag v-else size="small" round :type="repoStatusTagType">
-            <span class="header__dot" aria-hidden="true" />
-            {{ repoStatusText }}
-          </n-tag>
+          <StatusTag v-else :kind="repoStatusTagType" :label="repoStatusText" />
           <n-tag v-if="runningJobsCount > 0 && !isMobile" size="small" round type="info">
             {{ t('header.runningJobs', { n: runningJobsCount }) }}
           </n-tag>
@@ -464,16 +459,6 @@ async function onLogout(): Promise<void> {
 .header__repo-select {
   flex: 0 0 auto;
   max-width: 200px;
-}
-
-/* 状态点：背景取 currentColor = 标签语义色（success/error/default），亮/暗与主题令牌同源 */
-.header__dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 4px;
-  border-radius: 50%;
-  background: currentColor;
 }
 
 .header__user-name {

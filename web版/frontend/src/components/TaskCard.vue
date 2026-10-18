@@ -6,11 +6,12 @@
  * 状态徽章色用 Naive 语义色；卡片高度由调用方（仪表盘虚拟列表）固定，内容超高地截断。
  */
 
-import { NButton, NCard, NDropdown, NSpace, NTag, NText, NTooltip } from 'naive-ui'
+import { NButton, NCard, NDropdown, NSpace, NText, NTooltip } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import JobProgress from '@/components/JobProgress.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
 
 const props = defineProps<{
@@ -97,10 +98,11 @@ function openLogs(): void {
     <template #header>
       <n-space align="center" :size="8" class="task-card__header">
         <n-text strong class="task-card__name">{{ task.name }}</n-text>
-        <n-tag size="small" round :type="statusTagType">{{ t(`task.status.${task.status}`) }}</n-tag>
+        <!-- P3a 收口为 StatusTag：圆点 + 文案，type 由 statusTagType 透传（同色同文案） -->
+        <StatusTag :kind="statusTagType" :label="t(`task.status.${task.status}`)" />
         <n-tooltip v-if="task.prune_due" trigger="hover">
           <template #trigger>
-            <n-tag size="small" round type="warning">{{ t('task.pruneDue') }}</n-tag>
+            <StatusTag kind="warning" :label="t('task.pruneDue')" />
           </template>
           {{ t('task.pruneDueNote') }}
         </n-tooltip>
@@ -135,7 +137,8 @@ function openLogs(): void {
         <n-space v-else-if="lastResultText" align="center" :size="6">
           <!-- 缺陷 B：结果徽章用独立键 task.last_result_label，与「上次运行：」区分，避免同屏两个同义标签 -->
           <n-text depth="3">{{ t('task.last_result_label') }}</n-text>
-          <n-tag size="small" round :type="statusTagType">{{ lastResultText }}</n-tag>
+          <!-- P3a 等价替换：type 仍沿用 statusTagType（任务态），last_result 语义映射不动（PV-2：不合并语义差异） -->
+          <StatusTag :kind="statusTagType" :label="lastResultText" />
         </n-space>
       </div>
 
