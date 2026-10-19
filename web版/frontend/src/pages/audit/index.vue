@@ -27,7 +27,7 @@ import { formatDateTime } from '@/utils/datetime'
 
 const PAGE_SIZE = 50
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 
 // ---------------------------------------------------------------- 筛选（草稿态 + 应用态分离，点「查询」生效）
 
@@ -88,7 +88,14 @@ const errorText = computed(() => {
 
 /** 动作名枚举（响应附带）：筛选下拉数据源；filterable+tag 允许手输任意前缀（如 restore.）。 */
 const knownActions = ref<string[]>([])
-const actionOptions = computed(() => knownActions.value.map((action) => ({ label: action, value: action })))
+// 筛选项「中文（原文）」：既能一眼看懂，又保留原文以便按前缀手输（如 restore.）；
+// 未收录（译文 = 原文）时不重复拼括号，直接显示原文。
+const actionOptions = computed(() =>
+  knownActions.value.map((action) => {
+    const label = actionLabel(action)
+    return { label: label === action ? action : `${label}（${action}）`, value: action }
+  }),
+)
 
 /** 累积去重：换筛选/翻页后不丢此前见过的动作名。 */
 watch(
@@ -129,32 +136,85 @@ function resultTagType(result: AuditResult): 'success' | 'warning' | 'error' {
   }
 }
 
-/** detail 为 JSON 文本原文：能解析则缩进美化，不能则原样透传（契约不保证恒为 JSON）。 */
-function prettyDetail(detail: string): string {
+/** detail 为 JSON 文本原文（契约不保证恒为 JSON）：解析成对象才走中文化键值列表，否则原样透传。 */
+function parseDetail(detail: string): Record<string, unknown> | null {
   try {
-    return JSON.stringify(JSON.parse(detail) as unknown, null, 2)
+    const parsed = JSON.parse(detail) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
   } catch {
-    return detail
+    return null
   }
+}
+
+/** 动作名 → 中文（键与后端 constants.py AUDIT_* 字面值对齐）。
+ *  未收录的动作（后端新增）回落原文：宁可显示英文，也不显示空标签。 */
+function actionLabel(action: string): string {
+  const key = `audit.action.${action}`
+  return te(key) ? t(key) : action
+}
+
+/** detail 键名 → 中文（未收录回落原键名）。 */
+function detailKeyLabel(key: string): string {
+  const i18nKey = `audit.detailKey.${key}`
+  return te(i18nKey) ? t(i18nKey) : key
+}
+
+/** detail 值 → 中文可读文本：布尔走 是/否、耗时补单位、数组顿号连接、对象回落 JSON。 */
+function formatDetailValue(key: string, value: unknown): string {
+  if (value === null || value === undefined) {
+    return '—'
+  }
+  if (typeof value === 'boolean') {
+    return value ? t('audit.value.yes') : t('audit.value.no')
+  }
+  if (key === 'latency_ms' && typeof value === 'number') {
+    return `${value} ms`
+  }
+  if (Array.isArray(value)) {
+    return value.length ? value.map((item) => String(item)).join('、') : '—'
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
+/** 展开区：中文键名的键值列表（不再是裸 JSON——审计是给人看的，键名全是英文时读不动）。 */
+function renderDetail(detail: string) {
+  const parsed = parseDetail(detail)
+  if (!parsed) {
+    return h('pre', { class: 'audit__detail' }, detail || t('common.none'))
+  }
+  const entries = Object.entries(parsed)
+  if (entries.length === 0) {
+    return h('pre', { class: 'audit__detail' }, t('common.none'))
+  }
+  return h(
+    'div',
+    { class: 'audit__detail-list' },
+    entries.map(([key, value]) =>
+      h('div', { class: 'audit__detail-row' }, [
+        h('span', { class: 'audit__detail-key' }, detailKeyLabel(key)),
+        h('span', { class: 'audit__detail-val' }, formatDetailValue(key, value)),
+      ]),
+    ),
+  )
 }
 
 const columns = computed<DataTableColumns<AuditOut>>(() => [
   {
     type: 'expand',
-    renderExpand: (row) =>
-      h(
-        'pre',
-        { class: 'audit__detail' },
-        row.detail ? prettyDetail(row.detail) : t('common.none'),
-      ),
+    renderExpand: (row) => renderDetail(row.detail ?? ''),
   },
   { title: t('audit.colTs'), key: 'ts', width: 170, render: (row) => formatDateTime(row.ts) },
   {
     title: t('audit.colAction'),
     key: 'action',
     width: 170,
-    // P3b 收口：动作名标签（原无 type）→ StatusTag default；原文案 row.action 不动
-    render: (row) => h(StatusTag, { kind: 'default', label: row.action }),
+    // P3b 收口：动作名标签（原无 type）→ StatusTag default；文案走 i18n 中文（未收录回落原文）
+    render: (row) => h(StatusTag, { kind: 'default', label: actionLabel(row.action) }),
   },
   {
     title: t('audit.colResult'),
@@ -266,6 +326,30 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 中文化键值列表（键名中文 + 值原样；读审计不用再对英文键名猜含义） */
+.audit__detail-list {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  max-width: 640px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.audit__detail-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+}
+
+.audit__detail-key {
+  color: var(--n-text-color-depth-3, inherit);
+}
+
+.audit__detail-val {
   word-break: break-all;
 }
 </style>
