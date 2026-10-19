@@ -21,11 +21,11 @@
 | A7 原位恢复 overwrite 布尔（never/always）+ 单次确认 | S7 v1.4（`OVERWRITE_MODES` 白名单） | `pages/restore/index.vue:81`（overwriteExisting 默认不勾） | ✅✅ |
 | B1 仓库修复（repair index/packs） | `JOB_TYPES` 含 repair | `repo/index.vue:465-469`（ConfirmGate 关键词 REPAIR） | ✅✅ |
 | B3 找回丢失快照（recover） | `constants.py:19` + `job_runner.py:343`（写 AUDIT_RECOVER_RUN） | **零 UI 入口**（`createJob('recover')` 全库无命中） | ✅❌ → G1 |
-| C4 密钥轮换 + 手动 copy（搬家） | `ops.py:576/683` | `repo/index.vue:471-523` | ✅✅ |
+| C4 密钥轮换 + 手动 copy（搬家） | `ops.py:576/683` | `repo/index.vue`（密钥轮换 `rotateShow:487`/`rotateRepoKey:512`，NModal 共用 `PasswordEntryModal`；手动 copy `copyShow` 区块） | ✅✅ |
 | C4 任务级多目的地（镜像仓） | `backup_tasks.py:81`（镜像仓存在性 422） | `TaskWizard.vue:85/662`（镜像仓多选） | ✅✅ |
 | E 配置导入/导出（口令加密凭据段） | `ops.py:358/413` | `pages/settings/index.vue:384-440`（覆盖确认门 IMPORT + 逐项报告） | ✅✅ |
 | E23 通知配置 + 测试消息 | `ops.py:755-854` | `pages/notifications/index.vue` | ✅✅ |
-| E25 缓存占用/清空 + E26 审计查询 | `ops.py:879-976` | 审计页/设置页 | ✅✅ |
+| E25 缓存占用/清空（E26 审计查询） | `ops.py:879-976` | E25：仓库页维护区唯一入口（设置页专区已并入，复用 `getCacheUsage`/`clearCache`）；E26：审计页 | ✅✅ |
 
 ### 0.2 视觉层基线
 
@@ -50,7 +50,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | E1 | 连接测试强门禁 | 待实施（= G3，第二轮范围） |
 | E2 | 向导离开保护（onBeforeRouteLeave + beforeunload） | 待实施 |
 | E3 | 步骤条可点击跳步（键盘可达，不用 tabindex=-1） | 待实施 |
-| E4 | 更改密码行内展开（弹窗 → 行内） | ✅ 2026-10-19（对象实为 repo 页「设置仓库密码」；设置页改密 E28 本就是行内卡，见 §4.1.2） |
+| E4 | 设置仓库密码复用共用弹窗（NModal → 行内面板 → 共用 `PasswordEntryModal`） | ✅ 2026-10-19（对象为 repo 页「设置仓库密码」，历经弹窗→行内→共用组件三形态，见 §4.1.2） |
 | E5 | 空态 CTA 化 | 部分已有（仪表盘引导卡）；其余空态随页面扫尾统一 |
 | E6 | 状态化着色 | ✅ 已达成（StatusTag 全站收口，P3a-c 批次 23 处） |
 
@@ -106,11 +106,13 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 **对象纠正（取证结论）**：v1.0 把 E4 写成「更改密码弹窗 → 行内」时未指明页面。实读发现——设置页管理员改密（E28）**从来就是行内卡**（`git log -S "n-modal"` 在 settings/index.vue 零命中）；全项目唯一的密码弹窗是 repo 页「设置仓库密码」（passfile 缺失时的一次性引导）。故 E4 的真实对象是后者。
 
-**改造**：`NModal` → 状态卡内**行内展开面板**（`v-if="passwordShow"`，按钮再点一次 = 收起；`role="region"` + aria-label）。对齐 Duplicati 向导 Step1 的行内形态——密码缺失本就发生在读状态卡的语境里，弹窗打断「看到问题 → 当场处理」动线。两段式流程（生成→复制 / 自填）、`setRepoPassword` API、一次性明文「面板存活期可见、收起即丢弃」的语义全部保留。
+**改造（v1.4 落地；v1.6 已二次修订改回 NModal 弹窗，见下方「E4 二次修订」）**：原 `NModal` → 状态卡内**行内展开面板**（`v-if="passwordShow"`，按钮再点一次 = 收起；`role="region"` + aria-label）。对齐 Duplicati 向导 Step1 的行内形态——密码缺失本就发生在读状态卡的语境里，弹窗打断「看到问题 → 当场处理」动线。两段式流程（生成→复制 / 自填）、`setRepoPassword` API、一次性明文「面板存活期可见、收起即丢弃」的语义全部保留。
 
 **真机断言**（`.e2e/e2e-e4b.cjs`，临时仓库完整生命周期 + 自清理）：新建临时仓库（不 init）→ passfile 必然缺失 → 面板可见 ✅ / **`.n-modal-mask` 数量 = 0** ✅ / 生成按钮可见 ✅ / 取消后面板收起 ✅ / 三步 DELETE 门删除临时仓库 ✅（页面 0 pageerror）。
 
 **E2E 取证沉淀**：ConfirmGate 是自定义内容 n-modal（**无 `.n-modal` 类**，祖先选择用 `.n-modal-body-wrapper`）；三步门按钮类型依次 primary（下一步）→ warning（下一步）→ error（最终确认），自动化必须按步走完。
+
+**E4 二次修订（2026-10-19 第六轮，commit eb9cf69）**：又将行内展开面板**改回 NModal 弹窗**，并抽取共用组件 `frontend/src/components/PasswordEntryModal.vue`——「设置仓库密码（E44）」与「密钥轮换（C4）」共用同一弹窗外壳，仅输入语义各异：E44 生成走后端（已落盘后一次性回显明文，`generated=true`）、自填直接提交；C4 生成走前端本地强随机（`generateStrongPassword`，因轮换新密码后端不回显 S3），复制后点「确认轮换」才执行 `restic key passwd`。同时修复弹窗瘦长条（原 `repo__modal` 类无 CSS 定义，n-modal 被撑满全屏宽；组件内 `width: min(520px, calc(100vw - 32px))` 收口）。`repo/index.vue` 删除行内面板/双栏确认/死 CSS，行号迁移：设置密码 `passwordShow:238`/`openPassword:246`/`generatePassword:256`/`setRepoPassword:272`/modal `1414-1437`；密钥轮换 `rotateShow:487`/`onRotate:498`/`rotateRepoKey:512`/modal `1439`。
 
 ### 4.1.1 R5 验证结果（2026-10-19 实测）
 
@@ -131,7 +133,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 2. **额外修掉一处真机才暴露的既有缺陷（i18n `@` 语法冲突）**：`repo.urlPlaceholder` 等 4 个键（`sftp:user@host:/path`、`sender@example.com`）里的 `@` 被 vue-i18n 当作 linked message 语法起点，**每次渲染都抛 `Message compilation error: Invalid linked format`**；页面照常显示（回退原文），故 typecheck/vitest/build 三道门全放行。定案：改为字面量插值 `{'@'}`（外层字符串同时改双引号，避免单引号提前闭合），并加 `i18n-message-syntax.spec.ts` 静态护栏。复验：四个页面控制台 0 error。
 
 3. **删除「E25 缓存前端零入口」的前提**——该前提是我上一轮 grep 漏配造成的误判。
-   证据：`api/settings.ts:12/19` 已有 `getCacheUsage`/`clearCache`（`/api/cache`、`/api/cache/clear`），`pages/settings/index.vue:766` 有完整缓存专区（占用/truncated/409 冲突提示/ConfirmGate）。故 repo 维护区的「清缓存」是**复用同一对函数的第二入口**，409 分支沿用 `settings.cache.conflict` 文案，不新造一套。（据此删除了误建指向 `/api/ops/cache` 的模块——该路径在后端不存在。）
+   证据：`api/settings.ts:12/19` 已有 `getCacheUsage`/`clearCache`（`/api/cache`、`/api/cache/clear`），当时 `pages/settings/index.vue` 有完整缓存专区（占用/truncated/409 冲突提示/ConfirmGate）。故当时 repo 维护区的「清缓存」是复用同一对函数的第二入口，409 分支沿用 `settings.cache.conflict` 文案，不新造一套。（据此删除了误建指向 `/api/ops/cache` 的模块——该路径在后端不存在。）**2026-10-19 第六轮修订**：设置页缓存维护专区已整体并入仓库页维护区（删除 `settings/index.vue` 的 `sec-cache` 卡片、锚点目录 `cache` 项、失效 import），仓库页成为 E25 唯一前端入口（占用详情改纯文本注释口径 `cachePathLine`/`cacheMeasuredLine`/`cacheTruncated`，复用 `api/settings` 同一对函数）。
 
 **护栏**（沿 v1.0）：不改 API/composable；既有 spec 原样通过；ConfirmGate/StatusTag/PathBreadcrumb 只复用不换接口；文案全走 i18n 双语；危险操作埋点由后端既有 AUDIT_* 承担（前端零新增端点）。
 
@@ -155,7 +157,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | 配色系统 | 9.5 | **9.5** | 靛蓝令牌基线 + StatusTag 全站收口；本轮新增 UI 全部引用既有语义色，零新硬编码 |
 | 字体排版 | 9 | **9** | 单字型四级层级 + 等宽技术文本（pack id / 仓库 id / cron） |
 | 控件与交互模式 | 9 | **9** | 步骤条（可点击+键盘）/ 两端页脚 / ConfirmGate / Toast 全站统一 |
-| 组件复用度 | 9.5 | **9.5** | ConfirmGate 6 处复用（UNLOCK/INIT/REPAIR/RECOVER/CLEAR/DELETE）、JobProgress 4 处、StatusTag 全站 |
+| 组件复用度 | 9.5 | **9.5** | ConfirmGate 6 处复用（UNLOCK/INIT/REPAIR/RECOVER/CLEAR/DELETE）、JobProgress 4 处、StatusTag 全站、`PasswordEntryModal` 2 处（E44 设置密码 / C4 密钥轮换） |
 | 状态设计/防错 | 8.5 | **9** ↑ | E1 强门禁（向导无逃生门 + repo 改配置强制复验）+ E2 离开保护（模版没有的能力）+ G5 摘要回读；真机实测门禁生效（未连接时 recover 禁用） |
 | 本地化完整性 | 6 | **9.5** ↑ | i18n parity 护栏（双语键集合全等）+ 本轮修掉 `@` 编译错误 + 新增 message-syntax 静态护栏；未做翻译质量人工审校，故不满分 |
 | 响应式适配 | 5 | **8.5** ↑ | P2 断点体系 + 本轮维护行 640px 纵向堆叠；**全站移动端走查未做**，保守计分 |
@@ -169,6 +171,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ## 修订记录
 
+- v1.6（2026-10-19 六次修订）：E4「设置仓库密码」由状态卡内行内展开面板**改回 NModal 弹窗**，并抽取 `PasswordEntryModal.vue` 共用组件（E44 设置密码与 C4 密钥轮换复用，生成语义各异：E44 后端生成回显 / C4 前端本地强随机）；弹窗 `width` 收口修复瘦长条（原 `repo__modal` 类无 CSS 定义）；E25 缓存维护设置页专区**整体并入仓库页维护区**成为唯一入口（占用详情改纯文本注释口径，删除设置页 `sec-cache` 卡片与锚点项）。后端与红线区零改动（commit eb9cf69）。
 - v1.5（2026-10-19 五次修订）：第三轮底座工程回填（§4.3）——aria 盘点（缺口 11 处补齐 + a11y-baseline 静态护栏）与移动端 4 视口走查（4 项实锤修复，含「overflow-x:auto 使 margin 不折叠 → 桌面 +8px」的像素级回归教训）；桌面零漂移以像素 diff 验收（0.000%）；评分更新：响应式 9 / 可访问性 8.5。
 - v1.4（2026-10-19 四次修订）：E4 落地（§4.1.2）——对象由「更改密码弹窗」纠正为 repo 页「设置仓库密码」NModal（设置页 E28 本就是行内卡，`git log -S` 取证）；改为状态卡内行内展开面板（API 不变，一次性明文语义保留）；真机以「临时仓库完整生命周期 + 自清理」断言（modal 遮罩 = 0、面板开合、DELETE 三步门）。E1–E6 至此全部落地。
 - v1.3（2026-10-19 三次修订）：R1–R4 实施回填（§4.1 逐批落地清单 + 新增 passwordStrength spec 护栏）；§4.2 记录两处**由实施取证推翻方案原文**的裁决——① E1 在 repo 页改为「保存后强制复验」（`testRepo` 读已存配置，先测后存会与凭据录入死锁），② 撤销「E25 前端零入口」误判（`api/settings.ts` + 设置页专区已完整覆盖，repo 维护区为复用式第二入口）。E4（更改密码行内展开）仍未实施，转入待办。

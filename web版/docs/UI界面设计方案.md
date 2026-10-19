@@ -326,7 +326,7 @@
 > - **KPI 状态带**：原「仓库状态卡 + 运行模式卡 + 2×`NStatistic`」四块合成一条 4 格带（仓库状态 / 快照数 / 运行模式 / 最近备份），窄屏 2×2；`TierCard.vue` **保留**（`TaskWizard` 步骤①仍在用），仅从仪表盘摘除；仓库告警（`last_error` / 加载失败）由卡内上提为整宽告警行。
 > - **count-up（AB-2）**：新建 `composables/useCountUp.ts`。两个必须的细节——① 首帧用 `firstRun` 标志跳过播放，否则 `immediate` 首次触发就会把 `played` 置位，数据后到时反而不播；② `prefers-reduced-motion` 直切终值；组件卸载/值重入时 `cancelAnimationFrame`，不与 15s 轮询抢帧（轮询只改目标值，动画一次性）。
 > - **任务卡「7 天未跑」**：`TaskCard.vue` 派生 `stale`（启用中且有 `last_run_at` 且超 7 天），追加 warning 态 `StatusTag`；从未运行的任务由 `never_run` 徽章表达，不重复标记。
-> - **settings 锚点目录**：8 区块（dump / behavior / credential / metrics / cache / timezone / password / transfer）吸顶横条，文案复用各卡 `title` 键（零新增目录文案）；高亮判定线取 `clamp(140, 45% 视口, 520)`——固定小判定线（120px）在「页面已滚到底、末尾区块推不到顶」时失效（实测点「管理员改密」高亮仍停在「缓存维护」）；点击后 1.2s 高亮锁定，避免平滑滚动途中被途经区块刷走。
+> - **settings 锚点目录**：7 区块（dump / behavior / credential / metrics / timezone / password / transfer，缓存维护已并入仓库页维护区）吸顶横条，文案复用各卡 `title` 键（零新增目录文案）；高亮判定线取 `clamp(140, 45% 视口, 520)`——固定小判定线（120px）在「页面已滚到底、末尾区块推不到顶」时失效（实测点「管理员改密」高亮此前停在已移除的「缓存维护」区块）；点击后 1.2s 高亮锁定，避免平滑滚动途中被途经区块刷走。
 > - **settings 吸底保存条**：仅 dump 表单（8 键 + 密码三态、页面最长）；其余 6 个区块各自独立保存动作，做统一底栏会出现「一条底栏对应多个保存目标」的歧义，故不做。
 > - **两个实测坑（已修，改这类样式/网格前必读）**：
 >   1. **`n-grid` 的 `responsive="screen"` 只认命名断点**（`xs/s/m/l/xl/xxl`）。`cols="2 900:4"` 这种数字断点**静默不生效**（`responsiveQuery` 传的是断点布尔集，不是像素宽度）→ 1440 宽仍停在基础值 2 列。本批修正 dashboard（`2 l:4`）与 repo 页（`1 l:2`，原 `1 1100:2` 同样失效），并在走查里加「1440 实测 4 列」护栏。

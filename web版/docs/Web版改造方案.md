@@ -294,7 +294,7 @@ services:
 | 调度参数（cron 表达式、jitter、重试次数/间隔、巡检周期、prune 独立间隔）                        | **UI**                               | APScheduler 动态重载，改完即生效无需重启容器；**调度统一为 cron 触发器**（策略级 cron + 全局缺省，v2.3 消除 interval/cron 双轨） |                          |
 | 行为开关（AUTO_INIT、AUTO_UNLOCK、CHECK 启用/抽样比例/月度全量日、压缩开关、one-file-system） | **UI**                               | 后者两项为策略级字段                                                                                |                          |
 | 时区（TZ）                                                               | **UI**                               | 后端用 zoneinfo 格式化时间戳 + spawn restic 时注入 TZ env；容器系统时区仅作回退                                  |                          |
-| 缓存维护                                                                 | **UI 动作**                            | 缓存位置由挂载定死（compose），但"查看占用/一键清空"是界面操作（清缓存不丢数据，仅变慢）                                         |                          |
+| 缓存维护                                                                 | **UI 动作**                            | 界面入口在仓库页维护区（设置页专区已并入，2026-10-19）；"查看占用/一键清空"是界面操作（清缓存不丢数据，仅变慢）                                         |                          |
 | 备份源 / 排除规则 / 保留档位（KEEP\_* / group-by）                                | **UI**                               | 即策略模型                                                                                     |                          |
 | 管理员账号与密码                                                             | **UI**                               | 首启随机密码仅 Web 页面一次性展示 + 强制修改（§6.1，不入 docker logs）                                           |                          |
 | 挂载清单（`/host` ro                                                      | rw、/restore、本地仓库 /repo、/data、/cache） | **compose**                                                                               | bind-mount 运行时不可变，容器固有约束 |
@@ -513,7 +513,7 @@ SSE 鉴权与普通 API 走同一 cookie session 体系。
 2. 策略管理器（多策略 UI 开放 / 自调度 / prune 独立到期，改表零成本——P1 已按多策略建表）；
 3. **覆盖比对确认流**：自研"快照 ls × 目标磁盘现状"比对层 + `restore/preview` + 原位恢复确认门（§3.4）；
 4. forget 预览-确认流、check、任务历史与审计；
-5. 通知模块（UI 配置 + 测试按钮）、DB dump 配置 UI（含 pg 版本探测失败提示）、缓存维护动作、  
+5. 通知模块（UI 配置 + 测试按钮）、DB dump 配置 UI（含 pg 版本探测失败提示）、缓存维护动作（仓库页维护区）、  
    行为开关（AUTO_INIT/AUTO_UNLOCK/CHECK）；
 6. **rclone 仓库支持（P2 优先，Q6 裁决）**：rclone 二进制、config 管理、UI 联动表单；sftp 移 P3（known_hosts 托管待设计）；
 7. **策略限速字段（Q5 裁决）**：`--limit-upload/--limit-download`（KiB/s，0=不限）进策略表与策略页，进程级 nice/ionice 作 IO 优先级补充（支持项随 P2 实现实测）。
