@@ -224,6 +224,17 @@ SUBPROCESS_LOOP_HINT = (
 )
 # 仓库状态进程内缓存 TTL：避免仪表盘轮询反复打仓库（E30 成本可控的关键手段）
 REPO_STATUS_CACHE_SECONDS = 30.0
+# 探测失败的结构化分类（E30 status / E29 test 共用；前端按它判定「初始化」按钮该不该出现，
+# 不必再匹配中文原因文案——文案可改、分类稳定，按钮判定不会随文案漂移）
+FAILURE_KIND_LOCKED = "locked"
+FAILURE_KIND_PASSWORD = "password"
+FAILURE_KIND_NOT_INITIALIZED = "not_initialized"
+FAILURE_KIND_CREDENTIALS = "credentials"
+FAILURE_KIND_NETWORK = "network"
+FAILURE_KIND_TIMEOUT = "timeout"
+FAILURE_KIND_UNKNOWN = "unknown"
+# 仓库密码生成长度（后端 secrets 生成与前端「生成强随机密码」同口径，避免两处位数不一致）
+REPO_PASSWORD_LENGTH = 24
 # 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）
 SNAPSHOT_FILES_MAX_OFFSET = 1_000_000
 

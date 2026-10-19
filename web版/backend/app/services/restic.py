@@ -20,7 +20,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from app.constants import INPLACE_RESTORE_TARGET_ROOT, SUBPROCESS_LOOP_HINT
+from app.constants import (
+    FAILURE_KIND_CREDENTIALS,
+    FAILURE_KIND_LOCKED,
+    FAILURE_KIND_NETWORK,
+    FAILURE_KIND_NOT_INITIALIZED,
+    FAILURE_KIND_PASSWORD,
+    FAILURE_KIND_TIMEOUT,
+    FAILURE_KIND_UNKNOWN,
+    INPLACE_RESTORE_TARGET_ROOT,
+    SUBPROCESS_LOOP_HINT,
+)
 from app.errors import ResticFailedError, ValidationError
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
@@ -633,28 +643,48 @@ class ResticCmd:
 
 
 # 失败原因关键词 → 可操作提示（§5.1 E29「原因明示，禁止静默」；按特异性从高到低排列）
-_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         ("already locked", "unable to create lock", "remove stale locks"),
+        FAILURE_KIND_LOCKED,
         "仓库锁残留（确认无任务运行后可走解锁操作清理）",
     ),
     (
         ("wrong password", "invalid password", "incorrect password", "no key found"),
+        FAILURE_KIND_PASSWORD,
         "仓库密码错误（请检查仓库密码文件挂载）",
     ),
     (
         ("does not exist", "not initialized", "unable to open config file", "no such bucket"),
+        FAILURE_KIND_NOT_INITIALIZED,
         "仓库不存在或未初始化（请检查 repo.url，或先执行 init）",
     ),
     (
         ("credentials", "accessdenied", "access denied", "unauthorized", "invalidaccesskey"),
+        FAILURE_KIND_CREDENTIALS,
         "对象存储凭据缺失或无效（请检查 cred.* 配置）",
     ),
     (
         ("no such host", "connection refused", "network is unreachable", "i/o timeout", "tls handshake"),
+        FAILURE_KIND_NETWORK,
         "网络不可达或端点错误（请检查网络与端点地址）",
     ),
 )
+
+
+def failure_kind(exit_code: int, lines: list[str]) -> str:
+    """把探测失败归到**结构化分类**（供 UI 判定该给哪个动作，不必匹配中文文案）。
+
+    Returns:
+        ``FAILURE_KIND_*`` 之一；无命中（含退出码 -1 超时）分别为 unknown / timeout。
+    """
+    if exit_code == -1:
+        return FAILURE_KIND_TIMEOUT
+    joined = "\n".join(lines).lower()
+    for keywords, kind, _reason in _FAILURE_HINTS:
+        if any(keyword in joined for keyword in keywords):
+            return kind
+    return FAILURE_KIND_UNKNOWN
 
 
 def failure_reason(exit_code: int, lines: list[str], timeout_seconds: float | None = None) -> str:
@@ -673,7 +703,7 @@ def failure_reason(exit_code: int, lines: list[str], timeout_seconds: float | No
             return f"restic 探测超时（超过 {timeout_seconds:g}s）"
         return "restic 探测超时"
     joined = "\n".join(lines).lower()
-    for keywords, reason in _FAILURE_HINTS:
+    for keywords, _kind, reason in _FAILURE_HINTS:
         if any(keyword in joined for keyword in keywords):
             return reason
     detail = _first_meaningful(lines)

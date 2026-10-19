@@ -30,6 +30,7 @@ from app.constants import (
     AUDIT_REPO_TEST,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
+    REPO_PASSWORD_LENGTH,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
     REPO_STATUS_CACHE_SECONDS,
@@ -52,7 +53,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
-from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
 from app.utils.ulid import new_ulid
 
 router = APIRouter(prefix="/api", tags=["repos"])
@@ -431,10 +432,11 @@ async def test_repo(
 
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS)
+        kind = failure_kind(probe.exit_code, probe.lines)
         await request.app.state.audit.record(
             AUDIT_REPO_TEST, target=repo_id, detail={"ok": False, "reason": reason}, result="denied"
         )
-        return RepoTestResponse(ok=False, latency_ms=latency_ms, reason=reason)
+        return RepoTestResponse(ok=False, latency_ms=latency_ms, reason=reason, failure_kind=kind)
 
     await request.app.state.audit.record(
         AUDIT_REPO_TEST, target=repo_id, detail={"ok": True, "latency_ms": latency_ms}, result="ok"
@@ -485,13 +487,20 @@ async def set_repo_password(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> RepoPasswordResponse:
-    """首次写入仓库密码文件（``<passfile_root>/<repo_id>/password``，0600 原子写）。
+    """写入仓库密码文件（``<passfile_root>/<repo_id>/password``，0600 原子写）。
 
-    - ``password`` 为空 → 后端生成强随机密码并**一次性回显**（不落库、不落日志、不进审计）；
-    - ``password`` 非空 → 按用户自填写入（响应不回显，用户已知）。
+    - ``password`` 为空 → 后端生成强随机密码（长度 ``REPO_PASSWORD_LENGTH``，与前端
+      「生成强随机密码」同口径）并**一次性回显**（不落库、不落日志、不进审计）；
+    - ``password`` 非空 → 按用户自填写入（响应不回显，用户已知）；
+    - ``force`` → 文件已存在时也允许覆盖，但**必须先证明仓库当前打不开**
+      （密码错误 / 未初始化 / 凭据无效……）。
 
-    **只在文件不存在时允许**：该密码既是 restic 仓库密钥，也是 R-025 凭据加密的密钥源
+    默认**只在文件不存在时允许**：该密码既是 restic 仓库密钥，也是 R-025 凭据加密的密钥源
     （HKDF info 混入 repo_id）——覆盖已存在的文件会让仓库不可读、已加密凭据全部失效。
+
+    force 的放行条件（自救通道，2026-10-20）：密码文件存在但仓库打不开时，用户既删不掉
+    default 仓库、旧密码又无从找回，界面上没有任何自救路径——故在此开一条「先探测后覆盖」
+    的窄门；仓库能正常打开（密码正确）时仍拒绝，更换密码必须走 restic key passwd（轮换）。
     """
     del session
     _validate_repo_id(repo_id)
@@ -501,14 +510,25 @@ async def set_repo_password(
         raise RepoNotFoundError(repo_id)
 
     path = passfile_path(request.app.state.settings, repo_id)
+    forced = False
     if path.exists():
-        raise ValidationError(
-            f"仓库密码文件已存在（{path}）——密码既是仓库密钥也是凭据加密密钥源，"
-            "覆盖会使仓库不可读且已加密凭据失效；如确需更换，请在宿主机挂载点手动操作"
-        )
+        if not payload.force:
+            raise ValidationError(
+                f"仓库密码文件已存在（{path}）——密码既是仓库密钥也是凭据加密密钥源，"
+                "覆盖会使仓库不可读且已加密凭据失效；如确需更换，请走「密钥轮换」，"
+                "或在仓库已打不开（密码错误）时点「重设密码」覆盖"
+            )
+        # 覆盖前置门禁：仓库此刻能用现有密码打开 → 绝不允许覆盖（覆盖＝自毁仓库）
+        status = await _probe_repo_status(request, repo_id)
+        if status.connected:
+            raise ValidationError(
+                "仓库当前可正常打开（现有密码正确）——覆盖密码会让仓库不可读。"
+                "若要更换密码，请走「密钥轮换」（restic key passwd）"
+            )
+        forced = True
 
     generated = not (payload.password or "").strip()
-    plain = secrets.token_urlsafe(32) if generated else (payload.password or "")
+    plain = _generate_repo_password() if generated else (payload.password or "")
 
     try:
         _write_passfile(path, plain)
@@ -517,9 +537,12 @@ async def set_repo_password(
             f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
         ) from exc
 
-    # 审计只记动作与是否生成，明文绝不入审计/日志（红线 S3）
+    # 审计只记动作与是否生成/是否覆盖，明文绝不入审计/日志（红线 S3）
     await request.app.state.audit.record(
-        AUDIT_REPO_PASSWORD_SET, target=repo_id, detail={"generated": generated}, result="ok"
+        AUDIT_REPO_PASSWORD_SET,
+        target=repo_id,
+        detail={"generated": generated, "forced": forced},
+        result="ok",
     )
     invalidate_repo_status_cache()
     return RepoPasswordResponse(
@@ -528,6 +551,30 @@ async def set_repo_password(
         password=plain if generated else None,
         path=str(path),
     )
+
+
+# 生成用字符集（四类；剔除易混淆字符 0/O、1/l/I，与前端 passwordStrength 同口径）
+_PASSWORD_CLASSES: tuple[str, ...] = (
+    "abcdefghjkmnpqrstuvwxyz",
+    "ABCDEFGHJKMNPQRSTUVWXYZ",
+    "23456789",
+    "!@#$%^&*-_=+",
+)
+
+
+def _generate_repo_password(length: int = REPO_PASSWORD_LENGTH) -> str:
+    """生成定长强随机仓库密码（每类字符至少一个，再整体洗牌）。
+
+    长度取 ``REPO_PASSWORD_LENGTH``，与前端「生成强随机密码」同一口径——两处位数
+    曾不一致（后端 token_urlsafe(32)≈43 位 vs 前端 20 位），用户可见。
+    """
+    rng = secrets.SystemRandom()
+    chars = [rng.choice(cls) for cls in _PASSWORD_CLASSES]
+    all_chars = "".join(_PASSWORD_CLASSES)
+    while len(chars) < max(length, len(_PASSWORD_CLASSES)):
+        chars.append(rng.choice(all_chars))
+    rng.shuffle(chars)
+    return "".join(chars)
 
 
 def _write_passfile(path: Path, secret: str) -> None:
@@ -607,6 +654,7 @@ async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusRespon
             connected=False,
             locked=_looks_locked(probe.lines),
             last_error=failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS),
+            failure_kind=failure_kind(probe.exit_code, probe.lines),
         )
 
     return RepoStatusResponse(connected=True, locked=False, capacity=await _read_capacity(restic, parser, env))

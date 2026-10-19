@@ -758,6 +758,9 @@ class RepoTestResponse(_Base):
     ok: bool
     latency_ms: int = 0
     reason: str | None = None
+    # 结构化失败分类（FAILURE_KIND_*；成功时 None）——前端据此判定该给
+    # 「初始化」还是「重设密码」，不再依赖中文文案匹配
+    failure_kind: str | None = None
 
 
 class RepoCapacity(_Base):
@@ -779,6 +782,9 @@ class RepoStatusResponse(_Base):
     locked: bool = False
     capacity: RepoCapacity = Field(default_factory=RepoCapacity)
     last_error: str | None = None
+    # 结构化失败分类（FAILURE_KIND_*；connected=True 时为 None）——UI 判定
+    # 「初始化 / 重设密码 / 解锁」哪个动作可用的唯一依据（不靠匹配 last_error 文案）
+    failure_kind: str | None = None
 
 
 class ReportBucketOut(_Base):
@@ -875,11 +881,15 @@ class RepoIdSuggestion(_Base):
 class RepoPasswordRequest(_Base):
     """R-023 设置仓库密码（**仅在密码文件不存在时允许**）。
 
-    - ``password`` 为空/None：后端生成强随机密码，明文**一次性回显**（不落库、不落日志）；
-    - ``password`` 非空：用户自填（明文只经本次请求体，响应不回显）。
+    - ``password`` 为空/None：后端生成强随机密码（长度 ``REPO_PASSWORD_LENGTH``，
+      与前端「生成强随机密码」同口径），明文**一次性回显**（不落库、不落日志）；
+    - ``password`` 非空：用户自填（明文只经本次请求体，响应不回显）；
+    - ``force``：密码文件已存在时也允许覆盖——**仅当仓库当前打不开**（密码错误 /
+      未初始化 / 凭据无效）才被接受，仓库可正常打开时仍 422（应走密钥轮换）。
     """
 
     password: str | None = Field(default=None, max_length=512)
+    force: bool = False
 
 
 class RepoPasswordResponse(_Base):

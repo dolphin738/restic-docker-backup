@@ -16,6 +16,9 @@ from pathlib import Path
 import pytest
 from conftest import ORIGIN, finish_bootstrap
 
+from app.constants import REPO_PASSWORD_LENGTH
+from app.schemas.api_schemas import RepoStatusResponse
+
 
 @pytest.fixture(autouse=True)
 def _reset_repo_status_cache():
@@ -33,7 +36,11 @@ def _passfile(ns, repo_id: str) -> Path:
 
 
 async def test_generate_writes_passfile_and_echoes_once(app_client):
-    """空 body → 生成强随机密码：落盘 0600，明文一次性回显且与文件内容一致。"""
+    """空 body → 生成强随机密码：落盘 0600，明文一次性回显且与文件内容一致。
+
+    生成长度取 ``REPO_PASSWORD_LENGTH``——与前端「生成强随机密码」同口径
+    （此前后端 token_urlsafe(32)≈43 位 vs 前端 20 位，界面上两个位数）。
+    """
     ns = app_client
     await finish_bootstrap(ns)
     await ns.app.state.repos_repo.create("r2", "二号仓库")
@@ -42,7 +49,12 @@ async def test_generate_writes_passfile_and_echoes_once(app_client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["generated"] is True
-    assert body["password"] and len(body["password"]) >= 32
+    assert len(body["password"]) == REPO_PASSWORD_LENGTH
+    # 四类字符齐备（与前端 generateStrongPassword 的生成口径一致：每类至少一个）
+    assert any(c.islower() for c in body["password"])
+    assert any(c.isupper() for c in body["password"])
+    assert any(c.isdigit() for c in body["password"])
+    assert any(not c.isalnum() for c in body["password"])
 
     path = _passfile(ns, "r2")
     assert path.is_file()
@@ -125,7 +137,7 @@ async def test_audit_never_records_plaintext(app_client):
     for row in rows:
         assert secret not in str(row.detail)
         # detail 落库为 JSON 文本（AuditRepo 只存文本，不存结构化列）
-        assert json.loads(row.detail) == {"generated": True}
+        assert json.loads(row.detail) == {"generated": True, "forced": False}
 
 
 async def test_passfile_status_flips_to_configured(app_client):
@@ -142,6 +154,60 @@ async def test_passfile_status_flips_to_configured(app_client):
 
     listed = await ns.client.get("/api/repos")
     assert {r["id"]: r["passfile_status"] for r in listed.json()}["r5"] == "configured"
+
+
+async def test_force_overwrite_allowed_when_repo_unreachable(app_client, monkeypatch):
+    """密码文件已存在但仓库打不开（密码错误）→ force=true 允许覆盖。
+
+    自救通道：default 仓库禁删、旧密码又无从找回时，界面此前没有任何出路。
+    放行前必须先探测一次——只有仓库**当前打不开**才接受覆盖。
+    """
+    from app.routers import repos as repos_router
+
+    async def unreachable(_request, _repo_id):
+        return RepoStatusResponse(
+            connected=False,
+            failure_kind="password",
+            last_error="仓库密码错误（请检查仓库密码文件挂载）",
+        )
+
+    monkeypatch.setattr(repos_router, "_probe_repo_status", unreachable)
+
+    ns = app_client
+    await finish_bootstrap(ns)
+    before = _passfile(ns, "default").read_text(encoding="utf-8")
+    assert before != "brand-new-secret"
+
+    resp = await ns.client.post(
+        "/api/repos/default/password", json={"password": "brand-new-secret", "force": True}, headers=ORIGIN
+    )
+    assert resp.status_code == 200, resp.text
+    assert _passfile(ns, "default").read_text(encoding="utf-8") == "brand-new-secret"
+
+    # 覆盖是危险动作：审计必须留下 forced 标记（明文仍不得入审计）
+    rows, _total = await ns.app.state.audit.query(action="repo.password_set", limit=20)
+    assert any(json.loads(r.detail).get("forced") is True for r in rows)
+    assert not any("brand-new-secret" in str(r.detail) for r in rows)
+
+
+async def test_force_still_rejected_when_repo_connected(app_client, monkeypatch):
+    """仓库此刻能正常打开（密码正确）→ 即使 force 也拒绝：换密码必须走密钥轮换。"""
+    from app.routers import repos as repos_router
+
+    async def reachable(_request, _repo_id):
+        return RepoStatusResponse(connected=True)
+
+    monkeypatch.setattr(repos_router, "_probe_repo_status", reachable)
+
+    ns = app_client
+    await finish_bootstrap(ns)
+    before = _passfile(ns, "default").read_text(encoding="utf-8")
+
+    resp = await ns.client.post(
+        "/api/repos/default/password", json={"password": "would-destroy-repo", "force": True}, headers=ORIGIN
+    )
+    assert resp.status_code == 422, resp.text
+    assert _passfile(ns, "default").read_text(encoding="utf-8") == before
 
 
 async def test_unwritable_directory_reports_actionable_error(app_client, monkeypatch):
