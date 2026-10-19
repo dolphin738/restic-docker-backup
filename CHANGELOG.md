@@ -4,7 +4,7 @@
 版本采用语义化版本（SemVer）。仓库同时包含 `shell版本/` 与 `web版/` 两套实现，
 下方版本记录以 **Web 版**为主。
 
-## [未发布] — 2026-10-20（Web 版仓库页「目标位置」模块复刻）
+## [1.0.3] — 2026-10-20（Web 版仓库页「目标位置」模块复刻）
 
 按《UI全量改造方案》v1.7 §4.4 落地（对齐 Duplicati `destination.component`）；除一处后端防护外**零业务改动**，API 契约不变。
 
@@ -25,6 +25,8 @@
 ### 质量
 
 - 前端 typecheck 0 error、vitest 33 例全通过、build 通过；后端 pytest 797 passed + ruff 0 error；新增护栏 `test_subprocess_loop_guard.py`（2 例）与 `audit-log-i18n.spec.ts`（3 例）。
+- 依赖精确钉定：pytest==9.0.3 / cryptography==50.0.0（按发布版本升级），pytest-asyncio 上限放宽至 `<2`；uv.lock 重锁为标准 PyPI 源（此前腾讯镜像源重写已还原）。
+- 安全加固：移除未声明 `bcrypt` 备降分支，密码哈希改为 argon2-only（历史 `$2b$` 哈希按不匹配处理，需重置密码）。
 
 ## [1.0.2] — 2026-10-19（Web 版第二轮功能面对齐）
 
