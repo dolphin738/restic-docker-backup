@@ -519,6 +519,9 @@ export default {
     cachePreview: '清空后首次备份/校验需重新读取仓库，可能明显变慢。',
     cacheUsage: '当前占用 {size}（{n} 项）',
     cacheUnknown: '缓存占用未知',
+    // E25 设置页缓存专区并入本页后新增（沿用纯文本注释口径）
+    cachePath: '缓存目录：{path}',
+    cacheMeasured: '测量时间：{time}',
     // G3/E1 连接验证态（repo 页：改配置 → 结论作废 → 复验后才放行 init）
     testPending: '尚未验证',
     testVerified: '连接已验证',
@@ -577,9 +580,10 @@ export default {
     rotateDesc: '把仓库密码改为新密码（restic key passwd）。旧密码轮换后立即作废，口令文件同步重写；请确保新密码已妥善备份。',
     rotateNewPw: '新密码',
     rotateNewPwPlaceholder: '至少 10 位',
-    rotateConfirmPw: '确认新密码',
-    rotateConfirmPwPlaceholder: '再输入一次新密码',
-    rotateMismatch: '两次输入的新密码不一致',
+    // 输入方式与 E44 同款（共用 PasswordEntryModal）：生成态 / 自填态文案
+    rotateGeneratedHint: '新密码已生成，仅显示这一次——请立即复制并妥善备份。确认后即执行轮换，旧密码作废。',
+    rotateUseCustom: '使用此密码轮换',
+    rotateConfirmLabel: '确认轮换',
     rotateOk: '密钥已轮换，口令文件已同步为新密码',
     copyBtn: '复制快照到…',
     copyDesc: '把当前仓库的快照原样增量复制到目标仓库（只传新快照，可中断续传）。用于搬家或建异地副本。',
@@ -852,17 +856,9 @@ export default {
       saved: '指标令牌已保存',
       hint: '抓取示例：curl -H "Authorization: Bearer <令牌>" http://<主机>/api/metrics；成功率报表见左侧「报表」页。',
     },
+    // E25 缓存维护专区已并入仓库页；仅保留仓库页在用的键（cleared/conflict/truncated）
     cache: {
-      title: '缓存维护',
-      desc: 'restic 缓存目录占用（服务端 30 秒结果缓存，超时返回部分值）。清空只影响缓存，不影响仓库数据与快照。',
-      path: '缓存目录',
-      size: '占用空间',
-      items: '条目数',
-      measured: '测量时间',
       truncated: '超时截断（部分值）',
-      clear: '清空缓存',
-      gateTitle: '确认清空缓存',
-      clearDesc: '将删除 restic 缓存目录下的全部内容以释放磁盘空间；不影响仓库数据与快照。有任务进行中时无法清空。',
       cleared: '缓存已清空',
       conflict: '有任务进行中：请等待运行中的任务结束后再清空缓存',
     },

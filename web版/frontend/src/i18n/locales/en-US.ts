@@ -496,9 +496,10 @@ export default {
     rotateDesc: 'Change the repository password (restic key passwd). The old password is invalidated immediately and the password file is rewritten; make sure the new password is safely backed up.',
     rotateNewPw: 'New password',
     rotateNewPwPlaceholder: 'At least 10 characters',
-    rotateConfirmPw: 'Confirm new password',
-    rotateConfirmPwPlaceholder: 'Repeat the new password',
-    rotateMismatch: 'The two passwords do not match',
+    // Same input style as E44 (shared PasswordEntryModal): generated mode / custom mode
+    rotateGeneratedHint: 'The new password has been generated and is shown only once — copy and store it now. Confirming will run the rotation and invalidate the old password.',
+    rotateUseCustom: 'Rotate with this password',
+    rotateConfirmLabel: 'Confirm rotation',
     rotateOk: 'Key rotated; password file updated to the new password',
     copyBtn: 'Copy snapshots to…',
     copyDesc: 'Incrementally copy snapshots from the current repository to a target repository (only new snapshots, resumable). For migration or offsite copies.',
@@ -581,6 +582,9 @@ export default {
     cachePreview: 'After clearing, the first backup or check re-reads the repository and may be noticeably slower.',
     cacheUsage: 'Current usage {size} ({n} item(s))',
     cacheUnknown: 'Cache usage unknown',
+    // Added when the settings-page cache section merged into this page (plain-text note style)
+    cachePath: 'Cache directory: {path}',
+    cacheMeasured: 'Measured at: {time}',
     // G3/E1 connection verification state (repo page: config change invalidates the verdict; re-verify before init)
     testPending: 'Not verified yet',
     testVerified: 'Connection verified',
@@ -852,17 +856,9 @@ export default {
       saved: 'Metrics token saved',
       hint: 'Example: curl -H "Authorization: Bearer <token>" http://<host>/api/metrics; the success-rate report lives on the Reports page.',
     },
+    // E25 cache section merged into the repo page; only keys still used there remain
     cache: {
-      title: 'Cache maintenance',
-      desc: 'restic cache directory usage (server-side 30s result cache; partial value on timeout). Clearing only affects the cache — repository data and snapshots are untouched.',
-      path: 'Cache directory',
-      size: 'Size',
-      items: 'Items',
-      measured: 'Measured at',
       truncated: 'Timeout truncated (partial)',
-      clear: 'Clear cache',
-      gateTitle: 'Confirm cache clearing',
-      clearDesc: 'Everything inside the restic cache directory will be deleted to free disk space; repository data and snapshots are untouched. Clearing is blocked while a job is running.',
       cleared: 'Cache cleared',
       conflict: 'A job is running: wait until running jobs finish before clearing the cache',
     },

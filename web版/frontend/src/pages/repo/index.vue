@@ -29,8 +29,9 @@ import { useI18n } from 'vue-i18n'
 import { browseFs } from '@/api/fs'
 import { getConfig, putConfig } from '@/api/config'
 import { createJob } from '@/api/jobs'
-// E25 缓存端点已在 api/settings.ts（GET /api/cache、POST /api/cache/clear），
-// 设置页有专区；维护区复用同一对函数，避免第二套路径（/api/ops/cache 并不存在）。
+// E25 缓存端点已在 api/settings.ts（GET /api/cache、POST /api/cache/clear）。
+// 设置页缓存维护专区已并入本维护区（2026-10-19），本页是唯一 UI 入口，
+// 复用同一对函数，避免第二套路径（/api/ops/cache 并不存在）。
 import { clearCache, getCacheUsage } from '@/api/settings'
 import {
   createRepo,
@@ -57,10 +58,14 @@ import type {
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
+import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
+import { formatDateTime } from '@/utils/datetime'
+// G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
+import { generateStrongPassword } from '@/utils/passwordStrength'
 
 const { t } = useI18n()
 const ui = useUiStore()
@@ -229,29 +234,32 @@ function typeLabel(ty: string): string {
 // 密码文件按仓库维度摆放（<PASSFILE_ROOT>/<repo_id>/password），新仓库缺省不存在。
 // 它既是 restic 仓库密钥，也是凭据加密的密钥源——缺失时任何仓库操作都注定失败，
 // 故此处提供「生成/自填」入口，而不是让用户自己去猜宿主机路径。
+// E4 改版：与 C4 轮换共用 PasswordEntryModal（NModal 弹窗 + 两段式输入），API 不变。
 const passwordShow = ref(false)
 const passwordSaving = ref(false)
-const passwordInput = ref('')
-/** 生成场景的一次性明文：仅在展开面板存活期展示，收起即丢弃（不落库、不落日志）。 */
+/** 生成场景的一次性明文：仅在弹窗存活期展示，关闭即丢弃（不落库、不落日志）。 */
 const generatedPassword = ref<string | null>(null)
 
 const passfileMissing = computed(() => (repo.value?.passfile_status ?? 'missing') !== 'configured')
 
-/** E4：行内展开的开关（再点一次按钮 = 收起）。展开/收起都清掉一次性明文与自填草稿。 */
+/** 打开弹窗即清一次性明文（自填草稿由组件在 show 翻转时自清）。 */
 function openPassword(): void {
-  passwordShow.value = !passwordShow.value
-  passwordInput.value = ''
   generatedPassword.value = null
+  passwordShow.value = true
 }
 
 function closePassword(): void {
   passwordShow.value = false
-  passwordInput.value = ''
   generatedPassword.value = null
 }
 
 async function generatePassword(): Promise<void> {
   await submitPassword({})
+}
+
+/** 自填提交（PasswordEntryModal submit-custom 事件）。 */
+function onSubmitPassword(password: string): void {
+  void submitPassword({ password })
 }
 
 async function submitPassword(body: RepoPasswordRequest): Promise<void> {
@@ -264,7 +272,6 @@ async function submitPassword(body: RepoPasswordRequest): Promise<void> {
     const result = await setRepoPassword(id, body)
     // 只在生成场景回显；自填场景 password 恒为 null
     generatedPassword.value = result.generated ? result.password : null
-    passwordInput.value = ''
     message.success(t('repo.passwordSetOk'))
     await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
     if (!result.generated) {
@@ -276,18 +283,6 @@ async function submitPassword(body: RepoPasswordRequest): Promise<void> {
     }
   } finally {
     passwordSaving.value = false
-  }
-}
-
-async function copyGenerated(): Promise<void> {
-  if (!generatedPassword.value) {
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(generatedPassword.value)
-    message.success(t('repo.passwordCopied'))
-  } catch {
-    message.warning(t('repo.passwordCopyFailed'))
   }
 }
 
@@ -487,20 +482,43 @@ const recovering = ref(false)
 const recoverJobId = ref('')
 
 // ---------------------------------------------------------------- C4 密钥轮换 + 手动 copy（搬家）
+// 输入方式与 E44 同款（生成→复制 / 自填），与「设置仓库密码」共用 PasswordEntryModal。
+// 区别只在生成实现：轮换新密码后端不回显（S3）→ 前端本地生成、确认后才随请求提交。
 const rotateShow = ref(false)
 const rotating = ref(false)
-const rotatePw = ref('')
-const rotatePwConfirm = ref('')
+/** 生成态的一次性明文（前端本地生成）；null = 自填态。确认前仅存于内存。 */
+const rotateGenerated = ref<string | null>(null)
 const copyShow = ref(false)
 const copying = ref(false)
 const copyTarget = ref<string | null>(null)
 const copyResult = ref<{ ok: boolean; exit_code: number; message: string } | null>(null)
 
-const rotateReady = computed(
-  () =>
-    rotatePw.value.length >= 10 &&
-    rotatePw.value === rotatePwConfirm.value,
-)
+function openRotate(): void {
+  rotateGenerated.value = null
+  rotateShow.value = true
+}
+
+/** 前端本地生成强随机密码（G4 passwordStrength，纯 crypto 源，不经网络、不落任何存储）。 */
+function generateRotatePw(): void {
+  rotateGenerated.value = generateStrongPassword()
+}
+
+async function onRotate(newPassword: string): Promise<void> {
+  if (!currentRepoId.value || newPassword.length < 10) {
+    return
+  }
+  rotating.value = true
+  try {
+    await rotateRepoKey({ repo_id: currentRepoId.value, new_password: newPassword })
+    message.success(t('repo.rotateOk'))
+    rotateShow.value = false
+    rotateGenerated.value = null
+  } catch {
+    // AppError 已有全局提示
+  } finally {
+    rotating.value = false
+  }
+}
 
 // E25 本地缓存：占用查询（服务端 30s 缓存，前端 5 分钟不重取）+ 清空（S6 危险操作）
 const cacheQuery = useQuery({
@@ -522,24 +540,6 @@ const copyOptions = computed(() =>
       disabled: !(repo.url ?? '').trim() || repo.passfile_status !== 'configured',
     })),
 )
-
-async function onRotate(): Promise<void> {
-  if (!currentRepoId.value || !rotateReady.value) {
-    return
-  }
-  rotating.value = true
-  try {
-    await rotateRepoKey({ repo_id: currentRepoId.value, new_password: rotatePw.value })
-    message.success(t('repo.rotateOk'))
-    rotateShow.value = false
-    rotatePw.value = ''
-    rotatePwConfirm.value = ''
-  } catch {
-    // AppError 已有全局提示
-  } finally {
-    rotating.value = false
-  }
-}
 
 async function onCopy(): Promise<void> {
   if (!currentRepoId.value || !copyTarget.value) {
@@ -781,6 +781,21 @@ const cacheUsageText = computed(() => {
   }
   return t('repo.cacheUsage', { size: formatBytes(usage.size_bytes), n: usage.items_count })
 })
+
+/** 缓存目录一行文案（原设置页专区字段并入，沿用纯文本注释口径）；无数据时不渲染。 */
+const cachePathLine = computed(() => {
+  const usage = cacheQuery.data.value
+  return usage ? t('repo.cachePath', { path: usage.path }) : ''
+})
+
+/** 测量时间一行文案；无数据时不渲染。 */
+const cacheMeasuredLine = computed(() => {
+  const usage = cacheQuery.data.value
+  return usage ? t('repo.cacheMeasured', { time: formatDateTime(usage.measured_at) }) : ''
+})
+
+/** du 超时截断标注（后端回部分值，仍可用，仅提示不精确）。 */
+const cacheTruncated = computed(() => cacheQuery.data.value?.truncated ?? false)
 
 const capacityText = computed(() => {
   const size = repoStatus.value?.capacity.size
@@ -1032,61 +1047,6 @@ function formatBytes(value: number): string {
             <n-button v-if="passfileMissing" size="small" type="primary" @click="openPassword">
               {{ t('repo.passwordSetBtn') }}
             </n-button>
-            <!--
-              E4：设置仓库密码为**行内展开面板**（原 NModal → 卡内展开，API 不变）。
-              对齐 Duplicati 向导 Step1 的行内形态——密码缺失本就发生在读当前状态卡的语境里，
-              弹窗会打断「看到问题 → 当场处理」的动线；行内展开保留同样的两段式流程
-              （生成→复制 / 自填），一次性明文仍只在面板存活期可见，关闭即丢弃。
-            -->
-            <div
-              v-if="passwordShow"
-              class="repo__password-panel"
-              role="region"
-              :aria-label="t('repo.passwordTitle')"
-            >
-              <n-text strong>{{ t('repo.passwordTitle') }}</n-text>
-              <template v-if="generatedPassword">
-                <n-alert type="success" :show-icon="false">{{ t('repo.passwordGeneratedHint') }}</n-alert>
-                <n-input :value="generatedPassword" readonly class="repo__password-out" />
-                <n-space justify="end" class="repo__password-actions">
-                  <n-button size="small" secondary @click="copyGenerated">
-                    {{ t('repo.passwordCopy') }}
-                  </n-button>
-                  <n-button size="small" type="primary" @click="closePassword">
-                    {{ t('repo.passwordSavedClose') }}
-                  </n-button>
-                </n-space>
-              </template>
-              <template v-else>
-                <n-alert type="warning" :show-icon="false">{{ t('repo.passwordIntro') }}</n-alert>
-                <n-form label-placement="top" size="small" class="repo__password-form">
-                  <n-form-item :label="t('repo.passwordCustomLabel')">
-                    <n-input
-                      v-model:value="passwordInput"
-                      type="password"
-                      show-password-on="click"
-                      :placeholder="t('repo.passwordCustomPlaceholder')"
-                    />
-                  </n-form-item>
-                </n-form>
-                <n-space justify="end" class="repo__password-actions">
-                  <n-button size="small" secondary @click="closePassword">
-                    {{ t('common.cancel') }}
-                  </n-button>
-                  <n-button
-                    size="small"
-                    :disabled="!passwordInput.trim()"
-                    :loading="passwordSaving"
-                    @click="submitPassword({ password: passwordInput })"
-                  >
-                    {{ t('repo.passwordUseCustom') }}
-                  </n-button>
-                  <n-button size="small" type="primary" :loading="passwordSaving" @click="generatePassword">
-                    {{ t('repo.passwordGenerate') }}
-                  </n-button>
-                </n-space>
-              </template>
-            </div>
             <!-- 锁残留属状态信号（留在状态卡）；对应动作按钮已收进下方「仓库维护」分区 -->
             <n-alert v-if="repoStatus?.locked" type="warning" :show-icon="false">
               {{ t('repo.lockedNote') }}
@@ -1101,7 +1061,7 @@ function formatBytes(value: number): string {
       「先解释风险，再给动作」：分区标题 → 风险说明段 → 动作行）。
       原散落在状态卡内的 init / unlock / repair 与 C4 轮换、copy 统一收进本分区，
       状态卡回归纯展示；并补上 B3 recover（G1：后端早已支持、前端此前零入口）与
-      E25 清空缓存（设置页已有专区的第二入口，复用 api/settings 的同一对函数）。
+      E25 清空缓存（原设置页专区已并入本分区，本页是唯一 UI 入口，复用 api/settings 的同一对函数）。
       危险动作一律走 ConfirmGate 关键词确认。
     -->
     <n-card :title="t('repo.maintenanceTitle')" size="small">
@@ -1199,7 +1159,7 @@ function formatBytes(value: number): string {
             size="small"
             secondary
             :disabled="passfileMissing"
-            @click="rotateShow = true"
+            @click="openRotate"
           >
             {{ t('repo.rotateBtn') }}
           </n-button>
@@ -1215,12 +1175,17 @@ function formatBytes(value: number): string {
           </n-button>
         </div>
 
-        <!-- 动作行 7：E25 清空本地缓存（后端 S6 危险操作，有活跃任务时 409） -->
+        <!-- 动作行 7：E25 清空本地缓存（后端 S6 危险操作，有活跃任务时 409）。
+             原设置页「缓存维护」专区已并入本行：路径/大小/条目数/测量时间/截断
+             全部沿用本行纯文本注释口径展示（不再用设置页的 descriptions 表格）。 -->
         <div class="repo__maint-row">
           <div class="repo__maint-text">
             <n-text strong>{{ t('repo.cacheBtn') }}</n-text>
             <n-text depth="3" class="repo__note">{{ t('repo.cacheHint') }}</n-text>
             <n-text depth="3" class="repo__note">{{ cacheUsageText }}</n-text>
+            <n-text v-if="cachePathLine" depth="3" class="repo__note">{{ cachePathLine }}</n-text>
+            <n-text v-if="cacheMeasuredLine" depth="3" class="repo__note">{{ cacheMeasuredLine }}</n-text>
+            <n-text v-if="cacheTruncated" depth="3" class="repo__note">{{ t('settings.cache.truncated') }}</n-text>
           </div>
           <n-button size="small" secondary :loading="cacheClearing" @click="cacheShow = true">
             {{ t('repo.cacheBtn') }}
@@ -1407,42 +1372,14 @@ function formatBytes(value: number): string {
       </template>
     </ConfirmGate>
 
-    <!-- C4 密钥轮换：新密码须输入两次且 ≥10 位；成功后旧密码作废，口令文件同步重写 -->
-    <n-modal v-model:show="rotateShow" preset="card" :title="t('repo.rotateBtn')" class="repo__modal">
-      <n-space vertical :size="10">
-        <n-alert type="warning" :show-icon="false">{{ t('repo.rotateDesc') }}</n-alert>
-        <n-form label-placement="left" label-width="120" size="small">
-          <n-form-item :label="t('repo.rotateNewPw')">
-            <n-input
-              v-model:value="rotatePw"
-              type="password"
-              show-password-on="click"
-              :placeholder="t('repo.rotateNewPwPlaceholder')"
-            />
-          </n-form-item>
-          <n-form-item :label="t('repo.rotateConfirmPw')">
-            <n-input
-              v-model:value="rotatePwConfirm"
-              type="password"
-              show-password-on="click"
-              :placeholder="t('repo.rotateConfirmPwPlaceholder')"
-            />
-          </n-form-item>
-        </n-form>
-        <n-text v-if="rotatePwConfirm && !rotateReady" depth="3" type="error">
-          {{ t('repo.rotateMismatch') }}
-        </n-text>
-        <n-space justify="end">
-          <n-button quaternary @click="rotateShow = false">{{ t('common.cancel') }}</n-button>
-          <n-button type="primary" :loading="rotating" :disabled="!rotateReady" @click="onRotate">
-            {{ t('repo.rotateBtn') }}
-          </n-button>
-        </n-space>
-      </n-space>
-    </n-modal>
-
-    <!-- C4 手动 copy：把当前仓快照增量复制到目标仓（增量只传新快照，可中断续传） -->
-    <n-modal v-model:show="copyShow" preset="card" :title="t('repo.copyBtn')" class="repo__modal">
+    <!-- C4 手动 copy：把当前仓快照增量复制到目标仓（增量只传新快照，可中断续传）。
+         宽度收口：n-modal preset=card 默认无宽度约束，会被内容撑成全屏宽瘦长条。 -->
+    <n-modal
+      v-model:show="copyShow"
+      preset="card"
+      :title="t('repo.copyBtn')"
+      style="width: min(560px, calc(100vw - 32px))"
+    >
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('repo.copyDesc') }}</n-text>
         <n-form label-placement="left" label-width="120" size="small">
@@ -1473,6 +1410,49 @@ function formatBytes(value: number): string {
         </template>
       </n-space>
     </n-modal>
+
+    <!-- E44 设置仓库密码：NModal（与 C4 轮换共用 PasswordEntryModal 两段式输入）。
+         生成 = 后端 secrets 生成并已写入口令文件后一次性回显（确认 = 我已备份，关闭）；
+         自填 = 直接提交写入。API 与一次性明文语义不变。 -->
+    <PasswordEntryModal
+      v-model:show="passwordShow"
+      :title="t('repo.passwordTitle')"
+      :intro="t('repo.passwordIntro')"
+      :generated-hint="t('repo.passwordGeneratedHint')"
+      :custom-label="t('repo.passwordCustomLabel')"
+      :custom-placeholder="t('repo.passwordCustomPlaceholder')"
+      :generate-label="t('repo.passwordGenerate')"
+      :submit-label="t('repo.passwordUseCustom')"
+      :confirm-label="t('repo.passwordSavedClose')"
+      :generated="generatedPassword"
+      :loading="passwordSaving"
+      :min-length="1"
+      :show-generated-cancel="false"
+      @generate="generatePassword"
+      @submit-custom="onSubmitPassword"
+      @confirm-generated="closePassword"
+    />
+
+    <!-- C4 密钥轮换：输入方式与 E44 同款（生成→复制 / 自填）。
+         生成 = 前端本地强随机（轮换新密码后端不回显，S3）；确认 = restic key passwd，
+         成功后旧密码作废、口令文件同步重写。未提交前可返回自填（showGeneratedCancel）。 -->
+    <PasswordEntryModal
+      v-model:show="rotateShow"
+      :title="t('repo.rotateBtn')"
+      :intro="t('repo.rotateDesc')"
+      :generated-hint="t('repo.rotateGeneratedHint')"
+      :custom-label="t('repo.rotateNewPw')"
+      :custom-placeholder="t('repo.rotateNewPwPlaceholder')"
+      :generate-label="t('repo.passwordGenerate')"
+      :submit-label="t('repo.rotateUseCustom')"
+      :confirm-label="t('repo.rotateConfirmLabel')"
+      :generated="rotateGenerated"
+      :loading="rotating"
+      :min-length="10"
+      @generate="generateRotatePw"
+      @submit-custom="onRotate"
+      @confirm-generated="onRotate(rotateGenerated ?? '')"
+    />
   </n-space>
 </template>
 
@@ -1493,17 +1473,6 @@ function formatBytes(value: number): string {
 
 .repo__mount {
   cursor: pointer;
-}
-
-/* 一次性密码展示：等宽字体便于人工抄录，只读态由 n-input 的 readonly 提供 */
-.repo__password-out {
-  margin-top: 8px;
-  /* 等宽常量收口：theme/tokens.ts fontFamilyMono（经 --font-family-mono 全局变量） */
-  font-family: var(--font-family-mono);
-}
-
-.repo__password-actions {
-  margin-top: 12px;
 }
 
 .repo__picked {
@@ -1541,26 +1510,6 @@ function formatBytes(value: number): string {
     align-items: flex-start;
     flex-direction: column;
   }
-}
-
-/* E4 密码行内展开面板：嵌在状态卡 passfile 告警与按钮之后的次级面板
-   （1px 边框 + 弱分隔底色，与卡片内容区分层；不再使用模态弹窗）。 */
-.repo__password-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--n-border-color, rgba(128, 128, 140, 0.24));
-  border-radius: 8px;
-  background: var(--n-action-color, transparent);
-}
-
-.repo__password-form {
-  margin: 0;
-}
-
-.repo__password-actions {
-  margin-top: 2px;
 }
 
 /* A5 目的地类型卡片网格 */

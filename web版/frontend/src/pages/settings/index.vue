@@ -2,9 +2,9 @@
 /** 系统设置页（页面 11，增量设计 §4）。
  *
  * 分区：DB dump（批次 B 实装：dump.* 八键，密码三态沿 notify.* 先例）
- * → 行为开关（批次 B 实装：behavior.* 五键）→ 缓存维护（E25：占用展示 + ConfirmGate 清空
- * + 409 友好提示）→ 时区（既有键只读展示）→ 管理员改密（E28）。
+ * → 行为开关（批次 B 实装：behavior.* 五键）→ 时区（既有键只读展示）→ 管理员改密（E28）。
  * dump/behavior 提交走 E07 patch 通道（api/settings.saveDumpBehaviorConfig）。
+ * 缓存维护（E25）已于 2026-10-19 并入仓库页维护区，本页不再保留入口。
  */
 
 import { useQuery } from '@tanstack/vue-query'
@@ -32,12 +32,10 @@ import { useI18n } from 'vue-i18n'
 import { changePassword } from '@/api/auth'
 import { getConfig } from '@/api/config'
 import { exportConfig, importConfig } from '@/api/configTransfer'
-import { hasCode, isAppError } from '@/api/http'
 import type { ConfigExportPack, ConfigImportReport } from '@/api/types'
-import { clearCache, getCacheUsage, saveDumpBehaviorConfig } from '@/api/settings'
+import { saveDumpBehaviorConfig } from '@/api/settings'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatDateTime } from '@/utils/datetime'
 // G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
 import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
 
@@ -278,50 +276,6 @@ async function onSaveMetricsToken(): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- 缓存维护（E25，批次 A 实装）
-
-const cacheQuery = useQuery({
-  queryKey: ['cache', 'usage'],
-  queryFn: getCacheUsage,
-})
-
-const usage = computed(() => cacheQuery.data.value ?? null)
-const gateShow = ref(false)
-const clearing = ref(false)
-
-/** 字节数人类可读化（二进制口径 B/KiB/MiB/GiB/TiB）；非法值回落 —。 */
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return '—'
-  }
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let value = bytes
-  let unitIndex = 0
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024
-    unitIndex += 1
-  }
-  return `${unitIndex === 0 ? String(value) : value.toFixed(2)} ${units[unitIndex]}`
-}
-
-async function onConfirmClear(): Promise<void> {
-  clearing.value = true
-  try {
-    await clearCache()
-    message.success(t('settings.cache.cleared'))
-    await cacheQuery.refetch()
-  } catch (error) {
-    // silent 请求：错误由本页统一处理，消除双重 toast
-    if (hasCode(error, 'JOB_CONFLICT')) {
-      message.warning(t('settings.cache.conflict'))
-    } else {
-      message.error(isAppError(error) ? error.message : String(error))
-    }
-  } finally {
-    clearing.value = false
-  }
-}
-
 // ---------------------------------------------------------------- 时区（既有键只读展示，本批无编辑入口）
 
 const timezoneItem = computed(() => configItem('timezone'))
@@ -486,13 +440,13 @@ async function doImport(): Promise<void> {
 
 // ---------------------------------------------------------------- 锚点目录（P4：长页 8 区块导航）
 
-/** 区块 id 与卡片标题键一一对应（复用既有 title 键 → 语言切换自动跟随，零新增目录文案）。 */
+/** 区块 id 与卡片标题键一一对应（复用既有 title 键 → 语言切换自动跟随，零新增目录文案）。
+ *  缓存维护（E25）已并入仓库页维护区，不再作为本页区块。 */
 const SECTIONS = [
   { id: 'dump', title: 'settings.dump.title' },
   { id: 'behavior', title: 'settings.behavior.title' },
   { id: 'credential', title: 'settings.credential.title' },
   { id: 'metrics', title: 'settings.metrics.title' },
-  { id: 'cache', title: 'settings.cache.title' },
   { id: 'timezone', title: 'settings.timezone.title' },
   { id: 'password', title: 'settings.password.title' },
   { id: 'transfer', title: 'settings.transfer.title' },
@@ -530,7 +484,7 @@ function scrollToSection(id: SectionId): void {
  *
  * 判定线按视口高度自适应（0.45×视口，夹在 140–520px）：固定小判定线（如 120px）在
  * 「页面滚到底、末尾区块无法再推到顶部」时失效——末尾两三个区块永远越不过线，高亮会
- * 卡在中间某个区块（实测点「管理员改密」后高亮仍停在「缓存维护」）。 */
+ * 卡在中间某个区块（实测点末尾区块后高亮仍停在中途区块）。 */
 let rafPending = false
 function onScrollCapture(): void {
   if (rafPending) {
@@ -560,7 +514,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
 
 <template>
   <n-space vertical :size="16">
-    <!-- P4：锚点目录（8 区块长页导航；吸顶常驻，窄屏横向滚动）。
+    <!-- P4：锚点目录（7 区块长页导航；吸顶常驻，窄屏横向滚动）。
          用 n-el 承载：naive 把 bodyColor 暴露为 --n-color，只在自渲染元素上定义；
          普通 div 取不到该变量，暗色下背景会回落成白条。 -->
     <n-el class="settings__anchor">
@@ -795,40 +749,6 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
       </n-space>
     </n-card>
 
-    <!-- 缓存维护（E25） -->
-    <n-card id="sec-cache" :title="t('settings.cache.title')" size="small">
-      <template #header-extra>
-        <n-space :size="8">
-          <n-button size="small" secondary :loading="cacheQuery.isFetching.value" @click="cacheQuery.refetch()">
-            {{ t('common.refresh') }}
-          </n-button>
-          <n-button size="small" type="warning" @click="gateShow = true">
-            {{ t('settings.cache.clear') }}
-          </n-button>
-        </n-space>
-      </template>
-      <n-space vertical :size="10">
-        <n-text depth="3">{{ t('settings.cache.desc') }}</n-text>
-        <n-alert v-if="cacheQuery.error.value" type="error" :show-icon="false">
-          {{ String(cacheQuery.error.value) }}
-        </n-alert>
-        <n-descriptions v-if="usage" :column="2" size="small" bordered>
-          <n-descriptions-item :label="t('settings.cache.path')">{{ usage.path }}</n-descriptions-item>
-          <n-descriptions-item :label="t('settings.cache.size')">
-            <n-space align="center" :size="6">
-              {{ formatBytes(usage.size_bytes) }}
-              <!-- P3c 收口：du 截断提示（warning） -->
-              <StatusTag v-if="usage.truncated" kind="warning" :label="t('settings.cache.truncated')" />
-            </n-space>
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.cache.items')">{{ usage.items_count }}</n-descriptions-item>
-          <n-descriptions-item :label="t('settings.cache.measured')">
-            {{ formatDateTime(usage.measured_at) }}
-          </n-descriptions-item>
-        </n-descriptions>
-      </n-space>
-    </n-card>
-
     <!-- 时区（既有键只读展示） -->
     <n-card id="sec-timezone" :title="t('settings.timezone.title')" size="small">
       <n-space vertical :size="8">
@@ -883,15 +803,6 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
       </n-form>
     </n-card>
 
-    <!-- 缓存清空确认门：预览 → 输入 CLEAR → 二次确认 -->
-    <ConfirmGate
-      v-model:show="gateShow"
-      :title="t('settings.cache.gateTitle')"
-      :keyword="'CLEAR'"
-      :description="t('settings.cache.clearDesc')"
-      :loading="clearing"
-      @confirm="onConfirmClear"
-    />
     <!-- 批次 E 配置迁移：导出（口令加密凭据段）+ 导入（跳过/覆盖 + 报告） -->
     <n-card id="sec-transfer" :title="t('settings.transfer.title')" size="small">
       <n-space vertical :size="12">
