@@ -59,7 +59,7 @@ import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
-// 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 新建弹窗类型卡共用
+// 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 编辑态类型卡共用
 import { backendIcon } from '@/components/icons/BackendIcons'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
@@ -1760,7 +1760,7 @@ function formatBytes(value: number): string {
               <n-text v-if="repoForm.type === 'rclone'" depth="3" class="repo__note">{{ t('repo.urlHintRclone') }}</n-text>
 
               <!-- rclone 预设快捷卡（改版前弹窗填入项的恢复；点卡只填「远端名」，路径用户自补）。
-                   样式复用原类型卡的 dest-grid/dest-card（弹窗已删，类名空闲）。 -->
+                   样式复用原类型卡的 dest-grid/dest-card（类名沿用原弹窗类型卡样式，仍在使用）。 -->
               <n-form-item v-if="repoForm.type === 'rclone'" :label="t('repo.dest.rclonePresetLabel')">
                 <div class="repo__dest-grid">
                   <button
