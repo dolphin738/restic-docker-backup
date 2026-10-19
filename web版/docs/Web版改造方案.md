@@ -450,7 +450,7 @@ PUT  /api/admin/password                       P1   管理员改密
 **会话机制**：
 
 - cookie session（`HttpOnly` + `SameSite=Strict`）+ **Origin 校验**做 CSRF 防护（写请求校验 Origin/Referer 同源）；
-- 密码哈希：**argon2id**（环境不支持则 bcrypt），不存明文、不落日志；
+- 密码哈希：**argon2**（argon2-cffi 默认 PasswordHasher，无 bcrypt 备降），不存明文、不落日志；
 - 会话有效期 24h，活跃**滑动续期**；登出即销毁服务端 session。
 
 **首启引导**：首次启动生成随机管理密码，**仅在首启 Web 页面一次性展示 + 强制修改后才能进入其他页面**  
