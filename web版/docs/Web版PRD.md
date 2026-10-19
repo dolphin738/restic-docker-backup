@@ -1,6 +1,6 @@
 # restic-docker-backup Web 版 PRD
 
-> 版本：v1.6（基于《Web版改造方案》v2.3.4）
+> 版本：v1.11（基于《Web版改造方案》v2.3.4；v1.11 = 2026-10-20 仓库页「目标位置」模块复刻与 S3 方言校准）
 > **A0 修订注记（2026-10-17，owner 裁决「去掉 host 模式」，不重写历史正文）**：本文中
 > 「host / sources 双模式」「能力四象限」「`RESTIC_WEB_MODE` / `HOST_MOUNT_MODE`」
 > 「`/host` 前缀」等相关表述**已于 2026-10-17 整体废止**——运行形态收敛为单一 `/sources`
@@ -12,6 +12,7 @@
 > 前端基线：Vite + Vue 3.5（组件库选型见 §7，已裁决 Naive UI）
 >
 > **修订记录**：
+> - v1.11（2026-10-20）：**仓库页「目标位置」模块复刻并入**（对齐 Duplicati `destination.component`，纯前端形态 + S3 事实校准，API 契约不变）——US-B1 新增 **AC6**：列表态 ↔ 编辑态整页替换、字段组按类型动态渲染、地址由字段组译（解析失败才回退原文输入）、常用值下拉聚焦即展开且仍可手填；新增 **AC7**：S3 地址按 restic 原生方言 `s3:<服务器地址>/<桶名>[/<文件夹>]` 组译（服务器地址与桶名之间为**斜杠**），**退役** URL 区域段与死凭据 `AWS_ENDPOINT_URL`（restic 0.19.1 不读、minio-go v7.1.0 零引用），区域语义归 `aws_default_region`；八类型逐一比对结论 = 仅 s3 一种原拼法错误。同期落地：仓库 ID 回显、管理即选中当前类型、初始化按钮就近且仅未初始化显示、审计日志动作名与详情中文化、新建态「创建并测试」单按钮。详见《UI全量改造方案.md》§4.4 与《架构设计文档.md》v1.7。
 > - v1.7（2026-10-17）：**A1 交付并入**——仓库类型扩展为 restic 0.19.1 全部七后端（sftp/azure/gcs/rest/rclone + 既有 s3/b2/本地）：URL 严格校验（Q20）、rclone 只读托管（conf 宿主机挂载 `:rw`，凭据零落库）、E45 `GET /api/rclone/remotes`、镜像装 rclone/openssh-client、凭据 env 表扩展（AZURE_/GOOGLE_/RESTIC_REST_）；US-B1 AC1/AC5 与 R-022/Q14 行更新为已交付。前端类型选择卡 preset 快捷卡随批次 A5 落地。详见《架构设计文档.md》v1.6-A1 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A1。
 > - v1.8（2026-10-17）：**A2 交付并入**——forget 保留档位补齐（Duplicati keep-time / retention-policy 分段的 restic 等价物）：任务保留策略新增时间线档 `keep_within`/`keep_within_{hourly,daily,weekly,monthly,yearly}`（restic duration，如 `1y5m7d2h`）与标签档 `keep_tags`（`--keep-tag`，OR 语义），与既有计数档并列；E21 预览/E12 执行/自动 forget 三处的「至少一个保留规则」兜底门同步扩为三门；duration 形态校验前移（保存即 422）。US-026-01④/US-026-07 保留档位表述同步。详见《架构设计文档.md》v1.6-A2 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A2。
 > - v1.9（2026-10-17）：**A3 交付并入**——**快照版本标签**（Duplicati 版本标签的 restic 等价物）：`VERBS` 增 `tag` 动词；新端点 **E46 `POST /api/snapshots/tag`** 提供 `add[]`/`remove[]` 维度（与 forget/snapshots 的 `--tag` **筛选**维度 `tags` 语义隔离，不复用），目标快照可指定 `snapshot_ids[]` 或按当前 `tag_filter`/`host` 作用全部匹配快照；restic `cmd_tag.go` 源码核验的两道高危约束前移为服务端 422——(1) `add`/`remove` 皆空 → 422（restic "nothing to do!"）；(2) 无 `snapshot_ids` 且无 `tag_filter`/`host` → 422（restic 无 id 即改**全部**匹配快照）。`tag` 动词取独占锁（与备份并发 exit 11 锁冲突由 `failure_reason` 明示「仓库锁残留」）；改标签生成新快照对象（原→新 id）经 `changed[]` 映射回传。审计动作 `tag.update`；快照页新增「快照标签」卡片（打/去标签输入 + 可选目标快照 ID + 应用结果回显 + 成功后自动刷新列表）。新增 US-E2。详见《架构设计文档.md》v1.6-A3 与《Duplicati功能对齐分析与改造计划-2026-10-17.md》批次 A3。
@@ -88,6 +89,8 @@
 - AC3：compose 环境变量已设置的凭据，对应输入框置灰并标注来源；
 - AC4：仓库密码不出现于任何表单/API——仅提示"密码文件挂载状态：已配置/缺失"。
 - AC5（A1）：仓库地址按协议前缀严格校验（sftp 拒密码内嵌/rest 拒 user:pass@/rclone remote 须在册），非法形态 422 不落库；s3/b2/本地不校验（零回归）。
+- AC6（2026-10-20 落地形态）：仓库页按 Duplicati「目标位置」两态交互组织——**列表态 ↔ 编辑态整页替换**，字段组按所选类型动态渲染，地址由字段**组译**而非手工裸填（解析失败才回退原文输入）；常用值下拉点击输入框即展开且仍可手填。
+- AC7（2026-10-20 S3 方言校准）：S3 地址组译为 restic 原生 `s3:<服务器地址>/<桶名>[/<文件夹>]`（**服务器地址与桶名之间是斜杠**）；**退役** URL 区域段与死凭据 `AWS_ENDPOINT_URL`（restic 0.19.1 不读、其 minio-go v7.1.0 依赖零引用），区域语义由 `aws_default_region` 承担。八种类型逐一比对结论：仅 s3 一种原拼法错误，其余（b2/gs/azure/sftp/rest/rclone/本地）均符合 restic 原生。
 
 **US-B2 首次备份前 dry-run 确认**
 > 作为管理员，我希望首次正式备份前看到预计扫描范围（含内置排除集生效结果）并确认，这样不会把 proc/docker 目录之类无意义内容写进仓库。

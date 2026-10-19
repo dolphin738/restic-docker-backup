@@ -26,7 +26,15 @@ pnpm run build                     # 类型检查 + 构建
 
 # 红线机器校验（规范 §3.1 的可执行断言：各红线 grep + 双文档编号锚点一致性）
 bash scripts/verify_redlines.sh
+
+# 本机开发启动（Windows 关键纪律，见架构文档 §7.10）
+pwsh dev-scripts/dev.ps1            # 菜单式；restart backend 已内置 --loop none
+# 裸命令等价写法（缺 --loop none 即踩坑）：
+#   uvicorn app.main:app --reload --loop none --port 8000
+#   cd frontend && pnpm dev          # :5173
 ```
+
+> ⚠️ **Windows 后端启动必须带 `--loop none`**：`uvicorn --reload` 在 Windows 会强制 `SelectorEventLoop`，其 `create_subprocess_exec` 抛 `NotImplementedError`，导致 **restic / rclone 全部子进程操作 500**（表现为「rclone 探测失败：服务器内部错误」）。首选 `dev-scripts/dev.ps1 restart backend`。Linux 与容器内无此问题。
 
 > 前端 **eslint 尚未接入**（无 `lint` script、无相关依赖），**不要执行** `npm run lint` 或 `eslint .`——会失败。详见规范 §7 过渡期说明。
 

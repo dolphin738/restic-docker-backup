@@ -4,6 +4,28 @@
 版本采用语义化版本（SemVer）。仓库同时包含 `shell版本/` 与 `web版/` 两套实现，
 下方版本记录以 **Web 版**为主。
 
+## [未发布] — 2026-10-20（Web 版仓库页「目标位置」模块复刻）
+
+按《UI全量改造方案》v1.7 §4.4 落地（对齐 Duplicati `destination.component`）；除一处后端防护外**零业务改动**，API 契约不变。
+
+### 新增
+
+- **仓库页两态交互**：列表态 ↔ 编辑态整页替换（不再叠加弹窗），字段组按所选存储类型动态渲染，地址由字段**组译**而非裸填（解析失败才回退原文输入）；常用值下拉点击输入框即展开且仍可手填。
+- **新建态「创建并测试」单按钮**：后端 `testRepo` 读已落库配置，故顺序恒为「先建/先存 → 后测」，二合一避免「只建不测」的静默错地址。
+- **审计日志中文化**：动作名 35 项中文映射（未收录回落原文）+ 筛选下拉「中文（原文）」+ 详情 JSON 转中文键值列表（布尔→是/否、耗时→`N ms`）。
+- 仓库列表行与编辑卡头回显仓库 ID；点「管理」即自动选中该仓库的存储类型；「初始化仓库」移到每行「管理」旁且仅「有地址且未连接」时显示。
+
+### 修复
+
+- **S3 地址拼法错误（落库即错地址）**：restic 0.19.1 原生方言是 `s3:<服务器地址>/<桶名>[/<文件夹>]`（服务器地址与桶名之间是**斜杠**），此前按 `s3://bucket/...` 组译。界面字段改为「服务器地址（必填）+ Bucket + 文件夹路径」，路径为空时不补尾斜杠（与解析严格互逆）。八种类型逐一比对结论：**仅 s3 一种错误**，b2/gs/azure/sftp/rest/rclone/本地均符合 restic 原生。
+- **退役两个死字段**：URL 的「区域（可选）」段与凭据键 `AWS_ENDPOINT_URL`（实证 restic 0.19.1 不读该变量、其 minio-go v7.1.0 依赖零引用）；区域语义归 `aws_default_region`。
+- **rclone 探测 / restic 操作全部 500（Windows）**：裸 `uvicorn --reload` 强制 `SelectorEventLoop`，其 `create_subprocess_exec` 抛 `NotImplementedError`。四层防护——提示常量 `SUBPROCESS_LOOP_HINT`、rclone 探测降级为 `available=false` + 原因、restic 转 `ResticFailedError`、启动自检告警；**启动必须带 `--loop none`**（`dev-scripts/dev.ps1 restart backend` 已内置）。
+- KPI 卡片布局：`n-space` 换 flex 行，消除 naive-ui vnode 克隆导致的按钮/内容重复渲染。
+
+### 质量
+
+- 前端 typecheck 0 error、vitest 33 例全通过、build 通过；后端 pytest 797 passed + ruff 0 error；新增护栏 `test_subprocess_loop_guard.py`（2 例）与 `audit-log-i18n.spec.ts`（3 例）。
+
 ## [1.0.2] — 2026-10-19（Web 版第二轮功能面对齐）
 
 按《UI全量改造方案》v1.5（owner 2026-10-19 恢复活跃，与《UI界面设计方案》分工 = 功能面 ↔ 视觉基线）落地 G1–G7 批次；零后端改动，API 契约不变。

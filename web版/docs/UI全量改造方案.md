@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.5（2026-10-19 五次修订：第三轮 aria 盘点 + 移动端走查回填；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 版本：v1.7（2026-10-20 七次修订：第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -47,7 +47,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 | # | 增强项 | 状态（2026-10-19） |
 |---|---|---|
-| E1 | 连接测试强门禁 | 待实施（= G3，第二轮范围） |
+| E1 | 连接测试强门禁 | ✅ 已落地（R2）；2026-10-20 第四轮强化为**按钮级状态机**：新建态「创建并测试」、编辑态脏且未验证「保存并测试」（warn/error），见 §4.4 |
 | E2 | 向导离开保护（onBeforeRouteLeave + beforeunload） | 待实施 |
 | E3 | 步骤条可点击跳步（键盘可达，不用 tabindex=-1） | 待实施 |
 | E4 | 设置仓库密码复用共用弹窗（NModal → 行内面板 → 共用 `PasswordEntryModal`） | ✅ 2026-10-19（对象为 repo 页「设置仓库密码」，历经弹窗→行内→共用组件三形态，见 §4.1.2） |
@@ -137,6 +137,67 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 **护栏**（沿 v1.0）：不改 API/composable；既有 spec 原样通过；ConfirmGate/StatusTag/PathBreadcrumb 只复用不换接口；文案全走 i18n 双语；危险操作埋点由后端既有 AUDIT_* 承担（前端零新增端点）。
 
+### 4.4 第四轮：仓库页「目标位置」模块复刻（2026-10-20 回填，owner 逐轮指令落地）
+
+> 对标 ngclient `destination.component` / `destination.config.ts`（customFields + dynamicFields）：**不在列表页上平铺配置**，而是「列表态 ↔ 编辑态」整页替换，字段按存储类型动态渲染，URL 由字段组译而非裸填。本轮除 §4.4.3 外**零后端业务改动**，API 契约不变。
+
+#### 4.4.1 交互形态定稿
+
+| 项 | 形态 | 依据 / 取舍 |
+|---|---|---|
+| 两态交互 | 列表态与编辑态**整页替换**（非叠加弹窗），保存成功即回列表态 | 对齐 Duplicati `selectedDestination` 语义（选中即编辑、保存即 `null`） |
+| 类型驱动字段 | 8 类型各一套字段组（local / s3 / b2 / gcs / azure / sftp / rest / rclone），凭据区随类型联动 | 修掉早期「配置项绑错对象」缺陷：字段源一律取 `repoForm.type`，**不取已有仓库的 `repo.type`** |
+| URL 组译 | `composeRepoUrl()` 按类型拼；反向 `parseRepoUrl()` 解析回填，解析失败回退 `raw` 原文输入 | 用户裁决「URL 还是用现在的字段组译」——不做裸地址框 |
+| 常用值下拉 | 点击输入框**即展开**全部候选（`n-auto-complete` 官方 hook `:get-show="() => true"`），仍可手填 | naive `mergedShowOptions = !!value`：聚焦空框默认不展开，需显式覆盖 |
+| 测试状态机 | 新建态 = **「创建并测试」单按钮**（建完立刻测一次，二合一）；编辑态：脏且未验证 → 「保存并测试」（warn，失败转 error）；已验证或无变更 → 「保存」（primary） | 后端 `testRepo` 读**已落库**配置（§4.2 裁决 1），故顺序恒为「先存后测」，不存在「先测后存」 |
+| 时序约束 | 新建后 `refetch()` → **`await nextTick()`** → `onTest()` | 必须放行 `watch(currentRepoId)` 先清完旧状态，否则它会晚于 `onTest()` 把结论清掉 |
+| 仓库 ID | 列表行弱化回显 `#id`、编辑卡头「仓库 ID：#id」 | 用户裁决：改造过程中曾丢失，已恢复 |
+| 类型自动选中 | 点「管理」即同步 `repoForm.type = normalizeRepoType(row.type)` | 消除 watch 异步竞态（靠 watch 会有半拍错类型） |
+| 初始化按钮 | 移到仓库列表每行「管理」旁，**仅「有 URL 且未连接」时显示** | 初始化是不可逆动作，不再常驻编辑区 |
+
+#### 4.4.2 S3 地址方言修正（**事实核验推翻原实现**）
+
+**缺陷**：本项目此前按 `s3://bucket/...` 组译，与 restic 原生方言不符——落库即错地址。
+
+**核验结论（restic 0.19.1 源码）**：S3 官方语法为 **`s3:<endpoint>/<bucket>[/<prefix>]`**，endpoint 与 bucket 之间是**斜杠**（冒号仅用于协议头或 `host:port`）。
+
+**修法**：界面字段改为「服务器地址 endpoint（必填，形如 `s3.amazonaws.com` 或 `host:port`）+ Bucket 名称 + 文件夹路径」；组译 `s3:{endpoint}/{bucket}[/{prefix}]`——**path 为空时不补尾斜杠**（restic 以首个 `/` 切 endpoint，`s3:host/bucket` 即可正确切出 bucket，且与解析严格互逆，避免「假脏」反复提示未保存）。解析侧 `parseS3Url()` 兼容 `s3:host[:port]/bucket[/prefix]`、`s3://host/…`（归一）、`s3:http(s)://host:port/…` 三种存量写法。
+
+**退役两个死字段**：
+- URL 的「区域（可选）」段——restic S3 方言无该段；
+- 凭据键 **`AWS_ENDPOINT_URL`**——实证 restic 0.19.1 不读该环境变量，其 minio-go v7.1.0 依赖零引用，属死凭据。区域改由 `aws_default_region` 凭据字段承担（S3 凭据集收敛为 `aws_access_key_id` / `aws_secret_access_key` / `aws_default_region` 三项）。
+
+**全类型审计结论（8 种逐一比对 restic 原生）**：**仅 s3 一种错误**；b2（`b2:bucket:/path`）、gcs（`gs:bucket:/path`）、azure（`azure:container:/path`）、sftp（`sftp:user@host:/path`）、rest（`rest:<url>` 原样）、rclone（`rclone:<remote>`，整段即 remote:path）、local（裸路径，restic `location.Parse` 自动补 `local:` 前缀）全部符合，零改动。
+
+#### 4.4.3 后端改动（本轮唯一例外：子进程事件循环防护）
+
+**现象**：仓库页选 rclone 提示「探测失败：AppError 服务器内部错误」；任何 restic 操作同样 500。
+
+**根因（Windows 实证）**：uvicorn 裸 `--reload` 走 `use_subprocess=True`，Windows 下强制 `SelectorEventLoop`，其 `create_subprocess_exec` 抛 `NotImplementedError`（`asyncio/base_events.py:539`）——**不是 rclone 未安装**（本机未装 rclone 时探测会诚实返回 `available=false`，属预期降级）。
+
+**四层防护**（不改业务语义）：① `constants.SUBPROCESS_LOOP_HINT` 常量（错误文案直指 `--loop none`）；② `rclone.list_remotes` 捕 `NotImplementedError` → 降级 `available=false` + 可操作 `reason`（与缺二进制/超时同口径，绝不裸 500）；③ `restic.spawn` 捕同异常 → `ResticFailedError(SUBPROCESS_LOOP_HINT)`；④ `main.py` lifespan 启动自检（win32 且非 `ProactorEventLoop` → `logger.error` 明示）。
+
+**启动纪律（已写入 AGENTS.md 与部署指南）**：本机后端启动**必须带 `--loop none`**；首选 `dev-scripts/dev.ps1 restart backend`（已内置）。新增护栏 `backend/tests/test_subprocess_loop_guard.py`（2 例）。
+
+#### 4.4.4 审计日志中文化
+
+- **动作名**：`audit.action.*` 35 项映射。**i18n 点号是层级分隔符**，键必须写成嵌套对象（`audit.action.login.ok`），扁平 `'login.ok'` 取不到值；未收录键用 `te()` 判存在后回落原文，保证新动作不显示成裸键名。
+- **筛选下拉**：显示 `中文（原文）`；译文与原文相同时不重复括号。
+- **详情**：`renderDetail()` 把 JSON 转中文键值列表——布尔 → 是/否、`latency_ms` → `N ms`、数组顿号连接、对象回落 JSON、非 JSON 的 detail 原样透传。
+
+#### 4.4.5 顺带修复与质量门
+
+- **KPI 卡片（dashboard）**：`n-space` 换 flex 行（`kpi__row--label/main/sub`）——naive-ui 的 vnode 克隆缺陷（v-if 模板与注释节点相邻时会复制内容）同一家族，早期「每点一次新建仓库就多一对按钮」也是它；结论：**底栏/统计行这类结构一律用 flex div，不用 `n-space`**。
+
+**质量门**：
+
+| 门 | 结果 |
+|---|---|
+| `pnpm run typecheck` | ✅ 0 error |
+| `vitest`（33 例：smoke 20 + audit i18n 3 + 其余 10） | ✅ 全通过 |
+| `NODE_OPTIONS="" pnpm run build` | ✅ built |
+| 后端 `pytest` + `ruff` | ✅ 797 passed / 0 error |
+
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
 | 维度 | 口径 |
@@ -171,6 +232,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ## 修订记录
 
+- v1.7（2026-10-20 七次修订）：第四轮仓库页「目标位置」模块复刻回填（新增 §4.4）——① 两态整页替换 + 类型驱动字段 + URL 字段组译 + 常用值下拉聚焦即展开 + 测试按钮状态机（新建态「创建并测试」二合一；时序上须 `await nextTick()` 放行 `watch(currentRepoId)` 再测）；② **S3 地址方言修正**（restic 原生 `s3:<endpoint>/<bucket>[/<prefix>]` 为斜杠，原 `s3://bucket/...` 落库即错），退役 URL 区域段与死凭据 `AWS_ENDPOINT_URL`（restic 0.19.1 不读、minio-go 零引用），全 8 类型审计结论 = 仅 s3 一种错误；③ 后端唯一例外——Windows `--reload` 强制 SelectorEventLoop 致子进程 NotImplementedError 的四层防护 + 启动纪律 `--loop none`；④ 审计日志中文化（嵌套 i18n 键 + `te()` 回落 + 详情键值中文渲染）；⑤ 仓库 ID 回显恢复、管理即选中类型、初始化按钮就近且仅未初始化显示。
 - v1.6（2026-10-19 六次修订）：E4「设置仓库密码」由状态卡内行内展开面板**改回 NModal 弹窗**，并抽取 `PasswordEntryModal.vue` 共用组件（E44 设置密码与 C4 密钥轮换复用，生成语义各异：E44 后端生成回显 / C4 前端本地强随机）；弹窗 `width` 收口修复瘦长条（原 `repo__modal` 类无 CSS 定义）；E25 缓存维护设置页专区**整体并入仓库页维护区**成为唯一入口（占用详情改纯文本注释口径，删除设置页 `sec-cache` 卡片与锚点项）。后端与红线区零改动（commit eb9cf69）。
 - v1.5（2026-10-19 五次修订）：第三轮底座工程回填（§4.3）——aria 盘点（缺口 11 处补齐 + a11y-baseline 静态护栏）与移动端 4 视口走查（4 项实锤修复，含「overflow-x:auto 使 margin 不折叠 → 桌面 +8px」的像素级回归教训）；桌面零漂移以像素 diff 验收（0.000%）；评分更新：响应式 9 / 可访问性 8.5。
 - v1.4（2026-10-19 四次修订）：E4 落地（§4.1.2）——对象由「更改密码弹窗」纠正为 repo 页「设置仓库密码」NModal（设置页 E28 本就是行内卡，`git log -S` 取证）；改为状态卡内行内展开面板（API 不变，一次性明文语义保留）；真机以「临时仓库完整生命周期 + 自清理」断言（modal 遮罩 = 0、面板开合、DELETE 三步门）。E1–E6 至此全部落地。
