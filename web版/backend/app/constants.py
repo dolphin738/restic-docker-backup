@@ -213,6 +213,15 @@ REPO_PROBE_TIMEOUT_SECONDS = 15         # cat config 连通性探测
 REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
 # rclone listremotes 只读探测（A1）：纯本地操作（读 conf），5s 足够；超时即视为不可用
 RCLONE_PROBE_TIMEOUT_SECONDS = 5.0
+# Windows 子进程可用性提示（2026-10-19 实证）：uvicorn 的 --reload / --workers>1 会经
+# use_subprocess 分支把 Windows 事件循环强制选成 SelectorEventLoop——它不支持
+# create_subprocess_exec（NotImplementedError，asyncio/base_events.py:539），restic/
+# rclone 全部子进程操作 500。修法：--loop none（走系统默认 policy=ProactorEventLoop），
+# dev-scripts/dev.ps1 已内置；Linux/Docker 无此问题。rclone 探测与 restic spawn 共用。
+SUBPROCESS_LOOP_HINT = (
+    "当前事件循环不支持子进程（Windows 下 uvicorn --reload 默认 SelectorEventLoop）"
+    "——请以 --loop none 重启后端（dev-scripts/dev.ps1 已内置该参数）"
+)
 # 仓库状态进程内缓存 TTL：避免仪表盘轮询反复打仓库（E30 成本可控的关键手段）
 REPO_STATUS_CACHE_SECONDS = 30.0
 # 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）

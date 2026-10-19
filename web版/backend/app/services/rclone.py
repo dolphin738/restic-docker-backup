@@ -24,7 +24,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.constants import RCLONE_PROBE_TIMEOUT_SECONDS
+from app.constants import RCLONE_PROBE_TIMEOUT_SECONDS, SUBPROCESS_LOOP_HINT
 from app.settings import Settings
 
 
@@ -60,7 +60,7 @@ class RcloneProbe:
         self._settings = settings
 
     async def list_remotes(self) -> RcloneRemotes:
-        """执行一次 ``rclone listremotes``（超时/缺二进制均降级为 available=False）。
+        """执行一次 ``rclone listremotes``（超时/缺二进制/事件循环不支持子进程均降级为 available=False）。
 
         Returns:
             :class:`RcloneRemotes`——任何失败路径都带可操作 ``reason``，不抛异常
@@ -85,6 +85,17 @@ class RcloneProbe:
                 conf_path=conf_path,
                 remotes=(),
                 reason=f"rclone 探测超时（>{RCLONE_PROBE_TIMEOUT_SECONDS:g}s）",
+            )
+        except NotImplementedError:
+            # Windows + uvicorn --reload：事件循环为 SelectorEventLoop，不支持子进程
+            # （2026-10-19 真机实证：裸 --reload 启动时本探测 500）。降级为可操作原因，
+            # 与缺二进制/超时同口径，绝不裸 500。
+            return RcloneRemotes(
+                available=False,
+                conf_present=conf_present,
+                conf_path=conf_path,
+                remotes=(),
+                reason=SUBPROCESS_LOOP_HINT,
             )
         if exit_code != 0:
             return RcloneRemotes(

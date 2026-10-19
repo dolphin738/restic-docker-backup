@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from app.constants import INPLACE_RESTORE_TARGET_ROOT
-from app.errors import ValidationError
+from app.constants import INPLACE_RESTORE_TARGET_ROOT, SUBPROCESS_LOOP_HINT
+from app.errors import ResticFailedError, ValidationError
 from app.services.path_mapper import PathMapper
 from app.settings import Settings, get_settings
 
@@ -313,12 +313,18 @@ class ResticCmd:
         path = Path(log_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch(exist_ok=True)
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+        except NotImplementedError as exc:
+            # Windows + uvicorn --reload：SelectorEventLoop 不支持 create_subprocess_exec
+            # （2026-10-19 真机实证：裸 --reload 启动时全部 restic 操作 500）。转成
+            # ResticFailedError（原因明示，禁止静默）而非裸 NotImplementedError 500。
+            raise ResticFailedError(SUBPROCESS_LOOP_HINT) from exc
         return ResticProcess(proc, path)
 
     async def run_json(

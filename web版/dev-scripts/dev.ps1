@@ -338,8 +338,12 @@ function Start-Backend {
 `$env:DATA_DIR = "$devDataDir"
 Set-Location "$backend"
 New-Item -ItemType Directory -Force -Path "$devDataDir" | Out-Null
-Write-Host "-> 启动后端：uvicorn app.main:app --reload --port $BackendPort（DATA_DIR=$devDataDir）" -ForegroundColor Cyan
-& "$venvPython" -m uvicorn app.main:app --reload --port $BackendPort
+Write-Host "-> 启动后端：uvicorn app.main:app --reload --loop none --port $BackendPort（DATA_DIR=$devDataDir）" -ForegroundColor Cyan
+# --loop none（2026-10-19）：uvicorn ≥0.54 的 --reload 会经 use_subprocess 分支把 Windows 的
+# 事件循环强制为 SelectorEventLoop——它不支持 create_subprocess_exec，restic 探测全部 500
+# （NotImplementedError，asyncio/base_events.py:539）。--loop none 让 uvicorn 不指定工厂、
+# 走系统默认 policy（Windows=ProactorEventLoop），reload 行为不变；Linux 下无差异。
+& "$venvPython" -m uvicorn app.main:app --reload --loop none --port $BackendPort
 "@
     $proc = Start-Service -Name "backend" -Script $backendCmd -PidFile $backendPidFile -Label "后端"
     if ($proc) {

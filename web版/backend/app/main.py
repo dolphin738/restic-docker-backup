@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -176,6 +178,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     settings = get_settings()
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Windows 子进程可用性自检（2026-10-19 真机实证）：uvicorn --reload / --workers>1 会把
+    # Windows 事件循环强制选成 SelectorEventLoop——它不支持 create_subprocess_exec
+    # （NotImplementedError，asyncio/base_events.py:539），restic/rclone 全部子进程操作
+    # 失败。启动即明示，避免用户到第一次备份/探测才发现；修法 --loop none 重启
+    # （dev-scripts/dev.ps1 已内置该参数；Linux/Docker 无此问题）。
+    _loop = asyncio.get_running_loop()
+    if sys.platform == "win32" and not isinstance(_loop, asyncio.ProactorEventLoop):
+        logger.error(
+            "当前事件循环为 %s（Windows 下 uvicorn --reload 的默认选择），不支持子进程："
+            "restic/rclone 操作将全部失败。请以 --loop none 重启后端"
+            "（dev-scripts/dev.ps1 已内置该参数）",
+            type(_loop).__name__,
+        )
 
     db = await init_database(settings.db_path)
     audit = AuditRepo(db)
