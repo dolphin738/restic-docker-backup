@@ -71,6 +71,11 @@ function randomChar(alphabet: string): string {
   return alphabet[randomIndex(alphabet.length)]
 }
 
+/** 仓库密码生成长度：**后端生成与前端生成同口径的唯一出处**（两处曾不一致——
+ *  后端 token_urlsafe(32)≈43 位 vs 前端 20 位，用户在界面上看到两个位数）。
+ *  后端常量同名 REPO_PASSWORD_LENGTH，改一处必须两边同步。 */
+export const REPO_PASSWORD_LENGTH = 24
+
 /** 生成强随机口令（G4：与强度条配套的「生成」按钮）。
  *
  * 两条硬要求决定了实现方式：
@@ -79,7 +84,7 @@ function randomChar(alphabet: string): string {
  *   （符号类字符占比小），会让「生成即强档」变成偶发不达标（测试也会 flaky）。
  *   洗牌用 Fisher-Yates（不是 `sort(() => Math.random() - 0.5)`，后者分布不均匀）。
  */
-export function generateStrongPassword(length = 20): string {
+export function generateStrongPassword(length = REPO_PASSWORD_LENGTH): string {
   const size = Math.max(length, CHAR_CLASSES.length)
   const chars: string[] = CHAR_CLASSES.map((cls) => randomChar(cls))
   while (chars.length < size) {

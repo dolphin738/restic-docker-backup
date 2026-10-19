@@ -524,7 +524,9 @@ export default {
     colPassfile: 'Password file',
     passfileMissingShort: 'Missing',
     passwordSetBtn: 'Set repository password',
+    passwordResetBtn: 'Reset password',
     passwordTitle: 'Set repository password',
+    passwordResetTitle: 'Reset repository password',
     passwordIntro:
       'This repository has no password file yet (restic cannot read the repository password, so every operation fails). The password is both the repository key and the credential-encryption key source — back it up right after generating.',
     passwordGenerate: 'Generate strong password',
@@ -537,9 +539,13 @@ export default {
     passwordCopied: 'Copied to clipboard',
     passwordCopyFailed: 'Copy failed — please select and copy manually',
     passwordSavedClose: 'Saved, close',
+    // 重设密码（force 覆盖）：仅在仓库打不开（密码错误）时由后端接受
+    passwordResetIntro:
+      'The repository cannot be opened with the current password file. Resetting overwrites the password file with the new password: if you later recall the old one, restore it or run key rotation. Credentials already encrypted with the old password become invalid and must be re-entered.',
+    passwordWrongHint: 'Repository password is wrong (repository cannot be opened) — reset it here',
     passwordSetOk: 'Repository password written',
     passfileMissingAlert:
-      'Password file missing: every operation on this repository (init/backup/snapshots) fails because the password cannot be read. Set the repository password first.',
+      'Password file missing: every operation on this repository (init/backup/snapshots) fails because the password cannot be read. Use “Set repository password” on this repository’s row in the list below.',
     initBlockedByPassfile: 'Password file missing — set the repository password first',
     save: 'Save config',
     saved: 'Config saved',

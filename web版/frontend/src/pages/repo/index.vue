@@ -85,27 +85,57 @@ const repos = computed<RepoOut[]>(() => reposQuery.data.value ?? [])
 const rowStatusQueries = useQueries({
   queries: () =>
     repos.value.map((r) => ({
-      queryKey: ['repo', 'status', r.id],
+      // key 带 'row' 段：与状态卡的 ['repo','status', id] **刻意分开**——同 key 会被
+      // vue-query 合并成同一个 observer，行查询的 staleTime 反过来拖住状态卡（反之亦然），
+      // 两者的刷新时效互相污染 = 「切换仓库后各行按钮显示乱」的根因之一。
+      queryKey: ['repo', 'status', 'row', r.id],
       queryFn: () => getRepoStatus(r.id),
       staleTime: 30_000,
     })),
 })
 
+/** 逐行状态结论：**按 queryKey 精确取**，不按下标取。
+ *  useQueries 的返回数组在 repos 长度变化的同一帧内可能尚未重排（新建/删除仓库后），
+ *  按下标取会拿到别的仓库的结论 = 「初始化按钮显示在错误的行上」。dataUpdatedAt 只作
+ *  响应式订阅信号，真正取值走 queryClient.getQueryData（key 与行一一对应，永不错位）。 */
 const rowStatusById = computed<Record<string, RepoStatusResponse | undefined>>(() => {
+  void rowStatusQueries.value.map((q) => q.dataUpdatedAt)
   const out: Record<string, RepoStatusResponse | undefined> = {}
-  repos.value.forEach((r, i) => {
-    out[r.id] = rowStatusQueries.value[i]?.data
-  })
+  for (const r of repos.value) {
+    out[r.id] = queryClient.getQueryData<RepoStatusResponse>(['repo', 'status', 'row', r.id])
+  }
   return out
 })
 
-/** 需要初始化 = 已填地址 + 探测结论「未连接」；无地址（未配置）与已连接均不显示。 */
+/** 值得给「初始化」入口的失败分类：只有「仓库不存在/未初始化」与兜底 unknown。
+ *  其余分类给 init 只会帮倒忙——密码错误 → 重设密码；凭据/网络 → 改配置；锁残留 → 解锁。
+ *  判定取自后端结构化 failure_kind（不匹配的中文文案：文案可改、分类稳定）。 */
+const INIT_FAILURE_KINDS = new Set(['not_initialized', 'unknown'])
+
+/** 需要初始化 = 已填地址 + 探测结论「未连接」且分类落在上述集合；无地址（未配置）与已连接均不显示。 */
 function needsInit(r: RepoOut): boolean {
   if (!r.url) {
     return false
   }
   const st = rowStatusById.value[r.id]
-  return !!st && !st.connected
+  if (!st || st.connected) {
+    return false
+  }
+  return INIT_FAILURE_KINDS.has(st.failure_kind ?? 'unknown')
+}
+
+/** 行内密码动作：'set' = 密码文件缺失（首次写入）；'reset' = 密码文件在但仓库打不开
+ *  （failure_kind=password，旧密码无从找回 → 走 force 覆盖）；null = 不需要入口。
+ *  判定用列表自带的 passfile_status + 行状态分类，两者都不依赖编辑态。 */
+function passwordAction(r: RepoOut): 'set' | 'reset' | null {
+  if (r.passfile_status !== 'configured') {
+    return 'set'
+  }
+  const st = rowStatusById.value[r.id]
+  if (st && !st.connected && st.failure_kind === 'password') {
+    return 'reset'
+  }
+  return null
 }
 
 /** 行内初始化：先把该仓库设为当前（init 作业按当前仓库寻址），再开确认门。 */
@@ -545,8 +575,20 @@ const generatedPassword = ref<string | null>(null)
 
 const passfileMissing = computed(() => (repo.value?.passfile_status ?? 'missing') !== 'configured')
 
-/** 打开弹窗即清一次性明文（自填草稿由组件在 show 翻转时自清）。 */
-function openPassword(): void {
+/** 弹窗目标仓库（行内按钮传入；缺省当前仓库）与是否走 force 覆盖（重设场景）。
+ *  与行内「初始化」同口径：非当前仓库先切成当前（后端按 X-Repo-Id 寻址）。 */
+const passwordTargetId = ref<string | null>(null)
+const passwordForce = ref(false)
+
+/** 打开弹窗即清一次性明文（自填草稿由组件在 show 翻转时自清）。
+ *  force = 密码文件已存在但仓库打不开（密码错误）→ 后端仅在探测未连接时接受覆盖。 */
+function openPassword(id?: string, force = false): void {
+  const target = id ?? currentRepoId.value
+  if (target !== ui.currentRepoId) {
+    onSetCurrent(target)
+  }
+  passwordTargetId.value = target
+  passwordForce.value = force
   generatedPassword.value = null
   passwordShow.value = true
 }
@@ -554,6 +596,8 @@ function openPassword(): void {
 function closePassword(): void {
   passwordShow.value = false
   generatedPassword.value = null
+  passwordTargetId.value = null
+  passwordForce.value = false
 }
 
 async function generatePassword(): Promise<void> {
@@ -566,17 +610,19 @@ function onSubmitPassword(password: string): void {
 }
 
 async function submitPassword(body: RepoPasswordRequest): Promise<void> {
-  const id = currentRepoId.value
+  const id = passwordTargetId.value ?? currentRepoId.value
   if (!id) {
     return
   }
   passwordSaving.value = true
   try {
-    const result = await setRepoPassword(id, body)
+    const result = await setRepoPassword(id, { ...body, force: passwordForce.value })
     // 只在生成场景回显；自填场景 password 恒为 null
     generatedPassword.value = result.generated ? result.password : null
     message.success(t('repo.passwordSetOk'))
     await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
+    // 各行状态一并失效：密码写入后仓库可连性变了，行内按钮判定要立刻跟上
+    await queryClient.invalidateQueries({ queryKey: ['repo', 'status'] })
     if (!result.generated) {
       passwordShow.value = false
     }
@@ -1014,6 +1060,11 @@ const testNotInitialized = computed(() => {
   if (repoTestState.value !== 'error') {
     return false
   }
+  // 优先用后端结构化分类（稳定）；旧后端无该字段时回落到原因文案匹配
+  const kind = testResult.value?.failure_kind
+  if (kind) {
+    return INIT_FAILURE_KINDS.has(kind)
+  }
   const reason = (testResult.value?.reason ?? '').toLowerCase()
   return NOT_INITIALIZED_MARKERS.some((m) => reason.includes(m.toLowerCase()))
 })
@@ -1048,6 +1099,14 @@ async function onInit(): Promise<void> {
   } finally {
     initializing.value = false
   }
+}
+
+/** init 作业终态（成功或失败都要刷新）：仓库可连性变了，行状态与列表必须立刻跟上——
+ *  此前只 refetch 当前仓库状态卡，行级查询仍持 30s 缓存，表现为「初始化完了按钮还在，
+ *  刷新网页才消失」（后端缓存在任务终态已清，缺的是前端失效）。 */
+async function onInitDone(): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ['repo'] })
+  await Promise.all([reposQuery.refetch(), statusQuery.refetch()])
 }
 
 async function onRepair(): Promise<void> {
@@ -1175,16 +1234,8 @@ function formatBytes(value: number): string {
           <n-text depth="3" class="repo__capacity-inline tabular-nums">
             {{ t('dashboard.repoCapacity') }} {{ capacityText }}
           </n-text>
-          <!-- 密码文件缺失 = 任何仓库操作都注定失败（restic 拿不到密码）：行内最右给可操作入口 -->
-          <n-button
-            v-if="passfileMissing"
-            size="tiny"
-            type="primary"
-            class="repo__status-action"
-            @click="openPassword"
-          >
-            {{ t('repo.passwordSetBtn') }}
-          </n-button>
+          <!-- 「设置仓库密码」入口已与「初始化」一样下放到仓库列表行内（每仓一行，按行判定），
+               此处不再放按钮——状态卡只负责展示，动作统一在列表行内，避免两处入口各判一套。 -->
         </n-space>
         <n-alert v-if="repoStatus?.last_error" type="error" :show-icon="false">
           {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
@@ -1247,6 +1298,26 @@ function formatBytes(value: number): string {
                密码文件缺失时禁用并给原因——与维护区原门禁同口径。 -->
           <n-button size="tiny" secondary @click.stop="openManage(r.id)">
             {{ t('repo.manage') }}
+          </n-button>
+          <!-- 密码入口（与「初始化」同位置、同口径：逐行判定）：
+               密码文件缺失 → 设置；仓库打不开且分类是密码错误 → 重设（force 覆盖，
+               后端仍会先探测，仓库能打开时拒绝）。 -->
+          <n-tooltip v-if="passwordAction(r) === 'reset'" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" secondary type="warning" @click.stop="openPassword(r.id, true)">
+                {{ t('repo.passwordResetBtn') }}
+              </n-button>
+            </template>
+            {{ t('repo.passwordWrongHint') }}
+          </n-tooltip>
+          <n-button
+            v-else-if="passwordAction(r) === 'set'"
+            size="tiny"
+            secondary
+            type="primary"
+            @click.stop="openPassword(r.id, false)"
+          >
+            {{ t('repo.passwordSetBtn') }}
           </n-button>
           <n-tooltip v-if="needsInit(r) && r.passfile_status !== 'configured'" trigger="hover">
             <template #trigger>
@@ -1384,9 +1455,6 @@ function formatBytes(value: number): string {
           </n-button>
         </div>
 
-        <template v-if="initJobId">
-          <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" />
-        </template>
         <template v-if="unlockJobId">
           <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
         </template>
@@ -1791,6 +1859,12 @@ function formatBytes(value: number): string {
       </n-card>
     </template>
 
+    <!-- init 进度卡放在页面级（不随列表/编辑态切换）：编辑态也能从连接测试结论区触发 init，
+         @done 终态回调负责刷新各行状态与仓库列表（否则按钮要等缓存过期或手动刷新才消失）。 -->
+    <template v-if="initJobId">
+      <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" @done="onInitDone" />
+    </template>
+
     <!-- 本地路径目录选择（E33；对齐 Duplicati FolderTree + Browse... 弹窗交互） -->
     <n-modal
       v-model:show="browseShow"
@@ -1968,8 +2042,8 @@ function formatBytes(value: number): string {
          自填 = 直接提交写入。API 与一次性明文语义不变。 -->
     <PasswordEntryModal
       v-model:show="passwordShow"
-      :title="t('repo.passwordTitle')"
-      :intro="t('repo.passwordIntro')"
+      :title="passwordForce ? t('repo.passwordResetTitle') : t('repo.passwordTitle')"
+      :intro="passwordForce ? t('repo.passwordResetIntro') : t('repo.passwordIntro')"
       :generated-hint="t('repo.passwordGeneratedHint')"
       :custom-label="t('repo.passwordCustomLabel')"
       :custom-placeholder="t('repo.passwordCustomPlaceholder')"

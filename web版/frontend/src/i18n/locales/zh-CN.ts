@@ -595,7 +595,9 @@ export default {
     colPassfile: '密码文件',
     passfileMissingShort: '缺失',
     passwordSetBtn: '设置仓库密码',
+    passwordResetBtn: '重设密码',
     passwordTitle: '设置仓库密码',
+    passwordResetTitle: '重设仓库密码',
     passwordIntro:
       '该仓库还没有密码文件（restic 读取不到仓库密码，任何操作都会失败）。密码既是仓库密钥，也是凭据加密的密钥源，请生成后立即备份。',
     passwordGenerate: '生成强随机密码',
@@ -609,8 +611,12 @@ export default {
     passwordCopyFailed: '复制失败，请手动选中复制',
     passwordSavedClose: '我已备份，关闭',
     passwordSetOk: '仓库密码已写入',
+    // 重设密码（force 覆盖）：仅在仓库打不开（密码错误）时被后端接受
+    passwordResetIntro:
+      '当前密码文件打不开该仓库。重设会用新密码覆盖口令文件：若日后找回旧密码，请改回或走「密钥轮换」；已用旧密码加密的凭据会失效，需要重新录入。',
+    passwordWrongHint: '仓库密码错误（仓库打不开）——可在此重设',
     passfileMissingAlert:
-      '密码文件缺失：该仓库的任何操作（初始化/备份/快照）都会因读取不到密码而失败，请先设置仓库密码。',
+      '密码文件缺失：该仓库的任何操作（初始化/备份/快照）都会因读取不到密码而失败，请在下方仓库列表该仓库所在行点「设置仓库密码」。',
     initBlockedByPassfile: '密码文件缺失，请先设置仓库密码',
     colCreated: '创建时间',
     setCurrent: '设为当前',

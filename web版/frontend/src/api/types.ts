@@ -75,6 +75,8 @@ export interface RepoCapacity {
 export interface RepoPasswordRequest {
   /** 空/null → 后端生成；非空 → 按此值写入（响应不回显）。 */
   password?: string | null
+  /** 密码文件已存在时也覆盖——后端仅在仓库当前打不开（密码错误等）时接受。 */
+  force?: boolean
 }
 
 /** R-023 设置仓库密码结果（password 仅 generated 时一次性回显）。 */
@@ -95,6 +97,9 @@ export interface RepoStatusResponse {
   locked: boolean
   capacity: RepoCapacity
   last_error: string | null
+  /** 结构化失败分类（locked/password/not_initialized/credentials/network/timeout/unknown）；
+   *  connected=true 时为 null——行内「初始化 / 重设密码」按钮判定的唯一依据。 */
+  failure_kind: string | null
 }
 
 /** R-023 仓库输出（repos 表事实源；type 派生不落库，passfile_status 只读派生）。 */
@@ -182,6 +187,8 @@ export interface RepoTestResponse {
   ok: boolean
   latency_ms: number
   reason: string | null
+  /** 结构化失败分类（同 RepoStatusResponse.failure_kind）；成功时为 null。 */
+  failure_kind: string | null
 }
 
 /** A1 rclone 只读探测（Q17：不生成、不编辑、不展示 conf 内凭据）。 */

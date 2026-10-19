@@ -153,6 +153,7 @@ beforeEach(() => {
     locked: false,
     last_error: null,
     capacity: { size: 2_147_483_648, snaps: 42 },
+    failure_kind: null,
   }
   mocks.statuses = {}
   mocks.backupTasks = [
@@ -261,9 +262,46 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     w.unmount()
   })
 
+  it('密码错误的仓库：行内给「重设密码」（force 覆盖），且不再给「初始化」', async () => {
+    mocks.statuses = {
+      'repo-3': {
+        connected: false,
+        configured: true,
+        locked: false,
+        last_error: '仓库密码错误（请检查仓库密码文件挂载）',
+        capacity: null,
+        failure_kind: 'password',
+      },
+    }
+    const w = mountPage(RepoPage)
+    await flushPromises()
+    const ui = useUiStore()
+
+    const row = w.findAll('.repo__dest')[2]
+    const labels = row.findAll('button').map((b) => b.text())
+    // 密码错误 ≠ 未初始化：init 入口必须消失（否则用户会拿 init 去砸一个打不开的仓库）
+    expect(labels).not.toContain('初始化仓库')
+    expect(labels).toContain('重设密码')
+
+    // 与行内初始化同口径：先切当前仓库，再开弹窗
+    await row.findAll('button').find((b) => b.text() === '重设密码')!.trigger('click')
+    await flushPromises()
+    expect(ui.currentRepoId).toBe('repo-3')
+
+    ui.setCurrentRepoId('default')
+    w.unmount()
+  })
+
   it('仓库行内初始化按行寻址：点击先切当前仓库，再开确认门', async () => {
     mocks.statuses = {
-      'repo-3': { connected: false, configured: true, locked: false, last_error: null, capacity: null },
+      'repo-3': {
+        connected: false,
+        configured: true,
+        locked: false,
+        last_error: null,
+        capacity: null,
+        failure_kind: 'not_initialized',
+      },
     }
     const w = mountPage(RepoPage)
     await flushPromises()
@@ -280,18 +318,25 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     w.unmount()
   })
 
-  it('状态行：容量挨着锁标签；密码缺失时「设置仓库密码」在同一行最右', async () => {
+  it('密码入口下放到仓库行：密码缺失行有「设置仓库密码」，状态卡不再重复放按钮', async () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    // 默认仓库密码已配置 → 行内只有标签 + 容量
+    // 默认仓库密码已配置 → 状态行只有标签 + 容量，且不再有密码按钮（已下放到列表行）
     expect(w.text()).toContain('仓库容量')
-    // repo-2 密码缺失：切到它 → 状态行出现设置密码按钮（margin-left:auto 推最右）
-    await w.findAll('.repo__dest')[1].trigger('click')
+    expect(w.find('.repo__status-action').exists()).toBe(false)
+
+    // repo-2 密码缺失 → 该行内出现「设置仓库密码」（与「初始化」同位置、逐行判定）
+    const row = w.findAll('.repo__dest')[1]
+    const setBtn = row.findAll('button').find((b) => b.text() === '设置仓库密码')
+    expect(setBtn).toBeTruthy()
+
+    // 点击：先把该仓库设为当前，再打开密码弹窗（与行内初始化同口径）
+    const ui = useUiStore()
+    await setBtn!.trigger('click')
     await flushPromises()
-    const action = w.find('.repo__status-action')
-    expect(action.exists()).toBe(true)
-    expect(action.text()).toBe('设置仓库密码')
+    expect(ui.currentRepoId).toBe('repo-2')
+    ui.setCurrentRepoId('default')
     w.unmount()
   })
 
@@ -578,6 +623,7 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
       ok: false,
       latency_ms: 3,
       reason: '仓库不存在或未初始化（请检查 repo.url，或先执行 init）',
+      failure_kind: 'not_initialized',
     })
     const w = mountPage(RepoPage)
     await flushPromises()
