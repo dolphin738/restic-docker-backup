@@ -203,66 +203,88 @@ async function onDeleteConfirmed(): Promise<void> {
 
 <template>
   <n-space vertical :size="16">
-    <!-- KPI 状态带（P4）：原「仓库状态卡 + 运行模式卡 + 2×NStatistic」三卡合一，
-         四格（仓库状态 / 快照数 / 运行模式 / 最近备份），窄屏 2×2。
+    <!-- KPI 状态带（P4+）：四格等高等距——统一「标签行 22px / 主行 36px / 辅出行 18px」固定骨架，
+         窄屏 2×2。原①卡因多出「刷新按钮行 + 标签行」且主值字号与②③不一致，四卡高矮不齐；
+         现刷新按钮收入标签行右端，状态标签升为主行，容量降为辅出行，四行结构完全同构。
          任务卡虚拟滚动常量（CARD_HEIGHT 260 / ITEM_HEIGHT 272）不动。 -->
     <!-- 响应式断点只能用命名档（s/m/l/xl/xxl）：naive 的 responsive="screen" 查询的是断点布尔集，
          数字形式（原 "2 900:4"）永不命中 → 一直停在基础值 2 列（P4 实测修正）。 -->
     <n-grid cols="2 l:4" :x-gap="12" :y-gap="12" responsive="screen">
-      <!-- ① 仓库状态：L3 三态（success/warning/error）+ 容量 -->
+      <!-- ① 仓库状态：L3 三态（success/warning/error）标签为主行，容量降为辅出行 -->
       <n-gi>
         <n-card size="small" class="kpi">
-          <n-space justify="space-between" align="center">
+          <div class="kpi__row kpi__row--label">
             <n-text depth="3" class="kpi__label">{{ t('dashboard.repoCard') }}</n-text>
             <n-button size="tiny" secondary :loading="repoLoading" @click="repoQuery.refetch()">
               {{ t('common.refresh') }}
             </n-button>
-          </n-space>
-          <n-space align="center" :size="8" class="kpi__tags">
-            <StatusTag
-              :kind="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
-              :label="
-                repoStatus?.connected
-                  ? t('dashboard.repoConnected')
-                  : repoStatus?.configured === false
-                    ? t('dashboard.repoNotConfigured')
-                    : t('dashboard.repoDisconnected')
-              "
-            />
-            <StatusTag
-              :kind="repoStatus?.locked ? 'warning' : 'default'"
-              :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
-            />
-          </n-space>
-          <n-text depth="2" class="kpi__value tabular-nums">{{ capacityText }}</n-text>
-          <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCapacity') }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--main">
+            <n-space align="center" :size="8">
+              <StatusTag
+                :kind="repoStatus?.connected ? 'success' : repoStatus?.configured === false ? 'warning' : 'error'"
+                :label="
+                  repoStatus?.connected
+                    ? t('dashboard.repoConnected')
+                    : repoStatus?.configured === false
+                      ? t('dashboard.repoNotConfigured')
+                      : t('dashboard.repoDisconnected')
+                "
+              />
+              <StatusTag
+                :kind="repoStatus?.locked ? 'warning' : 'default'"
+                :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
+              />
+            </n-space>
+          </div>
+          <div class="kpi__row kpi__row--sub">
+            <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCapacity') }} {{ capacityText }}</n-text>
+          </div>
         </n-card>
       </n-gi>
 
       <!-- ② 快照数：count-up（AB-2 一次性） -->
       <n-gi>
         <n-card size="small" class="kpi">
-          <n-text depth="3" class="kpi__label">{{ t('dashboard.repoSnapshots') }}</n-text>
-          <n-text class="kpi__num tabular-nums">{{ snapsText }}</n-text>
-          <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCacheNote') }}</n-text>
+          <div class="kpi__row kpi__row--label">
+            <n-text depth="3" class="kpi__label">{{ t('dashboard.repoSnapshots') }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--main">
+            <n-text class="kpi__num tabular-nums">{{ snapsText }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--sub">
+            <n-text depth="3" class="kpi__sub">{{ t('dashboard.repoCacheNote') }}</n-text>
+          </div>
         </n-card>
       </n-gi>
 
       <!-- ③ 运行模式（原 TierCard 内容并入；组件保留给任务向导） -->
       <n-gi>
         <n-card size="small" class="kpi">
-          <n-text depth="3" class="kpi__label">{{ t('tier.title') }}</n-text>
-          <n-text strong class="kpi__num">{{ t(`tier.name.${userKey}`) }}</n-text>
-          <n-text depth="3" class="kpi__sub">{{ t(`tier.user.${userKey}`) }}</n-text>
+          <div class="kpi__row kpi__row--label">
+            <n-text depth="3" class="kpi__label">{{ t('tier.title') }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--main">
+            <n-text strong class="kpi__tier">{{ t(`tier.name.${userKey}`) }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--sub">
+            <n-text depth="3" class="kpi__sub">{{ t(`tier.user.${userKey}`) }}</n-text>
+          </div>
         </n-card>
       </n-gi>
 
       <!-- ④ 最近备份：任务列表派生（零后端改动） -->
       <n-gi>
         <n-card size="small" class="kpi">
-          <n-text depth="3" class="kpi__label">{{ t('dashboard.lastBackup') }}</n-text>
-          <n-text strong class="kpi__value tabular-nums">{{ lastBackupText }}</n-text>
-          <n-text depth="3" class="kpi__sub">{{ t('dashboard.tasksAutoNote') }}</n-text>
+          <div class="kpi__row kpi__row--label">
+            <n-text depth="3" class="kpi__label">{{ t('dashboard.lastBackup') }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--main">
+            <n-text strong class="kpi__datetime tabular-nums">{{ lastBackupText }}</n-text>
+          </div>
+          <div class="kpi__row kpi__row--sub">
+            <n-text depth="3" class="kpi__sub">{{ t('dashboard.tasksAutoNote') }}</n-text>
+          </div>
         </n-card>
       </n-gi>
     </n-grid>
@@ -337,35 +359,57 @@ async function onDeleteConfirmed(): Promise<void> {
 </template>
 
 <style scoped>
-/* KPI 状态带单元格（P4）：标签 12px 辅助 / 主值 20px / 大数字 28px（方案 §3.1 字号阶梯） */
+/* KPI 状态带统一骨架（P4+）：四卡等高等距。
+   三行固定行高——标签 22（容纳 tiny 刷新按钮）/ 主 36 / 辅出 18——
+   卡片内边距四卡一致，叠加后总高相同；主行内按内容分档：
+   数字 28px（②）、模式名 24px（③）、时间 20px（④）、状态标签自然高（①）。 */
+.kpi__row {
+  display: flex;
+  align-items: center;
+}
+
+.kpi__row--label {
+  height: 22px;
+  justify-content: space-between;
+}
+
+.kpi__row--main {
+  height: 36px;
+}
+
+.kpi__row--sub {
+  height: 18px;
+}
+
+/* 标签 12px 辅助 / 主值分档 / 辅出 12px（方案 §3.1 字号阶梯） */
 .kpi__label {
   font-size: 12px;
 }
 
-.kpi__tags {
-  margin-top: 8px;
-  min-height: 22px;
-}
-
-.kpi__value {
-  display: block;
-  margin-top: 8px;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
 .kpi__num {
-  display: block;
-  margin-top: 8px;
   font-size: 28px;
   font-weight: 600;
   line-height: 1.2;
 }
 
+.kpi__tier {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* 时间串 19 字符（YYYY-MM-DD HH:mm:ss）：20px + nowrap 省略号防溢出 */
+.kpi__datetime {
+  max-width: 100%;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .kpi__sub {
-  display: block;
-  margin-top: 4px;
   font-size: 12px;
 }
 
