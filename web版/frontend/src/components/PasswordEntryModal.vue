@@ -21,14 +21,14 @@ const props = withDefaults(
     show: boolean
     title: string
     /** 自填态顶部的风险/说明文案（warning alert） */
-    intro: string
+    intro?: string
     /** 生成态顶部的一次性明文提示（success alert） */
     generatedHint: string
-    customLabel: string
-    customPlaceholder: string
-    generateLabel: string
+    customLabel?: string
+    customPlaceholder?: string
+    generateLabel?: string
     /** 自填态提交按钮文案（如「使用此密码」「使用此密码轮换」） */
-    submitLabel: string
+    submitLabel?: string
     /** 生成态确认按钮文案（如「我已备份，关闭」「确认轮换」） */
     confirmLabel: string
     /** 生成态一次性明文；null = 自填态 */
@@ -38,8 +38,11 @@ const props = withDefaults(
     minLength?: number
     /** 生成态是否显示「取消/返回」（E44 生成已落盘、无路可退=false；轮换未提交、可返回=true） */
     showGeneratedCancel?: boolean
+    /** 是否显示「生成」按钮。重设密码（force 覆盖）模式隐藏：生成的新密码写进文件也打不开
+     *  仓库（仓库密钥仍是旧的），只会让人以为「点了没用」；该模式只接受手填的旧密码重写文件。 */
+    showGenerate?: boolean
   }>(),
-  { minLength: 10, showGeneratedCancel: true },
+  { minLength: 10, showGeneratedCancel: true, showGenerate: true },
 )
 
 const emit = defineEmits<{
@@ -125,7 +128,9 @@ async function copyGenerated(): Promise<void> {
           <n-button :disabled="!customReady" :loading="loading" @click="emit('submit-custom', pw)">
             {{ submitLabel }}
           </n-button>
-          <n-button type="primary" :loading="loading" @click="emit('generate')">{{ generateLabel }}</n-button>
+          <n-button v-if="showGenerate" type="primary" :loading="loading" @click="emit('generate')">
+            {{ generateLabel }}
+          </n-button>
         </n-space>
       </template>
     </n-space>

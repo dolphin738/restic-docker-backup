@@ -541,8 +541,21 @@ export default {
     passwordSavedClose: 'Saved, close',
     // 重设密码（force 覆盖）：仅在仓库打不开（密码错误）时由后端接受
     passwordResetIntro:
-      'The repository cannot be opened with the current password file. Resetting overwrites the password file with the new password: if you later recall the old one, restore it or run key rotation. Credentials already encrypted with the old password become invalid and must be re-entered.',
-    passwordWrongHint: 'Repository password is wrong (repository cannot be opened) — reset it here',
+      'If you still remember the correct original password, enter it here to rewrite the password file and the repository will open. ⚠️ This only rewrites the password file, not the repository data: if you have completely forgotten the original password, no entry will open the repository (its key is still the old one) — you must rebuild the repository, which wipes all snapshots and re-initializes with a new password.',
+    passwordWrongHint:
+      'Wrong repository password (cannot open): if you remember the original, enter it here to rewrite the file; if forgotten, you must rebuild the repository (wipes snapshots).',
+    // Rebuild default repository (forgotten-password escape hatch; default repo + local FS only)
+    rebuildBtn: 'Rebuild repository',
+    rebuildTitle: 'Rebuild default repository',
+    rebuildOk: 'Default repository rebuilt with a new password (old snapshots wiped)',
+    rebuildConfirm:
+      'Rebuild wipes all snapshots and reinitializes the repository with a new password; credentials encrypted with the old password become invalid and must be re-entered. This cannot be undone.',
+    rebuildPreview:
+      'Will execute: write new password file → wipe repository directory → restic init. Running jobs will be rejected.',
+    rebuildGeneratedHint:
+      'Default repository rebuilt. This new password is shown only once — back it up now; credentials encrypted with the old password must be re-entered.',
+    rebuildNonDefaultHint:
+      'Forgotten the password? Non-default repositories can simply be deleted and recreated with a new URL (deleting does not wipe remote data; the old data is already unrecoverable, just abandon it).',
     passwordSetOk: 'Repository password written',
     passfileMissingAlert:
       'Password file missing: every operation on this repository (init/backup/snapshots) fails because the password cannot be read. Use “Set repository password” on this repository’s row in the list below.',

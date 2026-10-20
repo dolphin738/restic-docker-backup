@@ -38,6 +38,7 @@ import {
   listRepos,
   listRcloneRemotes,
   manualCopy,
+  rebuildRepo,
   rotateRepoKey,
   setRepoPassword,
   suggestRepoId,
@@ -598,6 +599,38 @@ function closePassword(): void {
   generatedPassword.value = null
   passwordTargetId.value = null
   passwordForce.value = false
+}
+
+// ---------------------------------------------------------------- 重建仓库（忘密码自救：默认仓库本地 FS 专属）
+// 与「重设密码」分工：记得原密码→重设（重写文件）；彻底忘记→重建（清空快照+新密码 re-init）。
+// 非默认仓库不允许重建（可删除后换 URL 新建），故本流程仅对 default 开放。
+const rebuildShow = ref(false)
+const rebuildResultShow = ref(false)
+const rebuildTargetId = ref<string | null>(null)
+const rebuildPassword = ref<string | null>(null)
+const rebuildSaving = ref(false)
+
+async function onRebuild(id: string): Promise<void> {
+  rebuildSaving.value = true
+  try {
+    const res = await rebuildRepo(id, {})
+    rebuildPassword.value = res.generated ? res.password : null
+    rebuildResultShow.value = true
+    message.success(t('repo.rebuildOk'))
+    await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
+    await queryClient.invalidateQueries({ queryKey: ['repo', 'status'] })
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    rebuildSaving.value = false
+  }
+}
+
+function closeRebuild(): void {
+  rebuildResultShow.value = false
+  rebuildPassword.value = null
 }
 
 async function generatePassword(): Promise<void> {
@@ -1302,14 +1335,27 @@ function formatBytes(value: number): string {
           <!-- 密码入口（与「初始化」同位置、同口径：逐行判定）：
                密码文件缺失 → 设置；仓库打不开且分类是密码错误 → 重设（force 覆盖，
                后端仍会先探测，仓库能打开时拒绝）。 -->
-          <n-tooltip v-if="passwordAction(r) === 'reset'" trigger="hover">
-            <template #trigger>
-              <n-button size="tiny" secondary type="warning" @click.stop="openPassword(r.id, true)">
-                {{ t('repo.passwordResetBtn') }}
-              </n-button>
-            </template>
-            {{ t('repo.passwordWrongHint') }}
-          </n-tooltip>
+          <template v-if="passwordAction(r) === 'reset'">
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button size="tiny" secondary type="warning" @click.stop="openPassword(r.id, true)">
+                  {{ t('repo.passwordResetBtn') }}
+                </n-button>
+              </template>
+              {{ t('repo.passwordWrongHint') }}
+            </n-tooltip>
+            <!-- 默认仓库不可删：忘记密码只能原地重建（本地 FS 专属）；非默认仓库提示删除后换 URL 新建 -->
+            <n-button
+              v-if="r.id === 'default'"
+              size="tiny"
+              secondary
+              type="error"
+              @click.stop="rebuildTargetId = r.id; rebuildShow = true"
+            >
+              {{ t('repo.rebuildBtn') }}
+            </n-button>
+            <n-text v-else depth="3" class="repo__note">{{ t('repo.rebuildNonDefaultHint') }}</n-text>
+          </template>
           <n-button
             v-else-if="passwordAction(r) === 'set'"
             size="tiny"
@@ -1998,6 +2044,20 @@ function formatBytes(value: number): string {
       </template>
     </ConfirmGate>
 
+    <!-- 重建默认仓库：三步确认门（关键词 REBUILD；清空全部快照，不可恢复） -->
+    <ConfirmGate
+      v-model:show="rebuildShow"
+      :title="t('repo.rebuildTitle')"
+      :keyword="'REBUILD'"
+      :description="t('repo.rebuildConfirm')"
+      :loading="rebuildSaving"
+      @confirm="onRebuild(rebuildTargetId ?? currentRepoId)"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.rebuildPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
     <!-- C4 手动 copy：把当前仓快照增量复制到目标仓（增量只传新快照，可中断续传）。
          宽度收口：n-modal preset=card 默认无宽度约束，会被内容撑成全屏宽瘦长条。 -->
     <n-modal
@@ -2054,6 +2114,7 @@ function formatBytes(value: number): string {
       :loading="passwordSaving"
       :min-length="1"
       :show-generated-cancel="false"
+      :show-generate="!passwordForce"
       @generate="generatePassword"
       @submit-custom="onSubmitPassword"
       @confirm-generated="closePassword"
@@ -2078,6 +2139,18 @@ function formatBytes(value: number): string {
       @generate="generateRotatePw"
       @submit-custom="onRotate"
       @confirm-generated="onRotate(rotateGenerated ?? '')"
+    />
+
+    <!-- 重建默认仓库结果：展示一次性新密码（与 E44 生成态同款展示 + 复制） -->
+    <PasswordEntryModal
+      v-model:show="rebuildResultShow"
+      :title="t('repo.rebuildTitle')"
+      :generated-hint="t('repo.rebuildGeneratedHint')"
+      :generated="rebuildPassword"
+      :loading="rebuildSaving"
+      :show-generated-cancel="false"
+      confirm-label="我已备份，关闭"
+      @confirm-generated="closeRebuild"
     />
   </n-space>
 </template>

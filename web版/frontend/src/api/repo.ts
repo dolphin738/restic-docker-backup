@@ -104,6 +104,19 @@ export function rotateRepoKey(body: RepoKeyRotateRequest): Promise<KeyRotateResp
 }
 
 /**
+ * 重建默认仓库（POST /api/repos/{id}/rebuild）：清空全部快照并用新密码重新初始化。
+ *
+ * 仅本地文件系统后端 + 默认仓库可用；忘记密码时的自救通道（记得原密码应走「重设密码」）。
+ * `password` 为空 → 后端生成强随机密码并一次性回显（须立即备份）；非空 → 按该值写入。
+ */
+export function rebuildRepo(id: string, body: RepoPasswordRequest = {}): Promise<RepoPasswordResponse> {
+  return request<RepoPasswordResponse>(`/api/repos/${encodeURIComponent(id)}/rebuild`, {
+    method: 'POST',
+    body,
+  })
+}
+
+/**
  * C4 手动 copy（POST /api/copy；搬家/建异地副本场景，增量只传新快照）。
  *
  * 两仓须均已配置地址与密码；exit_code -1 = 超时中断（增量可续传，重跑补齐）。

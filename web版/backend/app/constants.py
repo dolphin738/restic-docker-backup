@@ -136,6 +136,7 @@ AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
 AUDIT_REPO_TEST = "repo.test"
 # R-023 仓库密码文件首次写入（生成或自填）——安全敏感动作，留痕但**不记录明文**
 AUDIT_REPO_PASSWORD_SET = "repo.password_set"
+AUDIT_REPO_REBUILD = "repo.rebuild"  # 忘密码自救：清空快照并用新密码重新初始化（仅本地 FS 默认仓库）
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_CONFIG_EXPORT = "config.export"  # 批次 E：配置导出（凭据口令加密，文件出系统边界，危险操作留痕）
@@ -213,6 +214,7 @@ NOTIFY_SKIPPED_THRESHOLD_MAX = 1_000_000  # 阈值写爆兜底
 
 REPO_PROBE_TIMEOUT_SECONDS = 15         # cat config 连通性探测
 REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
+REPO_INIT_TIMEOUT_SECONDS = 120         # restic init（重建仓库）超时
 # rclone listremotes 只读探测（A1）：纯本地操作（读 conf），5s 足够；超时即视为不可用
 RCLONE_PROBE_TIMEOUT_SECONDS = 5.0
 # Windows 子进程可用性提示（2026-10-19 实证）：uvicorn 的 --reload / --workers>1 会经

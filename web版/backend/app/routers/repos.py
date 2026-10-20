@@ -13,9 +13,13 @@ E30 探测成本三招（沿用既有设计）：TTL 缓存（per-repo）/ 锁�
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import re
 import secrets
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -27,17 +31,19 @@ from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
     AUDIT_REPO_PASSWORD_SET,
+    AUDIT_REPO_REBUILD,
     AUDIT_REPO_TEST,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
+    REPO_INIT_TIMEOUT_SECONDS,
     REPO_PASSWORD_LENGTH,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
     REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
-from app.db.repositories.repo_repo import Repo, ReposRepo
-from app.errors import RepoNotFoundError, ValidationError
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, Repo, ReposRepo
+from app.errors import JobConflictError, RepoNotFoundError, ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
     OkResponse,
     RcloneRemotesOut,
@@ -55,6 +61,8 @@ from app.services.env_sync import load_credentials, passfile_path, passfile_stat
 from app.services.rclone import RcloneProbe
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
 from app.utils.ulid import new_ulid
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["repos"])
 
@@ -78,6 +86,27 @@ def _validate_repo_id(repo_id: str) -> str:
             f"仓库标识非法：仅允许字母、数字、下划线与连字符（1-{REPO_ID_MAX_LENGTH} 字符，且以字母或数字开头）"
         )
     return repo_id
+
+
+def _repo_local_path(url: str) -> Path | None:
+    """解析 restic 仓库 URL 的本地文件系统路径；非本地后端返回 ``None``。
+
+    接受：``/abs/path``、``local:/abs/path``、Windows ``C:\\...``；
+    拒绝一切远程 scheme（``s3:`` / ``rest:`` / ``sftp:`` / ``rclone:`` … 及 ``://`` 形式）。
+    重建仅支持本地文件系统后端（远端无法在此安全清空，提示手动处理）。
+    """
+    u = (url or "").strip()
+    if not u:
+        return None
+    if u.startswith("local:"):
+        u = u[len("local:"):]
+    # Windows 盘符（C:\ / C:/）视为本地
+    if re.match(r"^[A-Za-z]:[\\/]", u):
+        return Path(u)
+    # 远程 scheme：含 :// 或 "word:" 形式（盘符已在上一步过滤）
+    if "://" in u or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", u):
+        return None
+    return Path(u)
 
 
 # ---------------------------------------------------------------- A8 仓库标识自动生成
@@ -542,6 +571,132 @@ async def set_repo_password(
         AUDIT_REPO_PASSWORD_SET,
         target=repo_id,
         detail={"generated": generated, "forced": forced},
+        result="ok",
+    )
+    invalidate_repo_status_cache()
+    return RepoPasswordResponse(
+        ok=True,
+        generated=generated,
+        password=plain if generated else None,
+        path=str(path),
+    )
+
+
+@router.post(
+    "/repos/{repo_id}/rebuild",
+    response_model=RepoPasswordResponse,
+    summary="重建仓库（清空快照并用新密码重新初始化；仅本地 FS 默认仓库）",
+    dependencies=_PROTECTED,
+)
+async def rebuild_repo(
+    repo_id: str,
+    payload: RepoPasswordRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RepoPasswordResponse:
+    """忘密码的自救通道：清空仓库全部快照、用新密码重新初始化。
+
+    - 仅默认仓库（不可删除）走此通道；非默认仓库应直接删除后用新 URL 重建。
+    - 仅支持本地文件系统后端（url 为本地绝对路径或 ``local:`` 前缀）；远程后端（s3/rest/sftp…）
+      返回 400，提示手动清空后端存储后删除仓库、换 URL 新建（旧数据本就不可恢复）。
+    - 流程：写新密码文件 → rmtree 仓库目录 → restic init；运行中的任务会被 409 拒绝。
+    - default 仓库是凭据加密根：重建后旧 enc:v2 凭据无法用旧密钥解密，一并清除（需重新录入）。
+    """
+    del session
+    _validate_repo_id(repo_id)
+    if repo_id != DEFAULT_REPO_ID:
+        raise ValidationError(
+            "仅默认仓库支持原地重建（默认仓库不可删除）。非默认仓库请直接删除后换 URL 新建。",
+            data={"repo_id": repo_id},
+        )
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    if repo is None:
+        raise RepoNotFoundError(repo_id)
+
+    # 远程后端不支持自动清空
+    local_path = _repo_local_path(repo.url or "")
+    if local_path is None:
+        raise ValidationError(
+            "该仓库后端不是本地文件系统（远程后端无法自动清空）。请手动清空后端存储后删除仓库、换 URL 新建。",
+            data={"url": repo.url},
+        )
+
+    # 运行中的任务冲突
+    active = await request.app.state.job_repo.list_active(repo_id)
+    if active:
+        raise JobConflictError(data={"running_job_id": active[0].id})
+
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    audit = request.app.state.audit
+    settings = request.app.state.settings
+
+    # 新密码：自填或生成
+    generated = not (payload.password or "").strip()
+    plain = _generate_repo_password() if generated else (payload.password or "")
+
+    # 1) 写新密码文件（先于 rmtree；密码文件位于独立目录，不受仓库数据清空影响）
+    path = passfile_path(settings, repo_id)
+    try:
+        _write_passfile(path, plain)
+    except OSError as exc:
+        raise ValidationError(
+            f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
+        ) from exc
+
+    # 2) 清空仓库数据目录（已确认是本地文件系统目录）
+    if local_path == Path(local_path.root):
+        raise ValidationError(f"仓库路径解析为根目录，拒绝清空：{local_path}")
+    if local_path.exists():
+        if not local_path.is_dir():
+            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
+        shutil.rmtree(local_path)
+
+    # 3) restic init（用新密码文件）
+    fd, log_path = tempfile.mkstemp(prefix="restic-init-", suffix=".log")
+    os.close(fd)
+    exit_code = -1
+    last_line = ""
+    try:
+        env = restic.build_env(
+            repo_url=repo.url,
+            repo_id=repo_id,
+            env_extras=await load_credentials(config_repo, repo_id),
+        )
+        argv = restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
+        proc = await restic.spawn(argv, log_path, env=env)
+        async for line in proc.lines():
+            last_line = line
+        try:
+            exit_code = await asyncio.wait_for(proc.wait(), timeout=REPO_INIT_TIMEOUT_SECONDS)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            exit_code = -1
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(log_path)
+    if exit_code != 0:
+        reason = failure_reason(exit_code, [last_line]) if exit_code != -1 else "初始化超时"
+        logger.warning("仓库 %s 重建初始化失败：%s", repo_id, reason)
+        raise ResticFailedError(f"重建初始化失败：{reason}", exit_code=exit_code)
+
+    # 4) default 凭据根：清除旧 enc:v2 凭据（旧密钥已丢失，无法解密）
+    crypto = request.app.state.encryption.crypto
+    cleared = 0
+    for row in await config_repo.list_all_raw():
+        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
+            continue
+        if not crypto.is_encrypted(row.value):
+            continue
+        await config_repo.delete(row.key)
+        cleared += 1
+
+    await audit.record(
+        AUDIT_REPO_REBUILD,
+        target=repo_id,
+        detail={"generated": generated, "cleared_credentials": cleared},
         result="ok",
     )
     invalidate_repo_status_cache()
