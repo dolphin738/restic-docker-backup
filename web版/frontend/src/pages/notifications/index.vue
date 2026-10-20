@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/** 通知设置页（R-018，A 方案 2026-10-20 重构）。
+ *
+ * 结构（对齐仓库页「先选类型 → 出该类型配置项」范式）：
+ *   ① 通知渠道卡：渠道类型下拉 → 仅渲染该类型的配置项 → 保存（只提交该渠道的键）；
+ *   ② 已保存的渠道列表：四类渠道各一行（状态 pill + 脱敏摘要 + 编辑/清除）；
+ *   ③ 告警规则卡：全局 on_success / skipped_threshold（对所有渠道生效）。
+ *
+ * 后端契约不变：E23 三态写入（undefined=不变 / ''=清除 / 非空=设置），敏感 URL
+ * 只回 *_set 不回明文（S3），故本页零后端改动。
+ */
+
 import { useQuery } from '@tanstack/vue-query'
 import {
   NAlert,
@@ -14,10 +25,11 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getNotifyConfig, testNotify, updateNotifyConfig } from '@/api/notify'
-import type { NotifyTestResponse } from '@/api/types'
+import type { NotifyConfigPatch, NotifyConfigResponse, NotifyTestResponse } from '@/api/types'
+import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 
 const { t } = useI18n()
@@ -25,109 +37,293 @@ const message = useMessage()
 
 const configQuery = useQuery({ queryKey: ['notify'], queryFn: getNotifyConfig })
 
-// 表单态（非敏感字段直接绑定；敏感 URL 用独立输入框，留空 = 不修改）
-const healthchecksUrl = ref('')
-const webhookUrl = ref('')
-const webhookTemplate = ref('')
-const meowNickname = ref('')
-// C2 SMTP 邮件（密码三态：留空不变 / 点清除后提交空串 / 输入新值覆盖）
-const mailHost = ref('')
-const mailPort = ref<number>(587)
-const mailUsername = ref('')
-const mailPassword = ref('')
-const mailFrom = ref('')
-const mailTo = ref('')
-const mailSecurity = ref<'none' | 'starttls' | 'tls'>('starttls')
-const mailRedact = ref(false)
+// ---------------------------------------------------------------- 渠道类型（A 方案：每种渠道一套配置键）
+
+type ChannelKey = 'healthchecks' | 'webhook' | 'meow' | 'mail'
+
+const CHANNEL_KEYS: ChannelKey[] = ['healthchecks', 'webhook', 'meow', 'mail']
+
+const channelType = ref<ChannelKey | ''>('')
+
+const channelOptions = computed(() => CHANNEL_KEYS.map((key) => ({ label: t(`notify.channel.${key}`), value: key })))
+
+/** 渠道是否已配置（与 Notifier 运行期启用判定同口径：对应键有值）。 */
+function isConfigured(key: ChannelKey, data: NotifyConfigResponse | undefined): boolean {
+  if (!data) {
+    return false
+  }
+  switch (key) {
+    case 'healthchecks':
+      return data.healthchecks_url_set
+    case 'webhook':
+      return data.webhook_url_set
+    case 'meow':
+      return data.meow_nickname.trim() !== ''
+    default:
+      return data.mail_password_set || data.mail_host.trim() !== ''
+  }
+}
+
+const hasAnyChannel = computed(() => CHANNEL_KEYS.some((key) => isConfigured(key, configQuery.data.value)))
+
+/** 列表行摘要（脱敏口径：URL/密码一律不回显，只给状态性描述）。 */
+function channelSummary(key: ChannelKey): string {
+  const data = configQuery.data.value
+  if (!data) {
+    return t('notify.list.summaryEmpty')
+  }
+  if (key === 'healthchecks') {
+    return data.healthchecks_url_set ? t('notify.list.summarySaved') : t('notify.list.summaryEmpty')
+  }
+  if (key === 'webhook') {
+    if (!data.webhook_url_set) {
+      return t('notify.list.summaryEmpty')
+    }
+    return data.webhook_template.trim() ? t('notify.list.summaryTemplateSet') : t('notify.list.summaryDefaultTemplate')
+  }
+  if (key === 'meow') {
+    const nickname = data.meow_nickname.trim()
+    return nickname ? t('notify.list.summaryNickname', { name: nickname }) : t('notify.list.summaryEmpty')
+  }
+  const host = data.mail_host.trim()
+  if (!host && !data.mail_password_set) {
+    return t('notify.list.summaryEmpty')
+  }
+  if (!host) {
+    return t('notify.list.summarySaved')
+  }
+  const from = data.mail_from.trim()
+  return from ? t('notify.list.summaryMail', { host, from }) : host
+}
+
+// ---------------------------------------------------------------- 表单态（敏感字段留空=不修改；clear=提交空串）
+
+const form = reactive({
+  healthchecksUrl: '',
+  webhookUrl: '',
+  webhookTemplate: '',
+  webhookRedact: false,
+  meowNickname: '',
+  meowRedact: true,
+  mailHost: '',
+  mailPort: 587,
+  mailUsername: '',
+  mailPassword: '',
+  mailFrom: '',
+  mailTo: '',
+  mailSecurity: 'starttls' as 'none' | 'starttls' | 'tls',
+  mailRedact: false,
+})
+
+/** 敏感字段「清除」意图（点击清除后保存时提交空串）。 */
+const clear = reactive({
+  healthchecksUrl: false,
+  webhookUrl: false,
+  mailPassword: false,
+})
+
+/** 把某类渠道的已存值装进表单（敏感 URL 不回显：输入框留空 + placeholder 提示已配置）。 */
+function loadChannel(key: ChannelKey): void {
+  channelType.value = key
+  const data = configQuery.data.value
+  if (!data) {
+    return
+  }
+  if (key === 'healthchecks') {
+    form.healthchecksUrl = ''
+    clear.healthchecksUrl = false
+    return
+  }
+  if (key === 'webhook') {
+    form.webhookUrl = ''
+    form.webhookTemplate = data.webhook_template
+    form.webhookRedact = data.webhook_redact
+    clear.webhookUrl = false
+    return
+  }
+  if (key === 'meow') {
+    form.meowNickname = data.meow_nickname
+    form.meowRedact = data.meow_redact
+    return
+  }
+  form.mailHost = data.mail_host
+  form.mailPort = data.mail_port
+  form.mailUsername = data.mail_username
+  form.mailPassword = ''
+  form.mailFrom = data.mail_from
+  form.mailTo = data.mail_to
+  form.mailSecurity = data.mail_security
+  form.mailRedact = data.mail_redact
+  clear.mailPassword = false
+}
+
+function channelMissing(): string | null {
+  switch (channelType.value) {
+    case 'healthchecks':
+      return clear.healthchecksUrl || form.healthchecksUrl.trim() ? null : t('notify.channel.needUrl')
+    case 'webhook':
+      return clear.webhookUrl || form.webhookUrl.trim() ? null : t('notify.channel.needUrl')
+    case 'meow':
+      return form.meowNickname.trim() ? null : t('notify.channel.needNickname')
+    case 'mail':
+      return form.mailHost.trim() ? null : t('notify.channel.needHost')
+    default:
+      return t('notify.channel.needType')
+  }
+}
+
+const savingChannel = ref(false)
+
+/** 保存当前类型渠道：patch 只含该渠道的键（其余键 undefined=不变）。 */
+async function saveChannel(): Promise<void> {
+  if (savingChannel.value) {
+    return
+  }
+  const missing = channelMissing()
+  if (missing) {
+    message.warning(missing)
+    return
+  }
+  const patch: NotifyConfigPatch = {}
+  if (channelType.value === 'healthchecks') {
+    if (clear.healthchecksUrl) {
+      patch.healthchecks_url = ''
+    } else if (form.healthchecksUrl.trim()) {
+      patch.healthchecks_url = form.healthchecksUrl.trim()
+    }
+  } else if (channelType.value === 'webhook') {
+    if (clear.webhookUrl) {
+      patch.webhook_url = ''
+    } else if (form.webhookUrl.trim()) {
+      patch.webhook_url = form.webhookUrl.trim()
+    }
+    patch.webhook_template = form.webhookTemplate
+    patch.webhook_redact = form.webhookRedact
+  } else if (channelType.value === 'meow') {
+    patch.meow_nickname = form.meowNickname.trim()
+    patch.meow_redact = form.meowRedact
+  } else {
+    patch.mail_host = form.mailHost.trim()
+    patch.mail_port = form.mailPort ?? 587
+    patch.mail_username = form.mailUsername.trim()
+    if (clear.mailPassword) {
+      patch.mail_password = ''
+    } else if (form.mailPassword) {
+      patch.mail_password = form.mailPassword
+    }
+    patch.mail_from = form.mailFrom.trim()
+    patch.mail_to = form.mailTo.trim()
+    patch.mail_security = form.mailSecurity
+    patch.mail_redact = form.mailRedact
+  }
+  if (Object.keys(patch).length === 0) {
+    return
+  }
+  savingChannel.value = true
+  try {
+    await updateNotifyConfig(patch)
+    message.success(t('notify.channel.saved'))
+    clear.healthchecksUrl = false
+    clear.webhookUrl = false
+    clear.mailPassword = false
+    form.healthchecksUrl = ''
+    form.webhookUrl = ''
+    form.mailPassword = ''
+    await configQuery.refetch()
+  } catch {
+    // AppError 已有全局提示；此处仅防未处理异常冒泡
+  } finally {
+    savingChannel.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 清除渠道（确认门；patch 逐键置空）
+
+const clearGateShow = ref(false)
+const clearTarget = ref<ChannelKey | null>(null)
+const clearing = ref(false)
+
+function onClearClick(key: ChannelKey): void {
+  clearTarget.value = key
+  clearGateShow.value = true
+}
+
+/** 清除 patch：身份类键置空（端口/加密/脱敏属缺省形态，不动即不变）。 */
+function clearPatchFor(key: ChannelKey): NotifyConfigPatch {
+  if (key === 'healthchecks') {
+    return { healthchecks_url: '' }
+  }
+  if (key === 'webhook') {
+    return { webhook_url: '', webhook_template: '' }
+  }
+  if (key === 'meow') {
+    return { meow_nickname: '' }
+  }
+  return { mail_host: '', mail_username: '', mail_password: '', mail_from: '', mail_to: '' }
+}
+
+async function confirmClear(): Promise<void> {
+  const key = clearTarget.value
+  if (!key || clearing.value) {
+    return
+  }
+  clearing.value = true
+  try {
+    await updateNotifyConfig(clearPatchFor(key))
+    message.success(t('notify.list.cleared'))
+    await configQuery.refetch()
+    if (channelType.value === key) {
+      loadChannel(key)
+    }
+  } catch {
+    // AppError 已有全局提示
+  } finally {
+    clearing.value = false
+    clearTarget.value = null
+  }
+}
+
+// ---------------------------------------------------------------- 告警规则（全局：on_success / skipped_threshold）
+
 const onSuccess = ref(false)
 const skippedThreshold = ref<number>(100)
-const webhookRedact = ref(false)
-const meowRedact = ref(true)
-// 敏感字段「清除」意图（点击清除按钮后保存时提交空串）
-const clearHealthchecks = ref(false)
-const clearWebhook = ref(false)
-const clearMailPassword = ref(false)
+const savingRules = ref(false)
 
 watch(configQuery.data, (data) => {
   if (!data) {
     return
   }
-  webhookTemplate.value = data.webhook_template
-  meowNickname.value = data.meow_nickname
-  mailHost.value = data.mail_host
-  mailPort.value = data.mail_port
-  mailUsername.value = data.mail_username
-  mailFrom.value = data.mail_from
-  mailTo.value = data.mail_to
-  mailSecurity.value = data.mail_security
-  mailRedact.value = data.mail_redact
   onSuccess.value = data.on_success
   skippedThreshold.value = data.skipped_threshold
-  webhookRedact.value = data.webhook_redact
-  meowRedact.value = data.meow_redact
 })
 
-const saving = ref(false)
-const testing = ref(false)
-const testResult = ref<NotifyTestResponse | null>(null)
-
-const hasAnyChannel = computed(
-  () =>
-    configQuery.data.value?.healthchecks_url_set ||
-    configQuery.data.value?.webhook_url_set ||
-    (configQuery.data.value?.meow_nickname ?? '') !== '' ||
-    configQuery.data.value?.mail_password_set === true ||
-    mailHost.value.trim() !== '' ||
-    healthchecksUrl.value.trim() !== '' ||
-    webhookUrl.value.trim() !== '' ||
-    meowNickname.value.trim() !== '',
-)
-
-async function save(): Promise<void> {
-  saving.value = true
+async function saveRules(): Promise<void> {
+  if (savingRules.value) {
+    return
+  }
+  savingRules.value = true
   try {
-    await updateNotifyConfig({
-      ...(clearHealthchecks.value ? { healthchecks_url: '' } : {}),
-      ...(healthchecksUrl.value.trim() ? { healthchecks_url: healthchecksUrl.value.trim() } : {}),
-      ...(clearWebhook.value ? { webhook_url: '' } : {}),
-      ...(webhookUrl.value.trim() ? { webhook_url: webhookUrl.value.trim() } : {}),
-      webhook_template: webhookTemplate.value,
-      meow_nickname: meowNickname.value.trim(),
-      mail_host: mailHost.value.trim(),
-      mail_port: mailPort.value ?? 587,
-      mail_username: mailUsername.value.trim(),
-      ...(clearMailPassword.value ? { mail_password: '' } : {}),
-      ...(mailPassword.value ? { mail_password: mailPassword.value } : {}),
-      mail_from: mailFrom.value.trim(),
-      mail_to: mailTo.value.trim(),
-      mail_security: mailSecurity.value,
-      mail_redact: mailRedact.value,
-      on_success: onSuccess.value,
-      skipped_threshold: skippedThreshold.value ?? 100,
-      webhook_redact: webhookRedact.value,
-      meow_redact: meowRedact.value,
-    })
-    message.success(t('notify.saved'))
-    clearHealthchecks.value = false
-    clearWebhook.value = false
-    clearMailPassword.value = false
-    healthchecksUrl.value = ''
-    webhookUrl.value = ''
-    mailPassword.value = ''
+    await updateNotifyConfig({ on_success: onSuccess.value, skipped_threshold: skippedThreshold.value ?? 100 })
+    message.success(t('notify.rules.saved'))
     await configQuery.refetch()
-  } catch (error) {
-    // AppError 已有全局提示；此处仅防未处理异常冒泡
+  } catch {
+    // AppError 已有全局提示
   } finally {
-    saving.value = false
+    savingRules.value = false
   }
 }
+
+// ---------------------------------------------------------------- E24 测试消息（逐渠道结果，失败必须带原因）
+
+const testing = ref(false)
+const testResult = ref<NotifyTestResponse | null>(null)
 
 async function runTest(): Promise<void> {
   testing.value = true
   testResult.value = null
   try {
     testResult.value = await testNotify()
-  } catch (error) {
+  } catch {
     // AppError 已有全局提示
   } finally {
     testing.value = false
@@ -137,167 +333,204 @@ async function runTest(): Promise<void> {
 
 <template>
   <n-space vertical :size="16">
-    <n-card :title="t('nav.notifications')" size="small">
+    <!-- ① 通知渠道：类型下拉 + 类型专属配置项 -->
+    <n-card :title="t('notify.channel.title')" size="small">
       <n-space vertical :size="12">
-        <n-alert type="info" :show-icon="false">{{ t('notify.intro') }}</n-alert>
-        <n-alert v-if="!hasAnyChannel" type="warning" :show-icon="false">
-          {{ t('notify.noChannel') }}
-        </n-alert>
+        <n-alert type="info" :show-icon="false">{{ t('notify.channel.hint') }}</n-alert>
 
-        <n-form label-placement="left" label-width="180" size="small" class="notify__form">
-          <n-form-item :label="t('notify.healthchecksUrl')">
-            <n-space vertical :size="4" class="notify__field">
-              <n-input
-                v-model:value="healthchecksUrl"
-                :placeholder="
-                  configQuery.data.value?.healthchecks_url_set
-                    ? t('notify.urlConfigured')
-                    : t('notify.healthchecksPlaceholder')
-                "
-                :disabled="clearHealthchecks"
-              />
-              <n-text v-if="configQuery.data.value?.healthchecks_url_set" depth="3" class="notify__hint">
-                {{ t('notify.urlKeepHint') }}
-                <n-button size="tiny" quaternary type="warning" @click="clearHealthchecks = !clearHealthchecks">
-                  {{ clearHealthchecks ? t('notify.urlClearUndo') : t('notify.urlClear') }}
-                </n-button>
-              </n-text>
-            </n-space>
-          </n-form-item>
-
-          <n-form-item :label="t('notify.webhookUrl')">
-            <n-space vertical :size="4" class="notify__field">
-              <n-input
-                v-model:value="webhookUrl"
-                :placeholder="
-                  configQuery.data.value?.webhook_url_set
-                    ? t('notify.urlConfigured')
-                    : t('notify.webhookPlaceholder')
-                "
-                :disabled="clearWebhook"
-              />
-              <n-text v-if="configQuery.data.value?.webhook_url_set" depth="3" class="notify__hint">
-                {{ t('notify.urlKeepHint') }}
-                <n-button size="tiny" quaternary type="warning" @click="clearWebhook = !clearWebhook">
-                  {{ clearWebhook ? t('notify.urlClearUndo') : t('notify.urlClear') }}
-                </n-button>
-              </n-text>
-            </n-space>
-          </n-form-item>
-
-          <n-form-item :label="t('notify.webhookTemplate')">
-            <n-input
-              v-model:value="webhookTemplate"
-              type="textarea"
-              :rows="3"
-              :placeholder="t('notify.templatePlaceholder')"
-              class="notify__field"
-            />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.meowNickname')">
-            <n-input
-              v-model:value="meowNickname"
-              :placeholder="t('notify.meowPlaceholder')"
-              class="notify__field"
-            />
-          </n-form-item>
-
-          <!-- C2 SMTP 邮件渠道 -->
-          <n-form-item :label="t('notify.mailHost')">
-            <n-input v-model:value="mailHost" :placeholder="t('notify.mailHostPlaceholder')" class="notify__field" />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailPort')">
-            <n-input-number v-model:value="mailPort" :min="1" :max="65535" size="small" class="notify__num" />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailUsername')">
-            <n-input v-model:value="mailUsername" :placeholder="t('notify.mailUsernamePlaceholder')" class="notify__field" />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailPassword')">
-            <n-space vertical :size="4" class="notify__field">
-              <n-input
-                v-model:value="mailPassword"
-                type="password"
-                show-password-on="click"
-                :placeholder="
-                  configQuery.data.value?.mail_password_set
-                    ? t('notify.urlConfigured')
-                    : t('notify.mailPasswordPlaceholder')
-                "
-                :disabled="clearMailPassword"
-              />
-              <n-text v-if="configQuery.data.value?.mail_password_set" depth="3" class="notify__hint">
-                {{ t('notify.urlKeepHint') }}
-                <n-button size="tiny" quaternary type="warning" @click="clearMailPassword = !clearMailPassword">
-                  {{ clearMailPassword ? t('notify.urlClearUndo') : t('notify.urlClear') }}
-                </n-button>
-              </n-text>
-            </n-space>
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailFrom')">
-            <n-input v-model:value="mailFrom" :placeholder="t('notify.mailFromPlaceholder')" class="notify__field" />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailTo')">
-            <n-input v-model:value="mailTo" :placeholder="t('notify.mailToPlaceholder')" class="notify__field" />
-          </n-form-item>
-
-          <n-form-item :label="t('notify.mailSecurity')">
+        <n-form label-placement="left" label-width="160" size="small" class="notify__form">
+          <n-form-item :label="t('notify.channel.type')">
             <n-select
-              v-model:value="mailSecurity"
-              :options="[
-                { label: 'STARTTLS', value: 'starttls' },
-                { label: 'TLS/SSL', value: 'tls' },
-                { label: t('notify.mailSecurityNone'), value: 'none' },
-              ]"
-              class="notify__num"
+              v-model:value="channelType"
+              :options="channelOptions"
+              :placeholder="t('notify.channel.typePlaceholder')"
+              class="notify__type"
+              @update:value="(value) => value && loadChannel(value as ChannelKey)"
             />
           </n-form-item>
 
-          <n-form-item :label="t('notify.mailRedact')">
-            <n-space align="center" :size="8">
-              <n-switch v-model:value="mailRedact" size="small" :aria-label="t('notify.redactHint')" />
-              <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
-            </n-space>
-          </n-form-item>
+          <!-- 双层 template：外层按类型分支，内层为该类型字段组 -->
+          <template v-if="channelType === 'healthchecks'">
+            <n-form-item :label="t('notify.healthchecksUrl')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-input
+                  v-model:value="form.healthchecksUrl"
+                  :placeholder="
+                    configQuery.data.value?.healthchecks_url_set
+                      ? t('notify.urlConfigured')
+                      : t('notify.healthchecksPlaceholder')
+                  "
+                  :disabled="clear.healthchecksUrl"
+                />
+                <n-text v-if="configQuery.data.value?.healthchecks_url_set" depth="3" class="notify__hint">
+                  {{ t('notify.urlKeepHint') }}
+                  <n-button size="tiny" quaternary type="warning" @click="clear.healthchecksUrl = !clear.healthchecksUrl">
+                    {{ clear.healthchecksUrl ? t('notify.urlClearUndo') : t('notify.urlClear') }}
+                  </n-button>
+                </n-text>
+              </n-space>
+            </n-form-item>
+          </template>
 
-          <n-form-item :label="t('notify.onSuccess')">
-            <n-space align="center" :size="8">
-              <n-switch v-model:value="onSuccess" size="small" :aria-label="t('notify.onSuccessHint')" />
-              <n-text depth="3" class="notify__hint">{{ t('notify.onSuccessHint') }}</n-text>
-            </n-space>
-          </n-form-item>
+          <template v-else-if="channelType === 'webhook'">
+            <n-form-item :label="t('notify.webhookUrl')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-input
+                  v-model:value="form.webhookUrl"
+                  :placeholder="
+                    configQuery.data.value?.webhook_url_set ? t('notify.urlConfigured') : t('notify.webhookPlaceholder')
+                  "
+                  :disabled="clear.webhookUrl"
+                />
+                <n-text v-if="configQuery.data.value?.webhook_url_set" depth="3" class="notify__hint">
+                  {{ t('notify.urlKeepHint') }}
+                  <n-button size="tiny" quaternary type="warning" @click="clear.webhookUrl = !clear.webhookUrl">
+                    {{ clear.webhookUrl ? t('notify.urlClearUndo') : t('notify.urlClear') }}
+                  </n-button>
+                </n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item :label="t('notify.webhookTemplate')">
+              <n-input
+                v-model:value="form.webhookTemplate"
+                type="textarea"
+                :rows="3"
+                :placeholder="t('notify.templatePlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.webhookRedact')">
+              <n-space align="center" :size="8">
+                <n-switch v-model:value="form.webhookRedact" size="small" :aria-label="t('notify.redactHint')" />
+                <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+          </template>
 
-          <n-form-item :label="t('notify.skippedThreshold')">
-            <n-space align="center" :size="8">
-              <n-input-number v-model:value="skippedThreshold" :min="0" size="small" class="notify__num" />
-              <n-text depth="3" class="notify__hint">{{ t('notify.skippedThresholdHint') }}</n-text>
-            </n-space>
-          </n-form-item>
+          <template v-else-if="channelType === 'meow'">
+            <n-form-item :label="t('notify.meowNickname')">
+              <n-input
+                v-model:value="form.meowNickname"
+                :placeholder="t('notify.meowPlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.meowRedact')">
+              <n-space align="center" :size="8">
+                <n-switch v-model:value="form.meowRedact" size="small" :aria-label="t('notify.redactHint')" />
+                <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+          </template>
 
-          <n-form-item :label="t('notify.webhookRedact')">
-            <n-space align="center" :size="8">
-              <n-switch v-model:value="webhookRedact" size="small" :aria-label="t('notify.redactHint')" />
-              <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
-            </n-space>
-          </n-form-item>
-
-          <n-form-item :label="t('notify.meowRedact')">
-            <n-space align="center" :size="8">
-              <n-switch v-model:value="meowRedact" size="small" :aria-label="t('notify.redactHint')" />
-              <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
-            </n-space>
-          </n-form-item>
+          <template v-else-if="channelType === 'mail'">
+            <n-form-item :label="t('notify.mailHost')">
+              <n-input
+                v-model:value="form.mailHost"
+                :placeholder="t('notify.mailHostPlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailPort')">
+              <n-input-number v-model:value="form.mailPort" :min="1" :max="65535" size="small" class="notify__num" />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailUsername')">
+              <n-input
+                v-model:value="form.mailUsername"
+                :placeholder="t('notify.mailUsernamePlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailPassword')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-input
+                  v-model:value="form.mailPassword"
+                  type="password"
+                  show-password-on="click"
+                  :placeholder="
+                    configQuery.data.value?.mail_password_set
+                      ? t('notify.urlConfigured')
+                      : t('notify.mailPasswordPlaceholder')
+                  "
+                  :disabled="clear.mailPassword"
+                />
+                <n-text v-if="configQuery.data.value?.mail_password_set" depth="3" class="notify__hint">
+                  {{ t('notify.urlKeepHint') }}
+                  <n-button size="tiny" quaternary type="warning" @click="clear.mailPassword = !clear.mailPassword">
+                    {{ clear.mailPassword ? t('notify.urlClearUndo') : t('notify.urlClear') }}
+                  </n-button>
+                </n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item :label="t('notify.mailFrom')">
+              <n-input
+                v-model:value="form.mailFrom"
+                :placeholder="t('notify.mailFromPlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailTo')">
+              <n-input
+                v-model:value="form.mailTo"
+                :placeholder="t('notify.mailToPlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailSecurity')">
+              <n-select
+                v-model:value="form.mailSecurity"
+                :options="[
+                  { label: 'STARTTLS', value: 'starttls' },
+                  { label: 'TLS/SSL', value: 'tls' },
+                  { label: t('notify.mailSecurityNone'), value: 'none' },
+                ]"
+                class="notify__num"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.mailRedact')">
+              <n-space align="center" :size="8">
+                <n-switch v-model:value="form.mailRedact" size="small" :aria-label="t('notify.redactHint')" />
+                <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+          </template>
         </n-form>
 
         <n-space :size="10">
-          <n-button size="small" type="primary" :loading="saving" @click="save">
+          <n-button size="small" type="primary" :loading="savingChannel" :disabled="!channelType" @click="saveChannel">
             {{ t('common.save') }}
           </n-button>
+        </n-space>
+      </n-space>
+    </n-card>
+
+    <!-- ② 已保存的渠道列表 -->
+    <n-card :title="t('notify.list.title')" size="small">
+      <n-space vertical :size="10">
+        <n-alert v-if="!hasAnyChannel" type="warning" :show-icon="false">{{ t('notify.noChannel') }}</n-alert>
+
+        <n-space v-for="key in CHANNEL_KEYS" :key="key" align="center" class="notify__row">
+          <StatusTag
+            :kind="isConfigured(key, configQuery.data.value) ? 'success' : 'default'"
+            :label="isConfigured(key, configQuery.data.value) ? t('notify.list.configured') : t('notify.list.unconfigured')"
+          />
+          <n-text class="notify__row-name">{{ t(`notify.channel.${key}`) }}</n-text>
+          <n-text depth="3" class="notify__row-summary">{{ channelSummary(key) }}</n-text>
+          <n-space :size="6">
+            <n-button size="tiny" secondary @click="loadChannel(key)">{{ t('notify.list.edit') }}</n-button>
+            <n-button
+              size="tiny"
+              quaternary
+              type="warning"
+              :disabled="!isConfigured(key, configQuery.data.value)"
+              @click="onClearClick(key)"
+            >
+              {{ t('notify.list.clear') }}
+            </n-button>
+          </n-space>
+        </n-space>
+
+        <n-space :size="10">
           <n-button size="small" secondary :loading="testing" :disabled="!hasAnyChannel" @click="runTest">
             {{ t('notify.test') }}
           </n-button>
@@ -306,7 +539,6 @@ async function runTest(): Promise<void> {
         <!-- E24 逐渠道结果（失败必须带原因，禁止静默） -->
         <n-space v-if="testResult" vertical :size="6">
           <n-space align="center" :size="8">
-            <!-- P3c 收口：总体 + 逐渠道结果（success/error 映射不变） -->
             <StatusTag
               :kind="testResult.ok ? 'success' : 'error'"
               :label="testResult.ok ? t('notify.testOk') : t('notify.testFailed')"
@@ -323,6 +555,40 @@ async function runTest(): Promise<void> {
         </n-space>
       </n-space>
     </n-card>
+
+    <!-- ③ 告警规则（全局） -->
+    <n-card :title="t('notify.rules.title')" size="small">
+      <n-space vertical :size="10">
+        <n-text depth="3">{{ t('notify.rules.desc') }}</n-text>
+        <n-form label-placement="left" label-width="160" size="small" class="notify__form">
+          <n-form-item :label="t('notify.onSuccess')">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="onSuccess" size="small" :aria-label="t('notify.onSuccessHint')" />
+              <n-text depth="3" class="notify__hint">{{ t('notify.onSuccessHint') }}</n-text>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('notify.skippedThreshold')">
+            <n-space align="center" :size="8">
+              <n-input-number v-model:value="skippedThreshold" :min="0" size="small" class="notify__num" />
+              <n-text depth="3" class="notify__hint">{{ t('notify.skippedThresholdHint') }}</n-text>
+            </n-space>
+          </n-form-item>
+        </n-form>
+        <n-button size="small" type="primary" :loading="savingRules" @click="saveRules">
+          {{ t('common.save') }}
+        </n-button>
+      </n-space>
+    </n-card>
+
+    <!-- 清除渠道确认门（无关键词单次确认；清除不可撤销） -->
+    <ConfirmGate
+      v-model:show="clearGateShow"
+      :title="t('notify.list.clearTitle')"
+      :description="clearTarget ? t('notify.list.clearDesc', { name: t(`notify.channel.${clearTarget}`) }) : ''"
+      :loading="clearing"
+      :confirm-label="t('notify.list.clear')"
+      @confirm="confirmClear"
+    />
   </n-space>
 </template>
 
@@ -341,5 +607,24 @@ async function runTest(): Promise<void> {
 
 .notify__num {
   width: 160px;
+}
+
+.notify__type {
+  max-width: 280px;
+}
+
+.notify__row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.notify__row-name {
+  min-width: 180px;
+  font-weight: 500;
+}
+
+.notify__row-summary {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 </style>
