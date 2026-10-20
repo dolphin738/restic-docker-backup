@@ -144,6 +144,7 @@ function openInit(id: string): void {
   if (id !== ui.currentRepoId) {
     onSetCurrent(id)
   }
+  initTargetId.value = id
   initShow.value = true
 }
 
@@ -848,7 +849,9 @@ const unlocking = ref(false)
 const unlockJobId = ref('')
 const initShow = ref(false)
 const initializing = ref(false)
-const initJobId = ref('')
+// A 方案：init 进度行级化（绑定具体仓库）；initJobMap[repoId]=jobId，initTargetId=正在初始化的仓库
+const initTargetId = ref<string | null>(null)
+const initJobMap = reactive<Record<string, string>>({})
 // B1 自愈：仓库修复（repair index / repair packs），危险操作 ConfirmGate 关键词 REPAIR
 const repairShow = ref(false)
 const repairing = ref(false)
@@ -1119,15 +1122,21 @@ async function onUnlock(): Promise<void> {
 }
 
 async function onInit(): Promise<void> {
+  const targetId = currentRepoId.value
   initializing.value = true
   try {
     const created = await createJob('init')
-    initJobId.value = created.id
+    initJobMap[targetId] = created.id
     message.success(t('repo.initSubmitted'))
     void statusQuery.refetch()
   } catch (error) {
     if (!isAppError(error)) {
       throw error
+    }
+    // 提交失败也要清理（避免留下空 jobId 卡）
+    delete initJobMap[targetId]
+    if (initTargetId.value === targetId) {
+      initTargetId.value = null
     }
   } finally {
     initializing.value = false
@@ -1136,10 +1145,17 @@ async function onInit(): Promise<void> {
 
 /** init 作业终态（成功或失败都要刷新）：仓库可连性变了，行状态与列表必须立刻跟上——
  *  此前只 refetch 当前仓库状态卡，行级查询仍持 30s 缓存，表现为「初始化完了按钮还在，
- *  刷新网页才消失」（后端缓存在任务终态已清，缺的是前端失效）。 */
-async function onInitDone(): Promise<void> {
+ *  刷新网页才消失」（后端缓存在任务终态已清，缺的是前端失效）。
+ *  A 方案：按 repoId 清理对应行内进度卡，避免全站浮卡永不消失。 */
+async function onInitDone(repoId: string): Promise<void> {
+  delete initJobMap[repoId]
+  if (initTargetId.value === repoId) {
+    initTargetId.value = null
+  }
   await queryClient.invalidateQueries({ queryKey: ['repo'] })
   await Promise.all([reposQuery.refetch(), statusQuery.refetch()])
+  // 行级状态失效：初始化后仓库可连性变化，行内判定（needsInit/passwordAction）须立刻跟上
+  await queryClient.invalidateQueries({ queryKey: ['repo', 'status', 'row', repoId] })
 }
 
 async function onRepair(): Promise<void> {
@@ -1173,6 +1189,21 @@ async function onRecover(): Promise<void> {
   } finally {
     recovering.value = false
   }
+}
+
+// 维护区 3 个作业（unlock/repair/recover）终态清理：此前浮卡无 @done，完成/失败都永久残留。
+// 这里成功与失败都清空对应 jobId，让浮卡自动消失；并刷新当前仓库状态。
+function onUnlockDone(): void {
+  unlockJobId.value = ''
+  void statusQuery.refetch()
+}
+function onRepairDone(): void {
+  repairJobId.value = ''
+  void statusQuery.refetch()
+}
+function onRecoverDone(): void {
+  recoverJobId.value = ''
+  void statusQuery.refetch()
 }
 
 /** E25 清空本地缓存：与设置页同口径——409 JOB_CONFLICT 单独提示（有任务在跑不能清），
@@ -1376,11 +1407,21 @@ function formatBytes(value: number): string {
             size="tiny"
             secondary
             type="warning"
-            :loading="initializing && r.id === ui.currentRepoId"
+            :loading="initTargetId === r.id"
             @click.stop="openInit(r.id)"
           >
             {{ t('repo.initBtn') }}
           </n-button>
+          <!-- A 方案：init 进度行级化——挂在被初始化的仓库行内，done/failed 回调清理对应卡。
+               抽屉（日志）是覆盖层，不占行布局；非当前仓库也能在它自己的行看到进度。 -->
+          <JobProgress
+            v-if="initJobMap[r.id]"
+            :job-id="initJobMap[r.id]"
+            :title="`${r.name} · ${t('repo.initJobTitle')}`"
+            class="repo__init-progress"
+            @done="onInitDone(r.id)"
+            @failed="onInitDone(r.id)"
+          />
           <n-button
             size="tiny"
             secondary
@@ -1502,13 +1543,13 @@ function formatBytes(value: number): string {
         </div>
 
         <template v-if="unlockJobId">
-          <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" />
+          <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" @done="onUnlockDone" @failed="onUnlockDone" />
         </template>
         <template v-if="repairJobId">
-          <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" />
+          <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" @done="onRepairDone" @failed="onRepairDone" />
         </template>
         <template v-if="recoverJobId">
-          <JobProgress :job-id="recoverJobId" :title="t('repo.recoverJobTitle')" />
+          <JobProgress :job-id="recoverJobId" :title="t('repo.recoverJobTitle')" @done="onRecoverDone" @failed="onRecoverDone" />
         </template>
       </n-space>
     </n-card>
@@ -1905,12 +1946,6 @@ function formatBytes(value: number): string {
       </n-card>
     </template>
 
-    <!-- init 进度卡放在页面级（不随列表/编辑态切换）：编辑态也能从连接测试结论区触发 init，
-         @done 终态回调负责刷新各行状态与仓库列表（否则按钮要等缓存过期或手动刷新才消失）。 -->
-    <template v-if="initJobId">
-      <JobProgress :job-id="initJobId" :title="t('repo.initJobTitle')" @done="onInitDone" />
-    </template>
-
     <!-- 本地路径目录选择（E33；对齐 Duplicati FolderTree + Browse... 弹窗交互） -->
     <n-modal
       v-model:show="browseShow"
@@ -2217,6 +2252,12 @@ function formatBytes(value: number): string {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+/* A 方案：行内 init 进度条——在仓库行的动作区下方占满整行（抽屉日志是覆盖层不占布局）。 */
+.repo__init-progress {
+  width: 100%;
+  margin-top: 6px;
 }
 
 /* A5 目的地类型卡片网格（对齐 Duplicati 选择器：图标 + 名称竖排） */
