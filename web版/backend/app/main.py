@@ -65,6 +65,7 @@ from app.routers import repos as repos_router
 from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
+from app.routers import system as system_router
 from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
@@ -352,6 +353,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router.router)
     # auth 路由：E01/E02/E03/bootstrap/E28（②③ 由路由内部按端点声明）
     app.include_router(auth_router.router)
+    # E39 系统时间/时区同步（服务器时间 + NTP 对时 + 系统时钟校准；②③ 由 _PROTECTED 声明）
+    app.include_router(system_router.router)
     # 业务路由：②③ 必须显式挂载，否则首启未改密也能访问（PRD US-A1 AC2）
     protected = [Depends(require_session), Depends(require_bootstrap_done)]
     app.include_router(sources_router.router, dependencies=protected)    # E05/E31

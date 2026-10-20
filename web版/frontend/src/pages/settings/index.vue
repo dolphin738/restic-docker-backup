@@ -1,9 +1,19 @@
 <script setup lang="ts">
 /** 系统设置页（页面 11，增量设计 §4）。
  *
+ * 布局（2026-10-21 改版，替代 P4 锚点长页）：顶部分段 Tab 切换分区 +
+ * 单面板渲染当前分区（内容全宽，与全站单栏形态统一；桌面 / 移动同一分段条）。
+ * 曾试过「左侧 NMenu 分区导航」，因与主导航并排成双竖导航（层级含混 +
+ * 1366px 屏内容区被挤到约 700px）被 owner 否决——勿回退该形态。深链保留：
+ * 切换即 `#sec-<id>` replaceState，刷新 / 分享链接仍直达对应分区。
+ *
  * 分区：DB dump（批次 B 实装：dump.* 八键，密码三态沿 notify.* 先例）
- * → 行为开关（批次 B 实装：behavior.* 五键）→ 时区（既有键只读展示）→ 管理员改密（E28）。
- * dump/behavior 提交走 E07 patch 通道（api/settings.saveDumpBehaviorConfig）。
+ * → 行为开关（批次 B 实装：behavior.* 五键）→ 凭据加密（R-025）
+ * → Prometheus 指标（R-024）→ 时区（E39 实装：手动设置 + 服务器
+ * 实时时钟 + NTP 时间同步 + 主备 NTP 服务器设置）→ 管理员改密（E28）
+ * → 配置迁移（批次 E：导出 / 导入）。
+ * dump/behavior/时区提交走 E07 patch 通道（api/settings.saveDumpBehaviorConfig）；
+ * 服务器时间与时间同步走 E39（api/system.ts）。
  * 缓存维护（E25）已于 2026-10-19 并入仓库页维护区，本页不再保留入口。
  */
 
@@ -32,12 +42,14 @@ import { useI18n } from 'vue-i18n'
 import { changePassword } from '@/api/auth'
 import { getConfig } from '@/api/config'
 import { exportConfig, importConfig } from '@/api/configTransfer'
-import type { ConfigExportPack, ConfigImportReport } from '@/api/types'
+import type { ConfigExportPack, ConfigImportReport, TimeSyncResponse } from '@/api/types'
 import { saveDumpBehaviorConfig } from '@/api/settings'
+import { getSystemTime, syncSystemTime } from '@/api/system'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
 import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
+import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -276,9 +288,253 @@ async function onSaveMetricsToken(): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- 时区（既有键只读展示，本批无编辑入口）
+// ---------------------------------------------------------------- 时区（E39：手动设置 + 时间同步）
 
 const timezoneItem = computed(() => configItem('timezone'))
+const timezoneEnvLocked = computed(() => timezoneItem.value?.source === 'env')
+
+/** 常用时区回落清单（浏览器缺 ``Intl.supportedValuesOf`` 时用；名 → 展示名）。 */
+const COMMON_TIMEZONES: Array<[string, string]> = [
+  ['UTC', 'UTC'],
+  ['Asia/Shanghai', '中国上海（Asia/Shanghai）'],
+  ['Asia/Hong_Kong', '中国香港（Asia/Hong_Kong）'],
+  ['Asia/Taipei', '中国台北（Asia/Taipei）'],
+  ['Asia/Tokyo', '日本东京（Asia/Tokyo）'],
+  ['Asia/Singapore', '新加坡（Asia/Singapore）'],
+  ['Asia/Seoul', '韩国首尔（Asia/Seoul）'],
+  ['Europe/London', '英国伦敦（Europe/London）'],
+  ['Europe/Berlin', '德国柏林（Europe/Berlin）'],
+  ['Europe/Moscow', '俄罗斯莫斯科（Europe/Moscow）'],
+  ['America/New_York', '美国纽约（America/New_York）'],
+  ['America/Chicago', '美国芝加哥（America/Chicago）'],
+  ['America/Los_Angeles', '美国洛杉矶（America/Los_Angeles）'],
+  ['Australia/Sydney', '澳大利亚悉尼（Australia/Sydney）'],
+]
+
+function timezoneLabel(name: string): string {
+  return COMMON_TIMEZONES.find(([key]) => key === name)?.[1] ?? name
+}
+
+/** 时区下拉选项：优先浏览器 IANA 全量清单（可搜索任意 IANA 名），缺失回落常用清单。 */
+const timezoneOptions = computed(() => {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
+  let names: string[] = COMMON_TIMEZONES.map(([name]) => name)
+  if (typeof intl.supportedValuesOf === 'function') {
+    try {
+      const all = intl.supportedValuesOf('timeZone')
+      if (Array.isArray(all) && all.length > 0) {
+        names = [...new Set([...all, ...names])]
+      }
+    } catch {
+      // 老浏览器无该 API 或抛异常：回落常用清单
+    }
+  }
+  return names.map((name) => ({ label: timezoneLabel(name), value: name }))
+})
+
+const timezoneValue = ref('')
+watch(
+  timezoneItem,
+  (item) => {
+    timezoneValue.value = item?.value ?? ''
+  },
+  { immediate: true },
+)
+const timezoneDirty = computed(() => timezoneValue.value !== (timezoneItem.value?.value ?? ''))
+
+/** E39 服务器时间快照（30s 轮询；探测结果服务端另有 30s 缓存，不打爆 NTP 池）。 */
+const timeQuery = useQuery({
+  queryKey: ['system', 'time'],
+  queryFn: getSystemTime,
+  refetchInterval: 30_000,
+  staleTime: 20_000,
+})
+
+const savingTimezone = ref(false)
+
+async function onSaveTimezone(): Promise<void> {
+  if (!timezoneValue.value || savingTimezone.value) {
+    return
+  }
+  savingTimezone.value = true
+  try {
+    await saveDumpBehaviorConfig({ timezone: timezoneValue.value })
+    message.success(t('settings.timezone.saved'))
+    await configQuery.refetch()
+    await timeQuery.refetch()
+  } catch {
+    // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
+  } finally {
+    savingTimezone.value = false
+  }
+}
+
+// ---- NTP 对时服务器（E39：主备两个地址；皆空回落内置默认链，见生效链展示） ----
+
+const ntpPrimaryItem = computed(() => configItem('time_sync.ntp_primary'))
+const ntpBackupItem = computed(() => configItem('time_sync.ntp_backup'))
+const ntpEnvLocked = computed(() => ntpPrimaryItem.value?.source === 'env' || ntpBackupItem.value?.source === 'env')
+
+const ntpPrimary = ref('')
+const ntpBackup = ref('')
+watch(
+  [ntpPrimaryItem, ntpBackupItem],
+  ([primary, backup]) => {
+    ntpPrimary.value = primary?.value ?? ''
+    ntpBackup.value = backup?.value ?? ''
+  },
+  { immediate: true },
+)
+
+const ntpDirty = computed(
+  () =>
+    ntpPrimary.value.trim() !== (ntpPrimaryItem.value?.value ?? '') ||
+    ntpBackup.value.trim() !== (ntpBackupItem.value?.value ?? ''),
+)
+
+const savingNtp = ref(false)
+
+async function onSaveNtpServers(): Promise<void> {
+  if (savingNtp.value || ntpEnvLocked.value) {
+    return
+  }
+  savingNtp.value = true
+  try {
+    // 空串 = 清除该地址（回落默认链/仅用另一地址）；主备两键恒同批提交
+    await saveDumpBehaviorConfig({
+      'time_sync.ntp_primary': ntpPrimary.value.trim(),
+      'time_sync.ntp_backup': ntpBackup.value.trim(),
+    })
+    message.success(t('settings.timezone.ntpSaved'))
+    await configQuery.refetch()
+    // 探测缓存键含服务器链：换链后 refetch 即按新链重新探测
+    await timeQuery.refetch()
+  } catch {
+    // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
+  } finally {
+    savingNtp.value = false
+  }
+}
+
+/** 生效探测链（服务端按主备配置解析后透传，未配置时即内置默认链）。 */
+const effectiveChainText = computed(() => timeQuery.data.value?.ntp_servers.join(' → ') ?? '—')
+
+// ---- 服务器实时时钟（以服务器时刻为基准，规避本机时钟漂移） ----
+
+const serverEpoch = ref(Date.now())
+watch(
+  timeQuery.data,
+  (data) => {
+    if (data) {
+      serverEpoch.value = data.epoch_ms
+    }
+  },
+  { immediate: true },
+)
+
+const clockTick = ref(0)
+let clockTimer: number | undefined
+onMounted(() => {
+  clockTimer = window.setInterval(() => {
+    clockTick.value += 1
+  }, 1000)
+})
+onUnmounted(() => {
+  if (clockTimer !== undefined) {
+    window.clearInterval(clockTimer)
+  }
+})
+
+const serverClock = computed(() => new Date(serverEpoch.value + clockTick.value * 1000))
+
+/** 按 IANA 时区格式化（Intl 原生支持；解析失败回落本地格式）。 */
+function formatInTimeZone(date: Date, tz: string): string {
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: tz,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(date)
+  } catch {
+    return formatDateTime(date)
+  }
+}
+
+const serverClockText = computed(() => {
+  const tz = timezoneValue.value || timeQuery.data.value?.timezone || 'UTC'
+  return formatInTimeZone(serverClock.value, tz)
+})
+
+const ntpOffsetText = computed(() => {
+  const offset = timeQuery.data.value?.ntp.offset_ms
+  if (offset === null || offset === undefined) {
+    return '—'
+  }
+  return `${offset >= 0 ? '+' : ''}${Math.round(offset)} ms`
+})
+
+// ---- 时间同步（确认门；ok=false 时原因必须展示，禁止静默） ----
+
+const syncGateShow = ref(false)
+const syncing = ref(false)
+const syncResult = ref<TimeSyncResponse | null>(null)
+
+const SYNC_REASONS: readonly string[] = [
+  'clock.noop',
+  'clock.permission_denied',
+  'clock.unsupported_platform',
+  'clock.failed',
+  'clock.out_of_range',
+  'ntp.timeout',
+  'ntp.unreachable',
+  'ntp.bad_response',
+  'ntp.kod',
+]
+
+function syncReasonText(code: string | null): string {
+  if (!code) {
+    return ''
+  }
+  return SYNC_REASONS.includes(code) ? t(`settings.timezone.reason.${code}`) : code
+}
+
+const syncResultText = computed(() => {
+  const result = syncResult.value
+  if (!result) {
+    return ''
+  }
+  if (result.ok && result.applied) {
+    return t('settings.timezone.ntpOffset', {
+      offset: `${result.offset_ms !== null && result.offset_ms >= 0 ? '+' : ''}${Math.round(result.offset_ms ?? 0)} ms`,
+    })
+  }
+  return syncReasonText(result.reason)
+})
+
+async function doSyncTime(): Promise<void> {
+  if (syncing.value) {
+    return
+  }
+  syncing.value = true
+  try {
+    syncResult.value = await syncSystemTime()
+    if (syncResult.value.ok) {
+      message.success(syncResult.value.applied ? t('settings.timezone.syncOk') : t('settings.timezone.syncNoop'))
+    } else {
+      message.error(t('settings.timezone.syncFailed'))
+    }
+    await timeQuery.refetch()
+  } catch {
+    // AppError 已有全局提示
+  } finally {
+    syncing.value = false
+  }
+}
 
 // ---------------------------------------------------------------- 管理员改密（E28）
 
@@ -438,7 +694,7 @@ async function doImport(): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- 锚点目录（P4：长页 8 区块导航）
+// ---------------------------------------------------------------- 分区导航（2026-10-21 改版：点选切换替代锚点滚动）
 
 /** 区块 id 与卡片标题键一一对应（复用既有 title 键 → 语言切换自动跟随，零新增目录文案）。
  *  缓存维护（E25）已并入仓库页维护区，不再作为本页区块。 */
@@ -456,84 +712,54 @@ type SectionId = (typeof SECTIONS)[number]['id']
 
 /** 目录项：文案经 computed 派生，保证切换语言后即时刷新。 */
 const sectionLinks = computed(() =>
-  SECTIONS.map((item) => ({ id: item.id, anchor: `sec-${item.id}`, label: t(item.title) })),
+  SECTIONS.map((item) => ({ id: item.id, label: t(item.title) })),
 )
 
 const activeSection = ref<SectionId>('dump')
 
-/** 点击后短暂锁定高亮，覆盖平滑滚动全程：
- *  否则滚动途中的中间态会把高亮刷成途经区块，出现「点了 A 却高亮 B」。
- *  锁定时长按滚动距离估算（审查 💭③）：固定 1.2s 在超长页（如 dump→改密，滚动 >1.2s）会被
- *  scroll 处理器提前接管；smooth scroll 速度约 2500–3500px/s，取 0.4ms/px + 300ms 底数，
- *  夹在 [1.2s, 2s]——短距离维持原 1.2s 行为，超长页给足全程。 */
-let pinnedUntil = 0
-
-/** 跳转并立即高亮。 */
-function scrollToSection(id: SectionId): void {
-  activeSection.value = id
-  const el = document.getElementById(`sec-${id}`)
-  if (!el) {
+/** 切换分区（点选即换面板；`#sec-<id>` 经 replaceState 同步，保留 P4 锚点的深链能力，
+ *  且不触发 vue-router 跳转）。未知 id 忽略（分段条按钮事件载荷防御）。 */
+function switchSection(id: string): void {
+  if (!SECTIONS.some((item) => item.id === id)) {
     return
   }
-  const distance = Math.abs(el.getBoundingClientRect().top)
-  pinnedUntil = Date.now() + Math.min(2000, Math.max(1200, 300 + distance * 0.4))
-  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
-/** 滚动跟随高亮：scroll 事件不冒泡，须在 window 捕获阶段（capture:true）接收内层滚动容器的滚动。
- *
- * 判定线按视口高度自适应（0.45×视口，夹在 140–520px）：固定小判定线（如 120px）在
- * 「页面滚到底、末尾区块无法再推到顶部」时失效——末尾两三个区块永远越不过线，高亮会
- * 卡在中间某个区块（实测点末尾区块后高亮仍停在中途区块）。 */
-let rafPending = false
-function onScrollCapture(): void {
-  if (rafPending) {
-    return
+  activeSection.value = id as SectionId
+  if (typeof history !== 'undefined') {
+    history.replaceState(null, '', `#sec-${id}`)
   }
-  rafPending = true
-  requestAnimationFrame(() => {
-    rafPending = false
-    if (Date.now() < pinnedUntil) {
-      return
-    }
-    const line = Math.min(Math.max(140, window.innerHeight * 0.45), 520)
-    let current: SectionId = SECTIONS[0].id
-    for (const item of SECTIONS) {
-      const el = document.getElementById(`sec-${item.id}`)
-      if (el && el.getBoundingClientRect().top <= line) {
-        current = item.id
-      }
-    }
-    activeSection.value = current
-  })
 }
 
-onMounted(() => window.addEventListener('scroll', onScrollCapture, true))
-onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
+onMounted(() => {
+  // 深链直达：带 #sec-<id> 打开（书签 / 分享链接）时落到对应分区
+  const hash = typeof location !== 'undefined' ? location.hash.replace('#sec-', '') : ''
+  if (SECTIONS.some((item) => item.id === hash)) {
+    activeSection.value = hash as SectionId
+  }
+})
 </script>
 
 <template>
-  <n-space vertical :size="16">
-    <!-- P4：锚点目录（7 区块长页导航；吸顶常驻，窄屏横向滚动）。
-         用 n-el 承载：naive 把 bodyColor 暴露为 --n-color，只在自渲染元素上定义；
-         普通 div 取不到该变量，暗色下背景会回落成白条。 -->
-    <n-el class="settings__anchor">
-      <n-space :size="6" :wrap="false" class="settings__anchor-inner">
+  <n-el class="settings">
+    <!-- 分区切换：顶部分段条（全断点统一形态；吸顶常驻，滚长表单时仍在视口）。
+         按钮主/次态走 naive 主题内部配色（NButton），亮暗双主题一致；
+         吸顶背景用 --n-color（根 n-el 提供 bodyColor，暗色不回落白条）。 -->
+    <div class="settings__segments">
+      <n-space :size="6" :wrap="false" class="settings__segments-inner">
         <n-button
           v-for="item in sectionLinks"
           :key="item.id"
-          size="tiny"
+          size="small"
           :type="activeSection === item.id ? 'primary' : 'default'"
           :secondary="activeSection !== item.id"
-          @click="scrollToSection(item.id)"
+          @click="switchSection(item.id)"
         >
           {{ item.label }}
         </n-button>
       </n-space>
-    </n-el>
+    </div>
 
     <!-- DB dump（批次 B 实装：dump.* 八键 + 密码三态） -->
-    <n-card id="sec-dump" :title="t('settings.dump.title')" size="small">
+    <n-card v-if="activeSection === 'dump'" id="sec-dump" class="settings__panel" :title="t('settings.dump.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.dump.desc') }}</n-text>
         <n-alert v-if="showPgVersionNote" type="warning" :show-icon="false">
@@ -618,7 +844,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
     </n-card>
 
     <!-- 行为开关（批次 B 实装：behavior.* 五键） -->
-    <n-card id="sec-behavior" :title="t('settings.behavior.title')" size="small">
+    <n-card v-else-if="activeSection === 'behavior'" id="sec-behavior" class="settings__panel" :title="t('settings.behavior.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.behavior.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
@@ -690,7 +916,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
     </n-card>
 
     <!-- 凭据加密（R-025 / P3-A：密钥源自仓库密码文件，默认开） -->
-    <n-card id="sec-credential" :title="t('settings.credential.title')" size="small">
+    <n-card v-else-if="activeSection === 'credential'" id="sec-credential" class="settings__panel" :title="t('settings.credential.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.credential.desc') }}</n-text>
         <n-alert v-if="!credEncryptionAvailable" type="warning" :show-icon="false">
@@ -712,7 +938,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
     </n-card>
 
     <!-- Prometheus 指标（R-024 / P3-B：抓取令牌三态 + 端点提示） -->
-    <n-card id="sec-metrics" :title="t('settings.metrics.title')" size="small">
+    <n-card v-else-if="activeSection === 'metrics'" id="sec-metrics" class="settings__panel" :title="t('settings.metrics.title')" size="small">
       <n-space vertical :size="10">
         <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
@@ -749,22 +975,127 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
       </n-space>
     </n-card>
 
-    <!-- 时区（既有键只读展示） -->
-    <n-card id="sec-timezone" :title="t('settings.timezone.title')" size="small">
-      <n-space vertical :size="8">
-        <n-space align="center" :size="8">
+    <!-- 时区（E39：手动设置 + 服务器时间展示 + NTP 时间同步） -->
+    <n-card v-else-if="activeSection === 'timezone'" id="sec-timezone" class="settings__panel" :title="t('settings.timezone.title')" size="small">
+      <n-space vertical :size="12">
+        <n-text depth="3">{{ t('settings.timezone.desc') }}</n-text>
+
+        <!-- 当前时区 + 来源（env 覆盖只读） -->
+        <n-space align="center" :size="8" wrap>
           <n-text depth="2">{{ t('settings.timezone.current') }}</n-text>
-          <!-- P3c 收口：当前时区值（原无 type）+ env 来源提示（warning） -->
           <StatusTag v-if="timezoneItem" kind="default" :label="timezoneItem.value ?? t('settings.timezone.unset')" />
           <StatusTag v-if="timezoneItem?.source === 'env'" kind="warning" :label="t('settings.timezone.envNote')" />
           <n-text v-if="!timezoneItem" depth="3">{{ t('settings.timezone.unset') }}</n-text>
         </n-space>
-        <n-text depth="3">{{ t('settings.timezone.note') }}</n-text>
+
+        <!-- 服务器实时时钟（以服务器时刻为基准）+ NTP 偏差 -->
+        <n-space vertical :size="6">
+          <n-space align="center" :size="8" wrap>
+            <n-text depth="2">{{ t('settings.timezone.serverTime') }}</n-text>
+            <n-text strong class="settings__clock">{{ serverClockText }}</n-text>
+            <n-text depth="3">{{ timeQuery.data.value?.utc_offset }}</n-text>
+            <n-button size="tiny" quaternary :loading="timeQuery.isFetching.value" @click="timeQuery.refetch()">
+              {{ t('settings.timezone.refresh') }}
+            </n-button>
+          </n-space>
+          <n-space align="center" :size="8" wrap>
+            <n-text depth="2">{{ t('settings.timezone.ntpLabel') }}</n-text>
+            <template v-if="timeQuery.data.value?.ntp.available">
+              <StatusTag kind="success" :label="t('settings.timezone.ntpOk')" />
+              <n-text depth="3">
+                {{ t('settings.timezone.ntpOffset', { offset: ntpOffsetText }) }}（{{ timeQuery.data.value?.ntp.server }}）
+              </n-text>
+            </template>
+            <template v-else>
+              <StatusTag kind="warning" :label="t('settings.timezone.ntpUnavailable')" />
+              <n-text depth="3">{{ syncReasonText(timeQuery.data.value?.ntp.reason ?? null) }}</n-text>
+            </template>
+          </n-space>
+        </n-space>
+
+        <!-- NTP 对时服务器（E39：主备两地址；皆空回落内置默认链） -->
+        <n-space vertical :size="6">
+          <n-text depth="2">{{ t('settings.timezone.ntpServersTitle') }}</n-text>
+          <n-text depth="3">{{ t('settings.timezone.ntpServersDesc') }}</n-text>
+          <n-form label-placement="top" class="settings__form">
+            <n-form-item :label="t('settings.timezone.ntpPrimary')">
+              <n-input
+                v-model:value="ntpPrimary"
+                placeholder="pool.ntp.org"
+                :disabled="ntpEnvLocked"
+              />
+            </n-form-item>
+            <n-form-item :label="t('settings.timezone.ntpBackup')">
+              <n-input
+                v-model:value="ntpBackup"
+                placeholder="ntp.aliyun.com"
+                :disabled="ntpEnvLocked"
+              />
+            </n-form-item>
+            <n-space align="center" :size="8">
+              <n-button
+                size="small"
+                type="primary"
+                :loading="savingNtp"
+                :disabled="!ntpDirty || ntpEnvLocked"
+                @click="onSaveNtpServers"
+              >
+                {{ t('common.save') }}
+              </n-button>
+              <n-text v-if="ntpEnvLocked" depth="3">{{ t('settings.timezone.envLocked') }}</n-text>
+            </n-space>
+          </n-form>
+          <n-text depth="3">{{ t('settings.timezone.ntpEffective', { chain: effectiveChainText }) }}</n-text>
+        </n-space>
+
+        <!-- 时区选择 + 保存（env 覆盖时禁用并指路） -->
+        <n-form label-placement="top" class="settings__form">
+          <n-form-item :label="t('settings.timezone.select')">
+            <n-select
+              v-model:value="timezoneValue"
+              :options="timezoneOptions"
+              filterable
+              :placeholder="t('settings.timezone.search')"
+              :disabled="timezoneEnvLocked"
+              class="settings__tz-select"
+            />
+          </n-form-item>
+          <n-space align="center" :size="8">
+            <n-button
+              size="small"
+              type="primary"
+              :loading="savingTimezone"
+              :disabled="!timezoneDirty || !timezoneValue || timezoneEnvLocked"
+              @click="onSaveTimezone"
+            >
+              {{ t('common.save') }}
+            </n-button>
+            <n-text v-if="timezoneEnvLocked" depth="3">{{ t('settings.timezone.envLocked') }}</n-text>
+          </n-space>
+        </n-form>
+
+        <!-- 时间同步（NTP 校准系统时钟；结果必须可见，禁止静默） -->
+        <n-space vertical :size="6">
+          <n-text depth="2">{{ t('settings.timezone.syncTitle') }}</n-text>
+          <n-text depth="3">{{ t('settings.timezone.syncDesc') }}</n-text>
+          <n-space align="center" :size="8" wrap>
+            <n-button size="small" secondary :loading="syncing" @click="syncGateShow = true">
+              {{ t('settings.timezone.syncNow') }}
+            </n-button>
+            <template v-if="syncResult">
+              <StatusTag
+                :kind="syncResult.ok ? 'success' : 'error'"
+                :label="syncResult.ok ? t('settings.timezone.syncOk') : t('settings.timezone.syncFailed')"
+              />
+              <n-text depth="3">{{ syncResultText }}</n-text>
+            </template>
+          </n-space>
+        </n-space>
       </n-space>
     </n-card>
 
     <!-- 管理员改密（E28） -->
-    <n-card id="sec-password" :title="t('settings.password.title')" size="small">
+    <n-card v-else-if="activeSection === 'password'" id="sec-password" class="settings__panel" :title="t('settings.password.title')" size="small">
       <n-form label-placement="top" class="settings__password-form">
         <n-form-item :label="t('settings.password.oldPassword')">
           <n-input
@@ -804,7 +1135,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
     </n-card>
 
     <!-- 批次 E 配置迁移：导出（口令加密凭据段）+ 导入（跳过/覆盖 + 报告） -->
-    <n-card id="sec-transfer" :title="t('settings.transfer.title')" size="small">
+    <n-card v-else-if="activeSection === 'transfer'" id="sec-transfer" class="settings__panel" :title="t('settings.transfer.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.transfer.desc') }}</n-text>
         <n-space align="center" :size="8" wrap>
@@ -931,26 +1262,59 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
       :loading="importing"
       @confirm="doImport"
     />
-  </n-space>
+
+    <!-- E39 时间同步确认门：校准系统时钟影响调度与日志时间，先预览再确认 -->
+    <ConfirmGate
+      v-model:show="syncGateShow"
+      :title="t('settings.timezone.syncGateTitle')"
+      :description="t('settings.timezone.syncGateDesc')"
+      :loading="syncing"
+      :confirm-label="t('settings.timezone.syncNow')"
+      @confirm="doSyncTime"
+    />
+  </n-el>
 </template>
 
 <style scoped>
-/* P4：锚点目录吸顶条——背景跟随主题；窄屏横向滚动（不换行，避免占满两行挤压内容）。
-   背景必须用 --n-color：naive 把 common.bodyColor 暴露为 --n-color（外层由 n-el 提供），
-   --n-body-color / --n-card-color 并不存在——写成它们会静默回落 #fff，暗色下留一条白带（实测）。 */
-.settings__anchor {
+/* 布局（2026-10-21 改版，替代 P4 锚点长页）：顶部分段 Tab + 单面板，内容全宽。
+   曾用「左 NMenu 分区导航 + 右内容」双栏，因与主导航并排成双竖导航被否决
+   （见文件头）——勿回退双栏形态。根 n-el 提供 --n-color（naive 把 bodyColor
+   暴露在自渲染元素上），分段条吸顶背景随主题，暗色不回落白条。 */
+
+/* 分区切换分段条：全断点统一形态；吸顶常驻（滚长表单时仍在视口），
+   窄屏横向滚动不换行。按钮主/次态由 NButton 主题内部配色。 */
+.settings__segments {
   position: sticky;
   top: 0;
   z-index: 3;
+  margin: 0 0 16px;
   padding: 8px 0;
-  margin: -8px 0 0;
   background: var(--n-color, #fff);
 }
 
-.settings__anchor-inner {
+.settings__segments-inner {
   flex-wrap: nowrap;
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+/* 内容面板：仅渲染当前分区；分区卡片带该类，切换（v-if 换卡）即重放入场动画。
+   尊重系统减少动效偏好（WCAG 2.3.3）。 */
+.settings__panel {
+  animation: settings-panel-in 0.16s ease-out;
+}
+
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings__panel {
+    animation: none;
+  }
 }
 
 /* P4：dump 吸底保存条——表单最长（8 键 + 密码三态），保存动作常驻视口底部。
@@ -994,6 +1358,16 @@ onUnmounted(() => window.removeEventListener('scroll', onScrollCapture, true))
 
 .settings__dump-type {
   max-width: 220px;
+}
+
+/* E39：时区下拉（IANA 清单可搜索，留足宽度避免长名截断） */
+.settings__tz-select {
+  max-width: 360px;
+}
+
+/* E39：服务器实时时钟（等宽数字，避免秒位抖动导致横向窜动） */
+.settings__clock {
+  font-variant-numeric: tabular-nums;
 }
 
 .settings__number {

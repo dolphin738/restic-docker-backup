@@ -151,6 +151,20 @@ AUDIT_REPAIR_RUN = "repair.run"  # B1 自愈：仓库索引/卷修复（restic r
 AUDIT_RECOVER_RUN = "recover.run"  # B3 自愈：找回未快照数据（restic recover，危险操作留痕）
 AUDIT_COPY_RUN = "copy.run"  # C4 多目的地：restic copy 到镜像仓（跨仓库复制，危险操作留痕）
 AUDIT_KEY_ROTATE = "key.rotate"  # C4 多目的地：restic key 轮换仓库密码（改密码，危险操作留痕）
+# E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
+AUDIT_TIME_SYNC = "time.sync"
+
+# ---------------------------------------------------------------- E39 时间同步（NTP 对时 + 系统时钟校准）
+
+# NTP 服务器候选（按序探测，任一成功即用；公网池 + 国内池，容器多数环境可达）
+NTP_SERVERS: tuple[str, ...] = ("pool.ntp.org", "ntp.aliyun.com", "cn.pool.ntp.org")
+NTP_PORT = 123
+NTP_TIMEOUT_SECONDS = 3.0  # 单服务器 UDP 超时（秒）
+NTP_PROBE_CACHE_SECONDS = 30.0  # 探测结果进程内缓存（秒）——防前端轮询把 NTP 池打爆
+# 偏移低于该值不动系统时钟（毫秒）：规避无谓写入与日志噪音
+TIME_SYNC_MIN_OFFSET_MS = 1000.0
+# 偏移超过该值视为异常响应（毫秒，1 天）：拒绝把系统时钟改到离谱的位置
+TIME_SYNC_MAX_OFFSET_MS = 86_400_000.0
 
 # ---------------------------------------------------------------- 鉴权常量（§8）
 

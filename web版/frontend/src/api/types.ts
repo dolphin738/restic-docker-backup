@@ -681,6 +681,43 @@ export interface CacheUsageResponse {
   truncated: boolean
 }
 
+// ---------------------------------------------------------------- E39 系统时间/时区同步
+
+/** NTP 探测结果（失败必须带 reason 机器码，禁止静默）。 */
+export interface NtpProbe {
+  available: boolean
+  server: string | null
+  offset_ms: number | null
+  rtt_ms: number | null
+  reason: string | null
+}
+
+/** E39 服务器时间快照（GET /api/system/time）。 */
+export interface SystemTimeResponse {
+  /** 服务器 UTC 时刻（ISO 8601，秒级，Z 后缀）。 */
+  server_time: string
+  /** 生效时区名（config.timezone → settings.tz → UTC）。 */
+  timezone: string
+  /** 生效时区下的本地时间（ISO 8601 带偏移）。 */
+  local_time: string
+  /** 本地时间偏移（如 +08:00）。 */
+  utc_offset: string
+  /** 服务器当前 Unix 毫秒（前端实时时钟基准，避免用本机时钟）。 */
+  epoch_ms: number
+  /** 本次探测的生效 NTP 链（主备配置或内置默认链）。 */
+  ntp_servers: string[]
+  ntp: NtpProbe
+}
+
+/** E39 同步结论（POST /api/system/time/sync；applied=false 时必须带 reason）。 */
+export interface TimeSyncResponse {
+  ok: boolean
+  applied: boolean
+  offset_ms: number | null
+  server: string | null
+  reason: string | null
+}
+
 // ---------------------------------------------------------------- 批次 B（R-017 check 视图）
 
 /** E22 check 错误行（parser 从 `check --json` 逐行 error 提取）。 */

@@ -47,6 +47,9 @@ from app.schemas.api_schemas import (
 from app.services.crypto import EncryptionState
 from app.services.env_sync import passfile_status
 from app.services.metrics import hash_metrics_token
+from app.services.scheduler import TIMEZONE_KEY
+from app.services.time_sync import NTP_BACKUP_KEY, NTP_PRIMARY_KEY, validate_ntp_server
+from app.utils.time import is_valid_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,17 @@ async def put_config(
     # E30 有 30s 进程内 TTL 缓存：配置刚保存（尤其 repo.url/凭据）时必须失效，
     # 否则用户保存后点「刷新」拿到的仍是旧状态，误以为"保存了也没连上"。
     invalidate_repo_status_cache()
+
+    # 时区变更即时生效（E39）：调度触发器按 config.timezone 解释 cron，保存即重载，
+    # 否则用户改完时区要等下一次任务写入或重启容器才生效。重载失败不影响已落库的
+    # 写入结果（下次任务写入/重启仍会按新时区重建），故只记日志不让整笔请求失败。
+    if TIMEZONE_KEY in patch:
+        scheduler = getattr(request.app.state, "scheduler", None)
+        if scheduler is not None:
+            try:
+                await scheduler.reload()
+            except Exception:  # noqa: BLE001 - 重载失败不吞掉已成功的配置写入
+                logger.exception("时区变更后调度器重载失败（配置已保存，重启或下次任务写入后生效）")
 
     cred_migrated = 0
     if flag_in_patch:
@@ -280,5 +294,18 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
                 raise ValidationError(
                     f"{key} 须为非空 JSON 字符串数组", data={"key": key, "value": raw[:200]}
                 )
-
+        # E39：时区手动设置——坏值落库会被 resolve_timezone 静默回退 UTC
+        # （表现为「保存成功但触发时刻没变」），故写入侧前置拒绝
+        elif key == TIMEZONE_KEY and not is_valid_timezone(value):
+            raise ValidationError(
+                f"{key} 须为合法 IANA 时区名（如 Asia/Shanghai、UTC）",
+                data={"key": key, "value": raw},
+            )
+        # E39：NTP 主备服务器——坏地址落库只在探测时才炸（「保存成功但同步失败」），
+        # 同理写入侧前置拒绝；空串 = 清除配置回落内置默认链（由服务侧解析）
+        elif key in (NTP_PRIMARY_KEY, NTP_BACKUP_KEY) and value and validate_ntp_server(value) is None:
+            raise ValidationError(
+                f"{key} 须为 NTP 服务器地址（主机名或主机名:端口，如 ntp.example.com / ntp.example.com:123）",
+                data={"key": key, "value": raw},
+            )
 

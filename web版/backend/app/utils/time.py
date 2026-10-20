@@ -82,6 +82,27 @@ def to_local(moment: datetime, tz_name: str | None) -> datetime:
     return moment.astimezone(resolve_timezone(tz_name))
 
 
+def is_valid_timezone(name: str | None) -> bool:
+    """时区名是否可解析（zoneinfo 可查）。
+
+    ``UTC`` / ``Etc/UTC`` 恒真（:func:`resolve_timezone` 对二者不走数据库，直接返回
+    内置固定偏移）；其余经 :class:`ZoneInfo` 查询判定。
+
+    用途：E07 写入侧前置校验。坏时区名落库不会报错——:func:`resolve_timezone` 的
+    fail-safe 方向是**回退 UTC**，表现为「时区保存成功但调度触发时刻没变」，
+    故必须在写入侧拒绝（与 behavior.* / dump.* 键级校验同一机制位）。
+    """
+    if not name:
+        return False
+    if name in ("UTC", "Etc/UTC"):
+        return True
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
 def format_local(moment: datetime, tz_name: str | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     """按展示时区格式化时间（供 UI/通知模板使用）。"""
     return to_local(moment, tz_name).strftime(fmt)

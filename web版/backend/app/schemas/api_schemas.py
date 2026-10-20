@@ -811,6 +811,46 @@ class BackupSuccessReportOut(_Base):
     ratio: float | None
 
 
+# ---------------------------------------------------------------- E39 时间同步（时区手动设置 + NTP 对时）
+
+
+class NtpProbeOut(_Base):
+    """NTP 探测结果（失败必须带 reason 机器码，禁止静默）。"""
+
+    available: bool
+    server: str | None
+    offset_ms: float | None
+    rtt_ms: float | None
+    reason: str | None
+
+
+class SystemTimeOut(_Base):
+    """E39 服务器时间快照：UTC 时刻 + 生效时区本地时间 + NTP 偏差。
+
+    ``epoch_ms`` 供前端以服务器时刻为基准做实时时钟（避免用浏览器本机时间——
+    本机时钟漂移会让「服务器时间」显示与后端实际判定脱节）。
+    ``ntp_servers`` 为本次探测的生效链（主备配置或内置默认链），供前端展示。
+    """
+
+    server_time: str
+    timezone: str
+    local_time: str
+    utc_offset: str
+    epoch_ms: int
+    ntp_servers: list[str]
+    ntp: NtpProbeOut
+
+
+class TimeSyncOut(_Base):
+    """E39 同步结论：``applied=False`` 时必须带 reason（未应用/失败原因）。"""
+
+    ok: bool
+    applied: bool
+    offset_ms: float | None
+    server: str | None
+    reason: str | None
+
+
 class RepoOut(_Base):
     """R-023 仓库输出（repos 表事实源；type 派生不落库，passfile_status 只读派生）。"""
 
