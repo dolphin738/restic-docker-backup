@@ -91,6 +91,12 @@ $venv            = Join-Path $backend ".venv"
 $venvPython      = Join-Path $venv "Scripts\python.exe"
 $pyproject       = Join-Path $backend "pyproject.toml"
 $devDataDir      = Join-Path $PSScriptRoot ".dev-data"  # 开发库固定目录（DATA_DIR），随脚本放 dev-scripts 下，不入 git
+# 运行时产物收口：settings.py 里密码文件根（/data/repos）、restic 缓存（/cache/restic）默认落在盘符根，
+# 开发模式统一指到 .dev-data 下（与 DATA_DIR 同一处收口，均被仓库根 .gitignore 的 .dev-data/ 规则忽略）
+$passfileRoot = Join-Path $devDataDir "repos"            # PASSFILE_ROOT：密码文件 = <根>/<repo_id>/password
+$cacheRoot    = Join-Path $devDataDir "cache"            # CACHE_DIR：restic 缓存
+$rcloneDir    = Join-Path $devDataDir "rclone"
+$rcloneConf   = Join-Path $rcloneDir "rclone.conf"       # RCLONE_CONFIG：显式指定，不随 HOME 漂移
 $backendPidFile  = Join-Path $PSScriptRoot ".dev-backend.pid"
 $frontendPidFile = Join-Path $PSScriptRoot ".dev-frontend.pid"
 
@@ -336,8 +342,11 @@ function Start-Backend {
 `$ErrorActionPreference = 'Stop'
 `$env:NODE_OPTIONS = `$null
 `$env:DATA_DIR = "$devDataDir"
+`$env:PASSFILE_ROOT = "$passfileRoot"
+`$env:CACHE_DIR = "$cacheRoot"
+`$env:RCLONE_CONFIG = "$rcloneConf"
 Set-Location "$backend"
-New-Item -ItemType Directory -Force -Path "$devDataDir" | Out-Null
+New-Item -ItemType Directory -Force -Path "$devDataDir", "$passfileRoot", "$cacheRoot", "$rcloneDir" | Out-Null
 Write-Host "-> 启动后端：uvicorn app.main:app --reload --loop none --port $BackendPort（DATA_DIR=$devDataDir）" -ForegroundColor Cyan
 # --loop none（2026-10-19）：uvicorn ≥0.54 的 --reload 会经 use_subprocess 分支把 Windows 的
 # 事件循环强制为 SelectorEventLoop——它不支持 create_subprocess_exec，restic 探测全部 500
@@ -429,16 +438,21 @@ asyncio.run(main())
 "@
     $tmpPy = Join-Path $env:TEMP ("dev-migrate-$(Get-Random).py")
     [System.IO.File]::WriteAllText($tmpPy, $migratePy, (New-Object System.Text.UTF8Encoding $true))
-    $oldDataDir = $env:DATA_DIR
-    $env:DATA_DIR = $devDataDir
+    # 与 Start-Backend 同一套收口注入；退出时恢复原值，不污染 dot-source 的当前会话
+    $envNames  = @('DATA_DIR', 'PASSFILE_ROOT', 'CACHE_DIR', 'RCLONE_CONFIG')
+    $envValues = @{ DATA_DIR = $devDataDir; PASSFILE_ROOT = $passfileRoot; CACHE_DIR = $cacheRoot; RCLONE_CONFIG = $rcloneConf }
+    $oldValues = @{}
+    foreach ($n in $envNames) { $oldValues[$n] = [Environment]::GetEnvironmentVariable($n); Set-Item "Env:\$n" $envValues[$n] }
     try {
         & $venvPython $tmpPy
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  迁移执行失败（退出码 $LASTEXITCODE）。" -ForegroundColor Red; return
         }
     } finally {
-        if ($null -ne $oldDataDir) { $env:DATA_DIR = $oldDataDir }
-        else { Remove-Item Env:\DATA_DIR -ErrorAction SilentlyContinue }
+        foreach ($n in $envNames) {
+            if ($null -ne $oldValues[$n]) { Set-Item "Env:\$n" $oldValues[$n] }
+            else { Remove-Item "Env:\$n" -ErrorAction SilentlyContinue }
+        }
         Remove-Item $tmpPy -Force -ErrorAction SilentlyContinue
     }
     Write-Host "-> 开发库表结构已更新到最新迁移。" -ForegroundColor Green
@@ -620,6 +634,9 @@ function Invoke-Check {
     Write-Host ("  bash          : " + $(if ($BashExe) { $BashExe } else { "未找到（红线校验不可用）" }))
     Write-Host ("  verify_redlines: " + $(if (Test-Path (Join-Path $scriptsDir "verify_redlines.sh")) { "有" } else { "缺失" }))
     Write-Host ("  开发库        : $devDataDir " + $(if (Test-Path (Join-Path $devDataDir "restic.db")) { "(已存在)" } else { "(未创建，首启自动生成)" }))
+    Write-Host ("  密码文件根    : $passfileRoot（PASSFILE_ROOT）")
+    Write-Host ("  restic 缓存   : $cacheRoot（CACHE_DIR）")
+    Write-Host ("  rclone 配置   : $rcloneConf（RCLONE_CONFIG）")
     Write-Host ("  后端 PID 文件 : " + $(if (Test-Path $backendPidFile) { (Get-Content $backendPidFile -Raw).Trim() } else { "无（未运行）" }))
     Write-Host ("  前端 PID 文件 : " + $(if (Test-Path $frontendPidFile) { (Get-Content $frontendPidFile -Raw).Trim() } else { "无（未运行）" }))
     if (Test-Path $venvPython) {

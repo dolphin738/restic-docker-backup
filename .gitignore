@@ -18,8 +18,9 @@ dist-ssr/
 .installed.cfg
 *.egg
 
-# venv / 虚拟环境（uv 用 .venv）
+# venv / 虚拟环境（uv 用 .venv；dev.sh 在含 Windows 布局 .venv 的仓库里改用 .venv-linux 隔离）
 .venv/
+.venv-linux/
 venv/
 env/
 
