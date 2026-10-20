@@ -80,6 +80,7 @@ CSRF_ORIGIN = "CSRF_ORIGIN"                        # 403 写方法 Origin 校验
 BOOTSTRAP_REQUIRED = "BOOTSTRAP_REQUIRED"          # 403 首启未改密门
 TASK_RUNNING = "TASK_RUNNING"                      # 409 E35''：运行中/等待中任务拒绝删除
 REPO_NOT_FOUND = "REPO_NOT_FOUND"                  # 404 E34–E36：repo 作用域 id 不存在（P2 仅 default）
+REPO_NOT_EMPTY = "REPO_NOT_EMPTY"                  # 409 E41：仓库下仍有任务/历史任务，拒绝删除（R-023）
 CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密文无法解密（密码文件被换/数据损坏）
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
@@ -105,6 +106,7 @@ ERROR_STATUS: dict[str, int] = {
     BOOTSTRAP_REQUIRED: 403,
     TASK_RUNNING: 409,
     REPO_NOT_FOUND: 404,
+    REPO_NOT_EMPTY: 409,
     CREDENTIAL_DECRYPT_FAILED: 500,
 }
 

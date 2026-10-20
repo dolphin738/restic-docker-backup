@@ -28,6 +28,7 @@ from app.constants import (
     PATH_OUT_OF_PREFIX,
     RATE_LIMITED,
     READONLY_KEY,
+    REPO_NOT_EMPTY,
     REPO_NOT_FOUND,
     RESTIC_FAILED,
     RESTORE_FORBIDDEN,
@@ -312,3 +313,24 @@ class RepoNotFoundError(AppError):
             repo_id: 请求的 repo 作用域 id（回显供前端排障）。
         """
         super().__init__(f"仓库 {repo_id!r} 不存在", data={"repo_id": repo_id})
+
+
+class RepoNotEmptyError(AppError):
+    """409 仓库下仍有 backup_tasks 或 jobs，拒绝删除（E41：先清理再删）。"""
+
+    code = REPO_NOT_EMPTY
+    status = ERROR_STATUS[REPO_NOT_EMPTY]
+    message = "仓库下仍有任务或历史任务，请先清理后再删除"
+
+    def __init__(self, repo_id: str, tasks: int, jobs: int) -> None:
+        """构造仓库非空错误。
+
+        Args:
+            repo_id: 被拒删的仓库 id（回显供前端定位）。
+            tasks: 仓库下 backup_tasks 条数。
+            jobs: 仓库下 jobs 历史条数。
+        """
+        super().__init__(
+            f"仓库 {repo_id!r} 下仍有 {tasks} 个任务与 {jobs} 条历史记录，请先清理后再删除",
+            data={"repo_id": repo_id, "tasks": tasks, "jobs": jobs},
+        )

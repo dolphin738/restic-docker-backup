@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.db.database import Database
-from app.errors import EnvOverriddenError, ValidationError
+from app.errors import EnvOverriddenError, RepoNotEmptyError, ValidationError
 from app.schemas.enums import ConfigSource, RepoType
 from app.utils.time import utc_iso
 
@@ -195,7 +195,7 @@ class ReposRepo:
 
         Raises:
             ValidationError: default 仓库不可删（409 语义由路由层映射）。
-            EnvOverriddenError: 仓库下仍有任务或历史任务（先清理再删）。
+            RepoNotEmptyError: 仓库下仍有任务或历史任务（先清理再删）。
         """
         if repo_id == DEFAULT_REPO_ID:
             raise ValidationError("默认仓库不可删除", data={"repo_id": repo_id})
@@ -207,10 +207,7 @@ class ReposRepo:
         tasks = int(row["tasks"]) if row else 0
         jobs = int(row["jobs"]) if row else 0
         if tasks or jobs:
-            raise EnvOverriddenError(
-                "仓库下仍有任务或历史任务，请先清理后再删除",
-                data={"repo_id": repo_id, "tasks": tasks, "jobs": jobs},
-            )
+            raise RepoNotEmptyError(repo_id, tasks, jobs)
         await self._db.write("DELETE FROM repos WHERE id = ?", (repo_id,))
         return True
 
