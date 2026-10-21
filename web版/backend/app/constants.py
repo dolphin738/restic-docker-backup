@@ -299,8 +299,20 @@ BEHAVIOR_AUTO_UNLOCK_KEY = "behavior.auto_unlock"
 BEHAVIOR_CHECK_ENABLED_KEY = "behavior.check_enabled"
 BEHAVIOR_CHECK_SAMPLE_RATIO_KEY = "behavior.check_sample_ratio"
 BEHAVIOR_MONTHLY_FULL_DAY_KEY = "behavior.monthly_full_day"
+# R-017 收口（2026-10-21）：每日抽样由「随机百分比」改为「n/t 确定性分桶滚动扫描」——
+# t = 全量扫描周期天数，每天读第 n 个桶，t 天恰好覆盖全仓数据块一次（零重复、零遗漏）。
+BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY = "behavior.check_subset_denominator"
+# 月度全量独立开关（0/1，缺省 0=关）：与总开关 check_enabled 分离，默认关闭——
+# 每日 n/t 已能按周期全覆盖，月度全量默认只在需要「时点权威全量结论」时手动打开。
+BEHAVIOR_MONTHLY_FULL_ENABLED_KEY = "behavior.monthly_full_enabled"
 
-# 每日抽样 check 的缺省比例（0=不抽样、只月度全量；与 backup_tasks.check_sample_ratio 列缺省一致）
+# 每日 n/t 扫描周期天数（t）缺省与值域（[0, 256]；0 = 不做每日扫描，仅月度全量）
+# 上限 256 对齐 restic totalBucketsMax（见 services/restic.py READ_DATA_SUBSET_MAX_BUCKETS）。
+CHECK_SUBSET_DENOMINATOR_DEFAULT = 30
+CHECK_SUBSET_DENOMINATOR_MIN = 0
+CHECK_SUBSET_DENOMINATOR_MAX = 256
+# 已废弃：每日抽样的「随机百分比」比例（0=不抽样）。保留仅为旧配置兜底——
+# 新的 check_subset_denominator 未设置时按 t = round(1 / ratio) 换算（见 scheduler）。
 CHECK_SAMPLE_RATIO_DEFAULT = 0.02
 # 月度全量 check 的「当月第 N 天」缺省与值域（[1, 28]，规避月末不存在日）
 MONTHLY_FULL_DAY_DEFAULT = 1

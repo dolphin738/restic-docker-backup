@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -37,8 +38,9 @@ from test_state_machine import BACKUP_LINES, FakeRestic, await_job, insert_job
 
 from app.constants import (
     BEHAVIOR_CHECK_ENABLED_KEY,
-    BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    BEHAVIOR_MONTHLY_FULL_ENABLED_KEY,
     DUMP_RETENTION_DAYS_KEY,
 )
 from app.db.database import Database
@@ -1143,14 +1145,15 @@ def _maintenance_job_ids(scheduler: SchedulerService) -> set[str]:
 
 
 async def test_check_jobs_mounted_when_enabled(tmp_path):
-    """check_enabled=1 → 每日抽样（ratio>0）与月度全量都挂载；reload 摘/挂同步。"""
+    """check_enabled=1 → 每日 n/t 扫描（t>0）挂载；月度全量需独立开关 =1 才挂载。"""
     db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
     await scheduler.start()
     assert CHECK_SAMPLE_ID not in _maintenance_job_ids(scheduler)  # 缺省 off
 
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
-    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0.02")
+    await config_repo.set(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY, "30")
     await config_repo.set(BEHAVIOR_MONTHLY_FULL_DAY_KEY, "15")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_ENABLED_KEY, "1")
     await scheduler.reload()  # 保存即生效（reload 末尾补挂维护域）
 
     assert {CHECK_SAMPLE_ID, CHECK_FULL_ID} <= _maintenance_job_ids(scheduler)
@@ -1170,15 +1173,39 @@ async def test_check_jobs_mounted_when_enabled(tmp_path):
     await db.close()
 
 
-async def test_check_sample_not_mounted_when_ratio_zero(tmp_path):
-    """check_sample_ratio=0 → 不抽样（只月度全量），sample 触发器不挂载。"""
+async def test_check_sample_not_mounted_when_denominator_zero(tmp_path):
+    """check_subset_denominator=0 → 不做每日扫描（只月度全量），sample 触发器不挂载。"""
     db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
-    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0")
+    await config_repo.set(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY, "0")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_ENABLED_KEY, "1")
 
     await scheduler.start()
 
     assert CHECK_SAMPLE_ID not in _maintenance_job_ids(scheduler)
+    assert CHECK_FULL_ID in _maintenance_job_ids(scheduler)
+
+    await scheduler.shutdown()
+    await asyncio.sleep(0)
+    await db.close()
+
+
+async def test_monthly_full_not_mounted_by_default(tmp_path):
+    """月度全量独立开关缺省关：即便配了 monthly_full_day，也不挂载（方案 A 默认态）。"""
+    db, scheduler, _, _, config_repo, _ = await make_scheduler(tmp_path)
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY, "30")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_DAY_KEY, "15")
+    # 故意不设 BEHAVIOR_MONTHLY_FULL_ENABLED_KEY
+
+    await scheduler.start()
+
+    assert CHECK_SAMPLE_ID in _maintenance_job_ids(scheduler)
+    assert CHECK_FULL_ID not in _maintenance_job_ids(scheduler)
+
+    # 打开独立开关 → 恢复挂载（方案 B）
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_ENABLED_KEY, "1")
+    await scheduler.reload()
     assert CHECK_FULL_ID in _maintenance_job_ids(scheduler)
 
     await scheduler.shutdown()
@@ -1203,10 +1230,15 @@ async def test_monthly_full_day_invalid_skips_full_job(tmp_path):
 
 
 async def test_fire_check_sample_submits_with_subset(tmp_path, monkeypatch):
-    """抽样回调：提交 scheduled check，params 带 read_data=False + 百分比 subset（0.02 → 2%）。"""
+    """抽样回调：提交 scheduled check，params 带 read_data=False + n/t 形态 subset。
+
+    n/t 为确定性分桶（替代旧的随机 ``x%``）：t = 周期天数，n 由当天日期序数推出，
+    值域 [1, t]。完整「一轮覆盖全部分桶」的性质见
+    ``tests/test_scheduler_check_multirepo.py::test_sample_bucket_covers_all_buckets``。
+    """
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
-    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0.02")
+    await config_repo.set(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY, "30")
     # 桩成已就绪，聚焦「多仓库提交」语义（跳过逻辑见 test_fire_check_skips_unconfigured_repo）
     monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
@@ -1215,13 +1247,21 @@ async def test_fire_check_sample_submits_with_subset(tmp_path, monkeypatch):
     jobs, total = await runner._jobs.list_page(job_type="check")  # noqa: SLF001
     assert total == 1
     assert jobs[0].trigger == "scheduled"
-    assert runner._params[jobs[0].id] == {"read_data": False, "read_data_subset": "2%"}  # noqa: SLF001
+    params = runner._params[jobs[0].id]  # noqa: SLF001
+    assert params["read_data"] is False
+    match = re.fullmatch(r"(\d+)/30", str(params["read_data_subset"]))
+    assert match is not None, params
+    assert 1 <= int(match.group(1)) <= 30
 
 
 async def test_fire_check_full_submits_read_data(tmp_path, monkeypatch):
-    """全量回调：params 带 read_data=True、无 subset（互斥语义由白名单层兜底）。"""
+    """全量回调：params 带 read_data=True、无 subset（互斥语义由白名单层兜底）。
+
+    月度全量受独立开关 ``behavior.monthly_full_enabled`` 门控（缺省关）。
+    """
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_MONTHLY_FULL_ENABLED_KEY, "1")
     monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
     await scheduler._fire_check("full")  # noqa: SLF001
@@ -1231,14 +1271,20 @@ async def test_fire_check_full_submits_read_data(tmp_path, monkeypatch):
     assert runner._params[jobs[0].id] == {"read_data": True}  # noqa: SLF001
 
 
-async def test_fire_check_skips_when_disabled_or_ratio_zero(tmp_path):
-    """开关关闭 / ratio=0 的抽样 → 不提交任何任务（fire 复核，覆盖 reload 摘除前的窗口）。"""
+async def test_fire_check_skips_when_disabled_or_denominator_zero(tmp_path, monkeypatch):
+    """t=0 / 月度全量开关关 → fire 均不提交（覆盖 reload 摘除触发器前的窗口）。"""
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
-    await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0")
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    await config_repo.set(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY, "0")
+    monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
+    await scheduler._fire_check("sample")  # noqa: SLF001 - t=0 = 不做每日扫描
+    await scheduler._fire_check("full")  # noqa: SLF001 - 月度全量开关缺省关
+
+    assert (await runner._jobs.list_page(job_type="check"))[1] == 0  # noqa: SLF001
+
+    await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "0")  # 总开关关闭同样静默
     await scheduler._fire_check("sample")  # noqa: SLF001
-    await scheduler._fire_check("full")  # noqa: SLF001
-
     assert (await runner._jobs.list_page(job_type="check"))[1] == 0  # noqa: SLF001
     await db.close()
 

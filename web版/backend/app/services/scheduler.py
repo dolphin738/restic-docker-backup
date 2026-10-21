@@ -25,7 +25,7 @@ import logging
 import random
 import re
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -34,8 +34,13 @@ from app.constants import (
     AUDIT_DUMP_CLEANUP,
     BEHAVIOR_CHECK_ENABLED_KEY,
     BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    BEHAVIOR_MONTHLY_FULL_ENABLED_KEY,
     CHECK_SAMPLE_RATIO_DEFAULT,
+    CHECK_SUBSET_DENOMINATOR_DEFAULT,
+    CHECK_SUBSET_DENOMINATOR_MAX,
+    CHECK_SUBSET_DENOMINATOR_MIN,
     DUMP_RETENTION_DAYS_DEFAULT,
     DUMP_RETENTION_DAYS_KEY,
     MONTHLY_FULL_DAY_DEFAULT,
@@ -52,7 +57,7 @@ from app.services.env_sync import passfile_status
 from app.services.job_runner import JobRunner
 from app.services.retention import RetentionService
 from app.settings import Settings, get_settings
-from app.utils.time import parse_iso, resolve_timezone, utc_iso
+from app.utils.time import now_utc, parse_iso, resolve_timezone, utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -368,9 +373,10 @@ class SchedulerService:
         - ``maintenance-retention``（R-020，恒挂载）；
         - ``maintenance-dump-cleanup``（R-019 产物清理兜底，恒挂载——dump 未启用时
           ``dump_dir`` 为空，清理为无害 no-op）；
-        - ``maintenance-check-sample``（R-017 每日抽样，``check_enabled=1`` 且
-          ``check_sample_ratio > 0`` 才挂载——ratio=0 = 不抽样、只月度全量）；
-        - ``maintenance-check-full``（R-017 月度全量，``check_enabled=1`` 才挂载，
+        - ``maintenance-check-sample``（R-017 每日 n/t 滚动扫描，``check_enabled=1``
+          且周期天数 ``check_subset_denominator > 0`` 才挂载——t=0 = 不扫描、只月度全量）；
+        - ``maintenance-check-full``（R-017 月度全量，**独立开关**
+          ``monthly_full_enabled=1``（缺省关）且 ``check_enabled=1`` 才挂载，
           当月 ``monthly_full_day`` 日 04:00）。
 
         与 backup 动态重载互不干扰的关键不变量：:meth:`reload` 的 keep 集合只识别
@@ -399,10 +405,8 @@ class SchedulerService:
         )
 
         if ((await self._config.get_value(BEHAVIOR_CHECK_ENABLED_KEY)) or "").strip() == "1":
-            ratio = self._parse_check_sample_ratio(
-                await self._config.get_value(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY)
-            )
-            if ratio > 0:
+            # 每日 n/t 滚动扫描：t=0 表示不做每日扫描（仅月度全量）
+            if await self._check_subset_denominator() > 0:
                 keep.add(f"{_MAINTENANCE_PREFIX}check-sample")
                 self._scheduler.add_job(
                     self._fire_check,
@@ -411,18 +415,20 @@ class SchedulerService:
                     id=f"{_MAINTENANCE_PREFIX}check-sample",
                     replace_existing=True,
                 )
-            day = self._parse_monthly_full_day(
-                await self._config.get_value(BEHAVIOR_MONTHLY_FULL_DAY_KEY)
-            )
-            if day is not None:
-                keep.add(f"{_MAINTENANCE_PREFIX}check-full")
-                self._scheduler.add_job(
-                    self._fire_check,
-                    trigger=_cron_trigger(f"0 4 {day} * *", timezone=self._tz),
-                    args=("full",),
-                    id=f"{_MAINTENANCE_PREFIX}check-full",
-                    replace_existing=True,
+            # 月度全量：独立开关（默认关），需总开关 + 该开关同为 1 才挂载
+            if await self._monthly_full_enabled():
+                day = self._parse_monthly_full_day(
+                    await self._config.get_value(BEHAVIOR_MONTHLY_FULL_DAY_KEY)
                 )
+                if day is not None:
+                    keep.add(f"{_MAINTENANCE_PREFIX}check-full")
+                    self._scheduler.add_job(
+                        self._fire_check,
+                        trigger=_cron_trigger(f"0 4 {day} * *", timezone=self._tz),
+                        args=("full",),
+                        id=f"{_MAINTENANCE_PREFIX}check-full",
+                        replace_existing=True,
+                    )
 
         for job in self._scheduler.get_jobs():
             if job.id.startswith(_MAINTENANCE_PREFIX) and job.id not in keep:
@@ -430,26 +436,34 @@ class SchedulerService:
                 self._scheduler.remove_job(job.id)
 
     async def _fire_check(self, kind: str) -> None:
-        """check 维护回调（``kind``：``sample`` 每日抽样 / ``full`` 月度全量）。
+        """check 维护回调（``kind``：``sample`` 每日 n/t 滚动扫描 / ``full`` 月度全量）。
 
         **多仓库覆盖（R-023 收口）**：遍历全部仓库逐仓库提交 check——每个仓库独立走
         E1 仓库维度互斥（与 backup 冲突落 cancelled + 审计后跳过，下个周期自然再试）。
         未就绪（密码文件未配置）的仓库跳过，避免空跑失败污染 jobs 列表。
-        抽样按 ``behavior.check_sample_ratio`` 换算为 ``--read-data-subset`` 百分比形态
-        （如 0.02 → ``2%``）；全量带 ``read_data=True``。fire 时复核开关（配置关闭后、
-        下轮 reload 摘除触发器前的窗口内静默跳过）。异常隔离记日志，不中断调度循环。
+
+        **每日扫描改 n/t 确定性分桶（2026-10-21）**：``--read-data-subset=n/t`` 由
+        :meth:`_check_subset_denominator` 给出周期天数 ``t``，当天桶号
+        ``n = (本地日期序数 % t) + 1``——t 天恰好把全仓数据块无重复、无遗漏读一遍
+        （替代旧的随机 ``x%`` 形态：随机形态官方明示**不保证**多次后覆盖全量）。
+        月度全量开启时，**当天跳过每日扫描**（全量已读遍，当日抽样纯属重复读）。
+        fire 时复核开关（配置关闭后、下轮 reload 摘除触发器前的窗口内静默跳过）。
+        异常隔离记日志，不中断调度循环。
         """
         try:
             if ((await self._config.get_value(BEHAVIOR_CHECK_ENABLED_KEY)) or "").strip() != "1":
                 return
             params: dict[str, object] = {"read_data": kind == "full"}
             if kind == "sample":
-                ratio = self._parse_check_sample_ratio(
-                    await self._config.get_value(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY)
-                )
-                if ratio <= 0:
-                    return  # ratio=0 = 不抽样（触发器待下轮 reload 摘除）
-                params["read_data_subset"] = f"{ratio * 100:g}%"
+                total = await self._check_subset_denominator()
+                if total <= 0:
+                    return  # t=0 = 不做每日扫描（触发器待下轮 reload 摘除）
+                if await self._is_monthly_full_today():
+                    return  # 月度全量当天已读遍全量，跳过当日抽样
+                bucket = self._today_local().toordinal() % total + 1
+                params["read_data_subset"] = f"{bucket}/{total}"
+            elif not await self._monthly_full_enabled():
+                return  # 月度全量开关关闭（触发器待下轮 reload 摘除）
             for repo in await self._runner.list_repos():
                 if passfile_status(self._settings, repo.id) != PASSFILE_STATUS_CONFIGURED:
                     continue  # 未就绪仓库跳过，避免空跑失败污染 jobs 列表
@@ -731,6 +745,56 @@ class SchedulerService:
             )
             return CHECK_SAMPLE_RATIO_DEFAULT
         return max(0.0, min(value, 1.0))
+
+    def _today_local(self) -> date:
+        """当前调度时区下的本地日期（C8：时间语义统一经 ``app.utils.time``）。"""
+        return now_utc().astimezone(self._tz).date()
+
+    def _clamp_denominator(self, raw: object) -> int:
+        """把周期天数钳到 [0, 256]；非法回退缺省并告警（运维直写坏值时 fail-safe）。"""
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "behavior.check_subset_denominator 配置非法：%r，回退缺省 %s",
+                raw,
+                CHECK_SUBSET_DENOMINATOR_DEFAULT,
+            )
+            return CHECK_SUBSET_DENOMINATOR_DEFAULT
+        return max(CHECK_SUBSET_DENOMINATOR_MIN, min(value, CHECK_SUBSET_DENOMINATOR_MAX))
+
+    async def _check_subset_denominator(self) -> int:
+        """每日 n/t 滚动扫描的周期天数 ``t``（[0,256]；0 = 不做每日扫描）。
+
+        取值优先级：``behavior.check_subset_denominator`` → 旧键 ``behavior.check_sample_ratio``
+        （已废弃的随机百分比，按 ``t = round(1/ratio)`` 换算；**仅在该键确有值时**生效，
+        避免空配置被缺省值带偏）→ 缺省 :data:`CHECK_SUBSET_DENOMINATOR_DEFAULT`。
+        """
+        raw = await self._config.get_value(BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY)
+        if raw is not None and str(raw).strip() != "":
+            return self._clamp_denominator(raw)
+        legacy = await self._config.get_value(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY)
+        if legacy is None or str(legacy).strip() == "":
+            return CHECK_SUBSET_DENOMINATOR_DEFAULT
+        ratio = self._parse_check_sample_ratio(legacy)
+        if ratio <= 0:
+            return 0
+        return self._clamp_denominator(round(1.0 / ratio))
+
+    async def _monthly_full_enabled(self) -> bool:
+        """月度全量独立开关（``behavior.monthly_full_enabled``，缺省 0 = 关）。"""
+        return (
+            (await self._config.get_value(BEHAVIOR_MONTHLY_FULL_ENABLED_KEY)) or ""
+        ).strip() == "1"
+
+    async def _is_monthly_full_today(self) -> bool:
+        """今天是否跑月度全量（用于当日跳过每日抽样——全量已读遍，抽样是重复读）。"""
+        if not await self._monthly_full_enabled():
+            return False
+        day = self._parse_monthly_full_day(
+            await self._config.get_value(BEHAVIOR_MONTHLY_FULL_DAY_KEY)
+        )
+        return day is not None and self._today_local().day == day
 
     def _parse_monthly_full_day(self, raw: str | None) -> int | None:
         """解析 ``behavior.monthly_full_day``（[1,28]；非法返回 None = 不挂月度全量）。

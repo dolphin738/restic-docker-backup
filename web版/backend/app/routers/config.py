@@ -23,7 +23,11 @@ from app.constants import (
     BEHAVIOR_AUTO_UNLOCK_KEY,
     BEHAVIOR_CHECK_ENABLED_KEY,
     BEHAVIOR_CHECK_SAMPLE_RATIO_KEY,
+    BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY,
     BEHAVIOR_MONTHLY_FULL_DAY_KEY,
+    BEHAVIOR_MONTHLY_FULL_ENABLED_KEY,
+    CHECK_SUBSET_DENOMINATOR_MAX,
+    CHECK_SUBSET_DENOMINATOR_MIN,
     CRED_ENCRYPTION_KEY,
     DUMP_DATABASES_KEY,
     DUMP_ENABLED_KEY,
@@ -69,6 +73,7 @@ _BOOL_KEYS: frozenset[str] = frozenset(
         BEHAVIOR_AUTO_INIT_KEY,
         BEHAVIOR_AUTO_UNLOCK_KEY,
         BEHAVIOR_CHECK_ENABLED_KEY,
+        BEHAVIOR_MONTHLY_FULL_ENABLED_KEY,
         DUMP_ENABLED_KEY,
         CRED_ENCRYPTION_KEY,
     }
@@ -270,6 +275,16 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
                 ) from exc
             if not 0.0 <= ratio <= 1.0:
                 raise ValidationError(f"{key} 须在 [0,1] 内（0=不抽样）", data={"key": key, "value": raw})
+        elif key == BEHAVIOR_CHECK_SUBSET_DENOMINATOR_KEY:
+            # 每日 n/t 滚动扫描周期天数：0 = 不做每日扫描；上限 256 对齐 restic totalBucketsMax
+            if not value.isdigit() or not (
+                CHECK_SUBSET_DENOMINATOR_MIN <= int(value) <= CHECK_SUBSET_DENOMINATOR_MAX
+            ):
+                raise ValidationError(
+                    f"{key} 须为 {CHECK_SUBSET_DENOMINATOR_MIN}~{CHECK_SUBSET_DENOMINATOR_MAX} 的整数"
+                    "（0=不做每日扫描，其余=每 N 天把全仓扫一遍）",
+                    data={"key": key, "value": raw},
+                )
         elif key == BEHAVIOR_MONTHLY_FULL_DAY_KEY:
             if not value.isdigit() or not (MONTHLY_FULL_DAY_MIN <= int(value) <= MONTHLY_FULL_DAY_MAX):
                 raise ValidationError(
