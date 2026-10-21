@@ -141,8 +141,13 @@ async def _seed_local_repo(ns, tmp_path, repo_id: str) -> Path:
     return data_dir
 
 
-async def test_delete_with_purge_disk_cleans_data_and_passfile(app_client, tmp_path):
-    """purge_disk=true：数据目录与密码文件随删除一并清空（同址可干净新建），审计记 purged_disk。"""
+async def test_delete_with_purge_disk_clears_contents_keeps_dir(app_client, tmp_path):
+    """purge_disk=true：数据目录**内容**清空、目录本身保留（同址新建免手动建文件夹），
+    密码文件删除且 ``<passfile_root>/<repo_id>/`` 空目录一并回收；审计记 purged_disk。
+
+    2026-10-22 owner 反馈：整体 rmtree 掉 /home/123/qqq 后，同址新建还得先手动
+    建文件夹；只删 password 不删目录，长期遗留一堆仓库 id 命名的空文件夹。
+    """
     ns = app_client
     await finish_bootstrap(ns)
     data_dir = await _seed_local_repo(ns, tmp_path, "r7")
@@ -152,13 +157,57 @@ async def test_delete_with_purge_disk_cleans_data_and_passfile(app_client, tmp_p
     assert resp.status_code == 200, resp.text
 
     assert (await ns.app.state.repos_repo.get("r7")) is None
-    assert not data_dir.exists()
+    # 目录本身保留，内容清空
+    assert data_dir.exists()
+    assert not (data_dir / "data").exists()
+    assert not (data_dir / "config").exists()
+    # 密码文件删除，仓库 id 命名的空目录一并回收（不遗留孤儿空文件夹）
     assert not passfile.exists()
+    assert not passfile.parent.exists()
 
     rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_DELETE)
     assert total == 1
     detail = json.loads(rows[0].detail or "{}")
     assert detail["purged_disk"] is True
+
+
+async def test_delete_purge_disk_reclaims_empty_passfile_dir_without_password(app_client, tmp_path):
+    """从未设置密码的仓库：purge 仍回收空的 ``<passfile_root>/<repo_id>/`` 目录。
+
+    现场：运维预置/旧版遗留的空目录 + 无 password 文件——删除仓库时一并回收。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    data_dir = tmp_path / "repo-r11"
+    data_dir.mkdir()
+    await ns.app.state.repos_repo.create("r11", "无密码仓库", url=str(data_dir))
+    passfile = ns.app.state.settings.passfile_path("r11")
+    passfile.parent.mkdir(parents=True)  # 目录在、密码文件不在
+
+    resp = await ns.client.delete("/api/repos/r11?purge_disk=true", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+
+    assert not passfile.exists()
+    assert not passfile.parent.exists()
+
+
+async def test_delete_purge_disk_keeps_foreign_files_in_passfile_dir(app_client, tmp_path):
+    """密码目录里有用户手动放入的文件 → 不回收该目录（rmdir 仅空目录成功）。
+
+    应用只拥有 ``<passfile_root>/<repo_id>/password`` 一个文件；目录里的其他
+    文件不属应用管控范围，删仓库不得顺手清掉。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed_local_repo(ns, tmp_path, "r10")
+    passfile = ns.app.state.settings.passfile_path("r10")
+    (passfile.parent / "keep-me").write_text("x", encoding="utf-8")
+
+    resp = await ns.client.delete("/api/repos/r10?purge_disk=true", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+
+    assert not passfile.exists()
+    assert (passfile.parent / "keep-me").read_text(encoding="utf-8") == "x"
 
 
 async def test_delete_purge_disk_rejected_for_remote_backend_zero_loss(app_client, tmp_path):

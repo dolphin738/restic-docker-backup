@@ -430,7 +430,8 @@ async def delete_repo(
     （``cred.{repo_id}.*``，env 来源除外）随仓库一并移除。
 
     ``purge_disk=true``（查询参数，默认 false）：删 DB 行**之前**先清空磁盘数据
-    （``rmtree`` 仓库目录 + 删除该仓库密码文件）。默认不清理——restic 仓库内的
+    （清空仓库目录**内容**、保留目录本身 + 删除该仓库密码文件并回收
+    ``<passfile_root>/<repo_id>/`` 空目录）。默认不清理——restic 仓库内的
     物理快照与密码文件保留，重新添加同 id 仓库仍可复用；但**同址新建会撞上
     打不开的旧仓库**（cat config 报「密码错误」），此时要么勾选本项干净重建，
     要么走「重建仓库」。仅本地 FS 可自动清空：远程后端/未配置地址 → 422。
@@ -449,7 +450,7 @@ async def delete_repo(
     if existing is None:
         raise RepoNotFoundError(repo_id)
     # 删除前置校验（default 禁删 + 无任务/无活跃作业）先于一切副作用——
-    # purge_disk 的 rmtree 尤其不能跑到校验前面
+    # purge_disk 的磁盘清理尤其不能跑到校验前面
     await repos_repo.ensure_deletable(repo_id)
     purged = await _purge_repo_disk(request, repo_id, existing.url or "") if purge_disk else False
     removed_logs = await repos_repo.delete(repo_id)
@@ -482,14 +483,18 @@ async def delete_repo(
 
 
 async def _purge_repo_disk(request: Request, repo_id: str, url: str) -> bool:
-    """清空仓库磁盘数据（delete 的 ``purge_disk``）：rmtree 仓库目录 + 删密码文件。
+    """清空仓库磁盘数据（delete 的 ``purge_disk``）：清空仓库目录内容 + 删密码文件。
 
-    返回是否实际删除了数据目录（目录本不存在时为 False；密码文件仍会尝试清理）。
+    返回是否实际清空了数据目录（目录本不存在时为 False；密码文件仍会尝试清理）。
     调用方保证：删除前置校验已通过、DB 行尚未删——故这里的 422 一律「零损失」
     （校验/清理失败时仓库行与数据都还在，可安全重试）。
 
     - 远程后端/未配置地址/文件系统根/非目录 → 422（可操作提示，不静默）；
-    - rmtree 失败（权限不足/文件被占用）→ 422 可操作提示，不 500。
+    - 清理失败（权限不足/文件被占用）→ 422 可操作提示，不 500。
+
+    **保留目录本身、只清内容**（2026-10-22 owner 反馈）：整体删掉
+    ``/home/123/qqq`` 后，同址新建还得先手动建文件夹；restic init 虽会
+    MkdirAll，但挂载点/运维预置目录不该被连根拔掉。
     """
     local_path = _repo_local_path(url)
     if local_path is None:
@@ -504,21 +509,51 @@ async def _purge_repo_disk(request: Request, repo_id: str, url: str) -> bool:
     if local_path.exists():
         if not local_path.is_dir():
             raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
-        try:
-            await asyncio.to_thread(shutil.rmtree, local_path)
-        except OSError as exc:
-            raise ValidationError(
-                f"仓库数据目录删除失败（权限不足或文件被占用）：{local_path}；"
-                "请在宿主机对应挂载目录手动清理后重试"
-            ) from exc
+        await _clear_dir_contents(local_path)
         removed = True
     # 密码文件随数据一并清除（purge 语义 = 该地址可干净重用）；失败只记日志——
     # 密码文件在应用管控目录内，删不掉不影响仓库删除本身
+    passfile = passfile_path(request.app.state.settings, repo_id)
     try:
-        passfile_path(request.app.state.settings, repo_id).unlink()
+        passfile.unlink()
+    except FileNotFoundError:
+        pass  # 本就未配置密码文件（目录回收仍继续）
     except OSError:
         logger.warning("仓库 %s 密码文件删除失败（不影响仓库删除）", repo_id)
+    # 回收 <passfile_root>/<repo_id>/ 空目录（2026-10-22 owner 反馈：只删 password
+    # 不删目录，长期会堆积一堆以仓库 id 命名的孤儿空文件夹）。rmdir 仅空目录
+    # 成功——用户若在该目录手动放过别的文件，不误删。
+    with contextlib.suppress(OSError):
+        passfile.parent.rmdir()
     return removed
+
+
+async def _clear_dir_contents(local_path: Path) -> None:
+    """清空目录**内容**（子文件/子目录全部删除，目录本身保留）——purge/rebuild 共用。
+
+    保留目录本身：同址新建/重建不必先手动建文件夹；restic init 本就 MkdirAll，
+    但挂载点与运维预置目录不该被整体删掉（2026-10-22 owner 反馈）。
+
+    调用方须先过 ``_is_fs_root`` 硬拒绝（清空根目录内容 = 灾难）。
+    失败（权限不足/文件被占用/挂载点 EBUSY）→ ``ValidationError``（422 可操作
+    提示，不 500）——两条调用路径（delete purge / rebuild）都要求「失败即停」。
+    """
+
+    def _clear() -> None:
+        for child in local_path.iterdir():
+            # 符号链接一律 unlink：rmtree 拒绝符号链接，且绝不跟随链接删目标
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+    try:
+        await asyncio.to_thread(_clear)
+    except OSError as exc:
+        raise ValidationError(
+            f"仓库数据目录清理失败（权限不足或文件被占用）：{local_path}；"
+            "请在宿主机对应挂载目录手动清理后重试"
+        ) from exc
 
 
 def _unlink_logs_sync(paths: list[str]) -> None:
@@ -709,7 +744,7 @@ async def rebuild_repo(
       非默认仓库此前没有任何恢复路径（「删除后换 URL 新建」同址即死循环）。
     - 仅支持本地文件系统后端（url 为本地绝对路径或 ``local:`` 前缀）；远程后端（s3/rest/sftp…）
       返回 422，提示手动清空后端存储后删除仓库、换 URL 新建（旧数据本就不可恢复）。
-    - 流程：写新密码文件 → rmtree 仓库目录 → restic init；运行中的任务会被 409 拒绝。
+    - 流程：写新密码文件 → 清空仓库目录内容（保留目录本身）→ restic init；运行中的任务会被 409 拒绝。
     - 仓库密码是凭据加密密钥源（HKDF info 混入 repo_id）：重建后该仓库的旧 enc:v2
       凭据无法用旧密钥解密，一并清除（需重新录入）；明文凭据不受影响。
     """
@@ -742,7 +777,7 @@ async def rebuild_repo(
     generated = not (payload.password or "").strip()
     plain = _generate_repo_password() if generated else (payload.password or "")
 
-    # 1) 写新密码文件（先于 rmtree；密码文件位于独立目录，不受仓库数据清空影响）
+    # 1) 写新密码文件（先于清空；密码文件位于独立目录，不受仓库数据清空影响）
     path = passfile_path(settings, repo_id)
     try:
         _write_passfile(path, plain)
@@ -751,13 +786,14 @@ async def rebuild_repo(
             f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
         ) from exc
 
-    # 2) 清空仓库数据目录（已确认是本地文件系统目录）
+    # 2) 清空仓库数据目录内容（已确认是本地文件系统目录；保留目录本身，
+    #    同址重建不必先手动建文件夹——restic init 会自行 MkdirAll）
     if _is_fs_root(local_path):
         raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
     if local_path.exists():
         if not local_path.is_dir():
             raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
-        shutil.rmtree(local_path)
+        await _clear_dir_contents(local_path)
 
     # 3) restic init（用新密码文件）
     fd, log_path = tempfile.mkstemp(prefix="restic-init-", suffix=".log")

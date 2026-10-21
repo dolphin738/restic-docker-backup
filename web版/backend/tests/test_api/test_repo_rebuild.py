@@ -4,7 +4,7 @@
 撞上打不开的旧仓库（cat config 报「密码错误」），非默认仓库没有任何恢复路径
 （「删除后换 URL 新建」同址即死循环）。本文件锁定放开后的语义：
 
-正向：非默认仓库 + 本地 FS → 重建成功（rmtree 旧数据 + 新密码 init + 清旧密钥凭据）；
+正向：非默认仓库 + 本地 FS → 重建成功（清空旧数据内容、保留目录本身 + 新密码 init + 清旧密钥凭据）；
 反向（零损失）：远程后端 422 / 运行中作业 409 / 仓库不存在 404，均不得毁数据、不落审计；
 S3：审计 detail 不得出现明文密码。
 """
@@ -89,8 +89,11 @@ async def test_rebuild_non_default_repo_succeeds(app_client, tmp_path):
     # S3：自填密码不回显
     assert body["password"] is None
 
-    # 旧仓库数据被清空（fake spawn 不会重建目录，故断言的是 rmtree 生效）
-    assert not data_dir.exists()
+    # 旧仓库数据被清空但目录保留（fake spawn 不会重建内容，故断言的是「清空内容」生效；
+    # 保留目录本身 = 同址重建不必先手动建文件夹，2026-10-22 owner 反馈）
+    assert data_dir.exists()
+    assert not (data_dir / "data").exists()
+    assert not (data_dir / "config").exists()
     # 密码文件已换新密码
     assert _passfile(ns, "rb1").read_text(encoding="utf-8") == "brand-new-pw"
     # 旧密钥加密的 enc:v2 凭据无法解密 → 一并清除（明文凭据不受影响）
@@ -144,7 +147,7 @@ async def test_rebuild_remote_backend_rejected_zero_loss(app_client, tmp_path):
 
 
 async def test_rebuild_rejects_active_jobs_zero_loss(app_client, tmp_path):
-    """运行中的作业 → 409：rmtree 不得发生（数据零损失），不落审计。"""
+    """运行中的作业 → 409：清空不得发生（数据零损失），不落审计。"""
     ns = app_client
     await finish_bootstrap(ns)
     data_dir = await _seed_repo(ns, tmp_path, repo_id="rb4")
@@ -185,7 +188,7 @@ async def test_rebuild_unknown_repo_is_404(app_client):
 
 
 async def test_rebuild_fs_root_path_rejected(app_client, tmp_path):
-    """仓库 URL 解析为文件系统根 → 422 硬拒绝（rmtree 防线），不落审计。"""
+    """仓库 URL 解析为文件系统根 → 422 硬拒绝（清空防线），不落审计。"""
     ns = app_client
     await finish_bootstrap(ns)
     root = Path(tmp_path).anchor  # Windows: 当前盘根；POSIX: /
