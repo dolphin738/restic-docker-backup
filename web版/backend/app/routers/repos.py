@@ -61,6 +61,7 @@ from app.schemas.api_schemas import (
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
+from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -943,8 +944,12 @@ def invalidate_repo_status_cache() -> None:
 
     调用时机：仓库资料更新（url/凭据变了）、任务终态（init/unlock 会改变仓库可连性，
     由 JobRunner 的 ``on_finish`` 回调触发）。无锁——字典赋空是原子的。
+
+    P1：连带清快照目录缓存——backup 终态会新增快照，任务卡片的 ``snapshot_count``
+    不该继续吃旧快照列表（TTL 之外的即时失效）。
     """
     _status_cache.clear()
+    invalidate_snapshot_catalog()
 
 
 async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusResponse:

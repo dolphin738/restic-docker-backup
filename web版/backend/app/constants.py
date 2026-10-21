@@ -211,6 +211,10 @@ SNAPSHOT_LIST_TIMEOUT_SECONDS = 20      # snapshots --json 探测超时
 SNAPSHOT_FILES_TIMEOUT_SECONDS = 30     # ls --json 探测超时
 SNAPSHOT_FILES_DEFAULT_LIMIT = 200
 SNAPSHOT_FILES_MAX_LIMIT = 1000
+# 快照列表进程内缓存 TTL（P1 任务卡片 ``snapshot_count``：一次列表按 tag 分组计数，
+# 援 E30 ``REPO_STATUS_CACHE_SECONDS`` 先例；失败结论同样入缓存，避免仓库不可达时
+# 每次列表都空耗一次探测超时）
+SNAPSHOT_LIST_CACHE_SECONDS = 30.0
 
 # ---------------------------------------------------------------- E21 forget 预览（R-016）
 

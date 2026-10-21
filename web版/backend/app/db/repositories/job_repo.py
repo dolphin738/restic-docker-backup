@@ -7,7 +7,7 @@ from typing import Any
 
 from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from app.db.database import Database
-from app.utils.time import utc_iso
+from app.utils.time import parse_iso, utc_iso
 
 _COLUMNS = (
     "id", "type", "status", "trigger", "repo_id", "policy_id", "task_id", "snapshot_id", "bytes_done", "files_done",
@@ -193,6 +193,48 @@ class JobRepo:
             if task_id not in latest:
                 latest[task_id] = str(row["status"])
         return latest
+
+    async def latest_backup_duration_ms_by_tasks(self, task_ids: list[int]) -> dict[int, int]:
+        """每任务最近一次**终态** backup 的耗时（毫秒，E34 卡片 ``last_duration_ms`` 数据源）。
+
+        与 :meth:`latest_backup_by_tasks` 同一取数口径（终态 + ``created_at DESC, id DESC``
+        取每任务首条），保证卡片上「上次结果」与「上次耗时」指向**同一次运行**。时间解析
+        只走 :func:`~app.utils.time.parse_iso`（C8）。
+
+        首条缺时间戳（老数据/异常中断）或时钟回拨导致负值时**不产出该任务键**——卡片降级
+        为 ``null``，不用更旧的补齐（静默换参照物比留空更误导）。
+
+        Args:
+            task_ids: 任务 id 列表；空列表直接返回空字典（不发 SQL）。
+
+        Returns:
+            ``{task_id: 耗时毫秒}``；无终态 backup 历史或时间戳不可用的任务不出现在字典中。
+        """
+        if not task_ids:
+            return {}
+        placeholders = ",".join("?" * len(task_ids))
+        terminal_placeholders = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT task_id, started_at, finished_at FROM jobs WHERE type = 'backup' AND task_id IN ({placeholders}) "
+            f"AND status IN ({terminal_placeholders}) ORDER BY created_at DESC, id DESC",
+            tuple(task_ids) + tuple(TERMINAL_JOB_STATUSES),
+        )
+        durations: dict[int, int] = {}
+        seen: set[int] = set()
+        for row in rows:
+            task_id = int(row["task_id"])
+            if task_id in seen:
+                continue
+            seen.add(task_id)
+            started = parse_iso(None if row["started_at"] is None else str(row["started_at"]))
+            finished = parse_iso(None if row["finished_at"] is None else str(row["finished_at"]))
+            if started is None or finished is None:
+                continue
+            delta_ms = int((finished - started).total_seconds() * 1000)
+            if delta_ms < 0:
+                continue
+            durations[task_id] = delta_ms
+        return durations
 
     async def last_backup_success_finished_at(self, task_id: int) -> str | None:
         """该任务最近一次**成功** backup 的 ``finished_at``（ISO 8601 UTC 文本）。

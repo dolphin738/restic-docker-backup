@@ -423,6 +423,11 @@ class TaskCardOut(_Base):
 
     ``status`` 词表：paused（enabled=0）/ running / pending / success / failed /
     interrupted / cancelled / never_run；``last_result`` 为最近一次 backup 终态。
+
+    P1 新增两个**可为 null** 的统计字段（UI 全量改造方案 §4.5.2 卡片「上次：相对时间
+    + 耗时」与「快照数」）：``last_duration_ms`` 与 ``last_result`` 指向同一次运行；
+    ``snapshot_count`` 为 ``null`` 表示**此刻不可知**（仓库未配置/快照列表探测失败），
+    与 ``0``（任务确实还没产出快照）严格区分。
     """
 
     id: int
@@ -435,6 +440,10 @@ class TaskCardOut(_Base):
     )
     last_run_at: str | None = None
     last_result: str | None = None
+    # P1：与 last_result 同一次运行的耗时（finished_at - started_at）；无终态历史为 null
+    last_duration_ms: int | None = Field(default=None, ge=0, description="上次运行时长（毫秒）")
+    # P1：该任务 tag 的快照数（一次快照列表按 tag 分组）；不可知为 null，无快照为 0
+    snapshot_count: int | None = Field(default=None, ge=0, description="该任务快照数；不可知为 null")
     next_run_at: str | None = Field(default=None, description="cron 推导；null=仅手动或已暂停")
     running_job_id: str | None = Field(default=None, description="有活跃 job 时非空（卡片内联进度入口）")
     dry_run_pending: bool = Field(default=False, description="true 时 UI 拦截 Start（R-026-08）")

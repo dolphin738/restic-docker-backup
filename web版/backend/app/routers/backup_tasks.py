@@ -49,6 +49,7 @@ from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.scheduler import SchedulerService
+from app.services.snapshot_catalog import SnapshotCatalog
 from app.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,8 @@ async def list_tasks(
 
     数据装配（§2.1）：``TaskRepo.list_all`` + ``JobRepo.list_active``（进行中）+
     ``JobRepo.latest_backup_by_tasks``（每任务最近一次 backup 终态）+
+    ``JobRepo.latest_backup_duration_ms_by_tasks``（P1：同上一次运行的耗时）+
+    ``SnapshotCatalog.counts_by_tag``（P1：一次快照列表按 tag 分组）+
     ``SchedulerService.next_fire_time`` / ``_due_for_prune``（cron 推导与 prune 提示）。
     """
     del session
@@ -140,9 +143,18 @@ async def list_tasks(
         if job.task_id is not None:
             active_by_task.setdefault(job.task_id, job)
     latest_results = await job_repo.latest_backup_by_tasks([task.id for task in tasks])
+    durations = await job_repo.latest_backup_duration_ms_by_tasks([task.id for task in tasks])
+    snapshot_counts = await _snapshot_counts_by_tag(request, repo_id)
 
     cards = [
-        await _to_card(task, active_by_task.get(task.id), latest_results.get(task.id), scheduler)
+        await _to_card(
+            task,
+            active_by_task.get(task.id),
+            latest_results.get(task.id),
+            scheduler,
+            durations.get(task.id),
+            snapshot_counts,
+        )
         for task in tasks
     ]
     window = cards[offset : offset + limit]
@@ -414,11 +426,22 @@ async def _to_card(
     active_job: Job | None,
     last_result: str | None,
     scheduler: SchedulerService | None,
+    last_duration_ms: int | None = None,
+    snapshot_counts: dict[str, int] | None = None,
 ) -> TaskCardOut:
     """把任务行 + 聚合数据装配为任务卡片（§1.2 派生规则，路由内聚合无新 SQL）。
 
     派生状态优先级：``enabled=0 → paused`` > 活跃 job（running/pending）>
     最近一次 backup 终态 > ``never_run``。
+
+    Args:
+        task: 任务行。
+        active_job: 该任务的活跃 job（running/pending）；无则 None。
+        last_result: 最近一次终态 backup 状态。
+        scheduler: 调度器（未装配时 None）。
+        last_duration_ms: 与 ``last_result`` 同一次运行的耗时（毫秒）。
+        snapshot_counts: ``{tag: 快照数}``；**None 表示不可知**（卡片字段置 null，
+            不可退化成 0——0 会被读成「任务还没产出快照」）。
     """
     if not task.enabled:
         status = CARD_PAUSED
@@ -443,11 +466,40 @@ async def _to_card(
         status=status,
         last_run_at=task.last_run_at,
         last_result=last_result,
+        last_duration_ms=last_duration_ms,
+        snapshot_count=None if snapshot_counts is None else snapshot_counts.get(task.tag, 0),
         next_run_at=next_run_at,
         running_job_id=active_job.id if active_job is not None else None,
         dry_run_pending=task.dry_run_pending,
         prune_due=prune_due,
         updated_at=task.updated_at,
+    )
+
+
+async def _snapshot_counts_by_tag(request: Request, repo_id: str) -> dict[str, int] | None:
+    """取一次快照列表并按 tag 分组计数（P1：卡片 ``snapshot_count`` 数据源）。
+
+    未配置仓库地址 / ``snapshot_catalog`` 未装配 / 探测失败 → ``None``（卡片字段降级
+    null）。凭据经 ``load_credentials`` + ``build_env`` 组装后**整体传入**服务，本路由
+    不接触明文（S3）。
+    """
+    catalog: SnapshotCatalog | None = getattr(request.app.state, "snapshot_catalog", None)
+    if catalog is None:
+        return None
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    config_repo: ConfigRepo = request.app.state.config_repo
+    restic: ResticCmd = request.app.state.restic
+    parser: OutputParser = request.app.state.parser
+
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    if not repo_url.strip():
+        return None
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    return await catalog.counts_by_tag(
+        restic=restic, parser=parser, repo_id=repo_id, repo_url=repo_url, env=env
     )
 
 
