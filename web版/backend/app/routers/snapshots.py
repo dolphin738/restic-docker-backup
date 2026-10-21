@@ -40,6 +40,8 @@ from app.errors import ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
     Page,
     SnapshotFileOut,
+    SnapshotFileSearchRequest,
+    SnapshotFileSearchResponse,
     SnapshotFilesResponse,
     SnapshotOut,
     TagChanged,
@@ -190,6 +192,73 @@ async def list_snapshot_files(
 
 
 @router.post(
+    "/snapshots/{snapshot_id}/files/search",
+    response_model=SnapshotFileSearchResponse,
+    summary="P3 快照内文件搜索",
+    dependencies=_PROTECTED,
+)
+async def search_snapshot_files(
+    snapshot_id: str,
+    payload: SnapshotFileSearchRequest,
+    request: Request,
+    repo_id: str = Depends(current_repo_id),
+    session: SessionContext = Depends(require_session),
+) -> SnapshotFileSearchResponse:
+    """``restic ls --json <id>``（全量）→ **服务端**子串过滤 → 游标分页（R6/V-3）。
+
+    与 E18 的关系：同一数据源、同一游标口径（``decode/encode_cursor``），差别是
+    E18 只取子树的**直接子项**（懒加载树），本端点跨层级匹配全部条目。
+
+    为什么不过滤下推进 restic：``ls`` 没有 name-filter argv，S2 白名单也不为搜索
+    扩面；所以「下推」的落点是**服务端过滤**（restic 只跑一次），**前端绝不拉全量
+    再过滤**——那正是本端点要消灭的用法（方案 §4.8 V-3）。
+
+    匹配口径：对**展示路径**（``display_path``，用户看见的形态）做大小写不敏感
+    子串匹配；既匹配目录也匹配文件，输出按展示路径升序（游标分页要求稳定序）。
+    """
+    del session
+    query = payload.query.strip()
+    if not query:
+        raise ValidationError("搜索关键词不能为空", data={"field": "query"})
+
+    restic: ResticCmd = request.app.state.restic
+    parser: OutputParser = request.app.state.parser
+    mapper: PathMapper = request.app.state.path_mapper
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    if not repo_url:
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
+
+    # 不带子树 positional：搜索覆盖整棵快照树
+    argv = restic.build("ls", args=WhitelistArgs(snapshot_id=snapshot_id, json_output=True))
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
+    if probe.exit_code != 0:
+        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
+        logger.warning("快照文件搜索探测失败（snapshot=%s）：%s", snapshot_id, reason)
+        raise ResticFailedError(reason, exit_code=probe.exit_code)
+
+    records = await asyncio.to_thread(parser.parse_file_list, "\n".join(probe.lines))
+    matches = _search_matches(records, query, mapper)
+
+    start = decode_cursor(payload.cursor, SNAPSHOT_FILES_MAX_OFFSET)
+    window = matches[start : start + payload.limit]
+    has_more = start + payload.limit < len(matches)
+    return SnapshotFileSearchResponse(
+        snapshot_id=snapshot_id,
+        query=query,
+        items=window,
+        total=len(matches),
+        next_cursor=encode_cursor(start + payload.limit) if has_more else None,
+        truncated=probe.truncated,
+    )
+
+
+@router.post(
     "/snapshots/tag",
     response_model=TagSnapshotsResponse,
     summary="A3 快照打/去标签（restic tag --add/--remove）",
@@ -312,6 +381,51 @@ def _to_snapshot_out(record: SnapshotRecord, mapper: PathMapper) -> SnapshotOut:
         paths=[mapper.to_display(item) for item in record.paths],
         size=record.size,
     )
+
+
+def _search_matches(
+    records: list[FileRecord],
+    query: str,
+    mapper: PathMapper,
+) -> list[SnapshotFileOut]:
+    """跨层级匹配：展示路径含关键词（大小写不敏感）→ 按展示路径升序去重。
+
+    与 :func:`_direct_children` 平级（同一 ``ls`` 数据源的两种投影），不共享排序
+    口径：搜索结果按**路径**升序（层级可读），文件树按「目录优先 + 名称」升序。
+
+    Args:
+        records: ``ls`` 解析出的全部条目。
+        query: 已 trim 的非空关键词。
+        mapper: 路径映射器（生成 display_path）。
+
+    Returns:
+        去重后的命中条目（顺序稳定，供游标分页切片）。
+    """
+    needle = query.casefold()
+    items: list[SnapshotFileOut] = []
+    seen: set[str] = set()
+    for record in records:
+        item_path = record.path
+        if not item_path:
+            continue
+        display_path = mapper.to_display(item_path)
+        if needle not in display_path.casefold():
+            continue
+        if item_path in seen:
+            continue
+        seen.add(item_path)
+        items.append(
+            SnapshotFileOut(
+                name=record.name or item_path.rsplit("/", 1)[-1],
+                type=record.type or "file",
+                path=item_path,
+                display_path=display_path,
+                size=record.size,
+                mtime=record.mtime,
+            )
+        )
+    items.sort(key=lambda item: item.display_path)
+    return items
 
 
 def _direct_children(

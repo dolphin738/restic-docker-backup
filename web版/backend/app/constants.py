@@ -215,6 +215,8 @@ SNAPSHOT_FILES_MAX_LIMIT = 1000
 # 援 E30 ``REPO_STATUS_CACHE_SECONDS`` 先例；失败结论同样入缓存，避免仓库不可达时
 # 每次列表都空耗一次探测超时）
 SNAPSHOT_LIST_CACHE_SECONDS = 30.0
+# P3 快照内文件搜索：关键词长度上限（防超长串拖垮服务端过滤；下限由空串校验兜底）
+SNAPSHOT_SEARCH_QUERY_MAX_LENGTH = 200
 
 # ---------------------------------------------------------------- E21 forget 预览（R-016）
 

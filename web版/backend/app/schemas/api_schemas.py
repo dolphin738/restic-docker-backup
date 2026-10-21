@@ -23,6 +23,9 @@ from app.constants import (
     RESTORE_PREVIEW_DEFAULT_LIMIT,
     RESTORE_PREVIEW_MAX_LIMIT,
     RETRY_COUNT_DEFAULT,
+    SNAPSHOT_FILES_DEFAULT_LIMIT,
+    SNAPSHOT_FILES_MAX_LIMIT,
+    SNAPSHOT_SEARCH_QUERY_MAX_LENGTH,
 )
 from app.schemas.enums import ConfigSource, JobStatus, JobTrigger, JobType
 
@@ -522,6 +525,34 @@ class SnapshotFilesResponse(_Base):
     snapshot_id: str
     path: str
     items: list[SnapshotFileOut] = Field(default_factory=list)
+    next_cursor: str | None = None
+    truncated: bool = False
+
+
+class SnapshotFileSearchRequest(_Base):
+    """P3 快照内文件搜索请求（恢复向导 select-files 的搜索框，R6）。
+
+    ``query`` 为文件名/路径子串（大小写不敏感，对**展示路径**匹配）；纯空白由路由层
+    拒 422——空关键词等价于「全量拉取」，那正是本端点要禁止的用法（V-3）。
+    """
+
+    query: str = Field(min_length=1, max_length=SNAPSHOT_SEARCH_QUERY_MAX_LENGTH)
+    limit: int = Field(default=SNAPSHOT_FILES_DEFAULT_LIMIT, ge=1, le=SNAPSHOT_FILES_MAX_LIMIT)
+    cursor: str | None = None
+
+
+class SnapshotFileSearchResponse(_Base):
+    """P3 搜索响应：游标语义与 E18 **同口径**（``decode/encode_cursor`` 同一套）。
+
+    ``total`` 是**命中总数**（不是本页条数）——搜索框要显示「N 个结果」，前端不
+    该靠翻页累加去猜。``truncated`` 与 E18 同源：restic 输出被截断时为真，此时
+    total/items 只是已收流部分的结论。
+    """
+
+    snapshot_id: str
+    query: str
+    items: list[SnapshotFileOut] = Field(default_factory=list)
+    total: int = 0
     next_cursor: str | None = None
     truncated: bool = False
 
