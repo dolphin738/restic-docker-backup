@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from app.db.database import Database
 from app.errors import EnvOverriddenError, RepoNotEmptyError, ValidationError
 from app.schemas.enums import ConfigSource, RepoType
@@ -190,26 +191,69 @@ class ReposRepo:
             raise RuntimeError(f"仓库 {repo_id} 更新后无法读回")
         return updated
 
-    async def delete(self, repo_id: str) -> bool:
-        """删除仓库。
+    async def ensure_deletable(self, repo_id: str) -> None:
+        """删除前置校验（**零副作用**）：default 禁删；有任务/活跃作业即拒。
+
+        从 :meth:`delete` 抽出的独立入口，供路由层的 ``purge_disk`` 流程
+        **先校验后清理**——rmtree 若发生在校验之后，「拒绝删除却已毁数据」
+        会比原来的死循环更糟（典型：default 禁删，但数据已被清空）。
 
         Raises:
-            ValidationError: default 仓库不可删（409 语义由路由层映射）。
-            RepoNotEmptyError: 仓库下仍有任务或历史任务（先清理再删）。
+            ValidationError: default 仓库不可删。
+            RepoNotEmptyError: 仓库下仍有备份任务或活跃作业。
         """
         if repo_id == DEFAULT_REPO_ID:
             raise ValidationError("默认仓库不可删除", data={"repo_id": repo_id})
+        active_ph = ",".join("?" * len(ACTIVE_JOB_STATUSES))
         row = await self._db.fetch_one(
             "SELECT (SELECT COUNT(*) FROM backup_tasks WHERE repo_id = ?) AS tasks, "
-            "(SELECT COUNT(*) FROM jobs WHERE repo_id = ?) AS jobs",
-            (repo_id, repo_id),
+            f"(SELECT COUNT(*) FROM jobs WHERE repo_id = ? AND status IN ({active_ph})) AS active_jobs",
+            (repo_id, repo_id, *ACTIVE_JOB_STATUSES),
         )
         tasks = int(row["tasks"]) if row else 0
-        jobs = int(row["jobs"]) if row else 0
-        if tasks or jobs:
-            raise RepoNotEmptyError(repo_id, tasks, jobs)
+        active_jobs = int(row["active_jobs"]) if row else 0
+        if tasks or active_jobs:
+            raise RepoNotEmptyError(repo_id, tasks=tasks, active_jobs=active_jobs)
+
+    async def delete(self, repo_id: str) -> list[str]:
+        """删除仓库，并级联清理其终态作业历史行（E41 v2，2026-10-21 修订）。
+
+        规则：
+        - ``default`` 不可删（切换器/补跑/env 覆盖的共同锚点）；
+        - 仍有 ``backup_tasks`` → 409（先删任务：任务删除 UI 自带确认门）；
+        - 仍有 running/pending ``jobs`` → 409（先取消：取消入口存在）；
+        - 终态 jobs（success/failed/interrupted/cancelled）随仓库一并删除——
+          v1「有历史即拒删」会使任何初始化过的仓库永远无法删除（restic 仓库
+          使用前必须 init，init 即落 job 行），且 jobs 无单行删除入口，规则
+          不可达；``jobs.repo_id`` 外键无级联动作，删库前须显式清子行。
+
+        删除前置校验（default/任务/活跃作业三门）委托 :meth:`ensure_deletable`；
+        路由层的磁盘清理（purge_disk）必须**先自行调用该校验**再动手删数据。
+
+        Args:
+            repo_id: 仓库 id。
+
+        Returns:
+            被级联删除的终态作业 ``log_path`` 列表（调用方负责清理孤儿文件，
+            口径同 :meth:`JobRepo.purge_older_than`）。
+
+        Raises:
+            ValidationError: default 仓库不可删。
+            RepoNotEmptyError: 仓库下仍有备份任务或活跃作业。
+        """
+        await self.ensure_deletable(repo_id)
+        terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
+            (repo_id, *TERMINAL_JOB_STATUSES),
+        )
+        if rows:
+            await self._db.write(
+                f"DELETE FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
+                (repo_id, *TERMINAL_JOB_STATUSES),
+            )
         await self._db.write("DELETE FROM repos WHERE id = ?", (repo_id,))
-        return True
+        return [str(r["log_path"]) for r in rows]
 
     # ---------------------------------------------------------------- env 同步专用（无写保护）
 

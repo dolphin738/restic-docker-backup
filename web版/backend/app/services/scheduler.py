@@ -41,12 +41,14 @@ from app.constants import (
     MONTHLY_FULL_DAY_DEFAULT,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
+    PASSFILE_STATUS_CONFIGURED,
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.services.dump import DumpService
+from app.services.env_sync import passfile_status
 from app.services.job_runner import JobRunner
 from app.services.retention import RetentionService
 from app.settings import Settings, get_settings
@@ -430,11 +432,12 @@ class SchedulerService:
     async def _fire_check(self, kind: str) -> None:
         """check 维护回调（``kind``：``sample`` 每日抽样 / ``full`` 月度全量）。
 
-        抽样按 ``behavior.check_sample_ratio`` 换算为 ``--read-data-subset`` 的百分比
-        形态（如 0.02 → ``2%``）；全量带 ``read_data=True``。与 backup 同仓库互斥
-        （E1）：调度冲突落 cancelled + ``job.skipped_conflict`` 审计后跳过，下个周期
-        自然再试。fire 时复核开关（配置关闭后、下轮 reload 摘除触发器前的窗口内
-        静默跳过）。异常隔离记日志，不中断调度循环。
+        **多仓库覆盖（R-023 收口）**：遍历全部仓库逐仓库提交 check——每个仓库独立走
+        E1 仓库维度互斥（与 backup 冲突落 cancelled + 审计后跳过，下个周期自然再试）。
+        未就绪（密码文件未配置）的仓库跳过，避免空跑失败污染 jobs 列表。
+        抽样按 ``behavior.check_sample_ratio`` 换算为 ``--read-data-subset`` 百分比形态
+        （如 0.02 → ``2%``）；全量带 ``read_data=True``。fire 时复核开关（配置关闭后、
+        下轮 reload 摘除触发器前的窗口内静默跳过）。异常隔离记日志，不中断调度循环。
         """
         try:
             if ((await self._config.get_value(BEHAVIOR_CHECK_ENABLED_KEY)) or "").strip() != "1":
@@ -447,7 +450,12 @@ class SchedulerService:
                 if ratio <= 0:
                     return  # ratio=0 = 不抽样（触发器待下轮 reload 摘除）
                 params["read_data_subset"] = f"{ratio * 100:g}%"
-            await self._runner.submit("check", trigger="scheduled", params=params)
+            for repo in await self._runner.list_repos():
+                if passfile_status(self._settings, repo.id) != PASSFILE_STATUS_CONFIGURED:
+                    continue  # 未就绪仓库跳过，避免空跑失败污染 jobs 列表
+                await self._runner.submit(
+                    "check", trigger="scheduled", params=params, repo_id=repo.id
+                )
         except Exception:  # noqa: BLE001 - 单次维护失败不应拖垮调度器（援 _submit 口径）
             logger.exception("调度提交 check 失败：kind=%s", kind)
 

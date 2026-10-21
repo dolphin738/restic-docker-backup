@@ -316,21 +316,39 @@ class RepoNotFoundError(AppError):
 
 
 class RepoNotEmptyError(AppError):
-    """409 仓库下仍有 backup_tasks 或 jobs，拒绝删除（E41：先清理再删）。"""
+    """409 仓库仍被占用，拒绝删除（E41：有备份任务或活跃作业时先清理）。
+
+    终态作业历史（success/failed/interrupted/cancelled）不阻塞删除——随仓库
+    级联清理（见 :meth:`ReposRepo.delete`）；v1「有历史即拒删」会使任何初始化过
+    的仓库永远无法删除（init 即落 job 行且 jobs 无单行删除入口），已废止。
+    """
 
     code = REPO_NOT_EMPTY
     status = ERROR_STATUS[REPO_NOT_EMPTY]
-    message = "仓库下仍有任务或历史任务，请先清理后再删除"
+    message = "仓库下仍有备份任务或运行中的作业，请先处理后再删除"
 
-    def __init__(self, repo_id: str, tasks: int, jobs: int) -> None:
-        """构造仓库非空错误。
+    def __init__(self, repo_id: str, *, tasks: int = 0, active_jobs: int = 0) -> None:
+        """构造仓库占用错误。
 
         Args:
             repo_id: 被拒删的仓库 id（回显供前端定位）。
-            tasks: 仓库下 backup_tasks 条数。
-            jobs: 仓库下 jobs 历史条数。
+            tasks: 仓库下 backup_tasks 条数（>0 时提示先删任务）。
+            active_jobs: 仓库下 running/pending 作业条数（>0 时提示先取消）。
         """
+        if tasks and active_jobs:
+            detail = (
+                f"仓库 {repo_id!r} 下仍有 {tasks} 个备份任务与 {active_jobs} 个运行中的作业，"
+                "请先处理后再删除"
+            )
+        elif tasks:
+            detail = f"仓库 {repo_id!r} 下仍有 {tasks} 个备份任务，请先删除任务后再删除仓库"
+        elif active_jobs:
+            detail = (
+                f"仓库 {repo_id!r} 下有 {active_jobs} 个正在运行或等待中的作业，请先取消后再删除仓库"
+            )
+        else:  # pragma: no cover - 调用方保证至少一项非零
+            detail = f"仓库 {repo_id!r} 仍被占用，暂不可删除"
         super().__init__(
-            f"仓库 {repo_id!r} 下仍有 {tasks} 个任务与 {jobs} 条历史记录，请先清理后再删除",
-            data={"repo_id": repo_id, "tasks": tasks, "jobs": jobs},
+            detail,
+            data={"repo_id": repo_id, "tasks": tasks, "active_jobs": active_jobs},
         )

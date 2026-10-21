@@ -105,8 +105,13 @@ from app.services.notifier import (
     KEY_MAIL_SECURITY,
     KEY_MAIL_TO,
     KEY_MAIL_USERNAME,
+    KEY_MEOW_HTML_HEIGHT,
+    KEY_MEOW_IMG_URL,
+    KEY_MEOW_MSG_TYPE,
     KEY_MEOW_NICKNAME,
+    KEY_MEOW_PLAN,
     KEY_MEOW_REDACT,
+    KEY_MEOW_URL,
     KEY_ON_SUCCESS,
     KEY_SKIPPED_THRESHOLD,
     KEY_WEBHOOK_REDACT,
@@ -114,8 +119,11 @@ from app.services.notifier import (
     KEY_WEBHOOK_URL,
     Notifier,
     _parse_bool,
+    _parse_html_height,
     _parse_mail_port,
     _parse_mail_security,
+    _parse_meow_msg_type,
+    _parse_meow_plan,
     _parse_threshold,
 )
 from app.services.path_mapper import PathMapper
@@ -770,6 +778,11 @@ async def get_notify(
         webhook_url_set=bool(((await config.get_value(KEY_WEBHOOK_URL)) or "").strip()),
         webhook_template=(await config.get_value(KEY_WEBHOOK_TEMPLATE)) or "",
         meow_nickname=(await config.get_value(KEY_MEOW_NICKNAME)) or "",
+        meow_msg_type=_parse_meow_msg_type(await config.get_value(KEY_MEOW_MSG_TYPE)),
+        meow_html_height=_parse_html_height(await config.get_value(KEY_MEOW_HTML_HEIGHT)),
+        meow_url=((await config.get_value(KEY_MEOW_URL)) or "").strip(),
+        meow_img_url=((await config.get_value(KEY_MEOW_IMG_URL)) or "").strip(),
+        meow_plan=_parse_meow_plan(await config.get_value(KEY_MEOW_PLAN)),
         on_success=_parse_bool(await config.get_value(KEY_ON_SUCCESS), default=False),
         skipped_threshold=_parse_threshold(await config.get_value(KEY_SKIPPED_THRESHOLD)),
         webhook_redact=_parse_bool(await config.get_value(KEY_WEBHOOK_REDACT), default=DEFAULT_WEBHOOK_REDACT),
@@ -809,6 +822,17 @@ async def put_notify(
         patch[KEY_WEBHOOK_TEMPLATE] = payload.webhook_template
     if payload.meow_nickname is not None:
         patch[KEY_MEOW_NICKNAME] = payload.meow_nickname.strip()
+    if payload.meow_msg_type is not None:
+        patch[KEY_MEOW_MSG_TYPE] = payload.meow_msg_type
+    if payload.meow_html_height is not None:
+        patch[KEY_MEOW_HTML_HEIGHT] = str(int(payload.meow_html_height))
+    # 可选增强：空串 = 清除（E23 三态写入口径：'' 即清除该键）
+    if payload.meow_url is not None:
+        patch[KEY_MEOW_URL] = payload.meow_url.strip()
+    if payload.meow_img_url is not None:
+        patch[KEY_MEOW_IMG_URL] = payload.meow_img_url.strip()
+    if payload.meow_plan is not None:
+        patch[KEY_MEOW_PLAN] = payload.meow_plan.strip().lower()
     if payload.on_success is not None:
         patch[KEY_ON_SUCCESS] = _bool_value(payload.on_success)
     if payload.skipped_threshold is not None:

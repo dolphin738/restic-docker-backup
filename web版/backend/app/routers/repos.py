@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_REPO_DELETE,
     AUDIT_REPO_PASSWORD_SET,
     AUDIT_REPO_REBUILD,
     AUDIT_REPO_TEST,
@@ -42,7 +43,7 @@ from app.constants import (
     REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
-from app.db.repositories.repo_repo import DEFAULT_REPO_ID, Repo, ReposRepo
+from app.db.repositories.repo_repo import Repo, ReposRepo
 from app.errors import JobConflictError, RepoNotFoundError, ResticFailedError, ValidationError
 from app.schemas.api_schemas import (
     OkResponse,
@@ -107,6 +108,16 @@ def _repo_local_path(url: str) -> Path | None:
     if "://" in u or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", u):
         return None
     return Path(u)
+
+
+def _is_fs_root(path: Path) -> bool:
+    """是否文件系统根（``/``、``C:\\``、UNC share 根）——清空类动作的硬拒绝线。
+
+    可移植判据（``str(path) == path.anchor``）：旧的 ``path == Path(path.root)``
+    在 Windows 上对 ``/`` 失效（``WindowsPath('/')`` 的 root 是 ``\\``，两者不相等），
+    会把「当前盘根目录」放行给 rmtree。rebuild 与 delete 的 purge_disk 共用。
+    """
+    return str(path) == path.anchor
 
 
 # ---------------------------------------------------------------- A8 仓库标识自动生成
@@ -405,19 +416,116 @@ async def update_repo(
 @router.delete(
     "/repos/{repo_id}",
     response_model=OkResponse,
-    summary="R-023 删除仓库（default 禁删；有任务/历史 409）",
+    summary="R-023 删除仓库（default 禁删；有任务/活跃作业 409；终态历史级联清理；可选清空磁盘数据）",
     dependencies=_PROTECTED,
 )
 async def delete_repo(
     repo_id: str,
     request: Request,
     session: SessionContext = Depends(require_session),
+    purge_disk: bool = False,
 ) -> OkResponse:
-    """删除仓库：default 不可删；仓库下仍有 backup_tasks 或 jobs 时 409（先清理再删）。"""
+    """删除仓库：default 不可删；仍有 backup_tasks 或 running/pending 作业时 409
+    （先清理再删）；终态作业历史（jobs 行 + 日志文件）与该仓库的凭据键
+    （``cred.{repo_id}.*``，env 来源除外）随仓库一并移除。
+
+    ``purge_disk=true``（查询参数，默认 false）：删 DB 行**之前**先清空磁盘数据
+    （``rmtree`` 仓库目录 + 删除该仓库密码文件）。默认不清理——restic 仓库内的
+    物理快照与密码文件保留，重新添加同 id 仓库仍可复用；但**同址新建会撞上
+    打不开的旧仓库**（cat config 报「密码错误」），此时要么勾选本项干净重建，
+    要么走「重建仓库」。仅本地 FS 可自动清空：远程后端/未配置地址 → 422。
+
+    清理刻意后置于删除前置校验（default 禁删 / 有任务或活跃作业 409）——
+    校验拒绝时数据必须原封不动，「拒绝删除却已毁数据」比不清理更糟。
+
+    仓库不存在 → 404 ``REPO_NOT_FOUND``（先于删除校验，避免为无效 target 落审计）。
+    删除成功写审计 ``repo.delete``（S6 危险操作清单第 15 项）。
+    """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
-    await repos_repo.delete(repo_id)
+    config_repo: ConfigRepo = request.app.state.config_repo
+    # 存在性前置：仓库不存在直接 404，避免为「删了个不存在的仓库」落一条成功审计
+    existing = await repos_repo.get(repo_id)
+    if existing is None:
+        raise RepoNotFoundError(repo_id)
+    # 删除前置校验（default 禁删 + 无任务/无活跃作业）先于一切副作用——
+    # purge_disk 的 rmtree 尤其不能跑到校验前面
+    await repos_repo.ensure_deletable(repo_id)
+    purged = await _purge_repo_disk(request, repo_id, existing.url or "") if purge_disk else False
+    removed_logs = await repos_repo.delete(repo_id)
+    # 孤儿日志清理（口径同 retention：行没了，日志没有保留价值；缺失/失败静默跳过）
+    if removed_logs:
+        await asyncio.to_thread(_unlink_logs_sync, removed_logs)
+    # 凭据键清理（镜像 rebuild 先例：跳过 env 来源与空值——env 键归 env 同步管）
+    cleared = 0
+    for row in await config_repo.list_all_raw():
+        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
+            continue
+        await config_repo.delete(row.key)
+        cleared += 1
+    if cleared:
+        logger.info("仓库 %s 已删除：级联清理凭据键 %d 个", repo_id, cleared)
+    # 审计（S6 危险操作清单第 15 项）：只记计数与仓库名，不回显凭据（S3）
+    await request.app.state.audit.record(
+        AUDIT_REPO_DELETE,
+        target=repo_id,
+        detail={
+            "name": existing.name,
+            "removed_logs": len(removed_logs),
+            "cleared_credentials": cleared,
+            "purged_disk": purged,
+        },
+        result="ok",
+    )
+    invalidate_repo_status_cache()
     return OkResponse()
+
+
+async def _purge_repo_disk(request: Request, repo_id: str, url: str) -> bool:
+    """清空仓库磁盘数据（delete 的 ``purge_disk``）：rmtree 仓库目录 + 删密码文件。
+
+    返回是否实际删除了数据目录（目录本不存在时为 False；密码文件仍会尝试清理）。
+    调用方保证：删除前置校验已通过、DB 行尚未删——故这里的 422 一律「零损失」
+    （校验/清理失败时仓库行与数据都还在，可安全重试）。
+
+    - 远程后端/未配置地址/文件系统根/非目录 → 422（可操作提示，不静默）；
+    - rmtree 失败（权限不足/文件被占用）→ 422 可操作提示，不 500。
+    """
+    local_path = _repo_local_path(url)
+    if local_path is None:
+        raise ValidationError(
+            "该仓库未配置地址或后端不是本地文件系统（远程后端无法自动清空）。"
+            "请手动清空后端存储后再删除，或换 URL 新建。",
+            data={"url": url},
+        )
+    if _is_fs_root(local_path):
+        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
+    removed = False
+    if local_path.exists():
+        if not local_path.is_dir():
+            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
+        try:
+            await asyncio.to_thread(shutil.rmtree, local_path)
+        except OSError as exc:
+            raise ValidationError(
+                f"仓库数据目录删除失败（权限不足或文件被占用）：{local_path}；"
+                "请在宿主机对应挂载目录手动清理后重试"
+            ) from exc
+        removed = True
+    # 密码文件随数据一并清除（purge 语义 = 该地址可干净重用）；失败只记日志——
+    # 密码文件在应用管控目录内，删不掉不影响仓库删除本身
+    try:
+        passfile_path(request.app.state.settings, repo_id).unlink()
+    except OSError:
+        logger.warning("仓库 %s 密码文件删除失败（不影响仓库删除）", repo_id)
+    return removed
+
+
+def _unlink_logs_sync(paths: list[str]) -> None:
+    """同步删除孤儿任务日志文件（随仓库删除的终态作业；缺失/失败静默跳过）。"""
+    for raw in paths:
+        with contextlib.suppress(OSError):
+            Path(raw).unlink()
 
 
 @router.post(
@@ -585,7 +693,7 @@ async def set_repo_password(
 @router.post(
     "/repos/{repo_id}/rebuild",
     response_model=RepoPasswordResponse,
-    summary="重建仓库（清空快照并用新密码重新初始化；仅本地 FS 默认仓库）",
+    summary="重建仓库（清空快照并用新密码重新初始化；仅本地 FS 后端）",
     dependencies=_PROTECTED,
 )
 async def rebuild_repo(
@@ -594,21 +702,19 @@ async def rebuild_repo(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> RepoPasswordResponse:
-    """忘密码的自救通道：清空仓库全部快照、用新密码重新初始化。
+    """忘密码 / 文件夹被旧仓库卡住时的自救通道：清空仓库全部快照、用新密码重新初始化。
 
-    - 仅默认仓库（不可删除）走此通道；非默认仓库应直接删除后用新 URL 重建。
+    - 原为 default 专属（default 不可删、忘密码无出路）；2026-10-21 放开到**全部仓库**：
+      删除仓库不触碰磁盘数据，同址新建会撞上打不开的旧仓库（报「密码错误」），
+      非默认仓库此前没有任何恢复路径（「删除后换 URL 新建」同址即死循环）。
     - 仅支持本地文件系统后端（url 为本地绝对路径或 ``local:`` 前缀）；远程后端（s3/rest/sftp…）
-      返回 400，提示手动清空后端存储后删除仓库、换 URL 新建（旧数据本就不可恢复）。
+      返回 422，提示手动清空后端存储后删除仓库、换 URL 新建（旧数据本就不可恢复）。
     - 流程：写新密码文件 → rmtree 仓库目录 → restic init；运行中的任务会被 409 拒绝。
-    - default 仓库是凭据加密根：重建后旧 enc:v2 凭据无法用旧密钥解密，一并清除（需重新录入）。
+    - 仓库密码是凭据加密密钥源（HKDF info 混入 repo_id）：重建后该仓库的旧 enc:v2
+      凭据无法用旧密钥解密，一并清除（需重新录入）；明文凭据不受影响。
     """
     del session
     _validate_repo_id(repo_id)
-    if repo_id != DEFAULT_REPO_ID:
-        raise ValidationError(
-            "仅默认仓库支持原地重建（默认仓库不可删除）。非默认仓库请直接删除后换 URL 新建。",
-            data={"repo_id": repo_id},
-        )
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     if repo is None:
@@ -646,8 +752,8 @@ async def rebuild_repo(
         ) from exc
 
     # 2) 清空仓库数据目录（已确认是本地文件系统目录）
-    if local_path == Path(local_path.root):
-        raise ValidationError(f"仓库路径解析为根目录，拒绝清空：{local_path}")
+    if _is_fs_root(local_path):
+        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
     if local_path.exists():
         if not local_path.is_dir():
             raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")

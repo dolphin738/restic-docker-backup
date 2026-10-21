@@ -136,7 +136,10 @@ AUDIT_SOURCES_DRY_RUN = "sources.dry_run"
 AUDIT_REPO_TEST = "repo.test"
 # R-023 仓库密码文件首次写入（生成或自填）——安全敏感动作，留痕但**不记录明文**
 AUDIT_REPO_PASSWORD_SET = "repo.password_set"
-AUDIT_REPO_REBUILD = "repo.rebuild"  # 忘密码自救：清空快照并用新密码重新初始化（仅本地 FS 默认仓库）
+AUDIT_REPO_REBUILD = "repo.rebuild"  # 自救通道：清空快照并用新密码重新初始化（仅本地 FS；2026-10-21 起不限 default）
+# R-023 删除仓库：级联清除终态作业历史（jobs 行 + 日志文件）与该仓库凭据键——不可逆删除，
+# 入 S6 危险操作清单（15 项）；detail 只含计数与仓库名，不回显凭据（S3）。
+AUDIT_REPO_DELETE = "repo.delete"
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_CONFIG_EXPORT = "config.export"  # 批次 E：配置导出（凭据口令加密，文件出系统边界，危险操作留痕）
@@ -223,6 +226,26 @@ MAIL_PORT_DEFAULT = 587                 # 提交端口缺省（STARTTLS 提交�
 MAIL_SECURITY_MODES: tuple[str, ...] = ("none", "starttls", "tls")  # 加密方式白名单
 NOTIFY_SKIPPED_THRESHOLD_DEFAULT = 100  # skipped 告警阈值缺省（Q4 裁决：0=只要有 skipped 即告警）
 NOTIFY_SKIPPED_THRESHOLD_MAX = 1_000_000  # 阈值写爆兜底
+# MeoW 消息形态（API 文档 §3.2：msgType/htmlHeight 是查询参数，不属于 JSON Body）
+MEOW_MSG_TYPES: tuple[str, ...] = ("text", "html")  # 消息显示类型白名单
+MEOW_MSG_TYPE_DEFAULT = "text"          # 缺省纯文本（默认模板渲染的是多行纯文本）
+MEOW_HTML_HEIGHT_DEFAULT = 200          # html 消息显示高度缺省（像素，API 同值）
+MEOW_HTML_HEIGHT_MIN = 50               # 高度下限（低于此值 App 侧无法完整渲染）
+MEOW_HTML_HEIGHT_MAX = 2000             # 高度上限（超出屏幕高度无意义）
+# MeoW 使用限制（API 文档 §5.8 非会员限频 + §5.9 公共出口 IP 提示）
+MEOW_MIN_INTERVAL_SECONDS = 3.0         # 免费版最小发送间隔（3 秒 1 条）
+MEOW_MAX_WAIT_SECONDS = 3.0             # 为守最小间隔最多等待多久；超出即丢弃（通知不拖任务链路）
+# 套餐等级 → (最小间隔秒, ((窗口秒数, 条数上限), ...))；间隔 0.0 = 不限频率（只受日总量约束）
+MEOW_PLANS: tuple[str, ...] = ("free", "premium", "lifetime")
+MEOW_PLAN_DEFAULT = "free"
+MEOW_PLAN_LIMITS: dict[str, tuple[float, tuple[tuple[int, int], ...]]] = {
+    # 免费版：API §5.8 四档限频
+    "free": (MEOW_MIN_INTERVAL_SECONDS, ((60, 15), (3600, 60), (86400, 1000))),
+    # 高级版：频率不限，只受每天 2000 条约束
+    "premium": (0.0, ((86400, 2000),)),
+    # 终身版：频率不限，只受每天 3000 条约束
+    "lifetime": (0.0, ((86400, 3000),)),
+}
 
 # ---------------------------------------------------------------- E29/E30 仓库探测
 

@@ -60,6 +60,20 @@ async def close_leaked_databases(db_registry):
             await db.close()
 
 
+@pytest.fixture(autouse=True)
+def reset_meow_limiter():
+    """每用例清零 MeoW 限流计数（模块级单例，跨用例共享）。
+
+    限流器按 API §5.8 守「3 秒 1 条 / 分钟 15 / 小时 60 / 天 1000」；不清零会让
+    连续用例互相串味（第二次推送被判超配额或被迫真的睡 3 秒）。
+    """
+    from app.services import notifier as notifier_module
+
+    notifier_module.reset_meow_rate_limiter()
+    yield
+    notifier_module.reset_meow_rate_limiter()
+
+
 @pytest.fixture()
 def api_env(tmp_path, monkeypatch):
     """为每个测试准备隔离的 DATA_DIR/密码文件，并清空可能污染的仓库凭据环境变量。"""

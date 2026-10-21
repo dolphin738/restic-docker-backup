@@ -231,7 +231,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     restic_cmd = ResticCmd(settings, path_mapper)
     parser = OutputParser()
     sse_channel = SseChannel(parser, job_repo, heartbeat_seconds=settings.sse_heartbeat_seconds)
-    notifier = Notifier(config_repo)
+    # R-018：真实 Notifier（healthchecks/webhook/MeoW；全渠道未配置时零网络调用）。
+    # repos_repo 用于把无任务关联的手动操作（init/unlock/…）在通知里显示为仓库名
+    notifier = Notifier(config_repo, repos_repo)
     job_runner = JobRunner(
         db,
         restic_cmd,

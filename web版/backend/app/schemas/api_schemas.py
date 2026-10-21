@@ -12,6 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.constants import (
     MAIL_PORT_DEFAULT,
+    MEOW_HTML_HEIGHT_DEFAULT,
+    MEOW_HTML_HEIGHT_MAX,
+    MEOW_HTML_HEIGHT_MIN,
+    MEOW_MSG_TYPE_DEFAULT,
+    MEOW_PLAN_DEFAULT,
     MIRROR_REPO_IDS_MAX,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
@@ -26,6 +31,10 @@ T = TypeVar("T")
 # C2 SMTP 加密方式（字面量白名单，与 constants.MAIL_SECURITY_MODES 同源；非法值由
 # pydantic 直接 422，不留给运行期回退逻辑兜底）
 MailSecurity = Literal["none", "starttls", "tls"]
+# MeoW 消息显示类型（字面量白名单，与 constants.MEOW_MSG_TYPES 同源）
+MeowMsgType = Literal["text", "html"]
+# MeoW 套餐等级（决定本地限流档位：free 守 API §5.8 限频，premium/lifetime 只守日总量）
+MeowPlan = Literal["free", "premium", "lifetime"]
 
 
 class _Base(BaseModel):
@@ -613,6 +622,11 @@ class NotifyConfigResponse(_Base):
     webhook_url_set: bool = False
     webhook_template: str = ""
     meow_nickname: str = ""
+    meow_msg_type: MeowMsgType = MEOW_MSG_TYPE_DEFAULT      # 消息显示类型（text/html）
+    meow_html_height: int = MEOW_HTML_HEIGHT_DEFAULT        # 仅 msgType=html 生效（像素）
+    meow_url: str = ""                                      # 通知跳转链接（可选，API §3.2）
+    meow_img_url: str = ""                                  # 通知图标 URL（可选，建议 216×216 PNG）
+    meow_plan: MeowPlan = MEOW_PLAN_DEFAULT                 # 套餐等级（限流档位）
     on_success: bool = False
     skipped_threshold: int = 100
     webhook_redact: bool = False
@@ -639,6 +653,13 @@ class NotifyConfigPatch(_Base):
     webhook_url: str | None = Field(default=None, max_length=2048)
     webhook_template: str | None = Field(default=None, max_length=4000)
     meow_nickname: str | None = Field(default=None, max_length=128)
+    meow_msg_type: MeowMsgType | None = None
+    meow_html_height: int | None = Field(
+        default=None, ge=MEOW_HTML_HEIGHT_MIN, le=MEOW_HTML_HEIGHT_MAX
+    )
+    meow_url: str | None = Field(default=None, max_length=2048)
+    meow_img_url: str | None = Field(default=None, max_length=2048)
+    meow_plan: MeowPlan | None = None
     on_success: bool | None = None
     skipped_threshold: int | None = Field(default=None, ge=0, le=1_000_000)
     webhook_redact: bool | None = None

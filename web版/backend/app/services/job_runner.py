@@ -45,7 +45,7 @@ from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
-from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, Repo, ReposRepo
 from app.errors import JobConflictError, NotCancellableError, NotFoundError, ValidationError
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
@@ -1195,6 +1195,10 @@ class JobRunner:
         return WhitelistArgs()
 
     # ---------------------------------------------------------------- 依赖读取
+
+    async def list_repos(self) -> list[Repo]:
+        """列出全部仓库（调度器维护校验遍历用；default 恒首位，见 ReposRepo.list_all）。"""
+        return await self._repos.list_all()
 
     async def _repo_url(self, repo_id: str = DEFAULT_REPO_ID) -> str:
         """读取仓库地址（repos 表，R-023 后的事实源），未配置返回空串。"""

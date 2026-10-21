@@ -1202,11 +1202,13 @@ async def test_monthly_full_day_invalid_skips_full_job(tmp_path):
     await db.close()
 
 
-async def test_fire_check_sample_submits_with_subset(tmp_path):
+async def test_fire_check_sample_submits_with_subset(tmp_path, monkeypatch):
     """抽样回调：提交 scheduled check，params 带 read_data=False + 百分比 subset（0.02 → 2%）。"""
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
     await config_repo.set(BEHAVIOR_CHECK_SAMPLE_RATIO_KEY, "0.02")
+    # 桩成已就绪，聚焦「多仓库提交」语义（跳过逻辑见 test_fire_check_skips_unconfigured_repo）
+    monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
     await scheduler._fire_check("sample")  # noqa: SLF001
 
@@ -1216,10 +1218,11 @@ async def test_fire_check_sample_submits_with_subset(tmp_path):
     assert runner._params[jobs[0].id] == {"read_data": False, "read_data_subset": "2%"}  # noqa: SLF001
 
 
-async def test_fire_check_full_submits_read_data(tmp_path):
+async def test_fire_check_full_submits_read_data(tmp_path, monkeypatch):
     """全量回调：params 带 read_data=True、无 subset（互斥语义由白名单层兜底）。"""
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
     await scheduler._fire_check("full")  # noqa: SLF001
 
@@ -1240,10 +1243,11 @@ async def test_fire_check_skips_when_disabled_or_ratio_zero(tmp_path):
     await db.close()
 
 
-async def test_fire_check_isolates_exceptions(tmp_path, caplog):
+async def test_fire_check_isolates_exceptions(tmp_path, caplog, monkeypatch):
     """提交异常被隔离记日志，不向调度循环上抛（援 _submit/_fire_retention 口径）。"""
     db, scheduler, _, _, config_repo, runner = await make_scheduler(tmp_path)
     await config_repo.set(BEHAVIOR_CHECK_ENABLED_KEY, "1")
+    monkeypatch.setattr("app.services.scheduler.passfile_status", lambda *a, **k: "configured")
 
     async def failing_submit(*args, **kwargs):  # noqa: ANN001, ANN002, ANN202
         raise RuntimeError("submit boom")
