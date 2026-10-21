@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.10（2026-10-22 十次修订：第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 版本：v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -292,21 +292,6 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | `pages/dashboard/index.vue` | 重写：KPI 带 → 行动卡行 → 工具栏（视图/时间/排序）→ 双视图 → 空态/加载态 |
 | `utils/__tests__/relativeTime.spec.ts` | 相对/绝对时间格式化单测 |
 
-#### 4.5.7 实施批次与验收门
-
-> ⚠️ **本节 B1–B6 已由 §4.7 统一重排**（owner 2026-10-22 裁决强度档 = 彻底，视觉范围升级为全站）。此处保留原表作为历史记录，**执行以 §4.7 的 P1–P9 为准**；B1/B2 内容不变，对应 §4.7 的 P1/P2。
-
-| 批次 | 内容 | 验收 |
-|---|---|---|
-| **B1** | 后端 `last_duration_ms` + `snapshot_count` 派生（task_repo/job_repo 新查询 + schema + 单测） | `pytest` 全绿 + `ruff` |
-| **B2** | 后端单任务导出端点 + 审计埋点 + 单测 | `pytest` + 审计留痕断言 |
-| **B3** | 图标资产 + `ActionCard` + `GlobalStatusBar`（含 Stop/Abort + 限速入口） | `typecheck` |
-| **B4** | 工具栏（视图切换 localStorage / 时间 / 排序）+ list 视图卡片 | 新 spec：切换持久化、排序三态 |
-| **B5** | details 视图（`n-data-table` 8 列 + 表头排序）+ 空态/加载态对齐 | 新 spec |
-| **B6** | 视觉打磨（按 4.5.3 ⑤ 选定方案）+ i18n 双语 + 响应式走查 | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 |
-
-**护栏（沿 v1.x）**：既有 spec 原样通过；`i18n-parity` / `naive-imports` / `page-render-smoke` / `a11y-baseline` 四道静态护栏不破；危险操作埋点由后端既有 `AUDIT_*` 承担；前端不新造 API 端点（除 B2 的导出）。
-
 #### 4.5.8 视觉方案三选一（待 owner 拍板，推荐 A+）
 
 | 对比项 | A 形似 | **A+ 推荐** | B 像素级 |
@@ -394,39 +379,124 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | S-3 | 暗色下边框/阴影若只调亮色会「暗底黑边」 | 亮/暗两份**同批改**，暗色单独走查 |
 | S-4 | L2 形态层若被逐页复制粘贴会退化成第二套 | 必须是**共用组件 + 单一 skin 文件**，禁止页内各写一份 |
 
-#### 4.6.6 批次
+### 4.7 统一批次表 P1–P14（2026-10-22 融合定稿：**全项目唯一执行批次表**）
 
-> ⚠️ **本节 S1–S4 已由 §4.7 统一重排**（2026-10-22 强度档裁决为彻底）。此处保留原表作为历史记录，**执行以 §4.7 的 P1–P9 为准**。
-
-| 批次 | 内容 | 验收 |
-|---|---|---|
-| **S1** | L1 主题覆盖层：按裁决强度改 `tokens.ts`（亮/暗同批） | 全站截图走查 + 桌面零漂移 diff |
-| **S2** | L3 图标集统一（~30 个，统一描边/尺寸） | `naive-imports` 护栏 + 目视 |
-| **S3** | L2 共用形态层：行动卡 / 行卡片 / 分段 / 菜单分组 / 状态条提升为全站组件 | `typecheck` + 新 spec |
-| **S4** | 逐页替换与回归（dashboard → snapshots → jobs → audit → repo → settings → restore → notifications → reports） | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 + 逐页像素 diff |
-
-### 4.7 统一批次表 P1–P9（2026-10-22 重排，取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）
-
-> 强度档 = **彻底**（§4.6.4）；范围 = **全站 A+ + 仪表板主页复刻**。排序原则：① 后端契约先行（无前端依赖，且前端要消费新字段）；② 令牌层是全局开关，必须在逐页校准之前；③ 图标与形态层是主页复刻的前置；④ 逐页重排按**风险从低到高**分两批；⑤ 每批独立可提交、可回滚。
+> 强度档 = **彻底**（§4.6.4）；范围 = **全站 A+ + 仪表板主页复刻 + 恢复模块复刻**。
+> §4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次**已并入本表并删除**，执行一律以本节为准。
+> 排序原则：① 后端契约先行（零前端依赖，且前端要消费新字段）；② 令牌层是全局开关，必须在逐页校准之前；③ 图标与形态层是主页复刻的前置；④ **恢复模块的结构性改造（P8–P11）不等令牌层**，排在主页复刻之后、逐页重排之前；⑤ 逐页重排按**风险从低到高**分两批；⑥ 每批独立可提交、可回滚。
 
 | 批次 | 内容 | 依赖 | 验收门 | 风险 / 对策 |
 |---|---|---|---|---|
 | **P1** | 后端：`TaskCardOut.last_duration_ms`（最近终态 backup job 的 `finished_at - started_at`）、`snapshot_count`（一次快照列表按 tag 分组计数，复用 E30 30s 缓存） | — | `pytest` 全绿 + `ruff`；新增单测覆盖「无历史 job → null」「快照缓存不可用 → null」 | A1 红线：须经 `app/db/repositories/` 新查询，路由不直写 SQL；禁止退化成 N 次 `stats`（`snapshots.py:12` 既有裁决） |
 | **P2** | 后端：`POST /api/backup-tasks/{id}/export` 单任务配置导出（复用 config_transfer 加密管线）+ 审计埋点 + 导出包带 `kind=backup-task` 标记 | — | `pytest` + 审计留痕断言 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文 |
-| **P3** | L3 图标集：`components/icons/` 扩展 ~30 个统一风格 SVG（统一描边 1.5 / 尺寸 20），含主页所需全部图标 | — | `typecheck` + `naive-imports` 护栏 + 目视 | 无图标库，全自绘；集中在单一文件，禁止散落 |
-| **P4** | L1 令牌层**彻底档**：`tokens.ts` 圆角（common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16）+ 控件密度（行高 32/36/40）+ **间距节奏 4/8/12/16/24/32** + 卡片三档阴影 + 标签无边框实心五态；**亮/暗同批改** | P3 | 全站基线截图存档 → 改后**桌面零漂移像素 diff** + 亮/暗双模式截图 | 风险最高的一批：改前必须先存档全站基线；暗色值必须同批给（否则暗底黑边）；间距常量只落 `tokens.ts` + `skin.css`，页面零硬编码 |
-| **P5** | L2 共用形态层：行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条 → 提升为**全站共用组件** + `theme/skin.css` | P4 | `typecheck` + 新 spec（分段选中态、菜单分组渲染） | S-4：必须是共用组件 + 单一 skin 文件，**禁止逐页各写一份**（否则退化成第二套） |
-| **P6** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段 + 限速入口）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P3 P5 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段） | 限速后端已就绪（`restic.py:401-404`）仅接 UI；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
-| **P7** | 逐页重排**第一批（低风险）**：snapshots → jobs → audit → reports → notifications | P4 P5 | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 + 逐页像素 diff | 表格页需复核 `:scroll-x` 阈值（间距变大后可能溢出） |
-| **P8** | 逐页重排**第二批（高风险）**：repo（自定义 CSS 230 行）→ settings（133 行）→ restore → TaskWizard（58 行）→ login / bootstrap | P7 | 同上 + 向导 5 步与 ConfirmGate 真机断言 | 自定义 CSS 最厚的两页，逐块校准；沿用 §4.2 教训（门禁不得因重排失效） |
-| **P9** | 全站回归：三步门 + **全站逐页桌面零漂移像素 diff** + 移动端 4 视口（1440/960/768/390）走查 + 真机 E2E 冒烟 | P8 | 全绿；移动端 4 项断言（参照 §4.3 口径） | 沿用 §4.3 教训：`overflow-x:auto` 会使 margin 不折叠致桌面 +8px 漂移，必须 diff 验收 |
+| **P3** | 后端：`POST /api/snapshots/{id}/files/search` 快照内文件搜索（`{query, limit, cursor}` → `{items, next_cursor}`，游标与 E18 同口径） | — | `pytest` + 分页上限单测 | 上限沿用 `SNAPSHOT_FILES_MAX_LIMIT`（`constants.py:213`）；过滤下推，**禁止前端全量拉取再过滤** |
+| **P4** | L3 图标集：`components/icons/` 扩展 ~30 个统一风格 SVG（统一描边 1.5 / 尺寸 20），含主页与恢复向导所需全部图标 | — | `typecheck` + `naive-imports` 护栏 + 目视 | 无图标库，全自绘；集中在单一文件，禁止散落 |
+| **P5** | L1 令牌层**彻底档**：`tokens.ts` 圆角（common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16）+ 控件密度（行高 32/36/40）+ **间距节奏 4/8/12/16/24/32** + 卡片三档阴影 + 标签无边框实心五态；**亮/暗同批改** | P4 | 全站基线截图存档 → 改后**桌面零漂移像素 diff** + 亮/暗双模式截图 | 风险最高的一批：改前必须先存档全站基线；暗色值必须同批给（否则暗底黑边）；间距常量只落 `tokens.ts` + `skin.css`，页面零硬编码 |
+| **P6** | L2 共用形态层：行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条 → 提升为**全站共用组件** + `theme/skin.css` | P5 | `typecheck` + 新 spec（分段选中态、菜单分组渲染） | S-4：必须是共用组件 + 单一 skin 文件，**禁止逐页各写一份**（否则退化成第二套） |
+| **P7** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段 + 限速入口）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P4 P6 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段） | 限速后端已就绪（`restic.py:401-404`）仅接 UI；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
+| **P8** | **恢复入口页 + 路由重排**（§4.8.5）：`/restore` 改造成入口页；新增 `/restore/:id/{select-files,options,progress}` | — | `typecheck` + **快照页 `?snapshot=` 直达入口实测**（V-1） | 路由重排不得破坏 `snapshots/index.vue:118-123` 的预选直达 |
+| **P9** | **恢复向导外壳**（§4.8.5）：可跳步步骤条（键盘可达）+ `inactive` 态 + 全宽/满高切换 + 离开确认 | P8 | 新 spec（跳步/确认/全宽类） | V-2：跳步前校验，未过步骤置 `inactive`（沿用模版语义） |
+| **P10** | **恢复步骤重组**：select-files（版本下拉补 size/label + **搜索框**：结果计数 / Clear / spinner）+ options 四分区（恢复到哪 / 已存在文件 / Metadata / 高级）+ 页脚两端对齐 | P3 P9 | 新 spec | 搜索框依赖 P3 端点；无端点时该项顺延 |
+| **P11** | **恢复进度页三卡 + 完成态圆环**（进度 / 通知 / 日志）+ SSE 终态断言 | P9 | 新 spec | V-4：复用既有通知与 job 日志 API，**不新造数据源** |
+| **P12** | 逐页重排**第一批（低风险）**：snapshots → jobs → audit → reports → notifications | P5 P6 | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 + 逐页像素 diff | 表格页需复核 `:scroll-x` 阈值（间距变大后可能溢出） |
+| **P13** | 逐页重排**第二批（高风险）**：repo（自定义 CSS 230 行）→ settings（133 行）→ TaskWizard（58 行）→ login / bootstrap | P12 | 同上 + 向导 5 步与 ConfirmGate 真机断言 | 自定义 CSS 最厚的两页，逐块校准；沿用 §4.2 教训（门禁不得因重排失效） |
+| **P14** | 全站回归：三步门 + **全站逐页桌面零漂移像素 diff** + 移动端 4 视口（1440/960/768/390）走查 + 恢复模块响应式（`-milli` 等价）与 i18n 双语 + 真机 E2E 冒烟 | P13 | 全绿；移动端 4 项断言（参照 §4.3 口径） | 沿用 §4.3 教训：`overflow-x:auto` 会使 margin 不折叠致桌面 +8px 漂移，必须 diff 验收 |
 
 **批次关系说明**
 
-- **P1 / P2 与前端零耦合**，可与 P3–P5 并行推进（后端一个人、前端一个人时不互相阻塞）。
-- **P4 是分水岭**：在此之前页面外观不变；P4 一落地全站同时变化，P7/P8 是"变化后的逐页校准"，期间存在中间态（可接受，每批可提交）。
-- **P6 排在 P5 之后**：主页复刻要用 P5 的行动卡/行卡片/分段/菜单分组，否则会写出页内私有版本（违反 S-4）。
-- **P9 不是可选项**：彻底档动了间距节奏，移动端必然受影响，4 视口走查是硬性验收。
+- **P1 / P2 / P3 与前端零耦合**，可与 P4–P6 并行推进（后端与前端不互相阻塞）。
+- **P5 是分水岭**：在此之前页面外观不变；P5 一落地全站同时变化，P12/P13 是"变化后的逐页校准"，期间存在中间态（可接受，每批可提交）。
+- **P7 排在 P6 之后**：主页复刻要用 P6 的行动卡/行卡片/分段/菜单分组，否则会写出页内私有版本（违反 S-4）。
+- **P8–P11（恢复模块）是结构性改造，不等 P5 令牌层**，可与 P5/P6 并行；但其视觉打磨须在 P5/P6 之后复跑一遍（彻底档改圆角与间距）。
+- **P14 不是可选项**：彻底档动了间距节奏，移动端必然受影响，4 视口走查是硬性验收。
+
+**通用护栏（每批适用，沿 v1.x）**
+
+- 既有 spec 原样通过；`i18n-parity` / `naive-imports` / `page-render-smoke` / `a11y-baseline` 四道静态护栏不破；
+- 文案全走 i18n 双语；危险操作埋点由后端既有 `AUDIT_*` 承担，**前端零新增端点**（唯一例外 P2 的单任务导出）；
+- `ConfirmGate` / `StatusTag` / `PathBreadcrumb` / `PasswordEntryModal` 只复用、不换接口。
+
+### 4.8 第七轮：恢复模块按 Duplicati 恢复复刻（2026-10-22 方案定稿，owner 三项裁决）
+
+> 对标 ngclient `app/restore/`（入口页 + from-config）与 `app/restore-flow/`（向导：select-files / options / restore-destination / restore-encryption / restore-progress + `restore-flow.state.ts`）。MCP 图谱索引 `duplicati-ngclient`（2670 节点 / 7897 边；`restore-flow` 作用域 100 节点 / 215 边，热点 `#submitRestore` / `SelectFilesComponent.next` / `#repairVersion` / `#navigateToNext` / `#setTaskResult`）。
+> 视觉沿用 §4.6.4 已裁决的**全站 A+ 彻底档**；本模块批次挂在 §4.7 的 **P6 之后**（依赖 P4 令牌层 + P5 形态层），但结构性改造（R-1/R-2）**不等令牌层**，可先行。
+
+#### 4.8.1 对标基线
+
+| 层 | 形态 | 证据 |
+|---|---|---|
+| 入口页 | 标题「Where do you want to restore from?」+ 备份列表行动卡（48px 插图＋名称＋`SourceSizeString`/`BackupListCount`）+ `sh-divider`「Or without a local configuration」+ 两张卡（直接恢复 / 从配置恢复）；`@defer` 加载占位 | `restore.component.html:1-76` |
+| 向导外壳 | `app-status-bar` + `sh-stepper`（`routerLinkActive` 高亮，可点击跳步）+ `router-outlet`；常规 2 步 / 从文件 4 步（后两步初始 `inactive` = `pointer-events:none + opacity .5`） | `restore-flow.component.html:1-34`、`.scss:44-47` |
+| 布局信号 | `isFullWidthPage`（progress/select-files → 内容宽 500→**1000**）、`isSelectFilesPage`（`.fill-height` flex + `overflow:hidden` 撑满文件树） | `restore-flow.component.ts:35-45`、`.scss:5-24` |
+| 状态中枢 | 三张表单共享 + `getBackup()` 错误分诊（加密→跳 encryption、文件夹缺失/空→跳 destination、`DBPathExists=false`→提示修库）+ filesets 重试 2 次/间隔 1s + `submit()` 组装（paths 按 `\0` 切、目录补 `*`；`overwrite`；`skip_metadata=!includeMetadata`）+ `exit()` 离开确认 | `restore-flow.state.ts:113-361` |
+| 步骤 | select-files（版本下拉含 size/partial/label + 搜索 + 文件树）、options（四个 `toggle-card` 分区）、destination（目标 URL + `app-test-url` + 覆盖 URL 对话框）、encryption（密码框 `autocomplete="disabled"`）、progress（**三卡**：进度/通知/日志 + 完成态 SVG 圆环） | 各步骤 `.html` |
+| 响应式 | 仅 `-milli` 一档（`section` 加 `padding: 0 32`），与主页同 | `restore-flow.component.scss:36` |
+
+#### 4.8.2 本项目差距（R1–R10，对照 `pages/restore/index.vue` 682 行单页三步）
+
+| # | 差距 | 可行性 |
+|---|---|---|
+| R1 | 无恢复**入口页**（导航直接进向导） | ✅ 低 |
+| R2 | 无「从备份文件恢复」 | ⚠️ 中（见裁决） |
+| R3 | 无「从配置恢复」 | ✅ 低（`importConfig` 已有） |
+| R4 | `n-steps` 只读、无跳步 / 无全宽满高 / 无离开确认 | ✅ 低 |
+| R5 | 版本下拉缺 size/partial/label；快照语义等价 | ✅ 低 |
+| R6 | 文件树**无搜索**（`listSnapshotFiles` 只有游标） | ⚠️ 中（见裁决） |
+| R7 | 目标/覆盖/文件混在步骤 1，非四分区 | ✅ 低（重组） |
+| R8 | 进度页只有 `JobProgress`，无三卡 | ✅ 低（通知/日志 API 已有） |
+| R9 | 无完成态圆环 | ✅ 低 |
+| R10 | 无离开确认 | ✅ 低 |
+
+#### 4.8.3 owner 三项裁决（2026-10-22）
+
+| # | 裁决 |
+|---|---|
+| ① | **R6 文件树搜索 → 新增后端搜索端点**（不做前端伪过滤） |
+| ② | **R2 只做到「选已有仓库 + 输密码」**——Destination = 选已有仓库（复用仓库列表）；Encryption = 仓库密码（复用 `PasswordEntryModal` / passfile 引导）。**不做**临时备份、`copytotemp`、目标 URL 直填 |
+| ③ | 批次位置**按建议**：R1–R6 挂在 §4.7 的 P6 之后，写入本节 |
+
+#### 4.8.4 契约变更（后端，仅一项）
+
+| 项 | 内容 | 红线 |
+|---|---|---|
+| `POST /api/snapshots/{snapshot_id}/files/search` | 快照内文件名/路径搜索；请求 `{ query, limit, cursor }`，响应 `{ items, next_cursor }`——游标语义与 E18 `listSnapshotFiles` **同口径**；复用既有文件树服务，不新增数据源 | A1（经 `app/db/repositories/` 或既有 service）；S1（路径只出 `display_path`）；分页上限沿用 `SNAPSHOT_FILES_MAX_LIMIT`（`constants.py:213`） |
+
+其余全部**零后端改动**（入口页/外壳/分区/进度页均为纯前端重组）。
+
+#### 4.8.5 组件与文件规划
+
+| 文件 | 职责 |
+|---|---|
+| `pages/restore/index.vue` | **改造为入口页**（R1）：备份/仓库列表行动卡 + 直接恢复 + 从配置恢复 |
+| `pages/restore/flow/index.vue`（新） | 向导外壳：可跳步步骤条 + 全宽/满高 + 离开确认（R4/R10） |
+| `pages/restore/flow/select-files.vue`（新） | 版本下拉（size/label）+ 搜索框 + 文件树（R5/R6） |
+| `pages/restore/flow/options.vue`（新） | 四分区（恢复到哪 / 已存在文件 / Metadata / 高级）（R7） |
+| `pages/restore/flow/progress.vue`（新） | 三卡 + 完成态圆环（R8/R9） |
+| `router/index.ts:77-80` | 路由重排：`/restore` → 入口；`/restore/:id/select-files|options|progress` → 向导 |
+
+> ⚠️ 兼容约束：`snapshots/index.vue:118-123` 的「恢复此快照」走 `{ name: 'restore', query: { snapshot } }`，路由重排后**必须保持该入口可用**（预选语义不变）。
+
+> **批次**：本模块批次已并入 §4.7 统一批次表——**P3（搜索端点）/ P8（入口页+路由）/ P9（向导外壳）/ P10（步骤重组）/ P11（进度页三卡）**，响应式与 i18n 并入 **P14**。依赖判断：P8–P11 是结构性改造，不等 P5 令牌层；视觉打磨在 P5/P6 后复跑。
+
+#### 4.8.7 排除项（restic 语义无对应，不做）
+
+| 模版能力 | 不做理由 |
+|---|---|
+| extendedDataType：o365 / gsuite / diskimage 远程目标 | restic 无该概念；恢复目标只有原目录与 `/restore` 两种白名单 |
+| Hyper-V 注册（`register-restored-items`、虚拟根 `\\duplicati\hyperv\`） | 无对应 |
+| Check permissions 按钮 | 无对应 |
+| 临时备份 `copytotemp` | 裁决②已排除 |
+| 目标 URL 直填 + `app-test-url`（`containsBackup` 探测） | 裁决②简化为「选已有仓库」 |
+| `passphrase` 逐备份加密 | 本项目是仓库级密码（`PasswordEntryModal`） |
+
+#### 4.8.8 风险
+
+| # | 风险 | 对策 |
+|---|---|---|
+| V-1 | 路由重排破坏快照页直达入口 | R-1 验收必须实测 `?snapshot=` 预选 |
+| V-2 | 步骤条可跳步会跳过必填（如未选快照） | 跳步前校验，未过步骤 `inactive`（沿用模版 `.inactive` 语义） |
+| V-3 | 搜索端点若全量扫快照会很慢 | 游标分页 + `SNAPSHOT_FILES_MAX_LIMIT` 上限；后端过滤下推，禁止前端全量拉取再过滤 |
+| V-4 | 三卡里的通知/日志若新造拉取逻辑会重复 | 复用既有 notifications 与 job 日志 API，不新增数据源 |
 
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
@@ -462,6 +532,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ## 修订记录
 
+- v1.12（2026-10-22 十二次修订）：owner 指令「4.8.6 批次融入 4.7 统一批次，融合后 4.6.6 / 4.5.7 / 4.8.6 都可以删除」。**§4.7 成为全项目唯一执行批次表**，编号重排为 **P1–P14**：P1 `last_duration_ms`+`snapshot_count`／P2 单任务导出／**P3 快照文件搜索端点**／P4 图标集／**P5 令牌层彻底档（分水岭）**／P6 共用形态层／P7 仪表板主页复刻／**P8 恢复入口页+路由重排**／**P9 恢复向导外壳**／**P10 恢复步骤重组（含搜索框）**／**P11 恢复进度页三卡**／P12 逐页重排低风险／P13 逐页重排高风险／P14 全站回归（含恢复模块响应式与 i18n）。删除 §4.5.7、§4.6.6、§4.8.6 三节（§4.8.6 位置改为指向 §4.7 的指针）；§4.5.7 的护栏段升格为 §4.7 的「通用护栏（每批适用）」。批次关系更新：P8–P11 属结构性改造，**不等 P5 令牌层**，可与 P5/P6 并行，视觉打磨在其后复跑。
+- v1.11（2026-10-22 十一次修订）：新增 §4.8 第七轮（排序按模块，文档内第七轮批次另计）——恢复模块按 Duplicati 恢复复刻方案定稿。MCP 图谱索引 `duplicati-ngclient`（2670 节点 / 7897 边，restore-flow 作用域 100/215，热点 `#submitRestore` 等）。对标：入口页（备份卡 + 直接恢复 + 从配置）、向导外壳（可跳步 stepper + 全宽/满高）、状态中枢（三表单 + 错误分诊 + 重试）、5 个步骤形态、单档 `-milli` 响应式。差距 R1–R10。**owner 三项裁决**：① 文件树搜索 → 新增后端端点 `POST /api/snapshots/{id}/files/search`（游标同 E18 口径）；② 从备份文件恢复只做到「选已有仓库 + 输密码」，排除 copytotemp / URL 直填 / app-test-url；③ 批次 R1–R6 挂在 §4.7 的 P6 之后，R-1/R-2/R-3 结构性改造不等令牌层可先行。后端契约变更**仅此一项**，其余零后端改动。排除项 6 类（o365/gsuite/diskimage、Hyper-V、Check permissions、copytotemp、URL 直填、逐备份 passphrase）。兼容硬约束：快照页 `?snapshot=` 直达入口不得破坏。
 - v1.10（2026-10-22 十次修订）：新增 §4.7 **统一批次表 P1–P9**（owner 指令「把 §4.5.7 与 §4.6.6 批次重排成新的批次表」）——合并后端 B1/B2、图标 L3、令牌层 L1、形态层 L2、主页复刻、两批逐页重排、全站回归；排序原则：后端契约先行 → 令牌层（全局开关）在逐页校准之前 → 图标与形态层是主页复刻前置 → 逐页按风险低到高分两批 → 每批独立可提交。§4.5.7 / §4.6.6 保留原表作历史记录并加指针。**§4.6.4 强度档由「待裁决」定为 owner 裁决 = 彻底**，并补齐彻底档数值口径（圆角 common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16；控件行高 32/36/40；间距 4/8/12/16/24/32 六档；卡片三档阴影；标签无边框实心五态），数值只落 `tokens.ts` 与 `skin.css`，页面零硬编码、暗色同批。
 - v1.9（2026-10-22 九次修订）：新增 §4.6 第六轮——owner 指令「整个项目都要 A+ 视觉效果」，A+ 范围由仪表板单页升级为**全站**。取证结论：`frontend/src/theme/tokens.ts`（101 行，亮/暗两份 `GlobalThemeOverrides`）已是令牌唯一源、`App.vue:15-26` 唯一挂载，且**目前只覆盖 `common`、无组件级覆盖**（Card/Tag/Button 均可新增）→ 全站 A+ 走三层：L1 主题覆盖层（一处改全站，零复制粘贴）、L2 共用形态层（5 类 Naive 无对应组件的形态）、L3 图标层；§4.6.3 明确其与方案 B 的界线（不新建色板、不重绘组件内部、暗色沿用既有双份结构，故**仍是单体系**）；§4.6.4 强度三档（保守/中等/彻底，推荐中等）待 owner 裁决；§4.6.5 风险 S-1..S-4（含沿用 §4.3「桌面零漂移像素 diff」教训）；§4.6.6 批次 S1–S4，后端 B1/B2 不受影响可先行。
 - v1.8（2026-10-22 八次修订）：新增 §4.5 第五轮「仪表板（主页）按 Duplicati home 复刻」**方案定稿**（未动代码）——① 对标解剖：四层结构（StatusBar / 双行动卡 / 工具栏 / list-details 双视图）+ 三个 ng-template + 五类状态源 + 单档 `breakpoint(-milli)` 三处响应式；② 差距 D1–D8；③ owner 五项裁决（KPI 保留 / 状态条＝进度+Stop-Abort+限速且砍 pause-resume / 补 `last_duration_ms` / Export 走后端端点 / 视觉三案待拍）；④ **能力可行性实证表并纠正首轮误判**——限速后端已实现（`restic.py:401-404` + DB 字段）仅缺 UI、Abort 可（`cancel()` 已 SIGTERM→grace→SIGKILL）、Verify 即 `check`（全链路已就绪）、Duration 可派生（`jobs.started_at/finished_at`）、**仅 pause/resume 真不可行**；per-task Size 不做（`snapshots.py:12` 既有裁决），以「快照数」顶替 Versions chip；⑤ 数据契约变更仅两项（`last_duration_ms` / `snapshot_count` 派生 + `POST /api/backup-tasks/{id}/export`）；⑥ B1–B6 批次与验收门；⑦ 视觉 A/A+/B 对比与「两套主题治理体系」代价说明，推荐 A+。
