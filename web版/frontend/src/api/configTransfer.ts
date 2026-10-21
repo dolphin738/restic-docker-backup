@@ -7,7 +7,7 @@
 import { request } from './http'
 import type { ConfigExportPack, ConfigExportRequest, ConfigImportReport, ConfigImportRequest } from './types'
 
-/** POST /api/config/export：导出包（凭据经导出口令 PBKDF2+AES-GCM 加密）。 */
+/** POST /api/config/export：导出包（凭据经导出口令 PBKDF2-HMAC-SHA256 600k 迭代 + AES-256-GCM 加密）。 */
 export function exportConfig(body: ConfigExportRequest): Promise<ConfigExportPack> {
   return request<ConfigExportPack>('/api/config/export', { method: 'POST', body })
 }

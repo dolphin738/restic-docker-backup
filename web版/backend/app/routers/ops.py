@@ -372,7 +372,7 @@ async def export_config(
 ) -> Response:
     """批次 E：配置导出（仓清单 + 任务 + behavior/notify 配置 + 加密凭据段）。
 
-    响应为可下载 JSON 文件；凭据经导出口令 PBKDF2+AES-GCM 加密（S3：明文
+    响应为可下载 JSON 文件；凭据经导出口令 PBKDF2-HMAC-SHA256 600k 迭代 + AES-256-GCM 加密（S3：明文
     凭据不出内存，不进日志/审计）。导出留审计 ``config.export``（只含计数）。
     """
     config_repo: ConfigRepo = request.app.state.config_repo
