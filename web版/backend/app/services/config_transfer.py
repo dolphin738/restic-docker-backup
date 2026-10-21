@@ -40,6 +40,12 @@ from app.errors import PasswordWrongError, ValidationError
 # 包格式标识与版本（未来结构变更只增 version；旧版是否兼容届时裁决）
 PACK_FORMAT = "restic-web-config-export"
 PACK_VERSION = 1
+# 包形态（P2 单任务导出）：导入侧按 kind 分流——「全量包」是覆盖语义（可含全局
+# notify/behavior 与多仓多任务），「单任务包」只按任务维度落地，绝不套用全量覆盖。
+# 旧包无该字段 → 视为 full（兼容既有导出文件）。
+PACK_KIND_FULL = "full"
+PACK_KIND_TASK = "backup-task"
+_PACK_KINDS = (PACK_KIND_FULL, PACK_KIND_TASK)
 
 # PBKDF2 参数（OWASP 2023：PBKDF2-HMAC-SHA256 ≥ 600k 迭代）
 _PBKDF2_ITERATIONS = 600_000
@@ -173,15 +179,19 @@ def build_export_pack(
     config_rows: list[tuple[str, str]],
     password: str,
     created_at: str,
+    kind: str = PACK_KIND_FULL,
 ) -> dict[str, Any]:
     """构建导出包（凭据段加密；明文凭据只在内存瞬时存在）。
 
     Args:
         repos: 仓库清单（id/name/url/host_tag）。
-        tasks: 全部任务（Task.get_dict 形态，含 id/时间戳——导入侧剔除）。
-        config_rows: ``(key, value)`` 全量 config（调用方给**已解密**明文）。
+        tasks: 任务清单（``Task.get_dict`` 形态，含 id/时间戳——导入侧剔除）；
+            单任务导出只放一条。
+        config_rows: ``(key, value)`` config 明文（调用方给**已解密**明文）。
+            全量导出传全量；单任务导出只传该任务相关仓的 ``cred.*`` 段。
         password: 导出口令（≥ ``PASSWORD_MIN_LENGTH``）。
         created_at: 包生成时间（ISO 字符串）。
+        kind: 包形态（``PACK_KIND_FULL`` / ``PACK_KIND_TASK``），导入侧据此分流。
     """
     _validate_export_password(password)
     creds: dict[str, str] = {}
@@ -199,6 +209,7 @@ def build_export_pack(
     return {
         "format": PACK_FORMAT,
         "version": PACK_VERSION,
+        "kind": kind,
         "created_at": created_at,
         "encryption": enc_head,
         "data": {
@@ -211,10 +222,13 @@ def build_export_pack(
 
 
 def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
-    """解析并解密导出包，返回 ``{"repos", "tasks", "notify", "creds"}``。
+    """解析并解密导出包，返回 ``{"repos", "tasks", "notify", "creds", "kind"}``。
+
+    ``kind``：缺失（旧版全量包）回退 ``PACK_KIND_FULL``；非白名单值直接拒绝——
+    未知形态的包不该被猜着导入。
 
     Raises:
-        ValidationError: 格式/版本/结构非法。
+        ValidationError: 格式/版本/kind/结构非法。
         PasswordWrongError: 口令错误或包被篡改。
     """
     _validate_export_password(password)
@@ -222,6 +236,15 @@ def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
         raise ValidationError("不是本系统的配置导出文件")
     if pack.get("version") != PACK_VERSION:
         raise ValidationError(f"导出包版本不支持（{pack.get('version')}）")
+    raw_kind = pack.get("kind")
+    if raw_kind is None:
+        kind = PACK_KIND_FULL  # 旧包无 kind 字段 → 视为全量包
+    elif raw_kind in _PACK_KINDS:
+        kind = str(raw_kind)
+    else:
+        raise ValidationError(
+            f"导出包形态不支持：{raw_kind}", data={"kind": raw_kind, "allowed": list(_PACK_KINDS)}
+        )
     data = pack.get("data")
     if not isinstance(data, dict):
         raise ValidationError("导出包缺少数据段")
@@ -232,7 +255,7 @@ def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
     creds = secrets.get("creds")
     if not isinstance(creds, dict):
         raise ValidationError("导出包凭据段结构非法")
-    return {"repos": repos, "tasks": tasks, "notify": notify, "creds": creds}
+    return {"repos": repos, "tasks": tasks, "notify": notify, "creds": creds, "kind": kind}
 
 
 # ---------------------------------------------------------------- 导入辅助
@@ -310,6 +333,8 @@ def notify_pairs_to_import(notify: dict[str, Any], creds: dict[str, str]) -> lis
 
 __all__ = [
     "PACK_FORMAT",
+    "PACK_KIND_FULL",
+    "PACK_KIND_TASK",
     "PACK_VERSION",
     "PASSWORD_MIN_LENGTH",
     "ImportReport",

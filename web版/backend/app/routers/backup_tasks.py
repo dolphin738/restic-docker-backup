@@ -1,4 +1,5 @@
-"""备份任务路由（增量设计 §2.1，选项② R-026）：E34 列表/详情、E35 增改删、E36 dry-run。
+"""备份任务路由（增量设计 §2.1，选项② R-026）：E34 列表/详情、E35 增改删、E36 dry-run、
+P2 单任务配置导出。
 
 repo 作用域（E6）：路径前缀 ``/api/repos/{repo_id}/backup-tasks``；``repo_id`` 仅接受
 ``default``（P2 唯一仓库），其余值 404 ``REPO_NOT_FOUND``。R-023 多仓库时零改路由
@@ -12,13 +13,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import Response
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_CONFIG_EXPORT,
     AUDIT_TASK_CREATE,
     AUDIT_TASK_DELETE,
     AUDIT_TASK_UPDATE,
@@ -34,6 +39,7 @@ from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import NotFoundError, PathOutOfPrefixError, RepoNotFoundError, TaskRunningError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
 from app.schemas.api_schemas import (
+    ConfigExportRequest,
     DryRunItem,
     DryRunResponse,
     DryRunWarning,
@@ -44,12 +50,14 @@ from app.schemas.api_schemas import (
     TaskOut,
     TaskUpsertRequest,
 )
+from app.services.config_transfer import PACK_KIND_TASK, build_export_pack
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.scheduler import SchedulerService
 from app.services.snapshot_catalog import SnapshotCatalog
+from app.utils.time import utc_iso
 from app.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
@@ -299,6 +307,90 @@ async def delete_task(
     return OkResponse()
 
 
+# ---------------------------------------------------------------- P2 单任务配置导出
+
+
+@router.post(
+    "/{task_id}/export",
+    response_class=Response,
+    summary="P2 单任务配置导出",
+    dependencies=_PROTECTED,
+)
+async def export_task(
+    repo_id: str,
+    task_id: int,
+    payload: ConfigExportRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> Response:
+    """导出**单个**备份任务的配置包（UI 改造 §4.5.5，Duplicati 单备份 Export 对位）。
+
+    与全局导出（``POST /api/config/export``）的差别：
+
+    - ``kind=backup-task`` —— 导入侧据此分流，**绝不套用全量包的覆盖语义**（R-5）；
+    - ``tasks`` 只有这一条；``repos`` 只有该任务所属仓 + 其引用的镜像仓；
+    - ``notify`` / ``behavior`` 不带——那是**全局**设置，不该搭单任务包顺风车；
+    - 凭据只带任务相关仓的 ``cred.{repo_id}.*``，且仍走口令加密段（S3：响应无明文）。
+
+    口令校验与打包管线完全复用 :func:`build_export_pack`（不另造一套加密），
+    审计埋 ``config.export``，detail 只含任务名与计数（**不含口令、不含凭据**）。
+    """
+    del session
+    await _require_repo(request, repo_id)
+    task_repo: TaskRepo = request.app.state.task_repo
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+
+    task = await task_repo.get(task_id)
+    if task is None or task.repo_id != repo_id:
+        raise NotFoundError("任务不存在")
+    detail = await task_repo.get_dict(task_id)
+    if detail is None:  # pragma: no cover - 前置已确认存在，理论不可达
+        raise NotFoundError("任务不存在")
+
+    repo_ids = _export_repo_ids(task)
+    repo_entries: list[dict[str, Any]] = []
+    for rid in repo_ids:
+        repo = await repos_repo.get(rid)
+        if repo is not None:
+            repo_entries.append(
+                {"id": repo.id, "name": repo.name, "url": repo.url, "host_tag": repo.host_tag}
+            )
+    cred_prefixes = tuple(f"cred.{rid}." for rid in repo_ids)
+    config_rows = [
+        (row.key, row.value or "")
+        for row in await config_repo.list_all()
+        if row.key.startswith(cred_prefixes)
+    ]
+
+    pack = build_export_pack(
+        repos=repo_entries,
+        tasks=[detail],
+        config_rows=config_rows,
+        password=payload.password,
+        created_at=utc_iso(),
+        kind=PACK_KIND_TASK,
+    )
+    await request.app.state.audit.record(
+        AUDIT_CONFIG_EXPORT,
+        target=f"task:{task_id}",
+        detail={
+            "kind": PACK_KIND_TASK,
+            "name": task.name,
+            "repos": len(repo_entries),
+            "creds": len(config_rows),
+        },
+        result="ok",
+    )
+    stamp = str(pack["created_at"])[:10]
+    logger.info("备份任务配置已导出：id=%s name=%s repos=%s", task_id, task.name, len(repo_entries))
+    return Response(
+        content=json.dumps(pack, ensure_ascii=False, indent=1),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="restic-web-task-{task_id}-{stamp}.json"'},
+    )
+
+
 # ---------------------------------------------------------------- E36 dry-run 预览
 
 
@@ -474,6 +566,17 @@ async def _to_card(
         prune_due=prune_due,
         updated_at=task.updated_at,
     )
+
+
+def _export_repo_ids(task: Task) -> list[str]:
+    """单任务导出包要带的仓库 id：所属仓 + 引用的镜像仓（保序去重）。
+
+    镜像仓必须同包带出——导入侧 ``mirror_ids_for_import`` 的校验基准是「包内仓库
+    清单」，缺了会一律置空 + 警告，任务落地后静默丢掉多目的地语义。
+    """
+    ordered = [task.repo_id, *task.mirror_repo_ids]
+    seen: set[str] = set()
+    return [rid for rid in ordered if rid and not (rid in seen or seen.add(rid))]
 
 
 async def _snapshot_counts_by_tag(request: Request, repo_id: str) -> dict[str, int] | None:
