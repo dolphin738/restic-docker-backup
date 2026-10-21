@@ -5,6 +5,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NForm,
   NFormItem,
   NGrid,
@@ -48,6 +49,7 @@ import {
 import { hasCode, isAppError } from '@/api/http'
 import type {
   ConfigItem,
+  JobDonePayload,
   RcloneRemotesOut,
   RepoOut,
   RepoPasswordRequest,
@@ -526,6 +528,12 @@ const creating = ref(false)
 const deleting = ref(false)
 const deleteShow = ref(false)
 const deleteTarget = ref<string | null>(null)
+/** 删除确认门的「同时删除磁盘数据」勾选（默认不勾：保留磁盘数据，重新添加同 id 仓库可复用）。
+ *  勾选后 purge_disk=true：rmtree 仓库目录 + 删密码文件——治「删库后同址新建撞上
+ *  打不开的旧仓库」的孤儿死循环；仅本地 FS 可自动清空（远程后端后端 422）。 */
+const deletePurge = ref(false)
+/** 删除目标仓库行（勾选框仅本地 FS 显示：远程后端无本地数据可清）。 */
+const deleteTargetRepo = computed(() => repos.value.find((x) => x.id === deleteTarget.value))
 
 function onDeleteClick(id: string): void {
   if (id === 'default') {
@@ -533,6 +541,7 @@ function onDeleteClick(id: string): void {
     return
   }
   deleteTarget.value = id
+  deletePurge.value = false
   deleteShow.value = true
 }
 
@@ -543,7 +552,7 @@ async function confirmDelete(): Promise<void> {
   }
   deleting.value = true
   try {
-    await deleteRepo(id)
+    await deleteRepo(id, { purgeDisk: deletePurge.value })
     message.success(t('repo.deleted'))
     if (ui.currentRepoId === id) {
       onSetCurrent('default')
@@ -602,14 +611,22 @@ function closePassword(): void {
   passwordForce.value = false
 }
 
-// ---------------------------------------------------------------- 重建仓库（忘密码自救：默认仓库本地 FS 专属）
-// 与「重设密码」分工：记得原密码→重设（重写文件）；彻底忘记→重建（清空快照+新密码 re-init）。
-// 非默认仓库不允许重建（可删除后换 URL 新建），故本流程仅对 default 开放。
+// ---------------------------------------------------------------- 重建仓库（清空快照 + 新密码重新初始化）
+// 与「重设密码」分工：记得原密码→重设（重写文件）；彻底忘记 / 文件夹被旧仓库卡住→重建。
+// 2026-10-21 前仅 default 开放；删除仓库不触碰磁盘数据 ⇒ 同址新建会撞上打不开的旧仓库
+// （cat config 报「密码错误」），非默认仓库此前没有任何恢复路径（死循环），故放开到全部仓库。
+// 仅本地 FS 可自动清空（远程 422，需手动清空后端存储后删除重建）。
 const rebuildShow = ref(false)
 const rebuildResultShow = ref(false)
 const rebuildTargetId = ref<string | null>(null)
 const rebuildPassword = ref<string | null>(null)
 const rebuildSaving = ref(false)
+
+/** 打开重建确认门（列表行内与编辑态测试区共用；目标缺省当前仓库）。 */
+function openRebuild(id?: string): void {
+  rebuildTargetId.value = id ?? currentRepoId.value
+  rebuildShow.value = true
+}
 
 async function onRebuild(id: string): Promise<void> {
   rebuildSaving.value = true
@@ -618,6 +635,9 @@ async function onRebuild(id: string): Promise<void> {
     rebuildPassword.value = res.generated ? res.password : null
     rebuildResultShow.value = true
     message.success(t('repo.rebuildOk'))
+    // 旧测试结论（典型：密码错误）描述的是重建前的旧仓库，必须作废——
+    // 否则编辑态内联测试区仍挂着旧错误分支，把「重建后是全新仓库」的事实盖掉
+    resetTestResult()
     await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
     await queryClient.invalidateQueries({ queryKey: ['repo', 'status'] })
   } catch (error) {
@@ -654,6 +674,9 @@ async function submitPassword(body: RepoPasswordRequest): Promise<void> {
     // 只在生成场景回显；自填场景 password 恒为 null
     generatedPassword.value = result.generated ? result.password : null
     message.success(t('repo.passwordSetOk'))
+    // 一屏闭环：此处**故意不作废**测试结论——init 入口挂在「未初始化」结论上，
+    // 作废反而让入口消失、多一次点击。repoQuery 回刷新即让 passfileMissing 转 false
+    // → 初始化按钮就地解锁，用户「设密码 → 初始化」两步连点即可。
     await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
     // 各行状态一并失效：密码写入后仓库可连性变了，行内按钮判定要立刻跟上
     await queryClient.invalidateQueries({ queryKey: ['repo', 'status'] })
@@ -1067,6 +1090,13 @@ const repoTestState = ref<'idle' | 'success' | 'error'>('idle')
  *  测试成功即解除；切仓即清零（新仓库是新的验证对象）。 */
 const verifyRequired = ref(false)
 
+/** 连接结论作废（切仓 / 配置变更 / 密码写入 / init 完成后）：旧结论描述的是旧状态，
+ *  留着只会误导（如「仓库不存在」在 init 成功后仍挂在那里）。 */
+function resetTestResult(): void {
+  repoTestState.value = 'idle'
+  testResult.value = null
+}
+
 async function onTest(): Promise<void> {
   testing.value = true
   testResult.value = null
@@ -1105,6 +1135,12 @@ const testNotInitialized = computed(() => {
   return NOT_INITIALIZED_MARKERS.some((m) => reason.includes(m.toLowerCase()))
 })
 
+/** 测试失败且后端判定为「密码错误」（密码文件在但仓库打不开）→ 就地给重设出口（force 覆盖），
+ *  与列表行内 passwordAction='reset' 同口径，避免用户退回列表态才能自救。 */
+const testPasswordWrong = computed(
+  () => repoTestState.value === 'error' && testResult.value?.failure_kind === 'password',
+)
+
 async function onUnlock(): Promise<void> {
   unlocking.value = true
   try {
@@ -1118,6 +1154,23 @@ async function onUnlock(): Promise<void> {
     }
   } finally {
     unlocking.value = false
+  }
+}
+
+/** 确认门开合（v-model 拆开写）：关闭时必须按「是否真的提交了作业」决定要不要清目标标记——
+ *  ① 纯取消（未提交、无作业）→ 清，否则按钮 loading（绑 initTargetId）永久转圈；
+ *  ② 提交中（initializing）或已有作业（initJobMap）→ 不清，清了会提前解锁按钮，
+ *     诱发重复 init（在错误地址上另建新仓库，不可逆）。
+ *  顺序安全：ConfirmGate 先 emit('confirm')（同步把 initializing 置 true）再 close()。 */
+function onInitGateToggle(visible: boolean): void {
+  initShow.value = visible
+  if (visible) {
+    return
+  }
+  const target = initTargetId.value
+  const hasJob = target ? Boolean(initJobMap[target]) : false
+  if (!initializing.value && !hasJob) {
+    initTargetId.value = null
   }
 }
 
@@ -1147,11 +1200,22 @@ async function onInit(): Promise<void> {
  *  此前只 refetch 当前仓库状态卡，行级查询仍持 30s 缓存，表现为「初始化完了按钮还在，
  *  刷新网页才消失」（后端缓存在任务终态已清，缺的是前端失效）。
  *  A 方案：按 repoId 清理对应行内进度卡，避免全站浮卡永不消失。 */
-async function onInitDone(repoId: string): Promise<void> {
+async function onInitDone(repoId: string, payload?: JobDonePayload): Promise<void> {
   delete initJobMap[repoId]
   if (initTargetId.value === repoId) {
     initTargetId.value = null
   }
+  // 终态反馈：init 是秒级短任务，进度卡一闪即逝（无 progress 事件、只有日志与终态行），
+  // 卡片清掉后必须有明确结论，否则用户不知道成功还是失败。
+  if (payload) {
+    if (payload.exit_code === 0) {
+      message.success(t('repo.initDone'))
+    } else {
+      message.error(t('repo.initFailed', { reason: payload.summary || t('repo.testFail') }))
+    }
+  }
+  // 结论作废：init 后「仓库不存在/未初始化」已不成立，留着旧红条会把用户引向重复 init
+  resetTestResult()
   await queryClient.invalidateQueries({ queryKey: ['repo'] })
   await Promise.all([reposQuery.refetch(), statusQuery.refetch()])
   // 行级状态失效：初始化后仓库可连性变化，行内判定（needsInit/passwordAction）须立刻跟上
@@ -1375,17 +1439,21 @@ function formatBytes(value: number): string {
               </template>
               {{ t('repo.passwordWrongHint') }}
             </n-tooltip>
-            <!-- 默认仓库不可删：忘记密码只能原地重建（本地 FS 专属）；非默认仓库提示删除后换 URL 新建 -->
+            <!-- 密码错（文件在但打不开）→ 重设（force 覆盖）+ 重建。
+                 重建 2026-10-21 起对所有本地 FS 仓库开放：删除仓库不触碰磁盘数据，
+                 同址新建会撞上打不开的旧仓库（cat config 报「密码错误」），
+                 此前非默认仓库只能「删除后换 URL 新建」——同址即死循环，无路可走。 -->
             <n-button
-              v-if="r.id === 'default'"
+              v-if="r.type === 'local'"
               size="tiny"
               secondary
               type="error"
-              @click.stop="rebuildTargetId = r.id; rebuildShow = true"
+              @click.stop="openRebuild(r.id)"
             >
               {{ t('repo.rebuildBtn') }}
             </n-button>
-            <n-text v-else depth="3" class="repo__note">{{ t('repo.rebuildNonDefaultHint') }}</n-text>
+            <!-- 远程后端：无本地数据可自动清空——手动清空后端存储后删除、换 URL 新建 -->
+            <n-text v-else depth="3" class="repo__note">{{ t('repo.rebuildRemoteHint') }}</n-text>
           </template>
           <n-button
             v-else-if="passwordAction(r) === 'set'"
@@ -1418,9 +1486,10 @@ function formatBytes(value: number): string {
             v-if="initJobMap[r.id]"
             :job-id="initJobMap[r.id]"
             :title="`${r.name} · ${t('repo.initJobTitle')}`"
+            hide-progress-bar
             class="repo__init-progress"
-            @done="onInitDone(r.id)"
-            @failed="onInitDone(r.id)"
+            @done="onInitDone(r.id, $event)"
+            @failed="onInitDone(r.id, $event)"
           />
           <n-button
             size="tiny"
@@ -1891,24 +1960,66 @@ function formatBytes(value: number): string {
                     {{ t('repo.testAgain') }}
                   </n-button>
                 </n-space>
-                <!-- 地址可达但仓库尚未初始化（新建后首次测试的典型结论）：就地给初始化入口 -->
+                <!-- 地址可达但仓库尚未初始化（新建后首次测试的典型结论）：就地给「设密码 → 初始化」闭环。
+                     建仓必经两步（密码 + init），此前编辑态只禁用 init 却不给密码出口，
+                     用户须退回列表行内设密码再回来——一屏内补齐后全流程不离开本页。 -->
                 <div v-if="testNotInitialized" class="repo__test-init">
                   <n-text depth="3" class="repo__note">{{ t('repo.testNotInitializedHint') }}</n-text>
-                  <n-tooltip v-if="passfileMissing" trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" type="warning" disabled>{{ t('repo.initBtn') }}</n-button>
-                    </template>
-                    {{ t('repo.initBlockedByPassfile') }}
-                  </n-tooltip>
-                  <n-button
-                    v-else
-                    size="tiny"
-                    type="warning"
-                    :loading="initializing"
-                    @click="openInit(currentRepoId)"
-                  >
-                    {{ t('repo.initBtn') }}
-                  </n-button>
+                  <n-space :size="8" align="center">
+                    <!-- 前置动作：密码文件缺失时 init 注定失败（restic 读不到密码）→ 先给密码入口。
+                         与列表行内同源（openPassword + PasswordEntryModal），写入后 repoQuery
+                         回刷新 → passfileMissing 转 false → 初始化按钮就地解锁，无需手动刷新。 -->
+                    <n-button
+                      v-if="passfileMissing"
+                      size="tiny"
+                      secondary
+                      type="primary"
+                      @click="openPassword(currentRepoId)"
+                    >
+                      {{ t('repo.passwordSetBtn') }}
+                    </n-button>
+                    <n-tooltip v-if="passfileMissing" trigger="hover">
+                      <template #trigger>
+                        <n-button size="tiny" type="warning" disabled>{{ t('repo.initBtn') }}</n-button>
+                      </template>
+                      {{ t('repo.initBlockedByPassfile') }}
+                    </n-tooltip>
+                    <n-button
+                      v-else
+                      size="tiny"
+                      type="warning"
+                      :loading="initializing || initTargetId === currentRepoId"
+                      @click="openInit(currentRepoId)"
+                    >
+                      {{ t('repo.initBtn') }}
+                    </n-button>
+                  </n-space>
+                </div>
+                <!-- 密码错（文件在但打不开）：同样就地给出口（force 覆盖），不逼用户退回列表态 -->
+                <div v-else-if="testPasswordWrong" class="repo__test-init">
+                  <n-text depth="3" class="repo__note">{{ t('repo.passwordWrongHint') }}</n-text>
+                  <n-space :size="8" align="center">
+                    <n-button
+                      size="tiny"
+                      secondary
+                      type="warning"
+                      @click="openPassword(currentRepoId, true)"
+                    >
+                      {{ t('repo.passwordResetBtn') }}
+                    </n-button>
+                    <!-- 本地 FS 追加「重建仓库」：重设只重写密码文件，仓库密钥仍是旧的
+                         （打不开照旧）；文件夹被旧仓库卡住时重建是唯一恢复路径。
+                         远程后端无法自动清空，不显示。 -->
+                    <n-button
+                      v-if="repo?.type === 'local'"
+                      size="tiny"
+                      secondary
+                      type="error"
+                      @click="openRebuild()"
+                    >
+                      {{ t('repo.rebuildBtn') }}
+                    </n-button>
+                  </n-space>
                 </div>
               </n-alert>
               <n-alert v-else type="info" :show-icon="false">
@@ -1921,16 +2032,43 @@ function formatBytes(value: number): string {
               </n-alert>
             </div>
 
+            <!-- init 进度就地展示（编辑态专属）：编辑态整页替换掉列表，行内进度卡不渲染 →
+                 编辑态点初始化后既看不到进度/日志，done/failed 回调也不会触发（initJobMap 不清、
+                 结论不作废、查询不失效）。故编辑态自带一份；放在测试结论区之外，避免
+                 「结论作废 → 区块消失」把终态卡一起带走。 -->
+            <JobProgress
+              v-if="initJobMap[currentRepoId]"
+              :job-id="initJobMap[currentRepoId]"
+              :title="t('repo.initJobTitle')"
+              hide-progress-bar
+              class="repo__init-progress"
+              @done="onInitDone(currentRepoId, $event)"
+              @failed="onInitDone(currentRepoId, $event)"
+            />
+
             <!-- E1：改过配置但未复验 → 明确告知并挡住不可逆动作（init） -->
             <n-alert v-if="verifyRequired" type="warning" :show-icon="false">
               {{ t('repo.verifyRequired') }}
             </n-alert>
 
-            <n-text depth="3">{{ t('repo.passfileStatus') }}：
-              {{ repo?.passfile_status === 'configured'
-                ? t('repo.passfileConfigured')
-                : t('repo.passfileMissing') }}
-            </n-text>
+            <!-- 密码状态行：缺失即给出口（与未初始化分支互斥，全页只有一枚密码按钮）。
+                 覆盖「未初始化以外的失败」场景（凭据/网络等），避免只能退回列表态设密码。 -->
+            <n-space align="center" :size="8">
+              <n-text depth="3">{{ t('repo.passfileStatus') }}：
+                {{ repo?.passfile_status === 'configured'
+                  ? t('repo.passfileConfigured')
+                  : t('repo.passfileMissing') }}
+              </n-text>
+              <n-button
+                v-if="passfileMissing && !testNotInitialized"
+                size="tiny"
+                secondary
+                type="primary"
+                @click="openPassword(currentRepoId)"
+              >
+                {{ t('repo.passwordSetBtn') }}
+              </n-button>
+            </n-space>
           </template>
 
           <!-- 底部动作（对齐 Duplicati form-footer 智能主按钮：
@@ -2004,11 +2142,12 @@ function formatBytes(value: number): string {
 
     <!-- 初始化仓库：三步确认门（重复 init 会在错误地址上另建新仓库，须慎重） -->
     <ConfirmGate
-      v-model:show="initShow"
+      :show="initShow"
       :title="t('repo.initBtn')"
       :keyword="'INIT'"
       :description="t('repo.initDesc')"
       :loading="initializing"
+      @update:show="onInitGateToggle"
       @confirm="onInit"
     >
       <template #preview>
@@ -2075,11 +2214,17 @@ function formatBytes(value: number): string {
       @confirm="confirmDelete"
     >
       <template #preview>
-        <n-text depth="3">{{ t('repo.deleteConfirm') }}</n-text>
+        <!-- 磁盘清理勾选（仅本地 FS，默认不勾）：不勾 = 保留磁盘数据与密码文件
+             （重新添加同 id 仓库仍可复用，但同址新建会撞上打不开的旧仓库）；
+             勾选 = rmtree 仓库目录 + 删密码文件，该地址可干净重用。
+             文案已由 ConfirmGate 的 description 告警区统一展示，此处不再重复。 -->
+        <n-checkbox v-if="deleteTargetRepo?.type === 'local'" v-model:checked="deletePurge">
+          {{ t('repo.deletePurgeDiskLabel') }}
+        </n-checkbox>
       </template>
     </ConfirmGate>
 
-    <!-- 重建默认仓库：三步确认门（关键词 REBUILD；清空全部快照，不可恢复） -->
+    <!-- 重建仓库（本地 FS 全仓库开放）：三步确认门（关键词 REBUILD；清空全部快照，不可恢复） -->
     <ConfirmGate
       v-model:show="rebuildShow"
       :title="t('repo.rebuildTitle')"

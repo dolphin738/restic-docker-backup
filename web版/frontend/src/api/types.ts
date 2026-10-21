@@ -600,6 +600,16 @@ export interface NotifyConfigResponse {
   webhook_url_set: boolean
   webhook_template: string
   meow_nickname: string
+  /** MeoW 消息显示类型（API §3.2 查询参数 msgType）：text 纯文本 / html 渲染 HTML。 */
+  meow_msg_type: 'text' | 'html'
+  /** 仅 msgType=html 生效的显示高度（像素，查询参数 htmlHeight）。 */
+  meow_html_height: number
+  /** 可选：通知跳转链接（API §3.2 Body 字段 url）。 */
+  meow_url: string
+  /** 可选：通知图标 URL（API §3.2 Body 字段 imgUrl，建议 216×216 PNG）。 */
+  meow_img_url: string
+  /** MeoW 套餐等级（决定本地限流档位：free/premium/lifetime）。 */
+  meow_plan: 'free' | 'premium' | 'lifetime'
   on_success: boolean
   skipped_threshold: number
   webhook_redact: boolean
@@ -621,6 +631,11 @@ export interface NotifyConfigPatch {
   webhook_url?: string
   webhook_template?: string
   meow_nickname?: string
+  meow_msg_type?: 'text' | 'html'
+  meow_html_height?: number
+  meow_url?: string
+  meow_img_url?: string
+  meow_plan?: 'free' | 'premium' | 'lifetime'
   on_success?: boolean
   skipped_threshold?: number
   webhook_redact?: boolean

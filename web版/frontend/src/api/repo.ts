@@ -50,9 +50,16 @@ export function updateRepo(id: string, body: RepoUpdateRequest): Promise<RepoOut
   return request<RepoOut>(`/api/repos/${encodeURIComponent(id)}`, { method: 'PUT', body })
 }
 
-/** 删除仓库（DELETE /api/repos/{id}；default 由后端拒绝）。 */
-export function deleteRepo(id: string): Promise<OkResponse> {
-  return request<OkResponse>(`/api/repos/${encodeURIComponent(id)}`, { method: 'DELETE' })
+/**
+ * 删除仓库（DELETE /api/repos/{id}；default 由后端拒绝）。
+ *
+ * `purgeDisk: true` 时同步清空磁盘数据（rmtree 仓库目录 + 删密码文件）——
+ * 治「删库后同址新建撞上打不开的旧仓库」的孤儿场景；仅本地 FS 可自动清空
+ * （远程后端 422）。不传则保留磁盘数据（重新添加同 id 仓库仍可复用）。
+ */
+export function deleteRepo(id: string, opts: { purgeDisk?: boolean } = {}): Promise<OkResponse> {
+  const query = opts.purgeDisk ? '?purge_disk=true' : ''
+  return request<OkResponse>(`/api/repos/${encodeURIComponent(id)}${query}`, { method: 'DELETE' })
 }
 
 /** E30 仓库状态（服务端 30s 进程内缓存，前端不得秒级轮询）。 */
@@ -104,9 +111,11 @@ export function rotateRepoKey(body: RepoKeyRotateRequest): Promise<KeyRotateResp
 }
 
 /**
- * 重建默认仓库（POST /api/repos/{id}/rebuild）：清空全部快照并用新密码重新初始化。
+ * 重建仓库（POST /api/repos/{id}/rebuild）：清空全部快照并用新密码重新初始化。
  *
- * 仅本地文件系统后端 + 默认仓库可用；忘记密码时的自救通道（记得原密码应走「重设密码」）。
+ * 仅本地文件系统后端可用（远程 422，需手动清空后端存储）。原为 default 专属；
+ * 2026-10-21 放开到全部仓库——删除仓库不触碰磁盘数据，同址新建会撞上打不开的
+ * 旧仓库（报「密码错误」），非默认仓库此前没有任何恢复路径（死循环）。
  * `password` 为空 → 后端生成强随机密码并一次性回显（须立即备份）；非空 → 按该值写入。
  */
 export function rebuildRepo(id: string, body: RepoPasswordRequest = {}): Promise<RepoPasswordResponse> {
