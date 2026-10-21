@@ -906,8 +906,10 @@ class RepoCreateRequest(_Base):
     ``id`` 会被拼进密码文件路径 ``<passfile_root>/<id>/password``，故**必须**过
     :data:`REPO_ID_PATTERN`（不含 `.` 与 `/`，杜绝 `..` 路径穿越 → 任意文件读写）。
 
-    A8：``id`` 改为**可选**——留空（None/空串）时由服务端生成 ``repo-<小写 ULID>``
-    （26 位、全局唯一、按时间有序，天然满足 ``REPO_ID_PATTERN`` 与 64 长度上限）；
+    A8：``id`` 改为**可选**——留空（None/空串）时由服务端生成
+    ``r<YYMMDD>-<6 位小写 Base32 随机>``（14 字符，如 ``r261022-k3f9x2``；日期段 UTC
+    口径、字典序即时间序，Crockford 字母表剔除 i/l/o/u；2026-10-22 由
+    ``repo-<26 位 ULID>`` 改版，存量 id 不受影响）；
     显式提供时仍按既有规则校验 + 存在性校验（409/422）。
     """
 
@@ -915,7 +917,7 @@ class RepoCreateRequest(_Base):
         default=None,
         max_length=REPO_ID_MAX_LENGTH,
         pattern=REPO_ID_PATTERN,
-        description="仓库标识：字母/数字开头，仅允许字母数字与 _ -；留空则服务端生成 repo-<ULID>",
+        description="仓库标识：字母/数字开头，仅允许字母数字与 _ -；留空则服务端生成 r<YYMMDD>-xxxxxx",
     )
     name: str
     url: str | None = None
@@ -931,7 +933,7 @@ class RepoCreateRequest(_Base):
 
 
 class RepoIdSuggestion(_Base):
-    """A8 服务端生成的候选仓库标识（``repo-<小写 ULID>``），供新建向导预填。
+    """A8 服务端生成的候选仓库标识（``r<YYMMDD>-<6 位随机>``），供新建向导预填。
 
     不落库；用户可改可不改。留空提交时 ``POST /api/repos`` 仍会服务端生成（见 A8）。
     """

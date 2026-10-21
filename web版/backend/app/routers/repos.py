@@ -61,7 +61,7 @@ from app.schemas.api_schemas import (
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
-from app.utils.ulid import new_ulid
+from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -122,21 +122,37 @@ def _is_fs_root(path: Path) -> bool:
 
 # ---------------------------------------------------------------- A8 仓库标识自动生成
 #
-# owner 2026-10-17 07:37 立项：POST /repos 的 id 由必填改为可选，缺省服务端生成
-# ``repo-<小写 ULID>``（26 位、全局唯一、按时间有序，天然满足 REPO_ID_PATTERN 与
-# 64 长度上限）。ULID 小写化仍保持时间序可比较（同集合内大小写一致即可）。
+# owner 2026-10-17 07:37 立项：POST /repos 的 id 由必填改为可选，缺省服务端生成。
+# owner 2026-10-22 裁决改版（单字母前缀方案）：``repo-<26 位小写 ULID>``（31 字符、
+# 不可读）→ ``r<YYMMDD>-<6 位随机>``（14 字符，如 ``r261022-k3f9x2``）：
+# - 短且可读，日期段让人一眼看出创建时间，字典序即时间序（百年内）；
+# - 单字母 ``r`` 前缀保留「服务端生成」的辨识度，同时满足「小写字母开头」的
+#   REPO_ID_PATTERN 硬约束（纯日期开头 ``261022-…`` 会被 create 拒掉）；
+# - 存量 ``repo-<ULID>`` id 全部照旧工作，本规则只影响新建，零迁移。
 # 落库前 exists 查重 + 重试（碰撞概率极低，重试只是形式化兜底）。
 
+# Crockford Base32 小写字母表（剔除易混淆的 i/l/o/u，与密码生成字符集同思路）
+_ID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
+_ID_RANDOM_LENGTH = 6
+
+
 def _new_repo_id() -> str:
-    """生成一个候选仓库标识（``repo-<小写 ULID>``）。"""
-    return f"repo-{new_ulid().lower()}"
+    """生成一个候选仓库标识（``r<YYMMDD>-<6 位小写 Base32 随机>``，14 字符）。
+
+    日期段取 **UTC**（C8：时间语义只走 ``utils/time``）：UTC 口径无环境依赖、
+    跨部署可比；若用本地时区，「同日」边界会随部署时区漂移。随机段走
+    ``secrets.choice``（CSPRNG）。
+    """
+    stamp = now_utc().strftime("%y%m%d")
+    suffix = "".join(secrets.choice(_ID_ALPHABET) for _ in range(_ID_RANDOM_LENGTH))
+    return f"r{stamp}-{suffix}"
 
 
 async def _resolve_repo_id(repos_repo: ReposRepo, provided: str | None) -> str:
     """A8：解析新建仓库的标识。
 
     - 显式提供（非空）→ 原样返回，落库时再由 ``ReposRepo.create`` 做形态 + 存在性校验；
-    - 留空 → 服务端生成 ``repo-<小写 ULID>``，生成前 exists 查重，碰撞重试（上限 10 次）。
+    - 留空 → 服务端生成 ``r<YYMMDD>-<6 位随机>``，生成前 exists 查重，碰撞重试（上限 10 次）。
     """
     candidate = (provided or "").strip()
     if candidate:
@@ -145,7 +161,7 @@ async def _resolve_repo_id(repos_repo: ReposRepo, provided: str | None) -> str:
         generated = _new_repo_id()
         if not await repos_repo.exists(generated):
             return generated
-    # 理论不可达：ULID 碰撞概率极低；兜底抛错避免无限循环
+    # 理论不可达：26 位随机空间下单日碰撞概率极低；兜底抛错避免无限循环
     raise ValidationError("无法生成唯一仓库标识，请稍后重试或显式指定 id", data={})
 
 
@@ -353,7 +369,7 @@ async def create_repo(
 @router.get(
     "/repos/_new_id",
     response_model=RepoIdSuggestion,
-    summary="A8 返回服务端生成的候选仓库标识（repo-<小写 ULID>）",
+    summary="A8 返回服务端生成的候选仓库标识（r<YYMMDD>-<6 位随机>）",
     dependencies=_PROTECTED,
 )
 async def suggest_repo_id() -> RepoIdSuggestion:
