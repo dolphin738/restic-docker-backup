@@ -760,7 +760,9 @@ async def rebuild_repo(
       非默认仓库此前没有任何恢复路径（「删除后换 URL 新建」同址即死循环）。
     - 仅支持本地文件系统后端（url 为本地绝对路径或 ``local:`` 前缀）；远程后端（s3/rest/sftp…）
       返回 422，提示手动清空后端存储后删除仓库、换 URL 新建（旧数据本就不可恢复）。
-    - 流程：写新密码文件 → 清空仓库目录内容（保留目录本身）→ restic init；运行中的任务会被 409 拒绝。
+    - 流程：清空仓库目录内容（保留目录本身）→ 写新密码文件 → restic init——**清空必须
+      先于覆盖密码文件**（清空失败 = 零损失，旧密码仍在；见函数体内注释）；
+      运行中的任务会被 409 拒绝。
     - 仓库密码是凭据加密密钥源（HKDF info 混入 repo_id）：重建后该仓库的旧 enc:v2
       凭据无法用旧密钥解密，一并清除（需重新录入）；明文凭据不受影响。
     """
@@ -793,7 +795,20 @@ async def rebuild_repo(
     generated = not (payload.password or "").strip()
     plain = _generate_repo_password() if generated else (payload.password or "")
 
-    # 1) 写新密码文件（先于清空；密码文件位于独立目录，不受仓库数据清空影响）
+    # 1) 清空仓库数据目录内容（已确认是本地文件系统目录；保留目录本身，
+    #    同址重建不必先手动建文件夹——restic init 会自行 MkdirAll）。
+    #    **清空必须先于写新密码文件**（审查 🔴 修复，2026-10-22）：若先覆盖密码文件
+    #    再清空，清空失败（EBUSY/权限 422）时旧密码已被覆盖且无回滚——盘上快照
+    #    永久不可读，「自救」变「自毁」。调序后清空失败 = 零损失（什么都没动）；
+    #    清空成功后密码文件/init 失败 = 旧数据已按确认销毁，状态自洽（空库待 re-init）。
+    if _is_fs_root(local_path):
+        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
+    if local_path.exists():
+        if not local_path.is_dir():
+            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
+        await _clear_dir_contents(local_path)
+
+    # 2) 写新密码文件（数据已清空；此时失败 = 空库无密钥，按提示手动放置后重跑 rebuild 即可）
     path = passfile_path(settings, repo_id)
     try:
         _write_passfile(path, plain)
@@ -801,15 +816,6 @@ async def rebuild_repo(
         raise ValidationError(
             f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
         ) from exc
-
-    # 2) 清空仓库数据目录内容（已确认是本地文件系统目录；保留目录本身，
-    #    同址重建不必先手动建文件夹——restic init 会自行 MkdirAll）
-    if _is_fs_root(local_path):
-        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
-    if local_path.exists():
-        if not local_path.is_dir():
-            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
-        await _clear_dir_contents(local_path)
 
     # 3) restic init（用新密码文件）
     fd, log_path = tempfile.mkstemp(prefix="restic-init-", suffix=".log")

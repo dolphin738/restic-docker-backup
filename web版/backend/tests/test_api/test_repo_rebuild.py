@@ -18,6 +18,8 @@ import pytest
 from conftest import ORIGIN, finish_bootstrap
 
 from app.constants import AUDIT_REPO_REBUILD
+from app.errors import ValidationError
+from app.routers import repos as repos_router
 
 
 class _FakeProc:
@@ -198,5 +200,36 @@ async def test_rebuild_fs_root_path_rejected(app_client, tmp_path):
     assert resp.status_code == 422, resp.text
     assert "根目录" in resp.json()["message"]
 
+    _rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_REBUILD)
+    assert total == 0
+
+
+async def test_rebuild_clear_failure_preserves_old_passfile(app_client, tmp_path, monkeypatch):
+    """审查 🔴 回归（2026-10-22 调序修复）：清空目录失败 → 422 且**旧密码文件原样保留**。
+
+    修复前的顺序是「先覆盖密码文件 → 再清空」：清空失败（EBUSY/权限）时旧密码已被
+    覆盖且无回滚，盘上快照永久不可读。调序后（先清空 → 后写密码）清空失败 = 零损失
+    ——什么都没动，旧密码仍能打开旧快照。本用例锁定该不变量。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    data_dir = await _seed_repo(ns, tmp_path, repo_id="rb6")
+
+    async def _boom(_local_path):  # noqa: ANN001, ANN202
+        raise ValidationError("仓库数据目录清理失败（权限不足或文件被占用）：模拟 EBUSY")
+
+    monkeypatch.setattr(repos_router, "_clear_dir_contents", _boom)
+
+    resp = await ns.client.post(
+        "/api/repos/rb6/rebuild", json={"password": "would-be-lost"}, headers=ORIGIN
+    )
+    assert resp.status_code == 422, resp.text
+    assert "清理失败" in resp.json()["message"]
+
+    # 旧密码文件必须原样保留（旧快照仍可打开），新密码绝不落盘
+    assert _passfile(ns, "rb6").read_text(encoding="utf-8") == "old-password"
+    # 旧数据原封未动（清空失败即停）
+    assert (data_dir / "config").read_text(encoding="utf-8") == "old-repo-config"
+    # 失败路径不落成功审计
     _rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_REBUILD)
     assert total == 0
