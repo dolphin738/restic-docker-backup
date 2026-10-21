@@ -66,6 +66,16 @@ function isConfigured(key: ChannelKey, data: NotifyConfigResponse | undefined): 
 
 const hasAnyChannel = computed(() => CHANNEL_KEYS.some((key) => isConfigured(key, configQuery.data.value)))
 
+/** 当前所选 MeoW 套餐的额度说明（与后端 MEOW_PLAN_LIMITS 同口径，改档位文案要同步改）。 */
+const planDesc = computed(() => {
+  const key = {
+    free: 'notify.meowPlanFreeDesc',
+    premium: 'notify.meowPlanPremiumDesc',
+    lifetime: 'notify.meowPlanLifetimeDesc',
+  }[form.meowPlan]
+  return `${t(key)}｜${t('notify.meowPlanHint')}`
+})
+
 /** 列表行摘要（脱敏口径：URL/密码一律不回显，只给状态性描述）。 */
 function channelSummary(key: ChannelKey): string {
   const data = configQuery.data.value
@@ -104,6 +114,11 @@ const form = reactive({
   webhookTemplate: '',
   webhookRedact: false,
   meowNickname: '',
+  meowMsgType: 'text' as 'text' | 'html',
+  meowHtmlHeight: 200,
+  meowUrl: '',
+  meowImgUrl: '',
+  meowPlan: 'free' as 'free' | 'premium' | 'lifetime',
   meowRedact: true,
   mailHost: '',
   mailPort: 587,
@@ -143,6 +158,11 @@ function loadChannel(key: ChannelKey): void {
   }
   if (key === 'meow') {
     form.meowNickname = data.meow_nickname
+    form.meowMsgType = data.meow_msg_type
+    form.meowHtmlHeight = data.meow_html_height
+    form.meowUrl = data.meow_url
+    form.meowImgUrl = data.meow_img_url
+    form.meowPlan = data.meow_plan
     form.meowRedact = data.meow_redact
     return
   }
@@ -201,6 +221,12 @@ async function saveChannel(): Promise<void> {
     patch.webhook_redact = form.webhookRedact
   } else if (channelType.value === 'meow') {
     patch.meow_nickname = form.meowNickname.trim()
+    patch.meow_msg_type = form.meowMsgType
+    patch.meow_html_height = form.meowHtmlHeight ?? 200
+    // 可选增强：留空即清除（E23 三态：空串 = 清除该键）
+    patch.meow_url = form.meowUrl.trim()
+    patch.meow_img_url = form.meowImgUrl.trim()
+    patch.meow_plan = form.meowPlan
     patch.meow_redact = form.meowRedact
   } else {
     patch.mail_host = form.mailHost.trim()
@@ -415,12 +441,75 @@ async function runTest(): Promise<void> {
                 class="notify__field"
               />
             </n-form-item>
+            <n-form-item :label="t('notify.meowMsgType')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-select
+                  v-model:value="form.meowMsgType"
+                  :options="[
+                    { label: t('notify.meowMsgTypeText'), value: 'text' },
+                    { label: t('notify.meowMsgTypeHtml'), value: 'html' },
+                  ]"
+                  class="notify__type"
+                />
+                <n-text depth="3" class="notify__hint">{{ t('notify.meowMsgTypeHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+            <template v-if="form.meowMsgType === 'html'">
+              <n-form-item :label="t('notify.meowHtmlHeight')">
+                <n-space align="center" :size="8">
+                  <n-input-number
+                    v-model:value="form.meowHtmlHeight"
+                    :min="50"
+                    :max="2000"
+                    size="small"
+                    class="notify__num"
+                  />
+                  <n-text depth="3" class="notify__hint">{{ t('notify.meowHtmlHeightHint') }}</n-text>
+                </n-space>
+              </n-form-item>
+            </template>
+            <n-form-item :label="t('notify.meowUrl')">
+              <n-input
+                v-model:value="form.meowUrl"
+                :placeholder="t('notify.meowUrlPlaceholder')"
+                class="notify__field"
+              />
+            </n-form-item>
+            <n-form-item :label="t('notify.meowImgUrl')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-input
+                  v-model:value="form.meowImgUrl"
+                  :placeholder="t('notify.meowImgUrlPlaceholder')"
+                />
+                <n-text depth="3" class="notify__hint">{{ t('notify.meowImgUrlHint') }}</n-text>
+              </n-space>
+            </n-form-item>
             <n-form-item :label="t('notify.meowRedact')">
               <n-space align="center" :size="8">
                 <n-switch v-model:value="form.meowRedact" size="small" :aria-label="t('notify.redactHint')" />
                 <n-text depth="3" class="notify__hint">{{ t('notify.redactHint') }}</n-text>
               </n-space>
             </n-form-item>
+            <!-- 套餐等级：本地限流档位的开关（免费版守 API §5.8 限频；高级/终身版只守日总量） -->
+            <n-form-item :label="t('notify.meowPlan')">
+              <n-space vertical :size="4" class="notify__field">
+                <n-select
+                  v-model:value="form.meowPlan"
+                  :options="[
+                    { label: t('notify.meowPlanFree'), value: 'free' },
+                    { label: t('notify.meowPlanPremium'), value: 'premium' },
+                    { label: t('notify.meowPlanLifetime'), value: 'lifetime' },
+                  ]"
+                  class="notify__type"
+                />
+                <n-text depth="3" class="notify__hint">{{ planDesc }}</n-text>
+              </n-space>
+            </n-form-item>
+            <!-- 使用限制（API §5.8/§5.9）：写在配置区而非只在文档里——
+                 限频是会被真实踩到的约束，超限那条消息直接丢（服务端 429）。 -->
+            <n-alert type="info" :show-icon="false" class="notify__limits">
+              {{ t('notify.meowLimits') }}
+            </n-alert>
           </template>
 
           <template v-else-if="channelType === 'mail'">
@@ -607,6 +696,11 @@ async function runTest(): Promise<void> {
 
 .notify__num {
   width: 160px;
+}
+
+.notify__limits {
+  margin-top: 4px;
+  font-size: 12px;
 }
 
 .notify__type {

@@ -40,6 +40,11 @@ const BASE_CONFIG = {
   webhook_url_set: false,
   webhook_template: '',
   meow_nickname: '',
+  meow_msg_type: 'text',
+  meow_html_height: 200,
+  meow_url: '',
+  meow_img_url: '',
+  meow_plan: 'free',
   on_success: false,
   skipped_threshold: 100,
   webhook_redact: false,
@@ -172,6 +177,68 @@ describe('通知设置页：保存与清除', () => {
     expect(patch).not.toHaveProperty('healthchecks_url')
     expect(patch).not.toHaveProperty('meow_nickname')
     expect(patch).not.toHaveProperty('mail_host')
+    w.unmount()
+  })
+
+  it('保存 MeoW 提交昵称 + 消息形态（不夹带其它渠道）', async () => {
+    const w = mountPage()
+    await flushPromises()
+    await w.findComponent(NSelect).vm.$emit('update:value', 'meow')
+    await flushPromises()
+
+    await w.find('input[placeholder="MeoW App 中的设备昵称"]').setValue('nas')
+    await w.findAll('button').find((b) => b.text() === '保存')?.trigger('click')
+    await flushPromises()
+
+    expect(mocks.patches).toHaveLength(1)
+    expect(mocks.patches[0]).toMatchObject({
+      meow_nickname: 'nas',
+      meow_msg_type: 'text',
+      meow_html_height: 200,
+      meow_url: '',
+      meow_img_url: '',
+      meow_plan: 'free',
+    })
+    expect(mocks.patches[0]).not.toHaveProperty('webhook_url')
+    w.unmount()
+  })
+
+  it('MeoW 套餐等级可切换：切到终身版后保存提交 lifetime 并显示对应额度', async () => {
+    const w = mountPage()
+    await flushPromises()
+    await w.findComponent(NSelect).vm.$emit('update:value', 'meow')
+    await flushPromises()
+    // 昵称是 MeoW 渠道的必填项（不填保存会被挡）
+    await w.find('input[placeholder="MeoW App 中的设备昵称"]').setValue('nas')
+
+    // 默认免费版：显示 API §5.8 的四档限频
+    expect(w.text()).toContain('每分钟 15 条')
+
+    // 按选项内容定位套餐下拉（不按下标：消息类型下拉也是 NSelect，按下标会误伤）
+    const planSelect = w
+      .findAllComponents(NSelect)
+      .find((s) => JSON.stringify(s.props('options')).includes('终身版'))
+    expect(planSelect).toBeDefined()
+    await planSelect?.vm.$emit('update:value', 'lifetime')
+    await flushPromises()
+    expect(w.text()).toContain('每天最多 3000 条')
+
+    await w.findAll('button').find((b) => b.text() === '保存')?.trigger('click')
+    await flushPromises()
+    expect(mocks.patches[0]).toMatchObject({ meow_plan: 'lifetime' })
+    w.unmount()
+  })
+
+  it('MeoW 渠道展示使用限制（429/公共 IP）', async () => {
+    const w = mountPage()
+    await flushPromises()
+    await w.findComponent(NSelect).vm.$emit('update:value', 'meow')
+    await flushPromises()
+
+    // 使用限制是会被真实踩到的约束（超限那条直接丢），必须在配置页可见，不能只写在文档里
+    const text = w.text()
+    expect(text).toContain('429')
+    expect(text).toContain('216×216')
     w.unmount()
   })
 
