@@ -711,8 +711,10 @@ class Notifier:
         if summary and include_summary:
             content += f"\n摘要：{summary}"
         elif status != "success" and not include_summary:
-            # 脱敏渠道（MeoW 默认）：摘要被整体剔除——明示去哪看，别让用户以为失败无原因
-            content += "\n（失败详情已脱敏，请前往任务日志查看）"
+            # 脱敏渠道（MeoW 默认）：摘要被整体剔除——明示去哪看，别让用户以为失败无原因。
+            # 2026-10-22 owner 反馈：通知正文不出现「已脱敏」字样（脱敏是发送侧策略，
+            # 不是收件人需要关心的信息），只保留「请前往任务日志查看」的行动指引。
+            content += "\n（失败详情请前往任务日志查看）"
         return title, content
 
     async def _ping(self, url: str) -> None:

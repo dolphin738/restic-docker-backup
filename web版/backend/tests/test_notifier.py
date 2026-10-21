@@ -553,7 +553,8 @@ def test_render_job_type_labels_and_redaction_hint():
     assert "初始化任务失败" in title          # 不再裸奔英文 "init"
     assert "类型：初始化" in content
     # 脱敏渠道：摘要被剔除 → 明示前往任务日志，别让失败看起来没有原因
-    assert "失败详情已脱敏，请前往任务日志查看" in content
+    # （2026-10-22 owner 裁决：正文不出现「已脱敏」字样，只留行动指引）
+    assert "失败详情请前往任务日志查看" in content
     # 成功通知不追加该提示（无歧义）
     _, ok_content = n._render(
         job_type="init", status="success", task_name=None, job_id="01J",
@@ -561,7 +562,7 @@ def test_render_job_type_labels_and_redaction_hint():
         started_at=None, finished_at=None, summary=None,
         include_summary=False, repo_name="NAS 仓库",
     )
-    assert "失败详情已脱敏" not in ok_content
+    assert "请前往任务日志查看" not in ok_content
 
 
 async def test_on_finish_manual_job_shows_repo_name(tmp_path, monkeypatch):
