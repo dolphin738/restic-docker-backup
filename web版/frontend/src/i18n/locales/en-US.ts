@@ -553,7 +553,7 @@ export default {
     updated: 'Repository updated',
     deleted: 'Repository deleted',
     idRequired: 'Repository ID is required (letters, digits and hyphens; must be unique)',
-    idAutoHint: 'Leave blank to auto-generate (e.g. repo-xxxxxxxxxxxx)',
+    idAutoHint: 'Leave blank to auto-generate (e.g. r261022-k3f9x2)',
     idAutoNote: 'Left blank, the server generates a unique ID; or type your own (letters, digits and hyphens; must be unique)',
     regenerate: 'Regenerate',
     nameRequired: 'Repository name is required',

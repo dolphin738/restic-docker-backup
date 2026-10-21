@@ -430,7 +430,7 @@ function onTypeChange(value: string | null): void {
   rclonePresetKey.value = ''
 }
 
-/** A8：向服务端要一个候选仓库标识（repo-<ULID>）预填；失败不阻断（用户可手填/留空）。 */
+/** A8：向服务端要一个候选仓库标识（r<YYMMDD>-xxxxxx）预填；失败不阻断（用户可手填/留空）。 */
 async function regenerateRepoId(): Promise<void> {
   generatingId.value = true
   try {
@@ -1873,7 +1873,7 @@ function formatBytes(value: number): string {
                 <n-input v-model:value="repoForm.hostTag" :placeholder="t('repo.hostTagPlaceholder')" />
               </n-form-item>
 
-              <!-- 仓库 ID（仅新建态；留空服务端自动生成 repo-<ULID>） -->
+              <!-- 仓库 ID（仅新建态；留空服务端自动生成 r<YYMMDD>-xxxxxx） -->
               <n-form-item v-if="creatingNew" :label="t('repo.colId')">
                 <n-space vertical :size="6" class="repo__cred">
                   <n-space :size="8" align="center">

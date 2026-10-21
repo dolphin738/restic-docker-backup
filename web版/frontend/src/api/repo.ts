@@ -27,7 +27,7 @@ export function listRepos(): Promise<RepoOut[]> {
   return request<RepoOut[]>('/api/repos')
 }
 
-/** 新建仓库（POST /api/repos；id 可选，留空时服务端生成 repo-<ULID>）。 */
+/** 新建仓库（POST /api/repos；id 可选，留空时服务端生成 r<YYMMDD>-xxxxxx）。 */
 export function createRepo(body: RepoCreateRequest): Promise<RepoOut> {
   return request<RepoOut>('/api/repos', { method: 'POST', body })
 }

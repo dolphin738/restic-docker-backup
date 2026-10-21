@@ -698,7 +698,7 @@ export default {
     updated: '仓库已更新',
     deleted: '仓库已删除',
     idRequired: '请填写仓库 ID（字母数字与连字符，不可重复）',
-    idAutoHint: '留空则自动生成（如 repo-xxxxxxxxxxxx）',
+    idAutoHint: '留空则自动生成（如 r261022-k3f9x2）',
     idAutoNote: '留空时服务端自动生成唯一标识；也可自行填写（字母数字与连字符，不可重复）',
     regenerate: '换一个',
     nameRequired: '请填写仓库名称',
