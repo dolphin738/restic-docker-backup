@@ -548,7 +548,7 @@ export default {
     deleteConfirm:
       'Delete this repository? Its credentials, job history, and run logs are removed together. This cannot be undone. Restic snapshots inside the repository are not affected. Note: without also deleting data on disk, this URL stays occupied by the old repository — you will not be able to create a new repository at the same URL (it reports a wrong password), in which case check “Also delete data on disk”.',
     deleteDefaultForbidden: 'The default repository cannot be deleted',
-    deletePurgeDiskLabel: 'Also delete data on disk (wipes the repository directory and password file — unrecoverable)',
+    deletePurgeDiskLabel: 'Also delete data on disk (wipes files inside the repository directory and the password file, keeping the directory itself — unrecoverable)',
     created: 'Repository created',
     updated: 'Repository updated',
     deleted: 'Repository deleted',

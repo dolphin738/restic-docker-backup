@@ -693,7 +693,7 @@ export default {
     deleteConfirm:
       '确定删除该仓库？删除后将一并移除该仓库的凭据、任务历史记录与运行日志，操作不可撤销；仓库内的 restic 快照不受影响。注意：不清理磁盘数据时，该地址将被旧仓库占用——之后无法用同一地址新建仓库（会报密码错误），届时需勾选「同时删除磁盘数据」。',
     deleteDefaultForbidden: '默认仓库不可删除',
-    deletePurgeDiskLabel: '同时删除磁盘数据（清空该仓库目录与密码文件，不可恢复）',
+    deletePurgeDiskLabel: '同时删除磁盘数据（清空仓库目录内的数据与密码文件、保留目录本身，不可恢复）',
     created: '仓库已创建',
     updated: '仓库已更新',
     deleted: '仓库已删除',
