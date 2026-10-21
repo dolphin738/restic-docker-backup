@@ -163,7 +163,9 @@ async function onSaveDump(): Promise<void> {
 const behaviorAutoInit = ref(false)
 const behaviorAutoUnlock = ref(false)
 const behaviorCheckEnabled = ref(false)
-const behaviorCheckSampleRatio = ref<number>(0)
+// 每日 n/t 滚动扫描周期天数 t（1–256；0 = 不做每日扫描，仅月度全量）
+const behaviorCheckSubsetDenominator = ref<number>(30)
+const behaviorMonthlyFullEnabled = ref(false)
 const behaviorMonthlyFullDay = ref<number>(1)
 const savingBehavior = ref(false)
 
@@ -175,20 +177,33 @@ watch(configQuery.data, (data) => {
   behaviorAutoInit.value = item('behavior.auto_init')?.value === '1'
   behaviorAutoUnlock.value = item('behavior.auto_unlock')?.value === '1'
   behaviorCheckEnabled.value = item('behavior.check_enabled')?.value === '1'
-  const ratio = Number(item('behavior.check_sample_ratio')?.value)
-  // 后端契约存储 0–1，UI 以百分比（0–100%）录入，载入时 ×100。
-  behaviorCheckSampleRatio.value = Number.isFinite(ratio) ? ratio * 100 : 0
+  // 新键优先；旧键 check_sample_ratio（已废弃的随机百分比）兜底按 t = round(1/ratio) 换算
+  const rawDenominator = item('behavior.check_subset_denominator')?.value
+  const denom = Number(rawDenominator)
+  if (rawDenominator !== undefined && Number.isInteger(denom) && denom >= 0 && denom <= 256) {
+    behaviorCheckSubsetDenominator.value = denom
+  } else {
+    const ratio = Number(item('behavior.check_sample_ratio')?.value)
+    behaviorCheckSubsetDenominator.value =
+      Number.isFinite(ratio) && ratio > 0 ? Math.min(Math.round(1 / ratio), 256) : 30
+  }
+  behaviorMonthlyFullEnabled.value = item('behavior.monthly_full_enabled')?.value === '1'
   const day = Number(item('behavior.monthly_full_day')?.value)
   behaviorMonthlyFullDay.value = Number.isInteger(day) && day >= 1 && day <= 28 ? day : 1
 }, { immediate: true })
 
-const behaviorRatioValid = computed(
-  () => Number.isFinite(behaviorCheckSampleRatio.value) && behaviorCheckSampleRatio.value >= 0 && behaviorCheckSampleRatio.value <= 100,
+const behaviorDenominatorValid = computed(
+  () => Number.isInteger(behaviorCheckSubsetDenominator.value) && behaviorCheckSubsetDenominator.value >= 0 && behaviorCheckSubsetDenominator.value <= 256,
 )
+// 派生展示：每天约读 1/t（t=0 = 不做每日扫描）；仅用于提示文案，不回写后端
+const behaviorDailyPercent = computed(() => {
+  const total = behaviorCheckSubsetDenominator.value
+  return total > 0 ? (100 / total).toFixed(1) : '0'
+})
 const behaviorDayValid = computed(
   () => Number.isInteger(behaviorMonthlyFullDay.value) && behaviorMonthlyFullDay.value >= 1 && behaviorMonthlyFullDay.value <= 28,
 )
-const behaviorFormValid = computed(() => behaviorRatioValid.value && behaviorDayValid.value)
+const behaviorFormValid = computed(() => behaviorDenominatorValid.value && behaviorDayValid.value)
 
 async function onSaveBehavior(): Promise<void> {
   if (!behaviorFormValid.value || savingBehavior.value) {
@@ -200,8 +215,9 @@ async function onSaveBehavior(): Promise<void> {
       'behavior.auto_init': behaviorAutoInit.value ? '1' : '0',
       'behavior.auto_unlock': behaviorAutoUnlock.value ? '1' : '0',
       'behavior.check_enabled': behaviorCheckEnabled.value ? '1' : '0',
-      // 百分比录入 → 回写为 0–1 契约值（后端校验 [0,1]，越界钳制）。
-      'behavior.check_sample_ratio': String(behaviorCheckSampleRatio.value / 100),
+      // 周期天数 t：每天读第 n 个桶，t 天把全仓数据块无重复、无遗漏读一遍
+      'behavior.check_subset_denominator': String(behaviorCheckSubsetDenominator.value),
+      'behavior.monthly_full_enabled': behaviorMonthlyFullEnabled.value ? '1' : '0',
       'behavior.monthly_full_day': String(behaviorMonthlyFullDay.value),
     })
     message.success(t('settings.behavior.saved'))
@@ -873,23 +889,30 @@ onMounted(() => {
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.checkEnabledHint') }}</n-text>
             </n-space>
             <n-form-item
-              :label="t('settings.behavior.checkSampleRatio')"
-              :validation-status="behaviorRatioValid ? undefined : 'error'"
-              :feedback="behaviorRatioValid ? undefined : t('settings.behavior.invalidRatio')"
+              :label="t('settings.behavior.checkSubsetDenominator')"
+              :validation-status="behaviorDenominatorValid ? undefined : 'error'"
+              :feedback="behaviorDenominatorValid ? undefined : t('settings.behavior.invalidDenominator')"
               class="settings__ratio-item"
             >
               <n-space align="center" :size="10">
                 <n-input-number
-                  v-model:value="behaviorCheckSampleRatio"
+                  v-model:value="behaviorCheckSubsetDenominator"
                   :min="0"
-                  :max="100"
-                  :step="0.5"
+                  :max="256"
+                  :step="1"
                   :show-button="false"
                   class="settings__number"
                 />
-                <n-text depth="3">{{ t('settings.behavior.checkSampleRatioHint') }}</n-text>
+                <n-text depth="3">{{ t('settings.behavior.checkSubsetDenominatorHint', { percent: behaviorDailyPercent }) }}</n-text>
               </n-space>
             </n-form-item>
+            <n-space vertical :size="2">
+              <n-space align="center" :size="8">
+                <n-switch v-model:value="behaviorMonthlyFullEnabled" size="small" :aria-label="t('settings.behavior.monthlyFullEnabled')" />
+                <n-text>{{ t('settings.behavior.monthlyFullEnabled') }}</n-text>
+              </n-space>
+              <n-text depth="3" class="settings__hint">{{ t('settings.behavior.monthlyFullEnabledHint') }}</n-text>
+            </n-space>
             <n-form-item
               :label="t('settings.behavior.monthlyFullDay')"
               :validation-status="behaviorDayValid ? undefined : 'error'"
@@ -902,6 +925,7 @@ onMounted(() => {
                   :min="1"
                   :max="28"
                   :show-button="false"
+                  :disabled="!behaviorMonthlyFullEnabled"
                   class="settings__number"
                 />
                 <n-text depth="3">{{ t('settings.behavior.monthlyFullDayHint') }}</n-text>
