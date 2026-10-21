@@ -176,13 +176,14 @@ watch(configQuery.data, (data) => {
   behaviorAutoUnlock.value = item('behavior.auto_unlock')?.value === '1'
   behaviorCheckEnabled.value = item('behavior.check_enabled')?.value === '1'
   const ratio = Number(item('behavior.check_sample_ratio')?.value)
-  behaviorCheckSampleRatio.value = Number.isFinite(ratio) ? ratio : 0
+  // 后端契约存储 0–1，UI 以百分比（0–100%）录入，载入时 ×100。
+  behaviorCheckSampleRatio.value = Number.isFinite(ratio) ? ratio * 100 : 0
   const day = Number(item('behavior.monthly_full_day')?.value)
   behaviorMonthlyFullDay.value = Number.isInteger(day) && day >= 1 && day <= 28 ? day : 1
 }, { immediate: true })
 
 const behaviorRatioValid = computed(
-  () => Number.isFinite(behaviorCheckSampleRatio.value) && behaviorCheckSampleRatio.value >= 0 && behaviorCheckSampleRatio.value <= 1,
+  () => Number.isFinite(behaviorCheckSampleRatio.value) && behaviorCheckSampleRatio.value >= 0 && behaviorCheckSampleRatio.value <= 100,
 )
 const behaviorDayValid = computed(
   () => Number.isInteger(behaviorMonthlyFullDay.value) && behaviorMonthlyFullDay.value >= 1 && behaviorMonthlyFullDay.value <= 28,
@@ -199,7 +200,8 @@ async function onSaveBehavior(): Promise<void> {
       'behavior.auto_init': behaviorAutoInit.value ? '1' : '0',
       'behavior.auto_unlock': behaviorAutoUnlock.value ? '1' : '0',
       'behavior.check_enabled': behaviorCheckEnabled.value ? '1' : '0',
-      'behavior.check_sample_ratio': String(behaviorCheckSampleRatio.value),
+      // 百分比录入 → 回写为 0–1 契约值（后端校验 [0,1]，越界钳制）。
+      'behavior.check_sample_ratio': String(behaviorCheckSampleRatio.value / 100),
       'behavior.monthly_full_day': String(behaviorMonthlyFullDay.value),
     })
     message.success(t('settings.behavior.saved'))
@@ -880,8 +882,8 @@ onMounted(() => {
                 <n-input-number
                   v-model:value="behaviorCheckSampleRatio"
                   :min="0"
-                  :max="1"
-                  :step="0.05"
+                  :max="100"
+                  :step="0.5"
                   :show-button="false"
                   class="settings__number"
                 />

@@ -21,6 +21,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // WSL 挂载 Windows 盘（/mnt/d）无 inotify：默认 watch 收不到文件变更事件，
+    // 模块缓存永远陈旧（HMR 失效、浏览器一直显示旧代码）。改用轮询。
+    // node_modules 默认已在 watcher 忽略列表内，轮询开销仅限 src/ 配置文件。
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       // 后端 FastAPI 统一 /api 前缀；SSE（/api/jobs/{id}/stream）同样命中本规则。
       // ws: false —— SSE 是普通 HTTP 长连接，禁止走 websocket 升级路径。

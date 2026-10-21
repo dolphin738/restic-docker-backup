@@ -331,20 +331,24 @@ async function onLogout(): Promise<void> {
               @update:value="onRepoSwitch"
             />
           </span>
-          <!-- 状态 tag：绿/红/灰点 + 文案（P3a 收口为 StatusTag；点取 currentColor 继承语义色） -->
-          <n-tooltip v-if="repoStatusTooltip" trigger="hover">
-            <template #trigger>
-              <StatusTag :kind="repoStatusTagType" :label="repoStatusText" />
-            </template>
-            {{ repoStatusTooltip }}
-          </n-tooltip>
-          <StatusTag v-else :kind="repoStatusTagType" :label="repoStatusText" />
-          <!-- 运行中任务（P3c 收口：info 态 + 圆点，与全站状态语言统一） -->
-          <StatusTag
-            v-if="runningJobsCount > 0 && !isMobile"
-            kind="info"
-            :label="t('header.runningJobs', { n: runningJobsCount })"
-          />
+          <!-- 状态组（连接态 + 运行中）：收为一个不收缩单元，与左侧仓库切换器清晰分离，
+               避免窄顶栏下切换器（n-select 最长 200px）被压缩后贴近状态 pill 造成「两个框重叠」观感 -->
+          <span class="header__status-group">
+            <!-- 状态 tag：绿/红/灰点 + 文案（P3a 收口为 StatusTag；点取 currentColor 继承语义色） -->
+            <n-tooltip v-if="repoStatusTooltip" trigger="hover">
+              <template #trigger>
+                <StatusTag :kind="repoStatusTagType" :label="repoStatusText" />
+              </template>
+              {{ repoStatusTooltip }}
+            </n-tooltip>
+            <StatusTag v-else :kind="repoStatusTagType" :label="repoStatusText" />
+            <!-- 运行中任务（P3c 收口：info 态 + 圆点，与全站状态语言统一） -->
+            <StatusTag
+              v-if="runningJobsCount > 0 && !isMobile"
+              kind="info"
+              :label="t('header.runningJobs', { n: runningJobsCount })"
+            />
+          </span>
           <!-- 主题三态：NDropdown（P0 定稿），图标按钮 + 直接选择 + 勾选当前值 -->
           <n-dropdown :options="themeOptions" trigger="click" @select="onThemeSelect">
             <n-button size="small" quaternary :aria-label="themeAriaLabel">
@@ -454,6 +458,16 @@ async function onLogout(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* 状态组（连接态 + 运行中）：不收缩的稳定单元，与仓库切换器靠 n-space 间距明确分离 */
+.header__status-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .header__zone-icon {
@@ -462,7 +476,10 @@ async function onLogout(): Promise<void> {
 
 .header__repo-select {
   flex: 0 0 auto;
-  max-width: 200px;
+  /* 显式宽度：n-select 根节点是 width:100%，放在 width:auto 的 inline-flex 父级里会循环
+     尺寸计算——父 span 收缩为 select 同宽，图标+gap 把 select 向右顶出父级 20px，
+     吃掉 n-space 12px 间距后再与状态 tag 重叠 8px（多宽度实测恒定 -8px）。 */
+  width: 160px;
 }
 
 .header__user-name {
