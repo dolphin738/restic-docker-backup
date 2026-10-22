@@ -209,7 +209,6 @@ export default {
     // P6 GlobalStatusBar：全局进度常驻条（Abort 二段按后端缺口暂缺，见组件注释）
     statusBar: {
       stop: '停止',
-      throttle: '限速',
     },
   },
   job: {
@@ -340,6 +339,10 @@ export default {
     // C1 任务级前后钩子 + C3 失败重试
     retryCount: '失败重试次数',
     retryHint: '调度触发失败后自动重试的最大次数（0 = 不重试）',
+    // 限速（owner 2026-10-22 任务级裁决：任务级配置、创建时生效；运行中不可改）
+    limitUp: '上传限速（KiB/s）',
+    limitDown: '下载限速（KiB/s）',
+    limitHint: '0 = 不限速。任务级配置：保存后下次备份运行时生效，运行中的任务不受影响。',
     // C4 多目的地镜像
     mirrorTitle: '多目的地镜像（可选）',
     mirrorHint: '主仓库备份成功后，自动把本次新快照增量复制到所选仓库；镜像失败不影响主目的地状态。',

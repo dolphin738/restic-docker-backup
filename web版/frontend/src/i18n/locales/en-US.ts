@@ -209,7 +209,6 @@ export default {
     // pending the backend gap — see component comment)
     statusBar: {
       stop: 'Stop',
-      throttle: 'Throttle',
     },
   },
   job: {
@@ -339,6 +338,11 @@ export default {
     leaveConfirm: 'There are unsaved changes. Leave the wizard anyway?',
     retryCount: 'Retry count on failure',
     retryHint: 'Max automatic retries after a failed scheduled trigger (0 = no retry)',
+    // Bandwidth limits (owner adjudication 2026-10-22: task-level config, effective at
+    // creation; a running job cannot be changed - restic CLI has no control channel)
+    limitUp: 'Upload limit (KiB/s)',
+    limitDown: 'Download limit (KiB/s)',
+    limitHint: '0 = unlimited. Task-level config: applied the next time a backup runs; a running job is unaffected.',
     mirrorTitle: 'Multi-destination mirror (optional)',
     mirrorHint: 'After the primary backup succeeds, new snapshots are incrementally copied to the selected repositories; mirror failures never change the primary status.',
     mirrorPlaceholder: 'Select mirror repositories (up to 3)',

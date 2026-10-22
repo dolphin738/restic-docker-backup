@@ -11,17 +11,19 @@
  * - **Abort 二段暂缺**：Duplicati 的 isStopping→abort 是「优雅停止后仍可强杀」，
  *   本后端 cancel 无 grace=0 强杀路径（routers/jobs.py:202 无参数），故不渲染
  *   不可用的 Abort 按钮——待后端补强杀端点或 owner 裁决丢弃该段后再加；
- * - 限速：后端限速是**任务级配置**（backup_tasks.limit_up/down_kibps，创建时生效），
- *   无运行中改限速 API → 限速入口 = 只读展示当前任务限速 + 点击外抛 throttle
- *   事件（消费方跳任务编辑页）。
+ * - 限速（owner 2026-10-22 任务级裁决）：后端限速是**任务级配置**
+ *   （backup_tasks.limit_up/down_kibps，创建时生效——备份进程启动时读入
+ *   restic argv），restic CLI 无控制通道、运行中不可改 → 状态条**不设运行中
+ *   限速入口**（同 pause/resume 列降级），仅保留 limitText 只读展示当前任务
+ *   限速；改限速走任务编辑表单（TaskWizard step①）。
  */
 
-import { NButton, NIcon, NProgress, NSpace, NText, NTooltip } from 'naive-ui'
+import { NButton, NIcon, NProgress, NSpace, NText } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useJobStream } from '@/composables/useJobStream'
 import type { JobProgressPayload } from '@/api/types'
-import { IconGauge, IconStop } from '@/components/icons/HomeIcons'
+import { IconStop } from '@/components/icons/HomeIcons'
 
 const props = defineProps<{
   /** 当前作业 id；null/空 = 无进行中作业（整条不渲染）。 */
@@ -34,7 +36,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'stop'): void
-  (e: 'throttle'): void
 }>()
 
 const { t } = useI18n()
@@ -94,16 +95,6 @@ const barTitle = computed(() => props.title || props.jobId || '')
     </n-space>
     <n-space :size="6" :wrap="false" align="center" class="rw-status-bar__actions">
       <n-text v-if="limitText" depth="3" class="rw-status-bar__limit">{{ limitText }}</n-text>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button size="small" secondary circle :aria-label="t('dashboard.statusBar.throttle')" @click="emit('throttle')">
-            <template #icon>
-              <n-icon :size="16"><IconGauge /></n-icon>
-            </template>
-          </n-button>
-        </template>
-        {{ limitText || t('dashboard.statusBar.throttle') }}
-      </n-tooltip>
       <n-button size="small" type="warning" secondary @click="emit('stop')">
         <template #icon>
           <n-icon :size="14"><IconStop /></n-icon>

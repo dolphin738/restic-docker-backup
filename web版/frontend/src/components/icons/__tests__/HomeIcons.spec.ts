@@ -17,8 +17,9 @@ import * as icons from '../HomeIcons'
 
 const SRC_FILE = join(process.cwd(), 'src/components/icons/HomeIcons.ts')
 
-/** P4 交付时登记在册的图标数：新增图标必须同步改这里（ deliberate，防静默增删）。 */
-const REGISTERED_COUNT = 34
+/** P4 交付时登记在册的图标数：新增图标必须同步改这里（ deliberate，防静默增删）。
+ *  2026-10-22：IconGauge 随限速任务级裁决移除（状态条不设运行中限速入口）→ 34→33。 */
+const REGISTERED_COUNT = 33
 
 describe('HomeIcons 图标集（P4）', () => {
   it('导出规模与登记表一致', () => {
@@ -38,7 +39,6 @@ describe('HomeIcons 图标集（P4）', () => {
       'IconPlay',
       'IconStop',
       'IconAbort',
-      'IconGauge',
       'IconActivity',
       'IconList',
       'IconGrid',

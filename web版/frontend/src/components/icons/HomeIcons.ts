@@ -52,14 +52,6 @@ export const IconAbort: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M8.3 8.3l3.7 3.7M12 8.3l-3.7 3.7' }),
   ])
 
-/** 限速：仪表盘（全局状态条限速入口；后端 restic.py --limit-upload/download 已就绪）。 */
-export const IconGauge: FunctionalComponent<SVGAttributes> = () =>
-  h('svg', LINE_ICON_BASE, [
-    h('path', { d: 'M4.6 13.8a6.4 6.4 0 1 1 10.8 0' }),
-    h('path', { d: 'M10 13.8l3.6-4.2' }),
-    h('path', { d: 'M10 13.8h.01' }),
-  ])
-
 /** 活动：脉冲线（全局进度条 / KPI 带「进行中」格）。 */
 export const IconActivity: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [h('path', { d: 'M2 10.5h3.2l2-5.2 3.6 10.4 2-5.2H18' })])

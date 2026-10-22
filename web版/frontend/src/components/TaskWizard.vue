@@ -81,6 +81,11 @@ interface TaskFormState extends ScheduleRetentionValue {
   check_sample_ratio: number
   monthly_full_day: number
   prune_interval_days: number
+  /** 限速（owner 2026-10-22 任务级裁决）：任务级配置、创建时生效——值随任务保存，
+   *  下次备份进程启动时读入 restic argv（--limit-upload/--limit-download），
+   *  运行中的任务不可改（restic CLI 无控制通道）。单位 KiB/s，0 = 不限。 */
+  limit_up: number
+  limit_down: number
   /** C3 调度触发失败后的最大重试次数（0 = 不重试）。 */
   retry_count: number
   /** C4 多目的地：主备份成功后镜像到的仓库 id。 */
@@ -114,6 +119,8 @@ function defaultForm(): TaskFormState {
     check_sample_ratio: 0.02,
     monthly_full_day: 1,
     prune_interval_days: 7,
+    limit_up: 0,
+    limit_down: 0,
     retry_count: 2,
     mirror_repo_ids: [],
   }
@@ -269,6 +276,8 @@ watch(
     form.check_sample_ratio = task.check_sample_ratio
     form.monthly_full_day = task.monthly_full_day
     form.prune_interval_days = task.prune_interval_days
+    form.limit_up = task.limit_up
+    form.limit_down = task.limit_down
     form.retry_count = task.retry_count
     form.mirror_repo_ids = [...task.mirror_repo_ids]
     originalSources.value = [...task.display_sources]
@@ -533,8 +542,8 @@ function buildPayload(): TaskUpsertRequest {
     check_sample_ratio: form.check_sample_ratio,
     monthly_full_day: form.monthly_full_day,
     prune_interval_days: form.prune_interval_days,
-    limit_up: 0,
-    limit_down: 0,
+    limit_up: form.limit_up,
+    limit_down: form.limit_down,
     retry_count: form.retry_count,
     mirror_repo_ids: form.mirror_repo_ids,
   }
@@ -771,6 +780,17 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
               class="wizard__num"
             />
             <n-text depth="3">{{ t('wizard.retryHint') }}</n-text>
+          </n-space>
+
+          <!-- 限速（owner 2026-10-22 任务级裁决：任务级配置、创建时生效；运行中不可改） -->
+          <n-space vertical :size="4">
+            <n-space align="center" :size="8">
+              <n-text depth="3">{{ t('wizard.limitUp') }}</n-text>
+              <n-input-number v-model:value="form.limit_up" :min="0" size="small" class="wizard__num" />
+              <n-text depth="3">{{ t('wizard.limitDown') }}</n-text>
+              <n-input-number v-model:value="form.limit_down" :min="0" size="small" class="wizard__num" />
+            </n-space>
+            <n-text depth="3">{{ t('wizard.limitHint') }}</n-text>
           </n-space>
         </template>
 

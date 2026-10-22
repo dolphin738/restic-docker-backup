@@ -4,8 +4,9 @@
  * 锁定语义：
  * - jobId 为空（null / ''）= 无进行中作业，整条不渲染（不占位空条）；
  * - Stop → 外抛 stop 事件（消费方接 POST /api/jobs/{id}/cancel）；
- * - 限速 → 外抛 throttle 事件 + limitText 只读展示（后端无运行中改限速 API，
- *   详见组件注释：入口只读、点击外抛）；
+ * - 限速（owner 2026-10-22 任务级裁决）→ **无运行中入口**：仅 limitText 只读展示，
+ *   不渲染限速按钮、无 throttle 事件（restic CLI 无控制通道，运行中不可改；
+ *   改限速走任务编辑表单）；
  * - **Abort 二段暂缺**（后端 cancel 无 grace=0 强杀路径）：本用例反向锁定
  *   「不得渲染第二个强杀按钮」——待后端补端点后再放开，勿提前造假 UI；
  * - 进度订阅走 useJobStream（本用例 mock 之：不发真实 SSE / HTTP）。
@@ -78,19 +79,10 @@ describe('GlobalStatusBar 全局状态条', () => {
     w.unmount()
   })
 
-  it('限速按钮外抛 throttle 事件', async () => {
+  it('Abort 二段暂缺 + 限速入口已裁决砍掉：只渲染一个作业终止按钮（Stop），不得提前造假 UI', () => {
     const w = mountBar()
     const buttons = w.element.querySelectorAll('.rw-status-bar__actions button')
-    const throttle = buttons[0] as HTMLElement
-    throttle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(w.emitted('throttle')).toHaveLength(1)
-    w.unmount()
-  })
-
-  it('Abort 二段暂缺：只渲染一个作业终止按钮（Stop），不得提前造假 UI', () => {
-    const w = mountBar()
-    const buttons = w.element.querySelectorAll('.rw-status-bar__actions button')
-    expect(buttons).toHaveLength(2) // 限速 + Stop
+    expect(buttons).toHaveLength(1) // 仅 Stop（限速按钮按 owner 2026-10-22 任务级裁决移除）
     expect(w.text()).not.toContain('Abort')
     expect(w.text()).not.toContain('强杀')
     w.unmount()

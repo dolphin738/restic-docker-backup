@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 版本：v1.13（2026-10-22 十三次修订：**限速按任务级裁决落地**——owner 指令「那就按任务级裁决吧」：§4.5.3 ② 状态条形态去「限速入口」（砍 pause/resume + 限速入口；限速 = 任务级配置、任务表单设置、创建时生效，状态条仅 limitText 只读展示）；§4.5.4 限速行纠正「仓库级」误标（0001 policies 与 0002 backup_tasks 两处均任务级）并重估难度（表单控件低 / 运行中入口不可行——restic CLI 无控制通道）；GlobalStatusBar 砍限速按钮与 throttle 事件、删 IconGauge 与 statusBar.throttle 双语键（spec 同步：按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前恒 0）。零后端改动、零契约变更。v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -248,7 +248,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | # | 裁决 |
 |---|---|
 | ① | **KPI 四格保留**（Duplicati 无 KPI 带，本项目保留在行动卡下方） |
-| ② | 状态条按「**全局进度 + Stop/Abort 二段 + 限速入口**」做，**砍 pause/resume** |
+| ② | 状态条按「**全局进度 + Stop/Abort 二段**」做，**砍 pause/resume + 限速入口**（2026-10-22 补充裁决：限速 = **任务级配置**，任务表单设置、创建时生效；状态条不设运行中入口，仅 limitText 只读展示） |
 | ③ | Duration **补后端 `last_duration_ms` 派生字段** |
 | ④ | Export **走后端端点**（单任务配置导出，复用 configTransfer 加密打包管线） |
 | ⑤ | 视觉方案 A / A+ / B 三选一，**推荐 A+**（见 4.5.8，待 owner 最终拍板） |
@@ -257,7 +257,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 | 能力 | 首轮判断 | 实证结论 | 难度 |
 |---|---|---|---|
-| **限速** | ❌ 无 | ✅ **后端已实现**——`restic.py:401-404` 拼 `--limit-upload/--limit-download`；DB 字段 `0001_init.sql:57-58`（仓库级）+ `0002:37-38`（任务级）。**前端零接入**（frontend/src 全目录搜 `limit*` 无命中） | 低（接 UI） |
+| **限速** | ❌ 无 | ✅ **后端已实现（任务级，非仓库级）**——`restic.py:401-404` 在**备份进程启动时**拼 `--limit-upload/--limit-download`；DB 字段 `0001_init.sql:57-58`（policies 表）+ `0002:37-38`（backup_tasks 表）**均为任务级**（原「仓库级」标注有误，已纠正）。**运行中不可改**：restic CLI 无控制通道，flag 启动时读入 argv（Duplicati 实时限速靠自带 throttle 流包装层，本项目 shell out 无此层）→ 状态条运行中限速入口**不可行（降级，同 pause/resume）**；前端缺的是**任务表单输入控件**（TaskWizard 此前提交恒 0，2026-10-22 已补 limit_up/limit_down 控件） | 表单控件：低（接 UI）；运行中入口：不可行 |
 | **Abort** | ❌ 无 | ✅ 可——`job_runner.py:366-401` `cancel()` 已是 SIGTERM → 宽限 `grace_seconds` → SIGKILL；Abort = `grace=0` 直杀 | 中（force 参数 + 审计埋点） |
 | **Stop** | ❌ 无 | ✅ 现成 `cancelJob` 即等价 | 已有 |
 | **Pause/Resume** | ❌ 无 | ❌ **真不可行**——restic 无暂停语义；`SIGSTOP` 在 Windows 无等价物，且挂起会长期持仓库锁 | 不做（唯一降级项） |
@@ -282,15 +282,15 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 #### 4.5.6 组件与文件规划
 
-| 文件 | 职责 |
-|---|---|
-| `components/dashboard/ActionCard.vue` | 行动卡（插图 + 标题 + 描述 + 右按钮；整卡可点 + Enter/Space；`router` 跳转） |
-| `components/dashboard/GlobalStatusBar.vue` | 全局条：当前作业进度（SSE）+ Stop/Abort 二段 + 限速入口 |
-| `components/dashboard/TaskRowCard.vue` | list 视图卡片行（名称 + 类型 chip + 快照数 chip / 指标区 / 操作区） |
+| 文件                                         | 职责                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------ |
+| `components/dashboard/ActionCard.vue`      | 行动卡（插图 + 标题 + 描述 + 右按钮；整卡可点 + Enter/Space；`router` 跳转）                   |
+| `components/dashboard/GlobalStatusBar.vue` | 全局条：当前作业进度（SSE）+ Stop/Abort 二段 + 限速只读展示（任务级派生；无运行中入口，owner 2026-10-22 裁决） |
+| `components/dashboard/TaskRowCard.vue`     | list 视图卡片行（名称 + 类型 chip + 快照数 chip / 指标区 / 操作区）                          |
 | `components/dashboard/TaskActionsMenu.vue` | 三点菜单（Operations / Advanced / Reporting 分组 + divider；loading/success 图标态） |
-| `components/icons/HomeIcons.ts` | **新增 ~30 个内联 SVG 图标**（见 4.5.9 风险 R-1） |
-| `pages/dashboard/index.vue` | 重写：KPI 带 → 行动卡行 → 工具栏（视图/时间/排序）→ 双视图 → 空态/加载态 |
-| `utils/__tests__/relativeTime.spec.ts` | 相对/绝对时间格式化单测 |
+| `components/icons/HomeIcons.ts`            | **新增 ~30 个内联 SVG 图标**（见 4.5.9 风险 R-1）                                    |
+| `pages/dashboard/index.vue`                | 重写：KPI 带 → 行动卡行 → 工具栏（视图/时间/排序）→ 双视图 → 空态/加载态                            |
+| `utils/__tests__/relativeTime.spec.ts`     | 相对/绝对时间格式化单测                                                             |
 
 #### 4.5.8 视觉方案三选一（待 owner 拍板，推荐 A+）
 
@@ -393,7 +393,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | **P4** | L3 图标集：`components/icons/` 扩展 ~30 个统一风格 SVG（统一描边 1.5 / 尺寸 20），含主页与恢复向导所需全部图标 | — | `typecheck` + `naive-imports` 护栏 + 目视 | 无图标库，全自绘；集中在单一文件，禁止散落 |
 | **P5** | L1 令牌层**彻底档**：`tokens.ts` 圆角（common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16）+ 控件密度（行高 32/36/40）+ **间距节奏 4/8/12/16/24/32** + 卡片三档阴影 + 标签无边框实心五态；**亮/暗同批改** | P4 | 全站基线截图存档 → 改后**桌面零漂移像素 diff** + 亮/暗双模式截图 | 风险最高的一批：改前必须先存档全站基线；暗色值必须同批给（否则暗底黑边）；间距常量只落 `tokens.ts` + `skin.css`，页面零硬编码 |
 | **P6** | L2 共用形态层：行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条 → 提升为**全站共用组件** + `theme/skin.css` | P5 | `typecheck` + 新 spec（分段选中态、菜单分组渲染） | S-4：必须是共用组件 + 单一 skin 文件，**禁止逐页各写一份**（否则退化成第二套） |
-| **P7** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段 + 限速入口）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P4 P6 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段） | 限速后端已就绪（`restic.py:401-404`）仅接 UI；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
+| **P7** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段；限速仅只读展示）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P4 P6 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段） | 限速 = 任务级表单配置（TaskWizard 控件，创建时生效；运行中入口已裁决砍掉）；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
 | **P8** | **恢复入口页 + 路由重排**（§4.8.5）：`/restore` 改造成入口页；新增 `/restore/:id/{select-files,options,progress}` | — | `typecheck` + **快照页 `?snapshot=` 直达入口实测**（V-1） | 路由重排不得破坏 `snapshots/index.vue:118-123` 的预选直达 |
 | **P9** | **恢复向导外壳**（§4.8.5）：可跳步步骤条（键盘可达）+ `inactive` 态 + 全宽/满高切换 + 离开确认 | P8 | 新 spec（跳步/确认/全宽类） | V-2：跳步前校验，未过步骤置 `inactive`（沿用模版语义） |
 | **P10** | **恢复步骤重组**：select-files（版本下拉补 size/label + **搜索框**：结果计数 / Clear / spinner）+ options 四分区（恢复到哪 / 已存在文件 / Metadata / 高级）+ 页脚两端对齐 | P3 P9 | 新 spec | 搜索框依赖 P3 端点；无端点时该项顺延 |
@@ -532,6 +532,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ## 修订记录
 
+- v1.13（2026-10-22 十三次修订）：**限速按任务级裁决落地**（owner 指令「那就按任务级裁决吧」）。§4.5.3 ② 状态条形态修订为「全局进度 + Stop/Abort 二段」，砍 pause/resume + 限速入口；限速定为**任务级配置**（任务表单设置、创建时生效——备份进程启动时读入 restic argv，运行中不可改），状态条仅保留 limitText 只读展示。§4.5.4 限速行实证纠正：①「仓库级」标注错误——`0001_init.sql:57-58` 在 policies 表、`0002:37-38` 在 backup_tasks 表，均为任务级；②运行中限速入口不可行（restic CLI 无控制通道，Duplicati 实时限速靠自带 throttle 流包装层，本项目 shell out 无此层）；③难度重估：任务表单控件低（接 UI）/ 运行中入口降级（同 pause/resume）。代码：GlobalStatusBar 砍限速按钮 + throttle 事件 + NTooltip/IconGauge 引用 + `statusBar.throttle` 双语键（spec 同步：动作按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前硬编码 0）。零后端改动、零契约变更。
 - v1.12（2026-10-22 十二次修订）：owner 指令「4.8.6 批次融入 4.7 统一批次，融合后 4.6.6 / 4.5.7 / 4.8.6 都可以删除」。**§4.7 成为全项目唯一执行批次表**，编号重排为 **P1–P14**：P1 `last_duration_ms`+`snapshot_count`／P2 单任务导出／**P3 快照文件搜索端点**／P4 图标集／**P5 令牌层彻底档（分水岭）**／P6 共用形态层／P7 仪表板主页复刻／**P8 恢复入口页+路由重排**／**P9 恢复向导外壳**／**P10 恢复步骤重组（含搜索框）**／**P11 恢复进度页三卡**／P12 逐页重排低风险／P13 逐页重排高风险／P14 全站回归（含恢复模块响应式与 i18n）。删除 §4.5.7、§4.6.6、§4.8.6 三节（§4.8.6 位置改为指向 §4.7 的指针）；§4.5.7 的护栏段升格为 §4.7 的「通用护栏（每批适用）」。批次关系更新：P8–P11 属结构性改造，**不等 P5 令牌层**，可与 P5/P6 并行，视觉打磨在其后复跑。
 - v1.11（2026-10-22 十一次修订）：新增 §4.8 第七轮（排序按模块，文档内第七轮批次另计）——恢复模块按 Duplicati 恢复复刻方案定稿。MCP 图谱索引 `duplicati-ngclient`（2670 节点 / 7897 边，restore-flow 作用域 100/215，热点 `#submitRestore` 等）。对标：入口页（备份卡 + 直接恢复 + 从配置）、向导外壳（可跳步 stepper + 全宽/满高）、状态中枢（三表单 + 错误分诊 + 重试）、5 个步骤形态、单档 `-milli` 响应式。差距 R1–R10。**owner 三项裁决**：① 文件树搜索 → 新增后端端点 `POST /api/snapshots/{id}/files/search`（游标同 E18 口径）；② 从备份文件恢复只做到「选已有仓库 + 输密码」，排除 copytotemp / URL 直填 / app-test-url；③ 批次 R1–R6 挂在 §4.7 的 P6 之后，R-1/R-2/R-3 结构性改造不等令牌层可先行。后端契约变更**仅此一项**，其余零后端改动。排除项 6 类（o365/gsuite/diskimage、Hyper-V、Check permissions、copytotemp、URL 直填、逐备份 passphrase）。兼容硬约束：快照页 `?snapshot=` 直达入口不得破坏。
 - v1.10（2026-10-22 十次修订）：新增 §4.7 **统一批次表 P1–P9**（owner 指令「把 §4.5.7 与 §4.6.6 批次重排成新的批次表」）——合并后端 B1/B2、图标 L3、令牌层 L1、形态层 L2、主页复刻、两批逐页重排、全站回归；排序原则：后端契约先行 → 令牌层（全局开关）在逐页校准之前 → 图标与形态层是主页复刻前置 → 逐页按风险低到高分两批 → 每批独立可提交。§4.5.7 / §4.6.6 保留原表作历史记录并加指针。**§4.6.4 强度档由「待裁决」定为 owner 裁决 = 彻底**，并补齐彻底档数值口径（圆角 common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16；控件行高 32/36/40；间距 4/8/12/16/24/32 六档；卡片三档阴影；标签无边框实心五态），数值只落 `tokens.ts` 与 `skin.css`，页面零硬编码、暗色同批。
