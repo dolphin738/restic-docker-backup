@@ -47,6 +47,9 @@ import { saveDumpBehaviorConfig } from '@/api/settings'
 import { getSystemTime, syncSystemTime } from '@/api/system'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
+// P6 形态层：分段控件从本页私有实现提升为共用组件（S-4 单一实现）；
+// 深链（#sec-<id>）与未知 id 防御已内置于组件（hashPrefix='sec'）。
+import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 // G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
 import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
 import { formatDateTime } from '@/utils/datetime'
@@ -735,45 +738,27 @@ const sectionLinks = computed(() =>
 
 const activeSection = ref<SectionId>('dump')
 
-/** 切换分区（点选即换面板；`#sec-<id>` 经 replaceState 同步，保留 P4 锚点的深链能力，
- *  且不触发 vue-router 跳转）。未知 id 忽略（分段条按钮事件载荷防御）。 */
-function switchSection(id: string): void {
-  if (!SECTIONS.some((item) => item.id === id)) {
-    return
-  }
+/** 分段切换（P6：SegmentedTabs 受控 emit；未知 id 防御与 #sec-<id> 深链
+ *  均已内置于组件——这里只做联合类型收窄后赋值）。 */
+function onSectionChange(id: string): void {
   activeSection.value = id as SectionId
-  if (typeof history !== 'undefined') {
-    history.replaceState(null, '', `#sec-${id}`)
-  }
 }
-
-onMounted(() => {
-  // 深链直达：带 #sec-<id> 打开（书签 / 分享链接）时落到对应分区
-  const hash = typeof location !== 'undefined' ? location.hash.replace('#sec-', '') : ''
-  if (SECTIONS.some((item) => item.id === hash)) {
-    activeSection.value = hash as SectionId
-  }
-})
 </script>
 
 <template>
   <n-el class="settings">
-    <!-- 分区切换：顶部分段条（全断点统一形态；吸顶常驻，滚长表单时仍在视口）。
-         按钮主/次态走 naive 主题内部配色（NButton），亮暗双主题一致；
+    <!-- 分区切换：顶部分段条（P6 提升为共用 SegmentedTabs；全断点统一形态；
+         吸顶常驻，滚长表单时仍在视口）。按钮主/次态走 naive 主题内部配色（NButton），
+         亮暗双主题一致；深链 #sec-<id> 与未知 id 防御内置（hashPrefix='sec'）。
          吸顶背景用 --n-color（根 n-el 提供 bodyColor，暗色不回落白条）。 -->
     <div class="settings__segments">
-      <n-space :size="6" :wrap="false" class="settings__segments-inner">
-        <n-button
-          v-for="item in sectionLinks"
-          :key="item.id"
-          size="small"
-          :type="activeSection === item.id ? 'primary' : 'default'"
-          :secondary="activeSection !== item.id"
-          @click="switchSection(item.id)"
-        >
-          {{ item.label }}
-        </n-button>
-      </n-space>
+      <SegmentedTabs
+        :items="sectionLinks"
+        :model-value="activeSection"
+        hash-prefix="sec"
+        :aria-label="t('settings.sectionsAria')"
+        @update:model-value="onSectionChange"
+      />
     </div>
 
     <!-- DB dump（批次 B 实装：dump.* 八键 + 密码三态） -->
@@ -1308,7 +1293,8 @@ onMounted(() => {
    暴露在自渲染元素上），分段条吸顶背景随主题，暗色不回落白条。 */
 
 /* 分区切换分段条：全断点统一形态；吸顶常驻（滚长表单时仍在视口），
-   窄屏横向滚动不换行。按钮主/次态由 NButton 主题内部配色。 */
+   窄屏横向滚动不换行（P6 起由共用 SegmentedTabs 的 .rw-segmented 承担）。
+   按钮主/次态由 NButton 主题内部配色。 */
 .settings__segments {
   position: sticky;
   top: 0;
@@ -1316,12 +1302,6 @@ onMounted(() => {
   margin: 0 0 16px;
   padding: 8px 0;
   background: var(--n-color, #fff);
-}
-
-.settings__segments-inner {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  padding-bottom: 2px;
 }
 
 /* 内容面板：仅渲染当前分区；分区卡片带该类，切换（v-if 换卡）即重放入场动画。

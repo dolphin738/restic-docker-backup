@@ -37,6 +37,14 @@
      均为 border-radius: inherit，覆根元素即全树一致。 */
   --rw-radius-control: 10px;
 
+  /* P6 形态层自持表面变量：naive 的 --n-* 变量只存在于各组件根元素上（实证：
+     body/#app 直下解析为空；--n-color-hover / --n-text-color-2 等名称根本不存在），
+     普通 div 形态（行卡片 / 状态条 / chip）取不到主题面，故按 spacing/阴影同模式自持。
+     值与 tokens.ts 亮/暗 common 逐一对应（__tests__/tokens.spec.ts 跨文件同源护栏）。 */
+  --rw-border: #e2e5ee;
+  --rw-surface: #ffffff;
+  --rw-surface-hover: #f5f6fa;
+  --rw-focus: #3d5bd9;
 }
 
 /* 暗色三档阴影：低透明度黑。§4.6.4 要求「亮/暗各一套值」；强度刻意克制，
@@ -46,6 +54,12 @@
   --rw-shadow-hover: 0 1px 2px rgba(0, 0, 0, 0.4);
   --rw-shadow-pressed: 0 1px 1px rgba(0, 0, 0, 0.48);
 
+  /* P6 形态层表面变量暗色套（对应 darkThemeOverrides.common：borderColor #31364A /
+     cardColor #1C1F27 / popoverColor #232733 兼 hover 面 / primaryColor #7C93F5） */
+  --rw-border: #31364a;
+  --rw-surface: #1c1f27;
+  --rw-surface-hover: #232733;
+  --rw-focus: #7c93f5;
 }
 
 /* ─── 间距工具类：六档 × gap / padding / padding-inline / padding-block / margin-top / margin-bottom ───
@@ -142,3 +156,221 @@
   border-radius: var(--rw-radius-control);
 }
 
+/* ─── P6 L2 共用形态层（§4.7 P6；S-4：单一 skin 文件，禁止逐页各写一份）─────────
+ *
+ * 五类形态（行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条）的皮肤唯一定义处；
+ * 组件（components/dashboard/*）只挂类，数值一律取 --rw-space-* / --rw-shadow-* /
+ * --rw-radius-control 与本文件的派生值。 */
+
+/* ① 行动卡（ActionCard.vue）：整卡可点——hover 阴影内缩、pressed 压实、focus 环。
+ *   过渡由 .n-card.n-card 的 box-shadow 100ms 提供（卡片即 n-card）。 */
+.rw-action-card {
+  cursor: pointer;
+}
+
+.rw-action-card:hover {
+  box-shadow: var(--rw-shadow-hover);
+}
+
+.rw-action-card:active {
+  box-shadow: var(--rw-shadow-pressed);
+}
+
+.rw-action-card:focus-visible {
+  outline: 2px solid var(--rw-focus);
+  outline-offset: 2px;
+}
+
+.rw-action-card--disabled,
+.rw-action-card--disabled:hover,
+.rw-action-card--disabled:active {
+  cursor: not-allowed;
+  box-shadow: var(--rw-shadow-rest);
+}
+
+.rw-action-card--disabled {
+  opacity: 0.6;
+}
+
+.rw-action-card__body {
+  display: flex;
+  align-items: center;
+  gap: var(--rw-space-3);
+}
+
+.rw-action-card__icon {
+  flex: none;
+}
+
+.rw-action-card__text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rw-action-card__title {
+  font-size: 14px;
+}
+
+.rw-action-card__desc {
+  font-size: 12px;
+}
+
+.rw-action-card__action {
+  flex: none;
+}
+
+/* ② 行卡片（TaskRowCard.vue）：整行可点选中；选中行主色浅底高亮 + 主色边框，
+ *   点击空转（组件层已挡重复 emit）。边框/圆角/阴影语言与卡片一致。
+ *   表面变量取自持 --rw-*（普通 div 取不到 naive 组件根的 --n-*，见 :root 注释）。 */
+.rw-row-card {
+  display: flex;
+  align-items: center;
+  gap: var(--rw-space-3);
+  padding: var(--rw-space-3) var(--rw-space-4);
+  border: 1px solid var(--rw-border);
+  border-radius: 12px;
+  background-color: var(--rw-surface);
+  box-shadow: var(--rw-shadow-rest);
+  color: inherit;
+  cursor: pointer;
+  transition:
+    box-shadow 100ms var(--rw-ease),
+    border-color 0.3s var(--rw-ease),
+    background-color 0.3s var(--rw-ease);
+}
+
+.rw-row-card:hover {
+  box-shadow: var(--rw-shadow-hover);
+}
+
+.rw-row-card:active {
+  box-shadow: var(--rw-shadow-pressed);
+}
+
+.rw-row-card:focus-visible {
+  outline: 2px solid var(--rw-focus);
+  outline-offset: 2px;
+}
+
+.rw-row-card--active {
+  border-color: var(--rw-focus);
+  background-color: var(--rw-surface-hover);
+}
+
+.rw-row-card--disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.rw-row-card__icon {
+  flex: none;
+}
+
+.rw-row-card__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rw-row-card__name {
+  display: flex;
+  align-items: center;
+  gap: var(--rw-space-2);
+  min-width: 0;
+}
+
+.rw-row-card__desc {
+  font-size: 12px;
+}
+
+.rw-row-card__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--rw-space-2);
+}
+
+/* 行内 chip（类型 / 快照数）：无边框实心浅底，与 P5 标签五态同语言的小号变体。
+ *   浅底取自持 --rw-surface-hover（naive 无 --n-color-hover 变量，实证）。 */
+.rw-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background-color: var(--rw-surface-hover);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.rw-chip--muted {
+  opacity: 0.72;
+}
+
+/* ③ 分段控件（SegmentedTabs.vue）：横排不换行 + 窄屏横向滚动（自设置页私有实现提升）。
+ *   选中态 = NButton primary / 次态 = secondary default（naive 主题内部配色）。 */
+.rw-segmented {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+/* ④ 菜单分组标题（TaskActionsMenu.vue 的 NDropdown 分组头）：弱化小字 + 字距，
+ *   与条目区分层级；下拉经 portal 渲染，本规则全局生效（不随组件 scoped）。 */
+.n-dropdown-option-body--group {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.n-dropdown-option-body--group .n-dropdown-option-body__label {
+  opacity: 0.72;
+}
+
+/* ⑤ 全局状态条（GlobalStatusBar.vue）：吸顶常驻；卡片面 + rest 阴影 + 下边框，
+ *   与内容层拉开层级。sticky 由消费页容器或本类直接提供（top 由页面给）。 */
+.rw-status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--rw-space-4);
+  padding: var(--rw-space-2) var(--rw-space-4);
+  /* 普通 div 取不到 --n-border-color / --n-color（只存在于 naive 组件根），自持 --rw-* */
+  border-bottom: 1px solid var(--rw-border);
+  background-color: var(--rw-surface);
+  box-shadow: var(--rw-shadow-rest);
+}
+
+.rw-status-bar__title {
+  flex: none;
+  max-width: 240px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rw-status-bar__bar {
+  flex: 1 1 auto;
+  min-width: 120px;
+}
+
+.rw-status-bar__metrics {
+  flex: none;
+}
+
+.rw-status-bar__limit {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rw-status-bar__actions {
+  flex: none;
+  margin-left: auto;
+}

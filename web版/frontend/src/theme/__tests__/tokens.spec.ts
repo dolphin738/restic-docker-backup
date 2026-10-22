@@ -197,3 +197,52 @@ describe('P5 卡片三档阴影：skin.css 唯一定义处 + 亮暗各一套', (
   })
 })
 
+describe('P6 表面变量：skin.css 自持 + 与 tokens.ts borderColor 同源（S-4 单一 skin 文件）', () => {
+  it('--rw-border 亮暗值与 tokens.ts common.borderColor 相等（大小写不敏感）', () => {
+    // 跨文件同源：形态层边框色 = 令牌层边框色；skin.css 小写、tokens.ts 大写
+    expect(SKIN_CSS).toContain('--rw-border: #e2e5ee;')
+    expect(SKIN_CSS).toContain('--rw-border: #31364a;')
+    expect(lightThemeOverrides.common?.borderColor?.toLowerCase()).toBe('#e2e5ee')
+    expect(darkThemeOverrides.common?.borderColor?.toLowerCase()).toBe('#31364a')
+  })
+
+  it('surface / surface-hover / focus 亮暗四对登记（改值必须改测试）', () => {
+    // 亮色面：白底 / 浅灰 hover / 主色 focus（focus 与 StatusTag info 语义色 #3D5BD9 同源）
+    expect(SKIN_CSS).toContain('--rw-surface: #ffffff;')
+    expect(SKIN_CSS).toContain('--rw-surface-hover: #f5f6fa;')
+    expect(SKIN_CSS).toContain('--rw-focus: #3d5bd9;')
+    // 暗色面：深底 / 提亮一档 hover / 亮一档 focus（暗底上原主色对比不足）
+    expect(SKIN_CSS).toContain('--rw-surface: #1c1f27;')
+    expect(SKIN_CSS).toContain('--rw-surface-hover: #232733;')
+    expect(SKIN_CSS).toContain('--rw-focus: #7c93f5;')
+  })
+
+  it('四枚表面变量各定义两处（:root + .rw-dark，tokens.ts 不重复定义）', () => {
+    for (const name of ['--rw-border', '--rw-surface', '--rw-surface-hover', '--rw-focus']) {
+      const matches = SKIN_CSS.match(new RegExp(`${name}:`, 'g')) ?? []
+      expect(matches.length, `${name} 应仅在 :root 与 .rw-dark 各定义一次`).toBe(2)
+    }
+  })
+
+  it('P6 形态类齐全（action-card / row-card / chip / segmented / status-bar 均在 skin.css）', () => {
+    for (const cls of [
+      '.rw-action-card {',
+      '.rw-row-card {',
+      '.rw-chip {',
+      '.rw-segmented {',
+      '.rw-status-bar {',
+    ]) {
+      expect(SKIN_CSS, `形态类 ${cls} 缺失（S-4：禁逐页各写一份）`).toContain(cls)
+    }
+  })
+
+  it('形态类禁裸 --n-* 引用（普通 div 取不到 naive 变量，须消费 --rw-*）', () => {
+    // 背景：--n-color/--n-border-color 只存在于 naive 组件根（n-card/n-config-provider），
+    // body/#app 直下及普通 div 解析为空；--n-color-hover/--n-text-color-2 名称根本不存在。
+    const blocks = SKIN_CSS.match(/\.rw-(?:action-card|row-card|status-bar|chip|segmented)[a-z_-]*\s*\{[^}]*\}/g) ?? []
+    expect(blocks.length, '未提取到形态类规则块').toBeGreaterThanOrEqual(10)
+    for (const block of blocks) {
+      expect(block, `形态类规则引用了不存在的 naive 变量：\n${block}`).not.toMatch(/var\(--n-/)
+    }
+  })
+})

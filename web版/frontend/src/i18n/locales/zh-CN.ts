@@ -206,6 +206,11 @@ export default {
     jobsEmpty: '当前没有进行中的任务',
     tasksAutoNote: '任务列表每 15 秒自动刷新',
     loadFailed: '加载失败：{message}',
+    // P6 GlobalStatusBar：全局进度常驻条（Abort 二段按后端缺口暂缺，见组件注释）
+    statusBar: {
+      stop: '停止',
+      throttle: '限速',
+    },
   },
   job: {
     percent: '进度',
@@ -642,8 +647,9 @@ export default {
     // 目标位置列表（对齐 Duplicati destination 模块）：顶部新增操作卡 + 行卡
     listAddTitle: '新增仓库',
     listAddDesc: '配置新的存储位置：本地路径、S3、B2、SFTP、rclone 等后端。',
+    // add-new 卡与列表之间的分隔文案（Duplicati destinations.html：仅在有列表时渲染）
+    listManageDivider: '或管理已保存的仓库',
     currentConfigTitle: '当前仓库配置',
-    newRepo: '新建仓库',
     newRepoTitle: '新建仓库',
     editRepoTitle: '编辑仓库',
     colId: '仓库 ID',
@@ -921,6 +927,8 @@ export default {
     goJobs: '前往任务历史',
   },
   settings: {
+    // P6：SegmentedTabs 分段条 aria-label（共用组件消费位）
+    sectionsAria: '设置分区',
     dump: {
       title: '数据库导出',
       desc: 'dump 挂在备份任务调度链前：成功导出的 SQL 产物存于 /data/dump 并按保留天数清理；dump 失败会阻断本次备份并触发告警。',

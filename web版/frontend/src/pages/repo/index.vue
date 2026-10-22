@@ -6,6 +6,7 @@ import {
   NButton,
   NCard,
   NCheckbox,
+  NDivider,
   NForm,
   NFormItem,
   NGrid,
@@ -58,12 +59,17 @@ import type {
   RepoUpdateRequest,
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+// P6 形态层：add-new 行动卡（对齐 Duplicati destinations.html：plus-circle + 标题 + 描述，
+// 整卡可点 + Enter/Space）——替代原卡右上角「新建仓库」按钮（用户 2026-10-22 指令改回原样式）。
+import ActionCard from '@/components/dashboard/ActionCard.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 编辑态类型卡共用
 import { backendIcon } from '@/components/icons/BackendIcons'
+// add-new 卡图标（Duplicati destinations.html：plus-circle）
+import { IconPlusCircle } from '@/components/icons/HomeIcons'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'
@@ -1378,14 +1384,20 @@ function formatBytes(value: number): string {
       </n-space>
     </n-card>
     <!-- 仓库列表（R-023）：对齐 Duplicati「目标位置」模块（ngclient backup/destination）——
+         新增入口 = add-new 行动卡（用户 2026-10-22 指令：由卡右上角按钮改回 Duplicati 原样式；
+         早前的大操作卡形态 2026-10-19 曾回退为按钮，现按指令恢复，P6 以共用 ActionCard 落地），
+         下接 divider（仅在有仓库时渲染，对齐 destinations.html）再接仓库行卡。
          行卡 = [类型图标][名称 + 状态标签][地址·主机标识][右侧操作]，整行点击 = 设为当前
-         （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。
-         新增入口 = 卡右上角按钮（用户 2026-10-19 布局指令；早前的大操作卡形态已回退）。 -->
+         （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。 -->
     <n-card :title="t('repo.listTitle')" size="small">
-      <template #header-extra>
-        <n-button size="small" type="primary" secondary @click="openCreate">{{ t('repo.newRepo') }}</n-button>
-      </template>
       <n-space vertical :size="10">
+        <ActionCard
+          :icon="IconPlusCircle"
+          :title="t('repo.listAddTitle')"
+          :description="t('repo.listAddDesc')"
+          @click="openCreate"
+        />
+        <n-divider v-if="repos.length > 0">{{ t('repo.listManageDivider') }}</n-divider>
         <!-- 仓库行卡：整行点击 = 设为当前；当前行高亮且点击空转（已是选中态）。
              交互形态照搬 Duplicati destination.component.html：div + role=button + tabindex=0
              + keydown.enter/space（避免 button 嵌 button 的非法 HTML——行内还有删除按钮）。 -->

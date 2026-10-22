@@ -510,8 +510,11 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    const newBtn = w.findAll('button').find((b) => b.text() === '新建仓库')
-    await newBtn!.trigger('click')
+    // P6：新建入口 = Duplicati add-new 行动卡（div role=button + 「新增仓库」文案，
+    // 非 button 元素——整卡可点形态，契约变更自 2026-10-22 按钮改卡）
+    const newCard = w.find('.rw-action-card')
+    expect(newCard.text()).toContain('新增仓库')
+    await newCard.trigger('click')
     await flushPromises()
 
     // 类型下拉占位符（未选类型时不渲染地址区）
@@ -529,7 +532,7 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    await w.findAll('button').find((b) => b.text() === '新建仓库')!.trigger('click')
+    await w.find('.rw-action-card').trigger('click')
     await flushPromises()
     expect(w.text()).not.toContain('AWS Secret Access Key') // 未选类型时不渲染
 
@@ -555,7 +558,7 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
 
     // 新建态选 s3：地址区 Bucket + 服务器地址 + 凭据区 AWS 默认区域 = 3 个 auto-complete
     // （改版前还有 URL 区域段与 AWS_ENDPOINT_URL 两个，已随冒号方言一同退役）
-    await w.findAll('button').find((b) => b.text() === '新建仓库')!.trigger('click')
+    await w.find('.rw-action-card').trigger('click')
     await flushPromises()
     await w.findComponent(NSelect).vm.$emit('update:value', 's3')
     await flushPromises()
@@ -577,7 +580,7 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    await w.findAll('button').find((b) => b.text() === '新建仓库')!.trigger('click')
+    await w.find('.rw-action-card').trigger('click')
     await flushPromises()
     await w.findComponent(NSelect).vm.$emit('update:value', 'rclone')
     await flushPromises()
@@ -628,7 +631,7 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    await w.findAll('button').find((b) => b.text() === '新建仓库')!.trigger('click')
+    await w.find('.rw-action-card').trigger('click')
     await flushPromises()
     await w.findComponent(NSelect).vm.$emit('update:value', 'local')
     await flushPromises()
@@ -667,9 +670,10 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     await flushPromises()
 
     for (let i = 0; i < 3; i++) {
-      const newBtn = w.findAll('button').find((b) => b.text() === '新建仓库')
-      expect(newBtn).toBeTruthy()
-      await newBtn!.trigger('click')
+      // P6：新建入口为 add-new 行动卡（div role=button），非 button 元素
+      const newCard = w.find('.rw-action-card')
+      expect(newCard.exists()).toBe(true)
+      await newCard.trigger('click')
       await flushPromises()
       // 每轮恰好一个底栏、两枚按钮（取消 + 主按钮「创建并测试」）——累积即回归
       expect(w.findAll('.repo__form-footer').length).toBe(1)

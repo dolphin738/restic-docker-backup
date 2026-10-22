@@ -205,6 +205,12 @@ export default {
     jobsEmpty: 'No running jobs',
     tasksAutoNote: 'Task list refreshes every 15s',
     loadFailed: 'Load failed: {message}',
+    // P6 GlobalStatusBar: persistent global progress bar (Abort second stage omitted
+    // pending the backend gap — see component comment)
+    statusBar: {
+      stop: 'Stop',
+      throttle: 'Throttle',
+    },
   },
   job: {
     percent: 'Progress',
@@ -533,8 +539,10 @@ export default {
     // Destination list (aligned with the Duplicati destination module): top add card + row cards
     listAddTitle: 'Add repository',
     listAddDesc: 'Configure a new storage location: local path, S3, B2, SFTP, rclone and other backends.',
+    // Divider between the add-new card and the list (Duplicati destinations.html:
+    // rendered only when the list is non-empty)
+    listManageDivider: 'Or manage your saved repositories',
     currentConfigTitle: 'Current repository',
-    newRepo: 'New repository',
     newRepoTitle: 'New repository',
     editRepoTitle: 'Edit repository',
     colId: 'Repository ID',
@@ -923,6 +931,8 @@ export default {
     goJobs: 'Go to jobs',
   },
   settings: {
+    // P6: aria-label for the SegmentedTabs bar (shared component consumer)
+    sectionsAria: 'Settings sections',
     dump: {
       title: 'Database dump',
       desc: 'The dump phase runs before each backup job in the schedule chain: exported SQL artifacts land in /data/dump and are cleaned up by the retention days. A failed dump blocks the backup and triggers an alert.',
