@@ -6,7 +6,6 @@ import {
   NButton,
   NCard,
   NCheckbox,
-  NDivider,
   NForm,
   NFormItem,
   NGrid,
@@ -1386,7 +1385,7 @@ function formatBytes(value: number): string {
     <!-- 仓库列表（R-023）：对齐 Duplicati「目标位置」模块（ngclient backup/destination）——
          新增入口 = add-new 行动卡（用户 2026-10-22 指令：由卡右上角按钮改回 Duplicati 原样式；
          早前的大操作卡形态 2026-10-19 曾回退为按钮，现按指令恢复，P6 以共用 ActionCard 落地），
-         下接 divider（仅在有仓库时渲染，对齐 destinations.html）再接仓库行卡。
+         add-new 卡下直接接仓库行卡（用户 2026-10-22 指令去掉「或管理已保存的仓库」分隔文案，不留空 divider）。
          行卡 = [类型图标][名称 + 状态标签][地址·主机标识][右侧操作]，整行点击 = 设为当前
          （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。 -->
     <n-card :title="t('repo.listTitle')" size="small">
@@ -1397,7 +1396,6 @@ function formatBytes(value: number): string {
           :description="t('repo.listAddDesc')"
           @click="openCreate"
         />
-        <n-divider v-if="repos.length > 0">{{ t('repo.listManageDivider') }}</n-divider>
         <!-- 仓库行卡：整行点击 = 设为当前；当前行高亮且点击空转（已是选中态）。
              交互形态照搬 Duplicati destination.component.html：div + role=button + tabindex=0
              + keydown.enter/space（避免 button 嵌 button 的非法 HTML——行内还有删除按钮）。 -->

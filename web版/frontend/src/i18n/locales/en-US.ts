@@ -539,9 +539,6 @@ export default {
     // Destination list (aligned with the Duplicati destination module): top add card + row cards
     listAddTitle: 'Add repository',
     listAddDesc: 'Configure a new storage location: local path, S3, B2, SFTP, rclone and other backends.',
-    // Divider between the add-new card and the list (Duplicati destinations.html:
-    // rendered only when the list is non-empty)
-    listManageDivider: 'Or manage your saved repositories',
     currentConfigTitle: 'Current repository',
     newRepoTitle: 'New repository',
     editRepoTitle: 'Edit repository',

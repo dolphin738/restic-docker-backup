@@ -647,8 +647,6 @@ export default {
     // 目标位置列表（对齐 Duplicati destination 模块）：顶部新增操作卡 + 行卡
     listAddTitle: '新增仓库',
     listAddDesc: '配置新的存储位置：本地路径、S3、B2、SFTP、rclone 等后端。',
-    // add-new 卡与列表之间的分隔文案（Duplicati destinations.html：仅在有列表时渲染）
-    listManageDivider: '或管理已保存的仓库',
     currentConfigTitle: '当前仓库配置',
     newRepoTitle: '新建仓库',
     editRepoTitle: '编辑仓库',
