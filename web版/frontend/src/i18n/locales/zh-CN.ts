@@ -210,6 +210,12 @@ export default {
     statusBar: {
       stop: '停止',
     },
+    actions: {
+      newTask: '新建备份任务',
+      newTaskDesc: '配置定时备份计划，守护你的文件',
+      restore: '恢复文件',
+      restoreDesc: '从已有快照取回文件到任意位置',
+    },
   },
   job: {
     percent: '进度',

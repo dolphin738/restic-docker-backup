@@ -210,6 +210,12 @@ export default {
     statusBar: {
       stop: 'Stop',
     },
+    actions: {
+      newTask: 'New backup task',
+      newTaskDesc: 'Set up a scheduled backup plan to protect your files',
+      restore: 'Restore files',
+      restoreDesc: 'Retrieve files from a snapshot to any location',
+    },
   },
   job: {
     percent: 'Progress',

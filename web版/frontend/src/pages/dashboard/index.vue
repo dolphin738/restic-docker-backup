@@ -24,12 +24,14 @@ import { hasCode, isAppError } from '@/api/http'
 import { cancelJob, createJob } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import type { TaskCard as TaskCardModel } from '@/api/types'
+import ActionCard from '@/components/dashboard/ActionCard.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import { useCountUp } from '@/composables/useCountUp'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTimeOr } from '@/utils/datetime'
+import { IconFolderOpen, IconPlusCircle } from '@/components/icons/HomeIcons'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -123,6 +125,10 @@ async function invalidateTasks(): Promise<void> {
 
 function goNewTask(): void {
   void router.push({ name: 'task-new' })
+}
+
+function goRestore(): void {
+  void router.push({ name: 'restore' })
 }
 
 function onEdit(taskId: number): void {
@@ -289,6 +295,26 @@ async function onDeleteConfirmed(): Promise<void> {
       </n-gi>
     </n-grid>
 
+    <!-- D1 双行动卡行（P7：Duplicati 主页 Backups/Restores 对位；整卡可点 + Enter/Space） -->
+    <n-grid cols="1 l:2" :x-gap="12" :y-gap="12" responsive="screen" class="home__actions">
+      <n-gi>
+        <ActionCard
+          :icon="IconPlusCircle"
+          :title="t('dashboard.actions.newTask')"
+          :description="t('dashboard.actions.newTaskDesc')"
+          @click="goNewTask"
+        />
+      </n-gi>
+      <n-gi>
+        <ActionCard
+          :icon="IconFolderOpen"
+          :title="t('dashboard.actions.restore')"
+          :description="t('dashboard.actions.restoreDesc')"
+          @click="goRestore"
+        />
+      </n-gi>
+    </n-grid>
+
     <!-- 运行告警行（原状态卡内 alerts 上提为整宽） -->
     <n-space vertical :size="8">
       <n-alert
@@ -305,10 +331,6 @@ async function onDeleteConfirmed(): Promise<void> {
 
     <!-- 备份任务卡片列表（主内容） -->
     <n-card :title="t('task.card.title')" size="small">
-      <template #header-extra>
-        <n-button size="small" type="primary" @click="goNewTask">{{ t('task.new') }}</n-button>
-      </template>
-
       <n-alert v-if="tasksError" type="error" :show-icon="false">
         {{ t('dashboard.loadFailed', { message: tasksError }) }}
       </n-alert>
