@@ -1,0 +1,114 @@
+/**
+ * P5 令牌层皮肤（UI全量改造方案 §4.6.4 彻底档 / §4.7 P5）。
+ *
+ * 口径纪律（§4.6.4）：数值只出现在 theme/tokens.ts 与本文件，页面零硬编码。
+ * 本文件负责 tokens.ts 覆盖不到的三类事：
+ *   ① 间距节奏六档的 CSS 变量与工具类（与 tokens.ts 的 spacing 常量同源，spec 护栏）；
+ *   ② 卡片三档阴影（rest / hover / pressed，亮/暗各一套）——naive 的 Card 主题只有
+ *      单个 boxShadow 变量且仅服务于 .n-card--hoverable:hover，三档 + 100ms 过渡
+ *      无法全走主题变量，故阴影三档以本文件为唯一定义处（tokens.ts 不重复定义）；
+ *   ③ 暗色钩子类 .rw-dark —— naive 只暴露组件级 --n-* 变量、无全局暗色皮肤变量，
+ *      且 n-modal/n-drawer 的 portal 子树断继承，故由 main.ts 按 ui.isDark 把类挂到
+ *      documentElement（与 --font-family-mono 同模式）。
+ */
+
+:root {
+  /* 间距节奏（px）：4 / 8 / 12 / 16 / 24 / 32 —— 与 tokens.ts spacing 同源 */
+  --rw-space-1: 4px;
+  --rw-space-2: 8px;
+  --rw-space-3: 12px;
+  --rw-space-4: 16px;
+  --rw-space-5: 24px;
+  --rw-space-6: 32px;
+
+  /* 卡片三档阴影（亮）：rest 取 UI界面设计方案 §3.3 卡片值 0 1px 3px rgba(15,23,42,.08)；
+     hover / pressed 为「内缩」档——模糊半径递减、浓度微增，按压时逐级收紧。 */
+  --rw-shadow-rest: 0 1px 3px rgba(15, 23, 42, 0.08);
+  --rw-shadow-hover: 0 1px 2px rgba(15, 23, 42, 0.12);
+  --rw-shadow-pressed: 0 1px 1px rgba(15, 23, 42, 0.16);
+
+  /* 与 naive cubicBezierEaseInOut 同值；skin 自有类（portal 内）不依赖 naive 变量作用域 */
+  --rw-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 暗色三档阴影：低透明度黑。§4.6.4 要求「亮/暗各一套值」；强度刻意克制，
+   规避 UI界面设计方案 §3.3 警示的暗色「发灰糊一片」（暗色层次仍以 cardColor/borderColor 两档亮度差为主）。 */
+.rw-dark {
+  --rw-shadow-rest: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --rw-shadow-hover: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --rw-shadow-pressed: 0 1px 1px rgba(0, 0, 0, 0.48);
+}
+
+/* ─── 间距工具类：六档 × gap / padding / padding-inline / padding-block / margin-top / margin-bottom ───
+   消费位：P6 共用形态层（行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条）与 P7 主页复刻；
+   此前页面各写各的（8/12/16 混用）在本批只提供基础设施，逐页收敛属 P12/P13。 */
+.rw-gap-1 { gap: var(--rw-space-1); }
+.rw-gap-2 { gap: var(--rw-space-2); }
+.rw-gap-3 { gap: var(--rw-space-3); }
+.rw-gap-4 { gap: var(--rw-space-4); }
+.rw-gap-5 { gap: var(--rw-space-5); }
+.rw-gap-6 { gap: var(--rw-space-6); }
+
+.rw-p-1 { padding: var(--rw-space-1); }
+.rw-p-2 { padding: var(--rw-space-2); }
+.rw-p-3 { padding: var(--rw-space-3); }
+.rw-p-4 { padding: var(--rw-space-4); }
+.rw-p-5 { padding: var(--rw-space-5); }
+.rw-p-6 { padding: var(--rw-space-6); }
+
+.rw-px-1 { padding-inline: var(--rw-space-1); }
+.rw-px-2 { padding-inline: var(--rw-space-2); }
+.rw-px-3 { padding-inline: var(--rw-space-3); }
+.rw-px-4 { padding-inline: var(--rw-space-4); }
+.rw-px-5 { padding-inline: var(--rw-space-5); }
+.rw-px-6 { padding-inline: var(--rw-space-6); }
+
+.rw-py-1 { padding-block: var(--rw-space-1); }
+.rw-py-2 { padding-block: var(--rw-space-2); }
+.rw-py-3 { padding-block: var(--rw-space-3); }
+.rw-py-4 { padding-block: var(--rw-space-4); }
+.rw-py-5 { padding-block: var(--rw-space-5); }
+.rw-py-6 { padding-block: var(--rw-space-6); }
+
+.rw-mt-1 { margin-top: var(--rw-space-1); }
+.rw-mt-2 { margin-top: var(--rw-space-2); }
+.rw-mt-3 { margin-top: var(--rw-space-3); }
+.rw-mt-4 { margin-top: var(--rw-space-4); }
+.rw-mt-5 { margin-top: var(--rw-space-5); }
+.rw-mt-6 { margin-top: var(--rw-space-6); }
+
+.rw-mb-1 { margin-bottom: var(--rw-space-1); }
+.rw-mb-2 { margin-bottom: var(--rw-space-2); }
+.rw-mb-3 { margin-bottom: var(--rw-space-3); }
+.rw-mb-4 { margin-bottom: var(--rw-space-4); }
+.rw-mb-5 { margin-bottom: var(--rw-space-5); }
+.rw-mb-6 { margin-bottom: var(--rw-space-6); }
+
+/* ─── 卡片层级：1px 边框（naive 既有）+ 三档阴影 + hover 内缩过渡 100ms ───
+ *
+ * rest 档：naive 基础 .n-card 无 box-shadow 规则，此处无同特异性竞争，直接生效。
+ * hover 档：naive 的 .n-card--hoverable:hover { box-shadow: var(--n-box-shadow) } 特异性 0-2-0，
+ *   且 naive 样式运行时注入、源序在本文件之后——单类规则写不赢，故双类提升至 0-3-0。
+ *   （本应用暂无页面使用 hoverable prop；此规则服务 P6/P7 行动卡与日后显式 hoverable 卡片。）
+ * 过渡：仅把 box-shadow 时长改为 100ms（方案「hover 阴影内缩过渡 100ms」），
+ *   其余三项维持 naive 原值；双类提升同理（naive 基础 .n-card 也声明了 transition）。
+ * pressed 档：n-card 无按压态，供 P6/P7 行卡片 / 行动卡按压时挂载。 */
+.n-card {
+  box-shadow: var(--rw-shadow-rest);
+}
+
+.n-card.n-card--hoverable:hover {
+  box-shadow: var(--rw-shadow-hover);
+}
+
+.n-card.n-card {
+  transition:
+    color 0.3s var(--n-bezier),
+    background-color 0.3s var(--n-bezier),
+    box-shadow 100ms var(--rw-ease),
+    border-color 0.3s var(--n-bezier);
+}
+
+.rw-card--pressed {
+  box-shadow: var(--rw-shadow-pressed);
+}

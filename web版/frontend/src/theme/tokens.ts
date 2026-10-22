@@ -1,7 +1,11 @@
-/** 设计令牌：全项目唯一色值 / 等宽字体常量来源。
+/** 设计令牌：全项目唯一色值 / 等宽字体 / 间距节奏 / 圆角与密度档位来源。
  *
  * 基线：docs/UI界面设计方案.md（视觉令牌唯一权威）；docs/UI全量改造方案.md v1.5 管第二轮功能面
  * （文档管理规范 v1.9：owner 已撤销其「已作废」判定，两文档分工 = 视觉基线 ↔ 功能面呈现）。
+ *
+ * P5（§4.7 统一批次表，2026-10-22）起新增组件级覆盖：口径 = §4.6.4 彻底档唯一数值表，
+ * 亮/暗两份同批同键（__tests__/tokens.spec.ts 护栏）；卡片三档阴影只落 theme/skin.css
+ * （本文件不重复定义阴影值）。
  *
  * 纪律：
  * - 其他文件不得硬编码此处色值（单一事实来源）；
@@ -13,7 +17,96 @@
 
 import type { GlobalThemeOverrides } from 'naive-ui'
 
-/** 亮色主题覆盖：UI界面设计方案 §2.1（AA 对比度实测值）。 */
+// ─── P5 彻底档（§4.6.4）：控件密度 ───────────────────────────────────────────
+
+/** 按钮/输入四档行高：naive 默认 22/28/34/40 不在 4 的倍数节奏上，
+ *  彻底档取 28/32/36/40（方案「行高 32/36/40」三个主档 + tiny 补齐 4px 阶梯）。 */
+const CONTROL_HEIGHTS = {
+  heightTiny: '28px',
+  heightSmall: '32px',
+  heightMedium: '36px',
+  heightLarge: '40px',
+} as const
+
+/** 控件圆角（按钮/输入）：§4.6.4 彻底档 10px。
+ *
+ *  已知偏差（待 owner 仲裁）：naive 2.43 的 Select / AutoComplete / Cascader / TreeSelect
+ *  无独立主题变量，trigger 圆角随 common.borderRadius（12px）——方案表「Input/Select 10」中
+ *  Select 一档无法经主题变量达成；按 §4.6.3「不改 Naive 内部结构」纪律，不写内部类选择器覆盖，
+ *  故 Select 族落 12、Input/Button 落 10。若 naive 后续提供 Select.borderRadius 再对齐。 */
+const CONTROL_RADIUS = '10px'
+
+/** 卡片 / 弹层圆角（Card / Dialog；n-modal preset=card 的内层卡片随 Card）。 */
+const CARD_RADIUS = '16px'
+
+/** 标签药丸圆角：§4.6.4 彻底档 999px（round prop 的 calc(height/2) 修饰仍优先）。 */
+const TAG_RADIUS = '999px'
+
+/** 表格行高 40 的推导值：行高 = 9（上 padding）+ 21（lineHeight 1.5 × 14px）+ 9（下 padding）+ 1（分隔线）。
+ *
+ *  thPadding 必须保持**单值**：naive 在 expand 列用了 `margin: calc(var(--n-th-padding) * -1)`、
+ *  在 sortable+filterable 表头用了 `padding-right: calc(var(--n-th-padding) + 36px)`，
+ *  两值（如 '9px 8px'）会令 calc 失效、静默丢声明。横向 padding 因此在单值约束下随纵向
+ *  定为 9px（small 8→9、medium/large 12→9）；th/td 同值保持列对齐。 */
+const TABLE_CELL_PADDING = '9px'
+
+/** 表格正文行高 1.6→1.5：为「行高 40」让出 1.4px（22.4→21），配合 9px 上下 padding 精确命中 40。
+ *  line-height 挂在 .n-data-table-wrapper 上，th/td 继承。 */
+const TABLE_LINE_HEIGHT = '1.5'
+
+/** 标签「无边框实心五态」：默认态 + 五语义态边框全部置无。
+ *
+ *  n-tag 的边框渲染在绝对定位的 __border 子元素上（border: var(--n-border)），
+ *  置 'none' 即消除视觉边框而保留元素；底色仍取 colorBordered{Type}（hue@.1 浅底），
+ *  「实心浅底 + 彩色文字 + 药丸」形态不变。 */
+const NO_TAG_BORDER = {
+  border: 'none',
+  borderPrimary: 'none',
+  borderInfo: 'none',
+  borderSuccess: 'none',
+  borderWarning: 'none',
+  borderError: 'none',
+} as const
+
+/** 组件级形态/密度覆盖：与主题色无关，亮/暗两份同批同值（spec 校验两份键集一致）。
+ *  Card 不在此列——其圆角随两份主题各自给出（阴影三档统一只落 skin.css）。 */
+const controlShapeOverrides: GlobalThemeOverrides = {
+  Button: {
+    ...CONTROL_HEIGHTS,
+    borderRadiusTiny: CONTROL_RADIUS,
+    borderRadiusSmall: CONTROL_RADIUS,
+    borderRadiusMedium: CONTROL_RADIUS,
+    borderRadiusLarge: CONTROL_RADIUS,
+  },
+  Input: { ...CONTROL_HEIGHTS, borderRadius: CONTROL_RADIUS },
+  Tag: { borderRadius: TAG_RADIUS, ...NO_TAG_BORDER },
+  Dialog: { borderRadius: CARD_RADIUS },
+  DataTable: {
+    lineHeight: TABLE_LINE_HEIGHT,
+    thPaddingSmall: TABLE_CELL_PADDING,
+    thPaddingMedium: TABLE_CELL_PADDING,
+    thPaddingLarge: TABLE_CELL_PADDING,
+    tdPaddingSmall: TABLE_CELL_PADDING,
+    tdPaddingMedium: TABLE_CELL_PADDING,
+    tdPaddingLarge: TABLE_CELL_PADDING,
+  },
+}
+
+// ─── P5 彻底档（§4.6.4）：间距节奏 ──────────────────────────────────────────
+
+/** 间距节奏六档（对应模版 p2r() 节奏）：页面/共用组件一律取此档，禁止各写各的。
+ *  skin.css 的 `--rw-space-1..6` 变量与 `.rw-*` 工具类与此常量同源
+ *  （__tests__/tokens.spec.ts 跨文件同步护栏，防两处漂移）。 */
+export const spacing = {
+  1: 4,
+  2: 8,
+  3: 12,
+  4: 16,
+  5: 24,
+  6: 32,
+} as const
+
+/** 亮色主题覆盖：UI界面设计方案 §2.1（AA 对比度实测值）+ §4.6.4 彻底档组件级形态。 */
 export const lightThemeOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#3D5BD9',
@@ -49,13 +142,16 @@ export const lightThemeOverrides: GlobalThemeOverrides = {
     actionColor: '#F5F6FA',
     hoverColor: '#F5F6FA',
     pressedColor: '#E9ECF6',
-    borderRadius: '8px',
-    borderRadiusSmall: '6px',
+    borderRadius: '12px',
+    borderRadiusSmall: '8px',
   },
+  Card: { borderRadius: CARD_RADIUS },
+  ...controlShapeOverrides,
 }
 
 /** 暗色主题覆盖：UI界面设计方案 §2.2（独立调校，非反色）；
- * success/warning/error 三组色值方案未列改动，沿用既有暗色值。 */
+ * success/warning/error 三组色值方案未列改动，沿用既有暗色值；
+ * 组件级形态与亮色同批同值（§4.6.4「亮/暗同批改」）。 */
 export const darkThemeOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#7C93F5',
@@ -88,9 +184,11 @@ export const darkThemeOverrides: GlobalThemeOverrides = {
     popoverColor: '#232733',
     tableColor: '#191C24',
     borderColor: '#31364A',
-    borderRadius: '8px',
-    borderRadiusSmall: '6px',
+    borderRadius: '12px',
+    borderRadiusSmall: '8px',
   },
+  Card: { borderRadius: CARD_RADIUS },
+  ...controlShapeOverrides,
 }
 
 /** 数据 / 路径 / id / cron 等宽字体栈（UI界面设计方案 §3.1）。
