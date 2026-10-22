@@ -290,16 +290,19 @@ export default {
   },
   task: {
     card: { title: '备份任务' },
+    name: '任务名称',
     new: '新建备份任务',
     edit: '编辑任务',
     delete: '删除任务',
     export: '导出任务配置',
     menu: '更多操作',
+    actions: '操作',
     start: '立即运行',
     startSubmitted: '已触发立即运行，进度见任务卡片',
     cancel: '取消运行',
     logs: '查看日志',
     status: {
+      label: '状态',
       running: '运行中',
       pending: '等待中',
       success: '上次成功',
@@ -326,6 +329,7 @@ export default {
     duration: '耗时',
     restore: '从快照恢复',
     verify: '校验备份',
+    verifySubmitted: '已触发校验任务，进度见任务卡片',
     snapshotCount: '{n} 个快照',
   },
   wizard: {

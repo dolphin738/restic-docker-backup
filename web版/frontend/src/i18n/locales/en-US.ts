@@ -288,16 +288,19 @@ export default {
   },
   task: {
     card: { title: 'Backup tasks' },
+    name: 'Task name',
     new: 'New backup task',
     edit: 'Edit task',
     delete: 'Delete task',
     export: 'Export task config',
     menu: 'More actions',
+    actions: 'Actions',
     start: 'Run now',
     startSubmitted: 'Run triggered — see the task card for progress',
     cancel: 'Cancel run',
     logs: 'View log',
     status: {
+      label: 'Status',
       running: 'Running',
       pending: 'Pending',
       success: 'Last run OK',
@@ -324,6 +327,7 @@ export default {
     duration: 'Duration',
     restore: 'Restore from snapshot',
     verify: 'Verify backup',
+    verifySubmitted: 'Verification job triggered — progress shown on the task card',
     snapshotCount: '{n} snapshots',
   },
   wizard: {

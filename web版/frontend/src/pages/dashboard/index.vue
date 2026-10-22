@@ -29,6 +29,7 @@ import type { TaskCard as TaskCardModel } from '@/api/types'
 import ActionCard from '@/components/dashboard/ActionCard.vue'
 import GlobalStatusBar from '@/components/dashboard/GlobalStatusBar.vue'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
+import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -269,37 +270,50 @@ const detailColumns = computed(() => [
   {
     title: t('task.actions'),
     key: 'actions',
-    width: 200,
+    width: 100,
     render: (row: TaskCardModel) => renderRowActions(row),
   },
 ])
 
-/** details 表格操作区（D8 之前先用按钮组，D8 接入 TaskActionsMenu 后再替换）。 */
-function renderRowActions(row: TaskCardModel) {
+/** details 行菜单分组（D8：与 TaskCard 三点菜单同口径——Operations/Advanced/Danger）。 */
+function rowGroups(row: TaskCardModel) {
   const isActive = row.status === 'running' || row.status === 'pending'
-  const nodes: ReturnType<typeof h>[] = []
-  if (isActive && row.running_job_id) {
-    nodes.push(
-      h(NButton, { size: 'small', onClick: () => void onCancel(row.running_job_id!) }, { default: () => t('task.cancel') }),
-    )
-  } else {
-    nodes.push(
-      h(
-        NButton,
-        { size: 'small', type: 'primary', disabled: row.dry_run_pending, onClick: () => void onStart(row.id) },
-        { default: () => t('task.start') },
-      ),
-    )
+  return [
+    {
+      actions: [
+        { key: 'edit', label: t('task.edit') },
+        { key: 'restore', label: t('task.restore') },
+      ],
+    },
+    {
+      actions: [{ key: 'verify', label: t('task.verify') }],
+    },
+    {
+      label: t('delete.title'),
+      actions: [{ key: 'delete', label: t('task.delete'), disabled: isActive }],
+    },
+  ]
+}
+
+function onRowMenuSelect(key: string, row: TaskCardModel): void {
+  if (key === 'edit') {
+    onEdit(row.id)
+  } else if (key === 'delete') {
+    askDelete(row.id)
+  } else if (key === 'restore') {
+    goRestore()
+  } else if (key === 'verify') {
+    void onVerify(row.id)
   }
-  nodes.push(h(NButton, { size: 'small', quaternary: true, onClick: () => onEdit(row.id) }, { default: () => t('task.edit') }))
-  nodes.push(
-    h(
-      NButton,
-      { size: 'small', quaternary: true, disabled: isActive, onClick: () => askDelete(row.id) },
-      { default: () => t('task.delete') },
-    ),
-  )
-  return h(NSpace, { size: 8 }, { default: () => nodes })
+}
+
+/** details 表格操作区（D8：接入 TaskActionsMenu，与 list 视图 TaskCard 同三组菜单）。 */
+function renderRowActions(row: TaskCardModel) {
+  return h(TaskActionsMenu, {
+    groups: rowGroups(row),
+    ariaLabel: t('task.menu'),
+    onSelect: (key: string) => onRowMenuSelect(key, row),
+  })
 }
 
 // ---------------------------------------------------------------- 虚拟滚动（固定卡片骨架，仅 list 视图）
@@ -375,6 +389,26 @@ async function onCancel(jobId: string): Promise<void> {
     message.success(t('jobs.cancelSubmitted'))
     await invalidateTasks()
   } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  }
+}
+
+/** 校验备份（D8）：Verify 即 `createJob('check')`（§4.5.4：JobType 含 check，E22 结果视图已落地）。
+ *  与 onStart 同口径：409 JOB_CONFLICT 取 data.running_task_name 提示（US-026-04 AC2）。 */
+async function onVerify(taskId: number): Promise<void> {
+  try {
+    await createJob('check', { taskId })
+    message.success(t('task.verifySubmitted'))
+    await invalidateTasks()
+  } catch (error) {
+    if (hasCode(error, 'JOB_CONFLICT')) {
+      const raw = isAppError(error) ? error.data?.['running_task_name'] : null
+      const name = typeof raw === 'string' && raw ? raw : t('common.none')
+      message.error(t('task.conflict', { name }))
+      return
+    }
     if (!isAppError(error)) {
       throw error
     }
@@ -607,6 +641,8 @@ async function onDeleteConfirmed(): Promise<void> {
               @cancel="onCancel"
               @edit="onEdit"
               @delete="askDelete"
+              @restore="goRestore"
+              @verify="onVerify"
             />
           </div>
         </div>

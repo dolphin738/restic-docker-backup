@@ -21,6 +21,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DashboardPage from '@/pages/dashboard/index.vue'
 import RepoPage from '@/pages/repo/index.vue'
+import TaskCard from '@/components/TaskCard.vue'
+import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
 import { useUiStore } from '@/stores/ui'
@@ -163,7 +165,9 @@ beforeEach(() => {
       enabled: true,
       tag: 'task-1',
       cron: '0 3 * * *',
-      status: 'idle',
+      // 后端 _to_card 派生状态只有 paused/running/pending/last_result/never_run，无 idle
+      // （backup_tasks.py:538-545）；沿用 idle 会触发 [intlify] task.status.idle 缺键噪音。
+      status: 'success',
       last_run_at: '2026-10-19T03:00:00Z',
       last_result: 'success',
       next_run_at: '2026-10-20T03:00:00Z',
@@ -197,6 +201,49 @@ describe('仪表盘 KPI 四卡统一骨架', () => {
     expect(first.findAll('.kpi__row--label .n-button').length).toBe(1) // 刷新
     expect(first.findAll('.kpi__row--main .status-tag').length).toBe(2) // 连接态 + 锁态
     expect(first.find('.kpi__row--sub').text()).toContain('仓库容量')
+    w.unmount()
+  })
+})
+
+/**
+ * D8 三点菜单接线（防「死键」回归）——
+ * 存在理由：D8 首批只在 TaskCard 装了菜单，dashboard 未监听 @restore/@verify，
+ * 菜单可点但无效果；details 视图操作列更是停留在按钮组占位（原注释自承）。
+ * 这两条用例直接驱动菜单 select 并断言落到 createJob('check')，锁死两端接线。
+ */
+describe('仪表盘 D8 三点菜单接线（防死键回归）', () => {
+  it('details 视图：每行操作列渲染三点菜单；select verify → createJob(check, {taskId})', async () => {
+    localStorage.setItem('dashboard:viewMode', 'details')
+    const { createJob } = await import('@/api/jobs')
+    vi.mocked(createJob).mockClear()
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+
+    // 表格渲染 + 操作列已换成三点菜单（非原按钮组占位）
+    expect(w.find('.n-data-table').exists()).toBe(true)
+    const menus = w.findAllComponents(TaskActionsMenu)
+    expect(menus.length).toBe(1)
+
+    menus[0]!.vm.$emit('select', 'verify')
+    await flushPromises()
+    expect(vi.mocked(createJob)).toHaveBeenCalledWith('check', { taskId: 1 })
+
+    w.unmount()
+    localStorage.removeItem('dashboard:viewMode')
+  })
+
+  it('list 视图：任务卡三点菜单 select verify → createJob(check, {taskId})', async () => {
+    const { createJob } = await import('@/api/jobs')
+    vi.mocked(createJob).mockClear()
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+
+    const card = w.findComponent(TaskCard)
+    expect(card.exists()).toBe(true)
+    card.findComponent(TaskActionsMenu).vm.$emit('select', 'verify')
+    await flushPromises()
+    expect(vi.mocked(createJob)).toHaveBeenCalledWith('check', { taskId: 1 })
+
     w.unmount()
   })
 })
