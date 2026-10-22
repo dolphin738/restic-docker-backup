@@ -257,6 +257,7 @@ export default {
     new: 'New backup task',
     edit: 'Edit task',
     delete: 'Delete task',
+    export: 'Export task config',
     menu: 'More actions',
     start: 'Run now',
     startSubmitted: 'Run triggered — see the task card for progress',

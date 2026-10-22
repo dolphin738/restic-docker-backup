@@ -18,6 +18,7 @@ import { passCursor, request } from './http'
 import { useUiStore } from '@/stores/ui'
 import type {
   BackupTask,
+  ConfigExportPack,
   DryRunResponse,
   OkResponse,
   Page,
@@ -67,6 +68,11 @@ export function deleteBackupTask(taskId: number): Promise<OkResponse> {
 /** E36：任务域扫描预览（缺省取任务存量 sources/excludes）；预览成功即清除 dry_run_pending。 */
 export function dryRunBackupTask(taskId: number, payload: TaskDryRunRequest = {}): Promise<DryRunResponse> {
   return request<DryRunResponse>(taskPath(`/${taskId}/dry-run`), { method: 'POST', body: payload })
+}
+
+/** P2：单任务配置导出（复用全局打包管线，kind=backup-task；返回加密包 JSON，客户端落盘）。 */
+export function exportBackupTask(taskId: number, password: string): Promise<ConfigExportPack> {
+  return request<ConfigExportPack>(taskPath(`/${taskId}/export`), { method: 'POST', body: { password } })
 }
 
 // ---------------------------------------------------------------- E05 / E31（向导内源选择与预览）

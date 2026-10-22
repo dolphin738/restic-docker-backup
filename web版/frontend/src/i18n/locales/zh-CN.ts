@@ -257,6 +257,7 @@ export default {
     new: '新建备份任务',
     edit: '编辑任务',
     delete: '删除任务',
+    export: '导出任务配置',
     menu: '更多操作',
     start: '立即运行',
     startSubmitted: '已触发立即运行，进度见任务卡片',

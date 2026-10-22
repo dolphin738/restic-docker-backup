@@ -359,6 +359,10 @@ export interface TaskCard {
   last_run_at: string | null
   /** 最近一次 backup job 终态（success/failed/interrupted/cancelled）。 */
   last_result: string | null
+  /** 最近一次终态 backup 的耗时（毫秒）；无则 null。 */
+  last_duration_ms: number | null
+  /** 该任务快照数（按 task.tag 分组计数）；不可知为 null（不可退化成 0）。 */
+  snapshot_count: number | null
   /** null = 仅手动或已暂停。 */
   next_run_at: string | null
   /** 有活跃 job 时非空（卡片内联进度/取消/日志入口）。 */
