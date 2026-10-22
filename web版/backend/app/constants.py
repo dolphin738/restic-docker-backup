@@ -128,6 +128,9 @@ AUDIT_FORGET_PREVIEW = "forget.preview"  # R-016 E21 预览请求（只读，但
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
 AUDIT_JOB_SUBMIT = "job.submit"
 AUDIT_JOB_CANCEL = "job.cancel"
+# P7 D2 Abort 二段（2026-10-23 owner 裁决 A5）：跳过 SIGTERM 宽限直接 SIGKILL——与 cancel
+# 分动作留痕（规范 §3.1 S6 清单 15→16 项），detail 记 force 与宽限值，不含命令行原文（S3）。
+AUDIT_JOB_ABORT = "job.abort"
 AUDIT_JOB_FINISHED = "job.finished"
 AUDIT_JOB_RECOVERED = "job.recovered"
 AUDIT_CACHE_CLEAR = "cache.clear"
@@ -211,10 +214,22 @@ SNAPSHOT_LIST_TIMEOUT_SECONDS = 20      # snapshots --json 探测超时
 SNAPSHOT_FILES_TIMEOUT_SECONDS = 30     # ls --json 探测超时
 SNAPSHOT_FILES_DEFAULT_LIMIT = 200
 SNAPSHOT_FILES_MAX_LIMIT = 1000
-# 快照列表进程内缓存 TTL（P1 任务卡片 ``snapshot_count``：一次列表按 tag 分组计数，
-# 援 E30 ``REPO_STATUS_CACHE_SECONDS`` 先例；失败结论同样入缓存，避免仓库不可达时
-# 每次列表都空耗一次探测超时）
+# 快照列表进程内缓存 TTL（P1 任务卡片 ``snapshot_count``：一次列表按 tag 分组计数）。
+# **独立常量，不共享 E30 的 ``REPO_STATUS_CACHE_SECONDS``**（B6，owner 2026-10-23 裁决）：
+# 两者关心的对象不同——status 是「此刻能否连通 / 是否上锁」（希望灵敏），snapshot_count 只在
+# 备份终态变化（且 ``invalidate_repo_status_cache`` 已连带清本缓存）→ 各自可调、互不牵连。
 SNAPSHOT_LIST_CACHE_SECONDS = 30.0
+# P1 卡片 ``snapshot_count`` 的探测超时（B4，2026-10-23 裁决）：取 5s 而非列表页的 20s——
+# 它是**附带指标**，不能让主页 GET 列表被仓库不可达拖到 20s。超时/失败结论入缓存并指数退避
+# （见 SnapshotCatalog：30s → 60s → 120s → 240s → 300s 封顶），避免每次 TTL 到期再爆等一次。
+SNAPSHOT_COUNT_TIMEOUT_SECONDS = 5.0
+SNAPSHOT_COUNT_BACKOFF_MAX_SECONDS = 300.0
+# 快照内文件搜索缓存（B3，2026-10-23 裁决）：快照 id 内容不可变 → 缓存只为省重复 ``ls``
+# （游标翻页 / 同一关键词重复搜索）。条目数按 query 维度限 LRU（MAX_ENTRIES），单条命中数
+# 超 MAX_ITEMS 则不缓存（防单字符搜索把整棵快照树钉在内存里）。
+SNAPSHOT_SEARCH_CACHE_SECONDS = 30.0
+SNAPSHOT_SEARCH_CACHE_MAX_ENTRIES = 4
+SNAPSHOT_SEARCH_CACHE_MAX_ITEMS = 50_000
 # P3 快照内文件搜索：关键词长度上限（防超长串拖垮服务端过滤；下限由空串校验兜底）
 SNAPSHOT_SEARCH_QUERY_MAX_LENGTH = 200
 

@@ -24,6 +24,7 @@ from typing import Any
 from app.constants import (
     ACTIVE_JOB_STATUSES,
     AUDIT_COPY_RUN,
+    AUDIT_JOB_ABORT,
     AUDIT_JOB_CANCEL,
     AUDIT_JOB_FINISHED,
     AUDIT_JOB_RECOVERED,
@@ -363,11 +364,18 @@ class JobRunner:
         self._tasks[job_id] = asyncio.create_task(self._run(job), name=f"job-{job_id}")
         return job
 
-    async def cancel(self, job_id: str) -> Job:
+    async def cancel(self, job_id: str, *, force: bool = False) -> Job:
         """取消任务：SIGTERM → 宽限 grace_seconds → SIGKILL，终态 cancelled。
+
+        ``force=True`` 对应 P7 D2 的 **Abort 二段**（Duplicati isStopping→abort 语义，
+        方案 §4.5.4「Abort = grace=0 直杀 + force 参数 + 审计埋点」）：跳过 SIGTERM 与
+        宽限等待，直接 SIGKILL 并立即收尾——用于「已请求停止但迟迟不退出」的场景。
+        审计按动作分流：``job.abort``（force）/ ``job.cancel``（普通），两者 detail 均只记
+        类型与宽限值，**不含命令行原文**（S3 延续）。
 
         Args:
             job_id: 任务 id。
+            force: True = 跳过宽限直接强杀（Abort）；False = 常规 SIGTERM → grace → SIGKILL。
 
         Returns:
             更新后的任务。
@@ -384,13 +392,19 @@ class JobRunner:
 
         proc = self._processes.get(job_id)
         if proc is not None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), self._grace_seconds)
-            except TimeoutError:
-                logger.warning("任务 %s 宽限 %ss 后仍未退出，发送 SIGKILL", job_id, self._grace_seconds)
+            if force:
+                # Abort：跳过宽限，直接 SIGKILL（restic 未落盘的部分由下次增量补齐）
+                logger.warning("任务 %s Abort（force）：跳过 %ss 宽限，直接 SIGKILL", job_id, self._grace_seconds)
                 proc.kill()
                 await proc.wait()
+            else:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), self._grace_seconds)
+                except TimeoutError:
+                    logger.warning("任务 %s 宽限 %ss 后仍未退出，发送 SIGKILL", job_id, self._grace_seconds)
+                    proc.kill()
+                    await proc.wait()
 
         task = self._tasks.pop(job_id, None)
         if task is not None and not task.done():
@@ -398,8 +412,15 @@ class JobRunner:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-        await self._jobs.finalize(job_id, "cancelled", exit_code=-1, summary="用户取消")
-        await self._audit.record(AUDIT_JOB_CANCEL, target=job_id, detail={"type": job.type}, result="ok")
+        await self._jobs.finalize(
+            job_id, "cancelled", exit_code=-1, summary="用户强制中止（Abort）" if force else "用户取消"
+        )
+        await self._audit.record(
+            AUDIT_JOB_ABORT if force else AUDIT_JOB_CANCEL,
+            target=job_id,
+            detail={"type": job.type, "force": force, "grace_seconds": 0 if force else self._grace_seconds},
+            result="ok",
+        )
         updated = await self._jobs.get(job_id)
         return updated or job
 

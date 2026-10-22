@@ -83,6 +83,7 @@ from app.schemas.api_schemas import (
 )
 from app.schemas.enums import AuditResult
 from app.services.config_transfer import (
+    PACK_KIND_TASK,
     ImportReport,
     build_export_pack,
     creds_to_import,
@@ -427,11 +428,16 @@ async def import_config(
 ) -> ConfigImportReport:
     """批次 E：配置导入（先仓后任务；冲突默认跳过，``replace_existing`` 整体替换）。
 
+    **按包形态分流（方案 §4.5.9 R-5）**：``kind=backup-task``（单任务导出包）只按任务维度
+    落地——**不写全局 notify/behavior**（那是全量包的语义），且**不套用全量包的覆盖语义**
+    （即使带 ``replace_existing=true`` 也不覆盖同仓同名任务，一律跳过并在报告里说明）。
+    ``kind=full`` / 旧包（无 kind 字段）走原全量语义。
+
     - 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过（覆盖则更新）；
-    - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在跳过（覆盖则更新）；
+    - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在跳过（全量包覆盖则更新）；
       ``mirror_repo_ids`` 接上前校验「id 在包内且 url 一致」，否则置空 + 警告；
     - 凭据（``cred.*`` 与敏感 ``notify.*``）从加密段解出后写入（ConfigRepo 透明加密）；
-    - 导入留审计 ``config.import``（detail 只含计数与 replace_existing，绝不含凭据/包原文）。
+    - 导入留审计 ``config.import``（detail 只含 kind/计数与 replace_existing，绝不含凭据/包原文）。
     """
     config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
@@ -439,6 +445,8 @@ async def import_config(
     audit = request.app.state.audit
 
     parsed = parse_export_pack(payload.pack, payload.password)
+    kind = str(parsed["kind"])
+    is_task_pack = kind == PACK_KIND_TASK
     report = ImportReport()
     pack_urls = {str(r.get("id") or ""): r.get("url") for r in parsed["repos"]}
     repo_final_urls: dict[str, str | None] = {}
@@ -505,23 +513,33 @@ async def import_config(
         if current is None:
             await task_repo.create(values)
             report.tasks_created.append(name)
-        elif payload.replace_existing:
+        elif payload.replace_existing and not is_task_pack:
             await task_repo.update(int(current["id"]), values)
             report.tasks_updated.append(name)
+        elif is_task_pack:
+            report.tasks_skipped.append(
+                {"name": name, "reason": "单任务包不覆盖已有任务（如需替换请在任务页手工编辑）"}
+            )
         else:
             report.tasks_skipped.append({"name": name, "reason": "同仓同名任务已存在（如需替换请勾选覆盖导入）"})
 
     # 4. 通知配置（明文键 + 加密段敏感键合并写入）
-    notify_pairs = notify_pairs_to_import(parsed["notify"], parsed["creds"])
-    notify_written, notify_warnings = await _set_config_pairs(config_repo, notify_pairs)
-    report.notify_updated = notify_written
-    for warning in notify_warnings:
-        report.mirror_warnings.append({"mirror_id": "(config)", "reason": f"{warning['key']}：{warning['reason']}"})
+    #    单任务包不带全局设置：整段跳过——否则空 notify 段会被读成「把全局通知清空」的意图
+    #    （方案 §4.5.9 R-5：单任务包绝不套用全量包语义）。
+    if is_task_pack:
+        report.notify_updated = 0
+    else:
+        notify_pairs = notify_pairs_to_import(parsed["notify"], parsed["creds"])
+        notify_written, notify_warnings = await _set_config_pairs(config_repo, notify_pairs)
+        report.notify_updated = notify_written
+        for warning in notify_warnings:
+            report.mirror_warnings.append({"mirror_id": "(config)", "reason": f"{warning['key']}：{warning['reason']}"})
 
     await audit.record(
         AUDIT_CONFIG_IMPORT,
         target="config",
         detail={
+            "kind": kind,
             "replace_existing": payload.replace_existing,
             "repos_created": len(report.repos_created),
             "repos_updated": len(report.repos_updated),

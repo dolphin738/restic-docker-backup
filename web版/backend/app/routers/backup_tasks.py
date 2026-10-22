@@ -152,7 +152,9 @@ async def list_tasks(
             active_by_task.setdefault(job.task_id, job)
     latest_results = await job_repo.latest_backup_by_tasks([task.id for task in tasks])
     durations = await job_repo.latest_backup_duration_ms_by_tasks([task.id for task in tasks])
-    snapshot_counts = await _snapshot_counts_by_tag(request, repo_id)
+    # B4（owner 2026-10-23 裁决）：任务为空时不做快照探测（否则空列表也白跑一次 5s 级子进程）；
+    # 探测超时与失败退避由 SnapshotCatalog 内部承担（5s + 指数退避），路由层不再阻塞 20s。
+    snapshot_counts = await _snapshot_counts_by_tag(request, repo_id) if tasks else None
 
     cards = [
         await _to_card(

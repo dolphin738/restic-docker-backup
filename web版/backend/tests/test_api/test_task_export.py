@@ -170,3 +170,43 @@ async def test_parse_defaults_missing_kind_to_full(app_client):
     pack = resp.json()
     assert pack["kind"] == PACK_KIND_FULL
     assert parse_export_pack(pack, PASSWORD)["kind"] == PACK_KIND_FULL
+
+
+async def test_import_task_pack_skips_global_notify_and_never_overwrites(app_client):
+    """单任务包导入按 kind 分流（方案 §4.5.9 R-5）：不碰全局 notify，且不覆盖已有任务。
+
+    三条断言对应 R-5 的三个「绝不」：
+    1. 即使 ``replace_existing=true`` 也不覆盖同仓同名任务（单任务包没有全量覆盖语义）；
+    2. 全局 ``notify.*`` 一个字节都不动（包内无全局设置，空段不得被读成「清空」意图）；
+    3. 审计 detail 记 ``kind=backup-task``，便于事后区分两种导入。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    task = await _create_task(ns, cron="0 3 * * *")
+    await ns.app.state.repos_repo.update("default", url="/repo")
+    await ns.app.state.config_repo.set("notify.on_success", "false")
+
+    pack = (await _export(ns, task["id"])).json()
+    resp = await ns.client.post(
+        "/api/config/import",
+        json={"pack": pack, "password": PASSWORD, "replace_existing": True},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+    report = resp.json()
+
+    # ① 已有同名任务：不覆盖（replace_existing=true 也不生效）
+    assert report["tasks"]["created"] == []
+    assert report["tasks"]["updated"] == []
+    assert report["tasks"]["skipped"][0]["reason"].startswith("单任务包不覆盖")
+    unchanged = await ns.app.state.task_repo.get(task["id"])
+    assert unchanged is not None and unchanged.cron == "0 3 * * *"
+
+    # ② 全局通知未被触碰
+    assert report["notify_updated"] == 0
+    assert await ns.app.state.config_repo.get_value("notify.on_success") == "false"
+
+    # ③ 审计记形态
+    rows, _total = await ns.app.state.audit.query(action="config.import")
+    detail = json.loads(rows[0].detail or "{}")
+    assert detail["kind"] == PACK_KIND_TASK

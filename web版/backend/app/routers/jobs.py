@@ -208,12 +208,20 @@ async def stream_job(
 async def cancel_job(
     job_id: str,
     request: Request,
+    force: bool = Query(
+        default=False,
+        description="true=Abort（跳过 SIGTERM 宽限直接 SIGKILL，审计记 job.abort）；false=常规取消",
+    ),
     session: SessionContext = Depends(require_session),
 ) -> OkResponse:
-    """SIGTERM → 30s 宽限 → SIGKILL，终态 cancelled；非 running/pending 返回 409 NOT_CANCELLABLE。"""
+    """SIGTERM → 30s 宽限 → SIGKILL，终态 cancelled；非 running/pending 返回 409 NOT_CANCELLABLE。
+
+    ``force=true`` 为 P7 D2 的 Abort 二段（Duplicati isStopping→abort）：跳过宽限直杀，
+    供「已请求停止但长时间不退出」兜底；语义仍是 cancelled 终态，不新增状态。
+    """
     del session
     runner = request.app.state.job_runner
-    await runner.cancel(job_id)
+    await runner.cancel(job_id, force=force)
     return OkResponse()
 
 

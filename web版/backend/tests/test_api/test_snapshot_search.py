@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from conftest import ORIGIN, finish_bootstrap
 
 from app.services.restic import ProbeResult
@@ -184,3 +185,35 @@ async def test_search_requires_session(app_client):
     ns = app_client
     resp = await _search(ns, "nginx")
     assert resp.status_code == 401
+
+
+@pytest.fixture(autouse=True)
+def _clean_search_cache():
+    """搜索缓存是模块级字典（B3）：用例前后各清一次，杜绝跨用例污染。"""
+    from app.routers import snapshots as snapshots_router
+
+    snapshots_router._search_cache.clear()
+    yield
+    snapshots_router._search_cache.clear()
+
+
+async def test_search_caches_repeated_query(app_client):
+    """B3（owner 2026-10-23 裁决）：同一关键词翻页/重复搜索不再重跑 restic ls。
+
+    三层断言：① 同词两次 → 一次 ls；② 大小写不同但 casefold 相同 → 仍命中同一缓存；
+    ③ 换关键词 → 重新探测（缓存按关键词维度，不是按快照一刀切）。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _setup_repo(ns)
+    argv_log = _patch_run_json(ns)
+
+    assert (await _search(ns, "nginx")).status_code == 200
+    assert (await _search(ns, "nginx")).status_code == 200
+    assert len(argv_log) == 1  # 第二次走缓存
+
+    assert (await _search(ns, "NGINX")).status_code == 200  # casefold 命中同一键
+    assert len(argv_log) == 1
+
+    assert (await _search(ns, "hosts")).status_code == 200
+    assert len(argv_log) == 2  # 换词 → 重新探测

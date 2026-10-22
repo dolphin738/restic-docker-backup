@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from conftest import ORIGIN, finish_bootstrap
 
 
@@ -260,6 +262,83 @@ async def test_e16_cancel_missing_job_404(app_client):
     await finish_bootstrap(app_client)
     resp = await app_client.client.post("/api/jobs/no-such-job/cancel", headers=ORIGIN)
     assert resp.status_code == 404
+
+
+async def test_e16_abort_force_skips_grace_and_audits_job_abort(app_client):
+    """P7 D2 Abort 二段：force=true 跳过 SIGTERM 宽限直接 SIGKILL，审计记 job.abort。
+
+    断言三点（缺一即回归）：
+    1. 进程侧只调 kill、**不调 terminate**（不浪费 30s 宽限）；
+    2. 终态仍是 cancelled（Abort 不新增状态，保持状态机契约）；
+    3. 审计动作为 job.abort 且 detail 带 force=true / grace_seconds=0（S6 16 项清单）。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    job_id = await _make_running_job(ns)
+
+    class _FakeProc:
+        """替身：记录 terminate/kill 调用序列。"""
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def terminate(self) -> None:  # pragma: no cover - Abort 路径不应触达
+            self.calls.append("terminate")
+
+        def kill(self) -> None:
+            self.calls.append("kill")
+
+        async def wait(self) -> int:
+            return -9
+
+    fake = _FakeProc()
+    ns.app.state.job_runner._processes[job_id] = fake
+
+    resp = await ns.client.post(f"/api/jobs/{job_id}/cancel?force=true", headers=ORIGIN)
+    assert resp.status_code == 202, resp.text
+    assert fake.calls == ["kill"], fake.calls  # 跳过 terminate/宽限
+
+    body = (await ns.client.get(f"/api/jobs/{job_id}")).json()
+    assert body["status"] == "cancelled"
+
+    audit = (await ns.client.get("/api/audit", params={"action": "job.abort"})).json()
+    assert audit["total"] == 1
+    row = audit["items"][0]
+    assert row["action"] == "job.abort"
+    detail = json.loads(row["detail"] or "{}")  # E28 的 detail 为 JSON 文本
+    assert detail["force"] is True
+    assert detail["grace_seconds"] == 0
+
+
+async def test_e16_cancel_without_force_still_uses_grace(app_client):
+    """回归护栏：不带 force 时仍走 terminate → grace →（未超时才不 kill）的老路径。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    job_id = await _make_running_job(ns)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def terminate(self) -> None:
+            self.calls.append("terminate")
+
+        def kill(self) -> None:  # pragma: no cover - 正常退出不应触达
+            self.calls.append("kill")
+
+        async def wait(self) -> int:
+            return 0
+
+    fake = _FakeProc()
+    ns.app.state.job_runner._processes[job_id] = fake
+
+    resp = await ns.client.post(f"/api/jobs/{job_id}/cancel", headers=ORIGIN)
+    assert resp.status_code == 202
+    assert fake.calls == ["terminate"]
+
+    audit = (await ns.client.get("/api/audit", params={"action": "job.cancel"})).json()
+    assert audit["total"] == 1
+    assert json.loads(audit["items"][0]["detail"] or "{}")["force"] is False
 
 
 async def test_e27_log_tail(app_client):

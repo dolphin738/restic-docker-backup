@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
+import time
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -31,6 +32,9 @@ from app.constants import (
     SNAPSHOT_FILES_MAX_OFFSET,
     SNAPSHOT_FILES_TIMEOUT_SECONDS,
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
+    SNAPSHOT_SEARCH_CACHE_MAX_ENTRIES,
+    SNAPSHOT_SEARCH_CACHE_MAX_ITEMS,
+    SNAPSHOT_SEARCH_CACHE_SECONDS,
     TAG_OPERATION_TIMEOUT_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
@@ -68,6 +72,43 @@ def _is_snapshot_id(value: str) -> bool:
 router = APIRouter(prefix="/api", tags=["snapshots"])
 
 _PROTECTED = [Depends(require_session), Depends(require_bootstrap_done)]
+
+# ---------------------------------------------------------------- 搜索缓存（B3）
+# 快照 id 是内容寻址且**不可变**（restic 快照不会原地改变），因此缓存无需考虑失效逻辑，
+# 只为省掉「同一关键词翻页 / 重复搜索」时的重复 ``restic ls``。三道上限：
+#   · 单条命中数 > SNAPSHOT_SEARCH_CACHE_MAX_ITEMS → 不缓存（防单字符搜索把整棵树钉在内存）
+#   · 条目数 > SNAPSHOT_SEARCH_CACHE_MAX_ENTRIES → 淘汰最旧（LRU 近似：按写入时间）
+#   · SNAPSHOT_SEARCH_CACHE_SECONDS → TTL（防止长期占内存）
+_search_cache: dict[tuple[str, str], tuple[float, list[SnapshotFileOut], bool]] = {}
+
+
+def _search_cache_key(snapshot_id: str, query: str) -> tuple[str, str]:
+    """缓存键：快照 id + 归一化关键词（大小写不敏感匹配 ⇒ 关键词先 casefold）。"""
+    return (snapshot_id, query.casefold())
+
+
+def _search_cache_get(snapshot_id: str, query: str) -> tuple[list[SnapshotFileOut], bool] | None:
+    """读缓存；过期即删并返回 None。"""
+    key = _search_cache_key(snapshot_id, query)
+    hit = _search_cache.get(key)
+    if hit is None:
+        return None
+    ts, matches, truncated = hit
+    if time.monotonic() - ts >= SNAPSHOT_SEARCH_CACHE_SECONDS:
+        _search_cache.pop(key, None)
+        return None
+    return (matches, truncated)
+
+
+def _search_cache_put(snapshot_id: str, query: str, matches: list[SnapshotFileOut], truncated: bool) -> None:
+    """写缓存：超大结果集直接跳过；条目超限时淘汰最旧一条。"""
+    if len(matches) > SNAPSHOT_SEARCH_CACHE_MAX_ITEMS:
+        return
+    if len(_search_cache) >= SNAPSHOT_SEARCH_CACHE_MAX_ENTRIES:
+        oldest = min(_search_cache.items(), key=lambda item: item[1][0], default=None)
+        if oldest is not None:
+            _search_cache.pop(oldest[0], None)
+    _search_cache[_search_cache_key(snapshot_id, query)] = (time.monotonic(), matches, truncated)
 
 
 @router.get(
@@ -231,19 +272,26 @@ async def search_snapshot_files(
     if not repo_url:
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
-    # 不带子树 positional：搜索覆盖整棵快照树
-    argv = restic.build("ls", args=WhitelistArgs(snapshot_id=snapshot_id, json_output=True))
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
-    if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
-        logger.warning("快照文件搜索探测失败（snapshot=%s）：%s", snapshot_id, reason)
-        raise ResticFailedError(reason, exit_code=probe.exit_code)
+    # 命中缓存？（B3：快照内容不可变 → 缓存只为省重复 ls；key = 快照 + 归一化关键词）
+    cached = _search_cache_get(snapshot_id, query)
+    if cached is not None:
+        matches, truncated = cached
+    else:
+        # 不带子树 positional：搜索覆盖整棵快照树
+        argv = restic.build("ls", args=WhitelistArgs(snapshot_id=snapshot_id, json_output=True))
+        env = restic.build_env(
+            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+        )
+        probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
+        if probe.exit_code != 0:
+            reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
+            logger.warning("快照文件搜索探测失败（snapshot=%s）：%s", snapshot_id, reason)
+            raise ResticFailedError(reason, exit_code=probe.exit_code)
 
-    records = await asyncio.to_thread(parser.parse_file_list, "\n".join(probe.lines))
-    matches = _search_matches(records, query, mapper)
+        records = await asyncio.to_thread(parser.parse_file_list, "\n".join(probe.lines))
+        matches = _search_matches(records, query, mapper)
+        truncated = probe.truncated
+        _search_cache_put(snapshot_id, query, matches, truncated)
 
     start = decode_cursor(payload.cursor, SNAPSHOT_FILES_MAX_OFFSET)
     window = matches[start : start + payload.limit]
@@ -254,7 +302,7 @@ async def search_snapshot_files(
         items=window,
         total=len(matches),
         next_cursor=encode_cursor(start + payload.limit) if has_more else None,
-        truncated=probe.truncated,
+        truncated=truncated,
     )
 
 

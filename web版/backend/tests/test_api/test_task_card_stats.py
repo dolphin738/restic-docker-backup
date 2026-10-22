@@ -264,3 +264,33 @@ async def test_snapshot_count_refreshes_after_status_cache_invalidation(app_clie
     invalidate_repo_status_cache()
     assert (await _list_cards(ns))[0]["snapshot_count"] == 1
     assert len(argv_log) == 2  # 失效后重新取一次
+
+
+async def test_snapshot_count_skips_probe_when_no_tasks(app_client):
+    """B4（owner 2026-10-23 裁决）：任务列表为空时**不做**快照探测。
+
+    动机：P1 把 ``snapshot_count`` 挂在 E34 列表上，但空任务列表仍然会白跑一次
+    ``restic snapshots``（首版是 20s 超时，属可感知的无效等待）。短路后空列表零子进程。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.update("default", url="/repo")
+    argv_log = _patch_run_json(ns, lines=[_snapshot_line(SNAPSHOT_A, ["task-1"])])
+
+    assert await _list_cards(ns) == []
+    assert argv_log == []  # 空列表：一次探测都不发
+
+
+async def test_snapshot_count_failure_backs_off(app_client):
+    """B4：探测失败后进入指数退避——第二次请求不再吃一次超时（argv 不变）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.update("default", url="/repo")
+    await _create_task(ns)
+    argv_log = _patch_run_json(ns, lines=["unable to create lock"], exit_code=1)
+
+    assert (await _list_cards(ns))[0]["snapshot_count"] is None
+    assert len(argv_log) == 1
+    # 失败结论按退避 TTL 缓存（首次失败 2× base = 60s）→ 立即再查不会重新探测
+    assert (await _list_cards(ns))[0]["snapshot_count"] is None
+    assert len(argv_log) == 1
