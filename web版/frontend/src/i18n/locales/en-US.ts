@@ -1016,6 +1016,18 @@ export default {
       resultCount: '{n} results',
       hint: 'Click a hit to add it to / remove it from the restore list',
     },
+    progress: {
+      title: 'Restore progress',
+      summaryTitle: 'Result summary',
+      logTitle: 'Job log',
+      done: 'Done',
+      failed: 'Failed',
+      running: 'Restoring…',
+      finished: 'Restore finished',
+      failedHint: 'The restore job failed. Check the log for details.',
+      logEmpty: 'No log output yet.',
+      logTruncated: 'Log truncated, showing the tail only.',
+    },
   },
   settings: {
     // P6: aria-label for the SegmentedTabs bar (shared component consumer)

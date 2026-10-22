@@ -17,6 +17,9 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import ConfirmGate from '@/components/ConfirmGate.vue'
+import JobProgress from '@/components/JobProgress.vue'
+import RestoreProgressRing from '@/components/restore/RestoreProgressRing.vue'
 import RestoreStepper from '@/components/restore/RestoreStepper.vue'
 import WizardPage from '@/pages/restore/flow/index.vue'
 import { i18n } from '@/i18n'
@@ -26,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   snapshots: [] as Array<Record<string, unknown>>,
   searchHits: [] as Array<Record<string, unknown>>,
   searchTotal: 0,
+  logContent: '' as string,
 }))
 
 vi.mock('@/api/snapshots', () => ({
@@ -44,7 +48,21 @@ vi.mock('@/api/restore', () => ({
   INPLACE_TARGET_ROOT: '/sources',
   RESTORE_TARGET_ROOT: '/restore',
   previewRestore: vi.fn(async () => ({ items: [], total: 0, truncated: false })),
-  restoreSnapshot: vi.fn(async () => ({ job_id: 'job-1' })),
+  restoreSnapshot: vi.fn(async () => ({
+    job_id: 'job-1',
+    restore_target: '/restore/2026-10-01_000000',
+  })),
+}))
+
+// P11：日志卡复用既有 getJobLog（V-4：不新造数据源），这里只需把它 mock 掉
+vi.mock('@/api/jobs', () => ({
+  getJobLog: vi.fn(async () => ({
+    id: 'job-1',
+    log_path: '/data/logs/job-1.log',
+    tail_bytes: 100,
+    content: mocks.logContent,
+    truncated: false,
+  })),
 }))
 
 const STEPS = [
@@ -220,5 +238,86 @@ describe('P10 文件搜索框（R6 / B3 前端契约）', () => {
     await wrapper.find('.restore__hit').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('已选 1 个文件/目录')
+  })
+})
+
+describe('P11 完成态圆环（R9）', () => {
+  it('① percent=100 → 满环（stroke-dashoffset=0，无缺口）', () => {
+    const w = mount(RestoreProgressRing, { props: { percent: 100, status: 'success', label: '完成' } })
+    expect(Number(w.find('.ring__value').attributes('stroke-dashoffset'))).toBe(0)
+  })
+
+  it('② 失败态取 error 语义色 + 中心文案透传', () => {
+    const w = mount(RestoreProgressRing, { props: { percent: 100, status: 'error', label: '失败' } })
+    expect(w.find('.ring__value').classes()).toContain('is-error')
+    expect(w.text()).toContain('失败')
+  })
+
+  it('③ 越界 percent 归一化（150 → 满环，不产生负偏移反向弧）', () => {
+    const w = mount(RestoreProgressRing, { props: { percent: 150, status: 'info' } })
+    expect(Number(w.find('.ring__value').attributes('stroke-dashoffset'))).toBe(0)
+  })
+})
+
+describe('P11 进度页三卡（R8 / SSE 终态）', () => {
+  /** 假 EventSource：`useJobStream` 会 `new EventSource(...)` 建 SSE，测试环境不联网，
+   *  用哑实现替掉（不产生真实连接，也不影响 JobProgress 挂载）。 */
+  class FakeEventSource {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSED = 2
+    readyState = 0
+    onmessage: unknown = null
+    onerror: unknown = null
+    constructor(url: string) {
+      void url
+    }
+    addEventListener(): void {}
+    removeEventListener(): void {}
+    close(): void {
+      this.readyState = 2
+    }
+  }
+
+  it('④ 走到步骤 3 并触发 done → 三卡齐备 + 圆环出现 + 日志卡走既有 getJobLog', async () => {
+    mocks.logContent = 'restoring /data ...\ndone'
+    // 快照 paths 为空 → 原位不可用 → 自动回落时间戳流 → 步骤 2 的门无关键词阻塞
+    mocks.snapshots = [
+      { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: [], size: 1024 },
+    ]
+    const { getJobLog } = await import('@/api/jobs')
+    vi.mocked(getJobLog).mockClear()
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    try {
+      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      await flushPromises()
+
+      const clickNext = async (): Promise<void> => {
+        const btn = wrapper.findAll('button').find((b) => b.text().includes('下一步'))
+        expect(btn).toBeTruthy()
+        await btn!.trigger('click')
+        await flushPromises()
+      }
+      // 步骤 1 → 步骤 2
+      await clickNext()
+      // 步骤 2 → 开门
+      await clickNext()
+      wrapper.findComponent(ConfirmGate).vm.$emit('confirm')
+      await flushPromises()
+
+      // 步骤 3：驱动终态（等价于后端 SSE 推送 done）
+      wrapper.findComponent(JobProgress).vm.$emit('done', { files_done: 3, summary: null })
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('恢复进度')
+      expect(wrapper.text()).toContain('结果摘要')
+      expect(wrapper.text()).toContain('任务日志')
+      expect(wrapper.find('.ring').exists()).toBe(true)
+      // V-4：日志复用既有 getJobLog，未新造数据源
+      expect(getJobLog).toHaveBeenCalledWith('job-1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

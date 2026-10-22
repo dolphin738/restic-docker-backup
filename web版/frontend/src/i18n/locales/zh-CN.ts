@@ -1013,6 +1013,18 @@ export default {
       resultCount: '命中 {n} 个结果',
       hint: '点击命中项可加入 / 移出待恢复清单',
     },
+    progress: {
+      title: '恢复进度',
+      summaryTitle: '结果摘要',
+      logTitle: '任务日志',
+      done: '完成',
+      failed: '失败',
+      running: '正在恢复…',
+      finished: '恢复已完成',
+      failedHint: '恢复任务失败，请查看日志定位原因。',
+      logEmpty: '暂无日志输出。',
+      logTruncated: '日志已截断，仅显示末尾部分。',
+    },
   },
   settings: {
     // P6：SegmentedTabs 分段条 aria-label（共用组件消费位）
