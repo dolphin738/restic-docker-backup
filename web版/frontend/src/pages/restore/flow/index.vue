@@ -124,9 +124,16 @@ const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => s
 const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
 
 /** 入口被置灰时把模式回落到时间戳流：否则用户会停在必然 403 的非法态，
- *  而提示链路要绕到后端报错才看得到原因（radio 置灰本身不可点）。 */
-watch(inPlaceDisabled, (disabled) => {
-  if (disabled) {
+ *  而提示链路要绕到后端报错才看得到原因（radio 置灰本身不可点）。
+ *
+ *  监听对象必须是 `selectedSnapshot` 而不是 `inPlaceDisabled`：列表加载前
+ *  `inPlaceDisabled` 已恒为 true（无选中快照 → paths 为空），path-less 快照
+ *  加载后依然是 true——watcher 只认「变化」，真空初态会把回落整个吞掉，
+ *  用户卡在「inplace 置灰却仍选中」的非法态（A7 起的潜伏缺陷，P11 护栏
+ *  用例④ 走完整流程才暴露）。改为 watch 选中快照本身：切到（含默认选中）
+ *  无 paths 的快照时才回落；有 paths 时不打扰 A7 的 inplace 默认。 */
+watch(selectedSnapshot, (snapshot) => {
+  if (targetMode.value === 'inplace' && (snapshot?.paths.length ?? 0) === 0) {
     targetMode.value = 'timestamp'
   }
 })
