@@ -13,6 +13,7 @@ import {
   NDataTable,
   NGi,
   NGrid,
+  NSelect,
   NSpace,
   NText,
   useMessage,
