@@ -218,6 +218,32 @@ export default {
       restore: 'Restore files',
       restoreDesc: 'Retrieve files from a snapshot to any location',
     },
+    view: {
+      list: 'List',
+      details: 'Details',
+      listDesc: 'Card view',
+      detailsDesc: 'Table view',
+    },
+    time: {
+      relative: 'Relative',
+      actual: 'Actual',
+    },
+    sort: {
+      label: 'Sort',
+      name: 'Name',
+      lastRun: 'Last run',
+      nextRun: 'Next run',
+      status: 'Status',
+    },
+    rel: {
+      min: 'min',
+      hour: 'hr',
+      day: 'd',
+      ago: ' ago',
+      later: ' later',
+      justNow: 'just now',
+      soon: 'soon',
+    },
   },
   job: {
     percent: 'Progress',

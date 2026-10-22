@@ -12,11 +12,40 @@ import { useI18n } from 'vue-i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import JobProgress from '@/components/JobProgress.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatDateTimeOr } from '@/utils/datetime'
+import { formatDateTime, formatDateTimeOr } from '@/utils/datetime'
+import { relativeTime } from '@/utils/relativeTime'
 
 const props = defineProps<{
   task: TaskCardModel
+  /** 时间展示口径：actual=绝对时间，relative=相对时间（P7 D4 视图切换）。 */
+  timeMode?: 'actual' | 'relative'
 }>()
+
+/** 时间展示收口（P7 D4）：actual 走绝对时间；relative 走相对时间，回落绝对/语义兜底。 */
+function showTime(value: string | null, fallback: string): string {
+  if (!value) {
+    return fallback
+  }
+  if (props.timeMode !== 'relative') {
+    return formatDateTimeOr(value, fallback)
+  }
+  const r = relativeTime(value)
+  if (r.kind === 'absolute') {
+    return formatDateTime(r.date)
+  }
+  if (r.kind === 'none') {
+    return formatDateTimeOr(value, fallback)
+  }
+  if (r.kind === 'justNow') {
+    return t('dashboard.rel.justNow')
+  }
+  if (r.kind === 'soon') {
+    return t('dashboard.rel.soon')
+  }
+  const unit = r.unit === 'min' ? t('dashboard.rel.min') : r.unit === 'hour' ? t('dashboard.rel.hour') : t('dashboard.rel.day')
+  const dir = r.future ? t('dashboard.rel.later') : t('dashboard.rel.ago')
+  return `${r.amount}${unit}${dir}`
+}
 
 const emit = defineEmits<{
   (e: 'start', taskId: number): void
@@ -57,13 +86,13 @@ const stale = computed(() => {
 })
 
 /** 上次运行：ISO 原始串收口为本地可读时间；无记录时回落「无」。 */
-const lastRunText = computed(() => formatDateTimeOr(props.task.last_run_at, t('common.none')))
+const lastRunText = computed(() => showTime(props.task.last_run_at, t('common.none')))
 
 const nextRunText = computed(() => {
   if (!props.task.enabled) {
     return t('task.paused')
   }
-  return formatDateTimeOr(props.task.next_run_at, t('task.manual_only'))
+  return showTime(props.task.next_run_at, t('task.manual_only'))
 })
 
 /** dry-run 门禁（R-026-08）：未预览过扫描范围时拦截 Start，工具提示引导去向导第 5 步。 */

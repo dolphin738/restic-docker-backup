@@ -218,6 +218,34 @@ export default {
       restore: '恢复文件',
       restoreDesc: '从已有快照取回文件到任意位置',
     },
+    // P7 D3/D4/D5 工具栏：视图切换 / 时间口径 / 排序
+    view: {
+      list: '列表',
+      details: '详情',
+      listDesc: '卡片视图',
+      detailsDesc: '表格视图',
+    },
+    time: {
+      relative: '相对时间',
+      actual: '实际时间',
+    },
+    sort: {
+      label: '排序',
+      name: '名称',
+      lastRun: '上次运行',
+      nextRun: '下次运行',
+      status: '状态',
+    },
+    // P7 D4 相对时间文案（与 utils/relativeTime 结构化结果配套）
+    rel: {
+      min: '分钟',
+      hour: '小时',
+      day: '天',
+      ago: '前',
+      later: '后',
+      justNow: '刚刚',
+      soon: '即将',
+    },
   },
   job: {
     percent: '进度',

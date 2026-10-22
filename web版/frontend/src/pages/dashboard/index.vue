@@ -1,7 +1,7 @@
 <script setup lang="ts">
-/** 仪表盘（增量设计 §5.1）：仓库状态卡 + 运行模式卡保留；
- * 原「进行中任务卡」退役——进行中 job 并入任务卡片内联进度；
- * 新增备份任务卡片列表（useVirtualList，固定卡片骨架，Q6/N2 裁决）。
+/** 仪表盘（增量设计 §5.1 + P7 主页复刻 §4.5）：仓库状态卡 + 运行模式卡保留；
+ * 新增：双行动卡行（D1）/ 全局状态条（D2）/ 工具栏（D3 视图切换 + localStorage、
+ * D4 相对/绝对时间、D5 纯前端排序）/ list-details 双视图。
  */
 
 import { useVirtualList } from '@vueuse/core'
@@ -10,13 +10,14 @@ import {
   NAlert,
   NButton,
   NCard,
+  NDataTable,
   NGi,
   NGrid,
   NSpace,
   NText,
   useMessage,
 } from 'naive-ui'
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, h, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { deleteBackupTask, listBackupTasks } from '@/api/backupTasks'
@@ -26,12 +27,14 @@ import { getRepoStatus } from '@/api/repo'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import ActionCard from '@/components/dashboard/ActionCard.vue'
 import GlobalStatusBar from '@/components/dashboard/GlobalStatusBar.vue'
+import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
 import { useCountUp } from '@/composables/useCountUp'
 import { useUiStore } from '@/stores/ui'
-import { formatDateTimeOr } from '@/utils/datetime'
+import { formatDateTime, formatDateTimeOr } from '@/utils/datetime'
+import { relativeTime } from '@/utils/relativeTime'
 import { IconFolderOpen, IconPlusCircle } from '@/components/icons/HomeIcons'
 
 const { t } = useI18n()
@@ -63,6 +66,30 @@ const repoError = computed(() => toText(repoQuery.error.value))
 const tasks = computed<TaskCardModel[]>(() => tasksQuery.data.value?.items ?? [])
 const tasksError = computed(() => toText(tasksQuery.error.value))
 
+// ---------------------------------------------------------------- KPI 状态带（P4：三卡合一）
+/** 运行用户档位（A0 后只按运行用户分档；与 TierCard 同口径，仪表盘以 KPI 单元格呈现）。 */
+const userKey = computed<'root' | 'nonRoot'>(() => (ui.me?.user === 'root' ? 'root' : 'nonRoot'))
+
+/** 最近一次成功备份：任务列表派生（无专用端点；§13.1 零后端改动）。 */
+const lastBackupText = computed(() => {
+  const successes = tasks.value.filter((task) => task.last_result === 'success' && task.last_run_at)
+  if (successes.length === 0) {
+    return t('common.none')
+  }
+  const latest = successes.reduce((a, b) => (Date.parse(b.last_run_at!) > Date.parse(a.last_run_at!) ? b : a))
+  return formatDateTimeOr(latest.last_run_at, t('common.none'))
+})
+
+/** count-up（§11 AB-2）：一次性；空值不动画，回落占位文案。 */
+const capacityBytes = computed(() => repoStatus.value?.capacity.size ?? null)
+const snapsCount = computed(() => repoStatus.value?.capacity.snaps ?? null)
+const capacityCount = useCountUp(computed(() => capacityBytes.value ?? 0))
+const snapsDisplay = useCountUp(computed(() => snapsCount.value ?? 0))
+const capacityText = computed(() =>
+  capacityBytes.value === null ? t('common.none') : formatBytes(capacityCount.value),
+)
+const snapsText = computed(() => (snapsCount.value === null ? t('common.none') : String(snapsDisplay.value)))
+
 // ---------------------------------------------------------------- 全局状态条（D2 / P7 ②裁决）
 /** 当前进行中作业：取列表里首个带 running_job_id 的任务（JOB_CONFLICT 守卫保证同时至多一个）。 */
 const runningTask = computed(() => tasks.value.find((task) => task.running_job_id) ?? null)
@@ -87,43 +114,205 @@ function onStopGlobal(): void {
   }
 }
 
-// ---------------------------------------------------------------- KPI 状态带（P4：三卡合一）
-/** 运行用户档位（A0 后只按运行用户分档；与 TierCard 同口径，仪表盘以 KPI 单元格呈现）。 */
-const userKey = computed<'root' | 'nonRoot'>(() => (ui.me?.user === 'root' ? 'root' : 'nonRoot'))
+// ---------------------------------------------------------------- 工具栏（D3/D4/D5）
+/** 视图：list=卡片 / details=表格；localStorage 持久化（owner 裁决：视图切换持久化）。 */
+const VIEW_KEY = 'dashboard:viewMode'
+const TIME_KEY = 'dashboard:timeType'
+const viewMode = ref<'list' | 'details'>(
+  typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'details' ? 'details' : 'list',
+)
+const timeType = ref<'relative' | 'actual'>(
+  typeof localStorage !== 'undefined' && localStorage.getItem(TIME_KEY) === 'actual' ? 'actual' : 'relative',
+)
+const sortKey = ref<'name' | 'last_run_at' | 'next_run_at' | 'status'>('name')
 
-/** 最近一次成功备份：任务列表派生（无专用端点；§13.1 零后端改动）。 */
-const lastBackupText = computed(() => {
-  const successes = tasks.value.filter((task) => task.last_result === 'success' && task.last_run_at)
-  if (successes.length === 0) {
-    return t('common.none')
-  }
-  // 时间戳取 Date.parse 数值比较（审查 💭②）：不依赖 ISO 字符串字典序与后端格式完全统一的隐含约定
-  const latest = successes.reduce((a, b) => (Date.parse(b.last_run_at!) > Date.parse(a.last_run_at!) ? b : a))
-  return formatDateTimeOr(latest.last_run_at, t('common.none'))
+watch(viewMode, (v) => localStorage.setItem(VIEW_KEY, v))
+watch(timeType, (v) => localStorage.setItem(TIME_KEY, v))
+
+const viewItems = computed(() => [
+  { id: 'list', label: t('dashboard.view.list') },
+  { id: 'details', label: t('dashboard.view.details') },
+])
+const timeItems = computed(() => [
+  { id: 'relative', label: t('dashboard.time.relative') },
+  { id: 'actual', label: t('dashboard.time.actual') },
+])
+const sortOptions = computed(() => [
+  { label: t('dashboard.sort.name'), value: 'name' },
+  { label: t('dashboard.sort.lastRun'), value: 'last_run_at' },
+  { label: t('dashboard.sort.nextRun'), value: 'next_run_at' },
+  { label: t('dashboard.sort.status'), value: 'status' },
+])
+
+/** D5 纯前端排序（后端 listBackupTasks 无 order 参数）：空时间恒排末尾。 */
+const sortedTasks = computed<TaskCardModel[]>(() => {
+  const arr = [...tasks.value]
+  const k = sortKey.value
+  arr.sort((a, b) => {
+    if (k === 'name') {
+      return a.name.localeCompare(b.name)
+    }
+    if (k === 'status') {
+      return a.status.localeCompare(b.status)
+    }
+    const av = a[k] ? Date.parse(a[k] as string) : null
+    const bv = b[k] ? Date.parse(b[k] as string) : null
+    if (av === null && bv === null) {
+      return 0
+    }
+    if (av === null) {
+      return 1
+    }
+    if (bv === null) {
+      return -1
+    }
+    return av - bv
+  })
+  return arr
 })
 
-/** count-up（§11 AB-2）：一次性；空值不动画，回落占位文案。 */
-const capacityBytes = computed(() => repoStatus.value?.capacity.size ?? null)
-const snapsCount = computed(() => repoStatus.value?.capacity.snaps ?? null)
-const capacityCount = useCountUp(computed(() => capacityBytes.value ?? 0))
-const snapsDisplay = useCountUp(computed(() => snapsCount.value ?? 0))
-const capacityText = computed(() =>
-  capacityBytes.value === null ? t('common.none') : formatBytes(capacityCount.value),
-)
-const snapsText = computed(() => (snapsCount.value === null ? t('common.none') : String(snapsDisplay.value)))
+/** 表格时间列收口（D4 口径）：actual=绝对；relative=相对，回落绝对/语义兜底。 */
+function tableTime(value: string | null, fallback: string): string {
+  if (!value) {
+    return fallback
+  }
+  if (timeType.value === 'actual') {
+    return formatDateTimeOr(value, fallback)
+  }
+  const r = relativeTime(value)
+  if (r.kind === 'absolute') {
+    return formatDateTime(r.date)
+  }
+  if (r.kind === 'none') {
+    return formatDateTimeOr(value, fallback)
+  }
+  if (r.kind === 'justNow') {
+    return t('dashboard.rel.justNow')
+  }
+  if (r.kind === 'soon') {
+    return t('dashboard.rel.soon')
+  }
+  const unit = r.unit === 'min' ? t('dashboard.rel.min') : r.unit === 'hour' ? t('dashboard.rel.hour') : t('dashboard.rel.day')
+  const dir = r.future ? t('dashboard.rel.later') : t('dashboard.rel.ago')
+  return `${r.amount}${unit}${dir}`
+}
 
-// ---------------------------------------------------------------- 虚拟滚动（固定卡片骨架）
+/** 耗时（ms）→ 紧凑展示；null 回落长破折号。 */
+function formatDuration(ms: number | null): string {
+  if (ms === null || ms < 0) {
+    return '—'
+  }
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 状态徽章语义色（与 TaskCard.statusTagType 同口径，表格列复用）。 */
+function statusKind(status: string): 'default' | 'info' | 'success' | 'warning' | 'error' {
+  switch (status) {
+    case 'running':
+    case 'pending':
+      return 'info'
+    case 'success':
+      return 'success'
+    case 'failed':
+      return 'error'
+    case 'interrupted':
+      return 'warning'
+    default:
+      return 'default'
+  }
+}
+
+const detailRowKey = (row: TaskCardModel): number => row.id
+
+const detailColumns = computed(() => [
+  { title: t('task.name'), key: 'name', minWidth: 160 },
+  {
+    title: t('task.status.label'),
+    key: 'status',
+    width: 120,
+    render: (row: TaskCardModel) =>
+      h(StatusTag, { kind: statusKind(row.status), label: t(`task.status.${row.status}`) }),
+  },
+  {
+    title: t('task.last_run_label'),
+    key: 'last_run_at',
+    minWidth: 160,
+    render: (row: TaskCardModel) => tableTime(row.last_run_at, t('common.none')),
+  },
+  {
+    title: t('task.next_run'),
+    key: 'next_run_at',
+    minWidth: 160,
+    render: (row: TaskCardModel) =>
+      tableTime(row.next_run_at, row.enabled ? t('task.manual_only') : t('task.paused')),
+  },
+  {
+    title: t('task.duration'),
+    key: 'last_duration_ms',
+    width: 110,
+    render: (row: TaskCardModel) => formatDuration(row.last_duration_ms),
+  },
+  {
+    title: t('dashboard.repoSnapshots'),
+    key: 'snapshot_count',
+    width: 110,
+    render: (row: TaskCardModel) => (row.snapshot_count === null ? '—' : String(row.snapshot_count)),
+  },
+  {
+    title: t('task.actions'),
+    key: 'actions',
+    width: 200,
+    render: (row: TaskCardModel) => renderRowActions(row),
+  },
+])
+
+/** details 表格操作区（D8 之前先用按钮组，D8 接入 TaskActionsMenu 后再替换）。 */
+function renderRowActions(row: TaskCardModel) {
+  const isActive = row.status === 'running' || row.status === 'pending'
+  const nodes: ReturnType<typeof h>[] = []
+  if (isActive && row.running_job_id) {
+    nodes.push(
+      h(NButton, { size: 'small', onClick: () => void onCancel(row.running_job_id!) }, { default: () => t('task.cancel') }),
+    )
+  } else {
+    nodes.push(
+      h(
+        NButton,
+        { size: 'small', type: 'primary', disabled: row.dry_run_pending, onClick: () => void onStart(row.id) },
+        { default: () => t('task.start') },
+      ),
+    )
+  }
+  nodes.push(h(NButton, { size: 'small', quaternary: true, onClick: () => onEdit(row.id) }, { default: () => t('task.edit') }))
+  nodes.push(
+    h(
+      NButton,
+      { size: 'small', quaternary: true, disabled: isActive, onClick: () => askDelete(row.id) },
+      { default: () => t('task.delete') },
+    ),
+  )
+  return h(NSpace, { size: 8 }, { default: () => nodes })
+}
+
+// ---------------------------------------------------------------- 虚拟滚动（固定卡片骨架，仅 list 视图）
 const CARD_HEIGHT = 260
 const CARD_GAP = 12
 const ITEM_HEIGHT = CARD_HEIGHT + CARD_GAP
 const MAX_VISIBLE = 3
 
-const { containerProps, wrapperProps, list: virtualItems } = useVirtualList(tasks, {
+const { containerProps, wrapperProps, list: virtualItems } = useVirtualList(sortedTasks, {
   itemHeight: ITEM_HEIGHT,
 })
 
 /** 列表较短时不出现内层滚动条：容器高度随条数伸缩（最多 3 个卡位）。 */
-const viewportHeight = computed(() => Math.max(ITEM_HEIGHT, Math.min(tasks.value.length, MAX_VISIBLE) * ITEM_HEIGHT))
+const viewportHeight = computed(() => Math.max(ITEM_HEIGHT, Math.min(sortedTasks.value.length, MAX_VISIBLE) * ITEM_HEIGHT))
 
 function toText(error: unknown): string {
   if (!error) {
@@ -245,9 +434,7 @@ async function onDeleteConfirmed(): Promise<void> {
     />
 
     <!-- KPI 状态带（P4+）：四格等高等距——统一「标签行 22px / 主行 36px / 辅出行 18px」固定骨架，
-         窄屏 2×2。原①卡因多出「刷新按钮行 + 标签行」且主值字号与②③不一致，四卡高矮不齐；
-         现刷新按钮收入标签行右端，状态标签升为主行，容量降为辅出行，四行结构完全同构。
-         任务卡虚拟滚动常量（CARD_HEIGHT 260 / ITEM_HEIGHT 272）不动。 -->
+         窄屏 2×2。任务卡虚拟滚动常量（CARD_HEIGHT 260 / ITEM_HEIGHT 272）不动。 -->
     <!-- 响应式断点只能用命名档（s/m/l/xl/xxl）：naive 的 responsive="screen" 查询的是断点布尔集，
          数字形式（原 "2 900:4"）永不命中 → 一直停在基础值 2 列（P4 实测修正）。 -->
     <n-grid cols="2 l:4" :x-gap="12" :y-gap="12" responsive="screen">
@@ -350,6 +537,32 @@ async function onDeleteConfirmed(): Promise<void> {
       </n-gi>
     </n-grid>
 
+    <!-- D3 工具栏：视图切换（localStorage 持久化）+ 时间口径（D4）+ 排序（D5，仅 list） -->
+    <n-space :size="12" justify="space-between" align="center" class="home__toolbar">
+      <SegmentedTabs
+        :items="viewItems"
+        v-model="viewMode"
+        :aria-label="t('dashboard.view.list')"
+      />
+      <n-space :size="8" :wrap="false" align="center">
+        <SegmentedTabs
+          :items="timeItems"
+          v-model="timeType"
+          size="small"
+          :aria-label="t('dashboard.time.relative')"
+        />
+        <n-text v-if="viewMode === 'list'" depth="3" class="home__sort-label">{{ t('dashboard.sort.label') }}</n-text>
+        <n-select
+          v-if="viewMode === 'list'"
+          v-model:value="sortKey"
+          :options="sortOptions"
+          size="small"
+          :placeholder="t('dashboard.sort.label')"
+          style="width: 140px"
+        />
+      </n-space>
+    </n-space>
+
     <!-- 运行告警行（原状态卡内 alerts 上提为整宽） -->
     <n-space vertical :size="8">
       <n-alert
@@ -364,25 +577,31 @@ async function onDeleteConfirmed(): Promise<void> {
       </n-alert>
     </n-space>
 
-    <!-- 备份任务卡片列表（主内容） -->
+    <!-- 备份任务列表 / 详情（主内容，D3 双视图） -->
     <n-card :title="t('task.card.title')" size="small">
       <n-alert v-if="tasksError" type="error" :show-icon="false">
         {{ t('dashboard.loadFailed', { message: tasksError }) }}
       </n-alert>
 
       <!-- 空态：新建首个任务引导卡 -->
-      <div v-else-if="tasks.length === 0" class="tasks__empty">
+      <div v-else-if="sortedTasks.length === 0" class="tasks__empty">
         <n-text strong class="tasks__empty-title">{{ t('task.empty.title') }}</n-text>
         <n-text depth="3" class="tasks__empty-desc">{{ t('task.empty.desc') }}</n-text>
         <n-button type="primary" @click="goNewTask">{{ t('task.new') }}</n-button>
       </div>
 
-      <!-- 虚拟滚动：固定卡片骨架，内容超高地截断/省略 -->
-      <div v-else v-bind="containerProps" class="tasks__viewport" :style="{ height: `${viewportHeight}px` }">
+      <!-- list 视图：虚拟滚动卡片（D5 排序后） -->
+      <div
+        v-else-if="viewMode === 'list'"
+        v-bind="containerProps"
+        class="tasks__viewport"
+        :style="{ height: `${viewportHeight}px` }"
+      >
         <div v-bind="wrapperProps">
           <div v-for="item in virtualItems" :key="item.data.id" class="tasks__item">
             <TaskCard
               :task="item.data"
+              :time-mode="timeType"
               @start="onStart"
               @cancel="onCancel"
               @edit="onEdit"
@@ -391,6 +610,16 @@ async function onDeleteConfirmed(): Promise<void> {
           </div>
         </div>
       </div>
+
+      <!-- details 视图：表格（D3，含耗时/快照列；D4 时间口径共享） -->
+      <n-data-table
+        v-else
+        :columns="detailColumns"
+        :data="sortedTasks"
+        :row-key="detailRowKey"
+        size="small"
+        :scroll-x="920"
+      />
 
       <n-text depth="3" class="dashboard__note">{{ t('dashboard.tasksAutoNote') }}</n-text>
     </n-card>
@@ -473,6 +702,15 @@ async function onDeleteConfirmed(): Promise<void> {
 .dashboard__note {
   display: block;
   margin-top: 10px;
+  font-size: 12px;
+}
+
+/* D3 工具栏：两端对齐；窄屏断点内可换行（默认不换行避免移动端挤压） */
+.home__toolbar {
+  flex-wrap: wrap;
+}
+
+.home__sort-label {
   font-size: 12px;
 }
 
