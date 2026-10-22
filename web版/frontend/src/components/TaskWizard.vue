@@ -83,11 +83,12 @@ interface TaskFormState extends ScheduleRetentionValue {
   prune_interval_days: number
   /** 限速（owner 2026-10-22 任务级裁决）：任务级配置、创建时生效——值随任务保存，
    *  下次备份进程启动时读入 restic argv（--limit-upload/--limit-download），
-   *  运行中的任务不可改（restic CLI 无控制通道）。单位 KiB/s，0 = 不限。 */
-  limit_up: number
-  limit_down: number
-  /** C3 调度触发失败后的最大重试次数（0 = 不重试）。 */
-  retry_count: number
+   *  运行中的任务不可改（restic CLI 无控制通道）。单位 KiB/s，0 = 不限。
+   *  **类型含 null**：n-input-number 清空即为 null，提交前由 buildPayload 兜底 0（B5）。 */
+  limit_up: number | null
+  limit_down: number | null
+  /** C3 调度触发失败后的最大重试次数（0 = 不重试）；同样可能被清空为 null。 */
+  retry_count: number | null
   /** C4 多目的地：主备份成功后镜像到的仓库 id。 */
   mirror_repo_ids: string[]
 }
@@ -542,9 +543,11 @@ function buildPayload(): TaskUpsertRequest {
     check_sample_ratio: form.check_sample_ratio,
     monthly_full_day: form.monthly_full_day,
     prune_interval_days: form.prune_interval_days,
-    limit_up: form.limit_up,
-    limit_down: form.limit_down,
-    retry_count: form.retry_count,
+    // B5（owner 2026-10-23 裁决）：n-input-number 支持清空 → 值为 null，直接提交会 422
+    // （后端 TaskUpsertRequest 的 limit_up/limit_down 是 int 非 Optional）→ 此处兜底 0。
+    limit_up: form.limit_up ?? 0,
+    limit_down: form.limit_down ?? 0,
+    retry_count: form.retry_count ?? 0,
     mirror_repo_ids: form.mirror_repo_ids,
   }
 }

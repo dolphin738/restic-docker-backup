@@ -209,6 +209,8 @@ export default {
     // P6 GlobalStatusBar：全局进度常驻条（Abort 二段按后端缺口暂缺，见组件注释）
     statusBar: {
       stop: '停止',
+      stopping: '停止中…',
+      abort: '强制中止',
       limit: '上传 {up} · 下载 {down} KiB/s',
       unlimited: '不限速',
     },
@@ -220,12 +222,12 @@ export default {
     },
     // P7 D3/D4/D5 工具栏：视图切换 / 时间口径 / 排序
     view: {
+      aria: '视图切换',
       list: '列表',
       details: '详情',
-      listDesc: '卡片视图',
-      detailsDesc: '表格视图',
     },
     time: {
+      aria: '时间显示方式',
       relative: '相对时间',
       actual: '实际时间',
     },
@@ -295,6 +297,17 @@ export default {
     edit: '编辑任务',
     delete: '删除任务',
     export: '导出任务配置',
+    // 三点菜单分组（§4.5.6：Operations / Advanced / Reporting + Danger）
+    groupAdvanced: '高级',
+    groupReporting: '报告',
+    // Export 口令弹窗（P7 A3；口令 ≥10 位与后端 ConfigExportRequest 同口径）
+    exportTitle: '导出任务配置',
+    exportHint: '将任务「{name}」导出为加密配置包（含所属仓库与凭据，凭据段用口令加密）。口令至少 10 位，请自行保存——导入时需要同一口令。',
+    exportPassword: '导出口令（至少 10 位）',
+    exportPasswordTooShort: '口令至少 10 位',
+    exportBtn: '导出',
+    exportDone: '配置包已下载',
+    noLogYet: '该任务还没有可查看的作业日志',
     menu: '更多操作',
     actions: '操作',
     start: '立即运行',
@@ -842,6 +855,7 @@ export default {
     cancel: '取消任务',
     cancelConfirm: '确定取消该任务？终止后任务进入 cancelled 终态。',
     cancelSubmitted: '已发送取消请求（SIGTERM → 30s 宽限）',
+    abortSubmitted: '已强制中止（跳过宽限，直接 SIGKILL）',
     firstBackupSlowNote: '首次备份最慢属预期，后续只处理变更数据',
     logTitle: '任务日志',
     logLoadMore: '加载更多（放大尾部窗口）',

@@ -1,97 +1,138 @@
 /**
- * TaskRowCard 行卡片护栏（方案 §4.5.6 / §4.7 P6；形态来源 Duplicati home list 备份行）。
+ * TaskRowCard 任务行护栏（方案 §4.5.6:292 —— **list 视图卡片行**；P7 A1 裁决后取代旧 TaskCard）。
  *
  * 锁定语义：
- * - 形态：role=button + tabindex=0 + Enter/Space（避免 button 嵌 button 的非法 HTML——
- *   操作区由消费方经 #actions 插槽塞入，行内必有按钮）；
- * - 整行点击 = select；选中行高亮（--active）且点击空转（已是选中态）；
- * - 禁用态：失焦 + aria-disabled + 点击/键盘静默；
- * - 类型 / 快照数 chip 与副描述可缺省。
+ * - 内容：名称 / 状态徽章 / 快照数 chip（null 不渲染）/ 指标区（上次、下次、耗时、上次结果）；
+ * - 时间口径 timeMode：relative → 相对文案，actual → 绝对时间（同一函数 timeText 驱动）；
+ * - 操作区：Start（dry-run 未预览时禁用）/ Cancel（运行中）/ ⋯ 菜单；
+ * - 菜单分组含 P7 要求的 **Export / Log / Verify / Restore / Delete**，删除项运行中禁用；
+ * - 事件全部对外抛（edit/restore/verify/export/log/delete/start/cancel），不自行跳转。
  *
  * 查询纪律：组件根即 .rw-row-card（div 根），原生 querySelector 不含自身，
- * 根断言走 w.classes()/w.attributes()/w.trigger()；后代（chip/插槽）走 w.element。
+ * 根断言走 w.classes()；后代走 w.element。
  */
 
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
-import { h } from 'vue'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import TaskRowCard from '@/components/dashboard/TaskRowCard.vue'
-import { IconFolder } from '@/components/icons/HomeIcons'
+import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
+import { i18n } from '@/i18n'
+import type { TaskCard as TaskCardModel } from '@/api/types'
 
-function mountRow(props: Partial<InstanceType<typeof TaskRowCard>['$props']> = {}) {
+/** 基准任务：启用中、上次成功、有耗时与快照数。 */
+function makeTask(overrides: Partial<TaskCardModel> = {}): TaskCardModel {
+  return {
+    id: 7,
+    name: '每日全量',
+    enabled: true,
+    tag: 'task-7',
+    cron: '0 3 * * *',
+    status: 'success',
+    last_run_at: '2026-10-19T03:00:00Z',
+    last_result: 'success',
+    last_duration_ms: 93_000,
+    snapshot_count: 12,
+    limit_up: 0,
+    limit_down: 0,
+    next_run_at: '2026-10-20T03:00:00Z',
+    running_job_id: null,
+    dry_run_pending: false,
+    prune_due: false,
+    ...overrides,
+  } as TaskCardModel
+}
+
+function mountRow(props: Record<string, unknown> = {}) {
   return mount(TaskRowCard, {
-    props: { name: '每日备份', typeLabel: '本地', snapshotLabel: '12 个快照', description: '/data · host-01', ...props },
+    props: { task: makeTask(), timeMode: 'relative', ...props },
+    global: { plugins: [i18n] },
   })
 }
 
-describe('TaskRowCard 行卡片', () => {
-  it('名称 / 类型 chip / 快照 chip / 描述渲染', () => {
+beforeEach(() => {
+  i18n.global.locale.value = 'zh-CN'
+})
+
+describe('TaskRowCard 任务行', () => {
+  it('名称 / 状态徽章 / 快照 chip / 耗时渲染', () => {
     const w = mountRow()
-    expect(w.text()).toContain('每日备份')
-    expect(w.text()).toContain('本地')
+    expect(w.text()).toContain('每日全量')
+    expect(w.text()).toContain('上次成功')
     expect(w.text()).toContain('12 个快照')
-    expect(w.text()).toContain('/data · host-01')
-    const chips = w.element.querySelectorAll('.rw-chip')
-    expect(chips).toHaveLength(2)
-    expect(chips[1].classList.contains('rw-chip--muted')).toBe(true)
+    expect(w.text()).toContain('1:33') // 93000ms → M:SS
     w.unmount()
   })
 
-  it('整行点击 = select（role=button + tabindex=0）', async () => {
-    const w = mountRow()
-    expect(w.classes()).toContain('rw-row-card')
-    expect(w.attributes('role')).toBe('button')
-    expect(w.attributes('tabindex')).toBe('0')
-    await w.trigger('click')
-    expect(w.emitted('select')).toHaveLength(1)
+  it('snapshot_count 为 null → 不渲染 chip（不可知 ≠ 0）', () => {
+    const w = mountRow({ task: makeTask({ snapshot_count: null }) })
+    expect(w.text()).not.toContain('个快照')
     w.unmount()
   })
 
-  it('Enter / Space = select', async () => {
-    const w = mountRow()
-    await w.trigger('keydown.enter')
-    await w.trigger('keydown.space')
-    expect(w.emitted('select')).toHaveLength(2)
-    w.unmount()
+  it('timeMode 驱动时间口径：relative 与 actual 文案不同', () => {
+    const relative = mountRow()
+    const actual = mountRow({ timeMode: 'actual' })
+    const relativeText = relative.text()
+    const actualText = actual.text()
+    expect(relativeText).not.toBe(actualText)
+    expect(actualText).toMatch(/\d{4}-\d{2}-\d{2}/) // 绝对时间形态
+    relative.unmount()
+    actual.unmount()
   })
 
-  it('选中行：--active + aria-current + 点击空转', async () => {
-    const w = mountRow({ active: true })
-    expect(w.classes()).toContain('rw-row-card--active')
-    expect(w.attributes('aria-current')).toBe('true')
-    await w.trigger('click')
-    await w.trigger('keydown.enter')
-    expect(w.emitted('select')).toBeUndefined()
-    w.unmount()
-  })
+  it('菜单含 Export / Log / Verify / Restore，删除项运行中禁用', () => {
+    const idle = mountRow()
+    const idleGroups = idle.findComponent(TaskActionsMenu).props('groups') as {
+      actions: { key: string; disabled?: boolean }[]
+    }[]
+    const idleKeys = idleGroups.flatMap((group) => group.actions.map((action) => action.key))
+    expect(idleKeys).toEqual(['edit', 'restore', 'verify', 'export', 'log', 'delete'])
+    expect(idleGroups.flatMap((g) => g.actions).find((a) => a.key === 'delete')?.disabled).toBe(false)
+    idle.unmount()
 
-  it('禁用态：失焦 + aria-disabled + 静默', async () => {
-    const w = mountRow({ disabled: true })
-    expect(w.classes()).toContain('rw-row-card--disabled')
-    expect(w.attributes('tabindex')).toBe('-1')
-    expect(w.attributes('aria-disabled')).toBe('true')
-    await w.trigger('click')
-    expect(w.emitted('select')).toBeUndefined()
-    w.unmount()
-  })
-
-  it('#actions 插槽渲染（操作区由消费方塞入）', () => {
-    const w = mount(TaskRowCard, {
-      props: { name: '行' },
-      slots: { actions: () => h('button', { class: 'row-op' }, '删除') },
+    const running = mountRow({
+      task: makeTask({ status: 'running', running_job_id: 'job-1' }),
     })
-    expect(w.element.querySelector('.rw-row-card__actions .row-op')?.textContent).toBe('删除')
-    // 缺省 chip / 描述 / 图标不渲染
-    expect(w.element.querySelector('.rw-chip')).toBeNull()
-    expect(w.element.querySelector('.rw-row-card__desc')).toBeNull()
-    expect(w.element.querySelector('.rw-row-card__icon')).toBeNull()
+    const runningGroups = running.findComponent(TaskActionsMenu).props('groups') as {
+      actions: { key: string; disabled?: boolean }[]
+    }[]
+    expect(runningGroups.flatMap((g) => g.actions).find((a) => a.key === 'delete')?.disabled).toBe(true)
+    running.unmount()
+  })
+
+  it('菜单 select → 对外 emit（export / log 不自行跳转）', async () => {
+    const w = mountRow()
+    const menu = w.findComponent(TaskActionsMenu)
+    menu.vm.$emit('select', 'export')
+    menu.vm.$emit('select', 'log')
+    menu.vm.$emit('select', 'restore')
+    menu.vm.$emit('select', 'verify')
+    menu.vm.$emit('select', 'edit')
+    menu.vm.$emit('select', 'delete')
+    expect(w.emitted('export')?.[0]).toEqual([7])
+    expect(w.emitted('log')?.[0]).toEqual([7])
+    expect(w.emitted('restore')?.[0]).toEqual([7])
+    expect(w.emitted('verify')?.[0]).toEqual([7])
+    expect(w.emitted('edit')?.[0]).toEqual([7])
+    expect(w.emitted('delete')?.[0]).toEqual([7])
     w.unmount()
   })
 
-  it('图标渲染（BackendIcons 成员）', () => {
-    const w = mountRow({ icon: IconFolder })
-    expect(w.element.querySelector('.rw-row-card__icon')).not.toBeNull()
+  it('dry_run_pending → Start 禁用（R-026-08 门禁）', () => {
+    const w = mountRow({ task: makeTask({ dry_run_pending: true }) })
+    const buttons = w.findAll('button')
+    const start = buttons.find((button) => button.text() === '立即运行')
+    expect(start?.attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
+
+  it('运行中 → Cancel 按钮 emit cancel(jobId)', async () => {
+    const w = mountRow({ task: makeTask({ status: 'running', running_job_id: 'job-9' }) })
+    const cancel = w.findAll('button').find((button) => button.text() === '取消运行')
+    expect(cancel).toBeDefined()
+    await cancel!.trigger('click')
+    expect(w.emitted('cancel')?.[0]).toEqual(['job-9'])
     w.unmount()
   })
 })

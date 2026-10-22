@@ -1,7 +1,10 @@
 <script setup lang="ts">
-/** 仪表盘（增量设计 §5.1 + P7 主页复刻 §4.5）：仓库状态卡 + 运行模式卡保留；
- * 新增：双行动卡行（D1）/ 全局状态条（D2）/ 工具栏（D3 视图切换 + localStorage、
- * D4 相对/绝对时间、D5 纯前端排序）/ list-details 双视图。
+/** 仪表盘（增量设计 §5.1 + 方案 §4.5 / §4.5.6 P7）：仓库状态卡 + 运行模式卡保留；
+ * 层级按 §4.5.6 对齐：KPI 带 → 行动卡行（D1）→ 全局状态条（D2）→ 工具栏（D3/D4/D5）
+ * → list-details 双视图 → 空态。
+ *
+ * **list 视图用 `TaskRowCard` 行卡**（§4.5.6:292 组件规划原文；D8 里「list 视图经 TaskCard」
+ * 的表述已被 owner 2026-10-23 判定为错，旧 `TaskCard` 随之退役删除）。
  */
 
 import { useVirtualList } from '@vueuse/core'
@@ -13,6 +16,8 @@ import {
   NDataTable,
   NGi,
   NGrid,
+  NInput,
+  NModal,
   NSelect,
   NSpace,
   NText,
@@ -21,22 +26,23 @@ import {
 import { computed, h, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { deleteBackupTask, listBackupTasks } from '@/api/backupTasks'
+import { deleteBackupTask, exportBackupTask, listBackupTasks } from '@/api/backupTasks'
 import { hasCode, isAppError } from '@/api/http'
-import { cancelJob, createJob } from '@/api/jobs'
+import { cancelJob, createJob, listJobsHistory } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import ActionCard from '@/components/dashboard/ActionCard.vue'
 import GlobalStatusBar from '@/components/dashboard/GlobalStatusBar.vue'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
+import TaskRowCard from '@/components/dashboard/TaskRowCard.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import JobLogDrawer from '@/components/JobLogDrawer.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import TaskCard from '@/components/TaskCard.vue'
 import { useCountUp } from '@/composables/useCountUp'
 import { useUiStore } from '@/stores/ui'
-import { formatDateTime, formatDateTimeOr } from '@/utils/datetime'
-import { relativeTime } from '@/utils/relativeTime'
+import { formatDateTimeOr } from '@/utils/datetime'
+import { formatDurationMs, statusKind, timeText } from '@/utils/taskFormat'
 import { IconFolderOpen, IconPlusCircle } from '@/components/icons/HomeIcons'
 
 const { t } = useI18n()
@@ -116,6 +122,13 @@ function onStopGlobal(): void {
   }
 }
 
+/** Abort 二段（P7 D2 / §4.5.4）：跳过 SIGTERM 宽限直接 SIGKILL，服务端审计 job.abort。 */
+function onAbortGlobal(): void {
+  if (globalJobId.value) {
+    void onCancel(globalJobId.value, true)
+  }
+}
+
 // ---------------------------------------------------------------- 工具栏（D3/D4/D5）
 /** 视图：list=卡片 / details=表格；localStorage 持久化（owner 裁决：视图切换持久化）。 */
 const VIEW_KEY = 'dashboard:viewMode'
@@ -173,62 +186,18 @@ const sortedTasks = computed<TaskCardModel[]>(() => {
   return arr
 })
 
-/** 表格时间列收口（D4 口径）：actual=绝对；relative=相对，回落绝对/语义兜底。 */
+/** 表格时间列收口（D4 口径）：与行卡同一实现（utils/taskFormat 单一实现点）。 */
 function tableTime(value: string | null, fallback: string): string {
-  if (!value) {
-    return fallback
-  }
-  if (timeType.value === 'actual') {
-    return formatDateTimeOr(value, fallback)
-  }
-  const r = relativeTime(value)
-  if (r.kind === 'absolute') {
-    return formatDateTime(r.date)
-  }
-  if (r.kind === 'none') {
-    return formatDateTimeOr(value, fallback)
-  }
-  if (r.kind === 'justNow') {
-    return t('dashboard.rel.justNow')
-  }
-  if (r.kind === 'soon') {
-    return t('dashboard.rel.soon')
-  }
-  const unit = r.unit === 'min' ? t('dashboard.rel.min') : r.unit === 'hour' ? t('dashboard.rel.hour') : t('dashboard.rel.day')
-  const dir = r.future ? t('dashboard.rel.later') : t('dashboard.rel.ago')
-  return `${r.amount}${unit}${dir}`
+  const mode = timeType.value === 'actual' ? 'actual' : 'relative'
+  return timeText(value, mode, t, fallback)
 }
 
-/** 耗时（ms）→ 紧凑展示；null 回落长破折号。 */
-function formatDuration(ms: number | null): string {
+/** 耗时列：null → 长破折号（表格需要占位，行卡则直接不渲染）。 */
+function tableDuration(ms: number | null): string {
   if (ms === null || ms < 0) {
     return '—'
   }
-  const totalSec = Math.floor(ms / 1000)
-  const h = Math.floor(totalSec / 3600)
-  const m = Math.floor((totalSec % 3600) / 60)
-  const s = totalSec % 60
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }
-  return `${m}:${String(s).padStart(2, '0')}`
-}
-
-/** 状态徽章语义色（与 TaskCard.statusTagType 同口径，表格列复用）。 */
-function statusKind(status: string): 'default' | 'info' | 'success' | 'warning' | 'error' {
-  switch (status) {
-    case 'running':
-    case 'pending':
-      return 'info'
-    case 'success':
-      return 'success'
-    case 'failed':
-      return 'error'
-    case 'interrupted':
-      return 'warning'
-    default:
-      return 'default'
-  }
+  return formatDurationMs(ms) || '—'
 }
 
 const detailRowKey = (row: TaskCardModel): number => row.id
@@ -259,7 +228,7 @@ const detailColumns = computed(() => [
     title: t('task.duration'),
     key: 'last_duration_ms',
     width: 110,
-    render: (row: TaskCardModel) => formatDuration(row.last_duration_ms),
+    render: (row: TaskCardModel) => tableDuration(row.last_duration_ms),
   },
   {
     title: t('dashboard.repoSnapshots'),
@@ -275,7 +244,7 @@ const detailColumns = computed(() => [
   },
 ])
 
-/** details 行菜单分组（D8：与 TaskCard 三点菜单同口径——Operations/Advanced/Danger）。 */
+/** details 行菜单分组：与 list 视图行卡同一口径（§4.5.6 三组 + Danger），两端零漂移。 */
 function rowGroups(row: TaskCardModel) {
   const isActive = row.status === 'running' || row.status === 'pending'
   return [
@@ -286,7 +255,15 @@ function rowGroups(row: TaskCardModel) {
       ],
     },
     {
-      actions: [{ key: 'verify', label: t('task.verify') }],
+      label: t('task.groupAdvanced'),
+      actions: [
+        { key: 'verify', label: t('task.verify') },
+        { key: 'export', label: t('task.export') },
+      ],
+    },
+    {
+      label: t('task.groupReporting'),
+      actions: [{ key: 'log', label: t('task.logs') }],
     },
     {
       label: t('delete.title'),
@@ -304,6 +281,10 @@ function onRowMenuSelect(key: string, row: TaskCardModel): void {
     goRestore()
   } else if (key === 'verify') {
     void onVerify(row.id)
+  } else if (key === 'export') {
+    askExport(row.id)
+  } else if (key === 'log') {
+    openTaskLog(row.id)
   }
 }
 
@@ -316,17 +297,19 @@ function renderRowActions(row: TaskCardModel) {
   })
 }
 
-// ---------------------------------------------------------------- 虚拟滚动（固定卡片骨架，仅 list 视图）
-const CARD_HEIGHT = 260
-const CARD_GAP = 12
-const ITEM_HEIGHT = CARD_HEIGHT + CARD_GAP
-const MAX_VISIBLE = 3
+// ---------------------------------------------------------------- 虚拟滚动（固定行高骨架，仅 list 视图）
+/** 行卡固定骨架（§4.5.6 行卡：名称行 + 指标区，两行文字）：行高 84 + 间距 8。
+ *  改动须同步 `.tasks__row` 的 CSS 高度，否则 useVirtualList 会错位。 */
+const ROW_HEIGHT = 84
+const ROW_GAP = 8
+const ITEM_HEIGHT = ROW_HEIGHT + ROW_GAP
+const MAX_VISIBLE = 6
 
 const { containerProps, wrapperProps, list: virtualItems } = useVirtualList(sortedTasks, {
   itemHeight: ITEM_HEIGHT,
 })
 
-/** 列表较短时不出现内层滚动条：容器高度随条数伸缩（最多 3 个卡位）。 */
+/** 列表较短时不出现内层滚动条：容器高度随条数伸缩（最多 6 行）。 */
 const viewportHeight = computed(() => Math.max(ITEM_HEIGHT, Math.min(sortedTasks.value.length, MAX_VISIBLE) * ITEM_HEIGHT))
 
 function toText(error: unknown): string {
@@ -377,31 +360,34 @@ async function onStart(taskId: number): Promise<void> {
       message.error(t('task.conflict', { name }))
       return
     }
-    if (!isAppError(error)) {
-      throw error
-    }
+    // C9（owner 2026-10-23 裁决）：不再 rethrow —— 调用点多为 `void onXxx()`，
+    // 抛出会变成 unhandled rejection；统一落成用户可见的错误提示。
+    message.error(toText(error))
   }
 }
 
-async function onCancel(jobId: string): Promise<void> {
+async function onCancel(jobId: string, force = false): Promise<void> {
   try {
-    await cancelJob(jobId)
-    message.success(t('jobs.cancelSubmitted'))
+    await cancelJob(jobId, force)
+    message.success(force ? t('jobs.abortSubmitted') : t('jobs.cancelSubmitted'))
     await invalidateTasks()
   } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
+    // C9（owner 2026-10-23 裁决）：不再 rethrow —— 调用点多为 `void onXxx()`，
+    // 抛出会变成 unhandled rejection；统一落成用户可见的错误提示。
+    message.error(toText(error))
   }
 }
 
-/** 校验备份（D8）：Verify 即 `createJob('check')`（§4.5.4：JobType 含 check，E22 结果视图已落地）。
- *  与 onStart 同口径：409 JOB_CONFLICT 取 data.running_task_name 提示（US-026-04 AC2）。 */
+/** 校验备份（P7 菜单 Verify）：`createJob('check')` → **跳 E22 校验结果视图**
+ *  （方案 §4.5.4：「只缺菜单入口 + 结果跳转」；owner 2026-10-23 裁决 A6 认可 jobs 页
+ *  `?job=<id>` 自动打开 check 详情抽屉为落点）。
+ *  409 JOB_CONFLICT 与 onStart 同口径取 `data.running_task_name`。 */
 async function onVerify(taskId: number): Promise<void> {
   try {
-    await createJob('check', { taskId })
+    const job = await createJob('check', { taskId })
     message.success(t('task.verifySubmitted'))
     await invalidateTasks()
+    void router.push({ name: 'jobs', query: { job: job.id } })
   } catch (error) {
     if (hasCode(error, 'JOB_CONFLICT')) {
       const raw = isAppError(error) ? error.data?.['running_task_name'] : null
@@ -409,9 +395,97 @@ async function onVerify(taskId: number): Promise<void> {
       message.error(t('task.conflict', { name }))
       return
     }
-    if (!isAppError(error)) {
-      throw error
+    // C9（owner 2026-10-23 裁决）：不再 rethrow —— 调用点多为 `void onXxx()`，
+    // 抛出会变成 unhandled rejection；统一落成用户可见的错误提示。
+    message.error(toText(error))
+  }
+}
+
+// ---------------------------------------------------------------- 导出（P7 菜单 Export，§4.5.4 裁决④）
+/** 导出口令弹窗状态。口令只用于本地加密打包（后端 `build_export_pack`，≥10 位），
+ *  **不落库、不进 URL**；成功后立刻清空，避免留在内存/剪贴板旁。 */
+const exportTarget = ref<TaskCardModel | null>(null)
+const exportShow = ref(false)
+const exportPassword = ref('')
+const exporting = ref(false)
+
+function askExport(taskId: number): void {
+  const target = tasks.value.find((task) => task.id === taskId) ?? null
+  if (!target) {
+    return
+  }
+  exportTarget.value = target
+  exportPassword.value = ''
+  exportShow.value = true
+}
+
+function closeExport(): void {
+  exportShow.value = false
+  exportPassword.value = ''
+  exportTarget.value = null
+}
+
+/** 口令下限与后端 `ConfigExportRequest`（min_length=10）保持一致，前端先拦一道避免 422。 */
+const exportDisabled = computed(() => exporting.value || exportPassword.value.length < 10)
+
+async function onExportConfirmed(): Promise<void> {
+  const target = exportTarget.value
+  if (!target || exportDisabled.value) {
+    return
+  }
+  exporting.value = true
+  try {
+    const pack = await exportBackupTask(target.id, exportPassword.value)
+    const blob = new Blob([JSON.stringify(pack, null, 1)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `restic-web-task-${target.id}-${String(pack.created_at).slice(0, 10)}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    message.success(t('task.exportDone'))
+    closeExport()
+  } catch (error) {
+    // C9：不 rethrow（调用点多在 `void` 上下文，抛出即未处理 rejection）
+    message.error(toText(error))
+  } finally {
+    exporting.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 日志抽屉（共用 JobLogDrawer，A4）
+/** 打开某任务的作业日志：运行中直接用 `running_job_id`；已结束任务回查最近一条作业
+ *  （E34 契约不含 ``last_job_id``，故经 E13 历史查询取 1 条——零后端改动）。 */
+const logShow = ref(false)
+const logJobId = ref('')
+const logSkipped = ref(0)
+
+function openLog(jobId: string, skipped = 0): void {
+  logJobId.value = jobId
+  logSkipped.value = skipped
+  logShow.value = true
+}
+
+async function openTaskLog(taskId: number): Promise<void> {
+  const task = tasks.value.find((item) => item.id === taskId) ?? null
+  if (!task) {
+    return
+  }
+  if (task.running_job_id) {
+    openLog(task.running_job_id)
+    return
+  }
+  try {
+    const page = await listJobsHistory({ taskId, limit: 1 })
+    const latest = page.items[0]
+    if (!latest) {
+      message.warning(t('task.noLogYet'))
+      return
     }
+    openLog(latest.id, latest.skipped_count)
+  } catch (error) {
+    // C9：不 rethrow（调用点多在 `void` 上下文，抛出即未处理 rejection）
+    message.error(toText(error))
   }
 }
 
@@ -447,9 +521,9 @@ async function onDeleteConfirmed(): Promise<void> {
       message.error(t('delete.running_blocked'))
       return
     }
-    if (!isAppError(error)) {
-      throw error
-    }
+    // C9（owner 2026-10-23 裁决）：不再 rethrow —— 调用点多为 `void onXxx()`，
+    // 抛出会变成 unhandled rejection；统一落成用户可见的错误提示。
+    message.error(toText(error))
   } finally {
     deleting.value = false
   }
@@ -466,6 +540,7 @@ async function onDeleteConfirmed(): Promise<void> {
       :title="globalTitle"
       :limit-text="globalLimitText"
       @stop="onStopGlobal"
+      @abort="onAbortGlobal"
     />
 
     <!-- KPI 状态带（P4+）：四格等高等距——统一「标签行 22px / 主行 36px / 辅出行 18px」固定骨架，
@@ -577,14 +652,14 @@ async function onDeleteConfirmed(): Promise<void> {
       <SegmentedTabs
         :items="viewItems"
         v-model="viewMode"
-        :aria-label="t('dashboard.view.list')"
+        :aria-label="t('dashboard.view.aria')"
       />
       <n-space :size="8" :wrap="false" align="center">
         <SegmentedTabs
           :items="timeItems"
           v-model="timeType"
           size="small"
-          :aria-label="t('dashboard.time.relative')"
+          :aria-label="t('dashboard.time.aria')"
         />
         <n-text v-if="viewMode === 'list'" depth="3" class="home__sort-label">{{ t('dashboard.sort.label') }}</n-text>
         <n-select
@@ -625,7 +700,7 @@ async function onDeleteConfirmed(): Promise<void> {
         <n-button type="primary" @click="goNewTask">{{ t('task.new') }}</n-button>
       </div>
 
-      <!-- list 视图：虚拟滚动卡片（D5 排序后） -->
+      <!-- list 视图：虚拟滚动行卡（§4.5.6：TaskRowCard 即 list 视图卡片行；D5 排序后） -->
       <div
         v-else-if="viewMode === 'list'"
         v-bind="containerProps"
@@ -634,7 +709,7 @@ async function onDeleteConfirmed(): Promise<void> {
       >
         <div v-bind="wrapperProps">
           <div v-for="item in virtualItems" :key="item.data.id" class="tasks__item">
-            <TaskCard
+            <TaskRowCard
               :task="item.data"
               :time-mode="timeType"
               @start="onStart"
@@ -643,6 +718,8 @@ async function onDeleteConfirmed(): Promise<void> {
               @delete="askDelete"
               @restore="goRestore"
               @verify="onVerify"
+              @export="askExport"
+              @log="openTaskLog"
             />
           </div>
         </div>
@@ -656,6 +733,8 @@ async function onDeleteConfirmed(): Promise<void> {
         :row-key="detailRowKey"
         size="small"
         :scroll-x="920"
+        :virtual-scroll="sortedTasks.length > 50"
+        :max-height="560"
       />
 
       <n-text depth="3" class="dashboard__note">{{ t('dashboard.tasksAutoNote') }}</n-text>
@@ -679,6 +758,39 @@ async function onDeleteConfirmed(): Promise<void> {
       </n-space>
     </template>
   </ConfirmGate>
+
+  <!-- Export 口令弹窗（P7 菜单 Export；口令 ≥10 位与后端 ConfigExportRequest 同口径） -->
+  <n-modal
+    v-model:show="exportShow"
+    preset="card"
+    :title="t('task.exportTitle')"
+    style="width: 460px"
+    @after-leave="closeExport"
+  >
+    <n-space vertical :size="12">
+      <n-text depth="3">{{ t('task.exportHint', { name: exportTarget?.name ?? '' }) }}</n-text>
+      <n-input
+        v-model:value="exportPassword"
+        type="password"
+        show-password-on="click"
+        :placeholder="t('task.exportPassword')"
+        :maxlength="256"
+        @keyup.enter="onExportConfirmed"
+      />
+      <n-text v-if="exportPassword.length > 0 && exportPassword.length < 10" depth="3" type="warning">
+        {{ t('task.exportPasswordTooShort') }}
+      </n-text>
+      <n-space justify="end" :size="8">
+        <n-button size="small" @click="closeExport">{{ t('common.cancel') }}</n-button>
+        <n-button size="small" type="primary" :disabled="exportDisabled" :loading="exporting" @click="onExportConfirmed">
+          {{ t('task.exportBtn') }}
+        </n-button>
+      </n-space>
+    </n-space>
+  </n-modal>
+
+  <!-- 日志抽屉（与 jobs 页共用 JobLogDrawer；已结束作业同样可看历史日志） -->
+  <JobLogDrawer v-model:show="logShow" :job-id="logJobId" :skipped-count="logSkipped" />
 </template>
 
 <style scoped>
@@ -756,10 +868,10 @@ async function onDeleteConfirmed(): Promise<void> {
   border-radius: 3px;
 }
 
-/* 固定卡片骨架：ITEM_HEIGHT = CARD_HEIGHT(260) + CARD_GAP(12) = 272，间距用 padding-bottom 实现 */
+/* 固定行卡骨架：ITEM_HEIGHT = ROW_HEIGHT(84) + ROW_GAP(8) = 92，间距用 padding-bottom 实现 */
 .tasks__item {
-  height: 272px;
-  padding-bottom: 12px;
+  height: 92px;
+  padding-bottom: 8px;
   box-sizing: border-box;
 }
 

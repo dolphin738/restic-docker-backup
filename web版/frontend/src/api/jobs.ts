@@ -86,8 +86,16 @@ export function createJob(
 }
 
 /** 非 running/pending → 409 NOT_CANCELLABLE。 */
-export function cancelJob(jobId: string): Promise<OkResponse> {
-  return request<OkResponse>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+/** E16 取消：默认 SIGTERM → 30s 宽限 → SIGKILL。
+ *
+ * `force=true` = P7 D2 的 **Abort 二段**（Duplicati isStopping→abort）：跳过宽限直接 SIGKILL，
+ * 服务端审计记 `job.abort`。终态仍是 cancelled，不新增状态。
+ */
+export function cancelJob(jobId: string, force = false): Promise<OkResponse> {
+  return request<OkResponse>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: 'POST',
+    query: force ? { force: 'true' } : undefined,
+  })
 }
 
 /** 日志尾部：不传 tail_bytes 取服务端默认 64 KiB；响应 truncated + tail_bytes（实际字节）

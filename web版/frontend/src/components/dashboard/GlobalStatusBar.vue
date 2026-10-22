@@ -6,11 +6,11 @@
  *
  * 消费位：P7 主页顶部（全局进度常驻条）。
  *
- * 与后端能力的差异标注（如实标注，勿造假 UI）：
- * - Stop → 消费方接 POST /api/jobs/{id}/cancel（SIGTERM → 30s 宽限 → SIGKILL）；
- * - **Abort 二段暂缺**：Duplicati 的 isStopping→abort 是「优雅停止后仍可强杀」，
- *   本后端 cancel 无 grace=0 强杀路径（routers/jobs.py:202 无参数），故不渲染
- *   不可用的 Abort 按钮——待后端补强杀端点或 owner 裁决丢弃该段后再加；
+ * 与后端能力对齐（2026-10-23 owner 裁决 A5 后已补齐）：
+ * - **Stop** → `POST /api/jobs/{id}/cancel`（SIGTERM → 30s 宽限 → SIGKILL）；
+ * - **Abort 二段** → `POST /api/jobs/{id}/cancel?force=true`（跳过宽限直接 SIGKILL，
+ *   服务端审计 `job.abort`）。交互对齐 Duplicati：点 Stop 后进入 isStopping 态（按钮禁用 +
+ *   出现 Abort），供「已请求停止但迟迟不退出」时一键强杀；
  * - 限速（owner 2026-10-22 任务级裁决）：后端限速是**任务级配置**
  *   （backup_tasks.limit_up/down_kibps，创建时生效——备份进程启动时读入
  *   restic argv），restic CLI 无控制通道、运行中不可改 → 状态条**不设运行中
@@ -19,7 +19,7 @@
  */
 
 import { NButton, NIcon, NProgress, NSpace, NText } from 'naive-ui'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useJobStream } from '@/composables/useJobStream'
 import type { JobProgressPayload } from '@/api/types'
@@ -36,9 +36,38 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'stop'): void
+  (e: 'abort'): void
 }>()
 
 const { t } = useI18n()
+
+/** isStopping 态（Duplicati 对位）：点过 Stop 之后才允许 Abort —— 避免「还没请求停止就强杀」。 */
+const stopping = ref(false)
+
+function onStop(): void {
+  stopping.value = true
+  emit('stop')
+}
+
+function onAbort(): void {
+  emit('abort')
+}
+
+// 换作业（或作业结束）后 isStopping 归零，避免下个作业一上来就带着 Abort
+watch(
+  () => props.jobId,
+  () => {
+    stopping.value = false
+    // C4（owner 2026-10-23 裁决）：进度与速率一并归零——否则同实例换作业会先显示上一个
+    // 作业的 100% 与旧速率，直到新作业首个 progress 帧到达（视觉上像「已完成又倒回去」）。
+    percent.value = 0
+    filesDone.value = 0
+    totalFiles.value = 0
+    rateKib.value = 0
+    lastBytes = 0
+    lastAt = 0
+  },
+)
 
 const percent = ref(0)
 const filesDone = ref(0)
@@ -95,11 +124,15 @@ const barTitle = computed(() => props.title || props.jobId || '')
     </n-space>
     <n-space :size="6" :wrap="false" align="center" class="rw-status-bar__actions">
       <n-text v-if="limitText" depth="3" class="rw-status-bar__limit">{{ limitText }}</n-text>
-      <n-button size="small" type="warning" secondary @click="emit('stop')">
+      <!-- Stop/Abort 二段（Duplicati 对位）：Stop 后进入 stopping 态 → 出现 Abort 强杀 -->
+      <n-button size="small" type="warning" secondary :disabled="stopping" @click="onStop">
         <template #icon>
           <n-icon :size="14"><IconStop /></n-icon>
         </template>
-        {{ t('dashboard.statusBar.stop') }}
+        {{ stopping ? t('dashboard.statusBar.stopping') : t('dashboard.statusBar.stop') }}
+      </n-button>
+      <n-button v-if="stopping" size="small" type="error" secondary @click="onAbort">
+        {{ t('dashboard.statusBar.abort') }}
       </n-button>
     </n-space>
   </div>

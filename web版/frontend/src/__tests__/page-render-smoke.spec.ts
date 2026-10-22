@@ -21,8 +21,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DashboardPage from '@/pages/dashboard/index.vue'
 import RepoPage from '@/pages/repo/index.vue'
-import TaskCard from '@/components/TaskCard.vue'
+import TaskRowCard from '@/components/dashboard/TaskRowCard.vue'
 import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
+import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
 import { useUiStore } from '@/stores/ui'
@@ -53,11 +54,16 @@ vi.mock('@/api/repo', () => ({
 vi.mock('@/api/backupTasks', () => ({
   listBackupTasks: vi.fn(async () => ({ items: mocks.backupTasks, total: mocks.backupTasks.length })),
   deleteBackupTask: vi.fn(async () => ({ ok: true })),
+  // P7 A3：导出端点（菜单 Export → 口令弹窗 → 下载）
+  exportBackupTask: vi.fn(async () => ({ format: 'restic-web-config-export', created_at: '2026-10-23T00:00:00Z' })),
 }))
 
 vi.mock('@/api/jobs', () => ({
   createJob: vi.fn(async () => ({ id: 'job-1' })),
   cancelJob: vi.fn(async () => ({ ok: true })),
+  // P7 A4：日志抽屉（共用 JobLogDrawer 的数据源）与「最近一条作业」回查
+  getJobLog: vi.fn(async () => ({ content: '', tail_bytes: 0, truncated: false })),
+  listJobsHistory: vi.fn(async () => ({ items: [], total: 0 })),
 }))
 
 vi.mock('@/api/config', () => ({
@@ -84,7 +90,12 @@ function mountPage(component: Component) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component }],
+    routes: [
+      // P7 A6：主页「校验备份」提交后跳 `jobs?job=<id>`，宿主必须注册该 name，
+      // 否则 push 会 reject（真实 router 里 jobs 路由存在，属测试宿主缺口而非产品缺陷）。
+      { path: '/jobs', name: 'jobs', component: { template: '<div class="stub-jobs" />' } },
+      { path: '/:pathMatch(.*)*', component },
+    ],
   })
   return mount(NConfigProvider, {
     props: { themeOverrides: lightThemeOverrides },
@@ -207,9 +218,10 @@ describe('仪表盘 KPI 四卡统一骨架', () => {
 
 /**
  * D8 三点菜单接线（防「死键」回归）——
- * 存在理由：D8 首批只在 TaskCard 装了菜单，dashboard 未监听 @restore/@verify，
- * 菜单可点但无效果；details 视图操作列更是停留在按钮组占位（原注释自承）。
- * 这两条用例直接驱动菜单 select 并断言落到 createJob('check')，锁死两端接线。
+ * 存在理由：D8 首批只在任务卡装了菜单，dashboard 未监听 @restore/@verify，
+ * 菜单可点但无效果；details 视图操作列一度停留在按钮组占位。
+ * 2026-10-23 A1 裁决后 list 视图改 `TaskRowCard` 行卡（旧 TaskCard 删除），
+ * 本组用例继续锁死两端接线：菜单 select → createJob('check')／导出弹窗／日志抽屉。
  */
 describe('仪表盘 D8 三点菜单接线（防死键回归）', () => {
   it('details 视图：每行操作列渲染三点菜单；select verify → createJob(check, {taskId})', async () => {
@@ -232,15 +244,15 @@ describe('仪表盘 D8 三点菜单接线（防死键回归）', () => {
     localStorage.removeItem('dashboard:viewMode')
   })
 
-  it('list 视图：任务卡三点菜单 select verify → createJob(check, {taskId})', async () => {
+  it('list 视图：任务行三点菜单 select verify → createJob(check, {taskId})', async () => {
     const { createJob } = await import('@/api/jobs')
     vi.mocked(createJob).mockClear()
     const w = mountPage(DashboardPage)
     await flushPromises()
 
-    const card = w.findComponent(TaskCard)
-    expect(card.exists()).toBe(true)
-    card.findComponent(TaskActionsMenu).vm.$emit('select', 'verify')
+    const row = w.findComponent(TaskRowCard)
+    expect(row.exists()).toBe(true)
+    row.findComponent(TaskActionsMenu).vm.$emit('select', 'verify')
     await flushPromises()
     expect(vi.mocked(createJob)).toHaveBeenCalledWith('check', { taskId: 1 })
 
@@ -741,6 +753,117 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
 
     await w.find('.repo__edit-header button').trigger('click')
     expect(w.text()).toContain('仓库维护')
+    w.unmount()
+  })
+})
+
+/**
+ * P7 验收门（方案 §4.7 P7 原文：「新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段）」）。
+ *
+ * 存在理由：改造交付时这四项**一条 spec 都没有**（时间切换 0、排序 0、持久化只读不写、
+ * Abort 反向锁定），等于验收门没执行。owner 2026-10-23 裁决 A2 要求按方案补齐；
+ * Stop→Abort 二段在 GlobalStatusBar.spec.ts（组件级）覆盖，本组覆盖主页其余三项。
+ */
+describe('P7 验收门：视图持久化 / 时间切换 / 排序三态', () => {
+  /** 三任务排序夹具：name 与 last_run / next_run 三种排序结果各不相同（含 null 末尾）。 */
+  function seedSortTasks(): void {
+    mocks.backupTasks = [
+      {
+        id: 11,
+        name: 'Alpha',
+        enabled: true,
+        tag: 'task-11',
+        cron: '0 3 * * *',
+        status: 'success',
+        last_run_at: '2026-10-20T03:00:00Z',
+        last_result: 'success',
+        next_run_at: null, // 空值 → 恒排末尾
+      },
+      {
+        id: 12,
+        name: 'Bravo',
+        enabled: true,
+        tag: 'task-12',
+        cron: '0 4 * * *',
+        status: 'success',
+        last_run_at: '2026-10-10T03:00:00Z',
+        last_result: 'success',
+        next_run_at: '2026-10-22T04:00:00Z',
+      },
+      {
+        id: 13,
+        name: 'Charlie',
+        enabled: true,
+        tag: 'task-13',
+        cron: '0 5 * * *',
+        status: 'never_run',
+        last_run_at: null,
+        last_result: null,
+        next_run_at: '2026-10-21T05:00:00Z',
+      },
+    ]
+  }
+
+  function rowNames(w: ReturnType<typeof mountPage>): string[] {
+    return w.findAllComponents(TaskRowCard).map((row) => (row.props('task') as { name: string }).name)
+  }
+
+  it('视图切换写 localStorage（持久化是可恢复的，不只是能读）', async () => {
+    localStorage.removeItem('dashboard:viewMode')
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+
+    const viewTabs = w.findAllComponents(SegmentedTabs)[0]!
+    viewTabs.vm.$emit('update:modelValue', 'details')
+    await flushPromises()
+    expect(localStorage.getItem('dashboard:viewMode')).toBe('details')
+    expect(w.find('.n-data-table').exists()).toBe(true)
+
+    w.findAllComponents(SegmentedTabs)[0]!.vm.$emit('update:modelValue', 'list')
+    await flushPromises()
+    expect(localStorage.getItem('dashboard:viewMode')).toBe('list')
+
+    w.unmount()
+    localStorage.removeItem('dashboard:viewMode')
+  })
+
+  it('时间口径切换：actual 出绝对时间，relative 出相对文案', async () => {
+    seedSortTasks()
+    localStorage.setItem('dashboard:timeType', 'actual')
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+    expect(w.text()).toMatch(/\d{4}-\d{2}-\d{2}/) // 绝对时间形态（YYYY-MM-DD）
+
+    const timeTabs = w.findAllComponents(SegmentedTabs)[1]!
+    timeTabs.vm.$emit('update:modelValue', 'relative')
+    await flushPromises()
+    expect(localStorage.getItem('dashboard:timeType')).toBe('relative')
+    // 相对文案（「天前」等）与绝对形态并存替换：不再出现 2026-10-10 这种字面时间
+    expect(w.text()).not.toMatch(/2026-10-10/)
+
+    w.unmount()
+    localStorage.removeItem('dashboard:timeType')
+  })
+
+  it('排序三态：名称 / 上次运行 / 下次运行，空值恒排末尾', async () => {
+    seedSortTasks()
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+
+    // 默认 name
+    expect(rowNames(w)).toEqual(['Alpha', 'Bravo', 'Charlie'])
+
+    const select = w.findComponent(NSelect)
+    select.vm.$emit('update:value', 'last_run_at')
+    await flushPromises()
+    // 升序：Bravo(10-10) < Alpha(10-20)；Charlie 无记录 → 恒排末尾
+    expect(rowNames(w)).toEqual(['Bravo', 'Alpha', 'Charlie'])
+
+    select.vm.$emit('update:value', 'next_run_at')
+    await flushPromises()
+    // 升序：Charlie(10-21) < Bravo(10-22)；Alpha 无 → 恒排末尾
+    expect(rowNames(w)).toEqual(['Charlie', 'Bravo', 'Alpha'])
+
     w.unmount()
   })
 })

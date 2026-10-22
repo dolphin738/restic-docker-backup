@@ -19,9 +19,6 @@ import {
   NDrawer,
   NDrawerContent,
   NEmpty,
-  NCollapse,
-  NCollapseItem,
-  NLog,
   NPopconfirm,
   NSelect,
   NSpace,
@@ -31,11 +28,13 @@ import {
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
-import { computed, h, onUnmounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { listBackupTasks } from '@/api/backupTasks'
-import { cancelJob, createJob, getCheckDetail, getJobLog, listActiveJobs, listJobsHistory } from '@/api/jobs'
+import { cancelJob, createJob, getCheckDetail, getJob, listActiveJobs, listJobsHistory } from '@/api/jobs'
 import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
+import JobLogDrawer from '@/components/JobLogDrawer.vue'
 import { useUiStore } from '@/stores/ui'
 import { isAppError } from '@/api/http'
 import ConfirmGate from '@/components/ConfirmGate.vue'
@@ -316,120 +315,41 @@ async function onRepair(): Promise<void> {
 }
 
 // ================================================================ 日志抽屉（E27，两视图共用）
-
-interface LogState {
-  jobId: string
-  content: string
-  /** 实际已拉取字节数（响应 tail_bytes）；undefined 表示还没拉过（用服务端默认 64 KiB）。 */
-  tailBytes: number | null
-  truncated: boolean
-  loading: boolean
-  loadingMore: boolean
-  /** 该 job 的 skipped 计数（E14 口径），用于 skipped 明细折叠区标题与开关。 */
-  skippedCount: number
-}
-
-const DEFAULT_TAIL = 65_536
-const MAX_TAIL = 1_048_576
-
+/** 抽屉实现已提升为共用组件 `components/JobLogDrawer.vue`（owner 2026-10-23 裁决 A4/Q2a）：
+ *  主页任务行与 jobs 页消费同一份实现，避免「逐页各写一份」（S-4）。此处只留开合状态。 */
 const logShow = ref(false)
-const log = ref<LogState>({
-  jobId: '',
-  content: '',
-  tailBytes: null,
-  truncated: false,
-  loading: false,
-  loadingMore: false,
-  skippedCount: 0,
-})
-
-function nextTailSize(current: number | null): number {
-  if (current === null) {
-    return DEFAULT_TAIL * 4 // 64 KiB → 256 KiB
-  }
-  return Math.min(current * 2, MAX_TAIL)
-}
+const logJobId = ref('')
+const logSkipped = ref(0)
 
 function openLog(job: JobOut): void {
+  logJobId.value = job.id
+  logSkipped.value = job.skipped_count
   logShow.value = true
-  log.value = {
-    jobId: job.id,
-    content: '',
-    tailBytes: null,
-    truncated: false,
-    loading: true,
-    loadingMore: false,
-    skippedCount: job.skipped_count,
+}
+
+// ---------------------------------------------------------------- E22 直达（P7 A6 结果跳转落点）
+/** 主页「校验备份」提交后跳 `?job=<id>`：本页按 query 自动打开对应抽屉
+ *  （check → E22 校验结果抽屉；其它类型 → 日志抽屉），实现「提交即可看结果」。
+ *  方案 §4.5.4 只写了「结果跳转」未定目标，owner 2026-10-23 裁决（Q3）认可此落点。 */
+const route = useRoute()
+
+onMounted(() => {
+  const jobId = typeof route.query.job === 'string' ? route.query.job : ''
+  if (!jobId) {
+    return
   }
-  void getJobLog(job.id)
-    .then((data) => {
-      log.value = {
-        jobId: job.id,
-        content: data.content,
-        tailBytes: data.tail_bytes,
-        truncated: data.truncated,
-        loading: false,
-        loadingMore: false,
-        skippedCount: job.skipped_count,
+  void getJob(jobId)
+    .then((job) => {
+      viewTab.value = 'history' // 校验通常是短任务，落地即已终态 → 直接切历史视图
+      if (job.type === 'check') {
+        openCheckDetail(job)
+      } else {
+        openLog(job)
       }
     })
     .catch(() => {
-      log.value.loading = false
+      // 直达失败静默：不影响列表本身（任务可能已被清理）
     })
-}
-
-/** 逐级放大尾部窗口（64 KiB → 256 KiB → … → 1 MiB 上限）。 */
-async function loadMoreLog(): Promise<void> {
-  if (log.value.loadingMore || !log.value.truncated) {
-    return
-  }
-  const target = nextTailSize(log.value.tailBytes)
-  if (log.value.tailBytes !== null && log.value.tailBytes >= MAX_TAIL) {
-    return
-  }
-  log.value.loadingMore = true
-  try {
-    const data = await getJobLog(log.value.jobId, target)
-    log.value.content = data.content
-    log.value.tailBytes = data.tail_bytes
-    log.value.truncated = data.truncated
-  } finally {
-    log.value.loadingMore = false
-  }
-}
-
-const canLoadMore = computed(
-  () => log.value.truncated && (log.value.tailBytes === null || log.value.tailBytes < MAX_TAIL),
-)
-
-// ---------------------------------------------------------------- skipped 明细（数量取 E14，明细从 E27 文本挑）
-interface SkippedEntry {
-  item: string
-  error: string
-}
-
-const skippedEntries = computed<SkippedEntry[]>(() => {
-  const entries: SkippedEntry[] = []
-  for (const line of log.value.content.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('{')) {
-      continue
-    }
-    try {
-      const payload = JSON.parse(trimmed) as Record<string, unknown>
-      if (payload['message_type'] !== 'error' || payload['during'] !== 'archival') {
-        continue
-      }
-      const item = typeof payload['item'] === 'string' ? payload['item'] : trimmed
-      entries.push({
-        item,
-        error: typeof payload['error'] === 'string' ? payload['error'] : '',
-      })
-    } catch {
-      // 非完整 JSON 行（半行截断）跳过
-    }
-  }
-  return entries
 })
 </script>
 
@@ -639,46 +559,8 @@ const skippedEntries = computed<SkippedEntry[]>(() => {
       </n-drawer-content>
     </n-drawer>
 
-    <!-- 日志抽屉（两视图共用）：首次默认 64 KiB，按需逐级放大到 1 MiB -->
-    <n-drawer v-model:show="logShow" :width="760" placement="right">
-      <n-drawer-content :title="t('jobs.logTitle')" closable>
-        <n-space vertical :size="10">
-          <template v-if="log.skippedCount > 0">
-            <n-collapse size="small">
-              <n-collapse-item :title="t('job.skippedTitle', { n: log.skippedCount })" name="skipped">
-                <n-space vertical :size="6">
-                  <n-text depth="3">{{ t('jobs.skippedTailNote') }}</n-text>
-                  <template v-if="skippedEntries.length">
-                    <div v-for="(entry, index) in skippedEntries" :key="`${entry.item}-${index}`" class="jobs__skipped">
-                      <n-text depth="2">{{ entry.item }}</n-text>
-                      <n-text v-if="entry.error" depth="3">{{ entry.error }}</n-text>
-                    </div>
-                  </template>
-                  <n-text v-else depth="3">{{ t('jobs.skippedNotInTail') }}</n-text>
-                </n-space>
-              </n-collapse-item>
-            </n-collapse>
-          </template>
-
-          <n-log :log="log.content || t('job.logEmpty')" :rows="26" trim />
-          <n-text depth="3">
-            {{ t('jobs.logTailNote', { n: log.tailBytes ?? 0 }) }}
-          </n-text>
-          <n-space>
-            <n-button
-              v-if="canLoadMore"
-              size="small"
-              secondary
-              :loading="log.loadingMore"
-              @click="loadMoreLog"
-            >
-              {{ t('jobs.logLoadMore') }}
-            </n-button>
-            <n-text v-else-if="log.truncated" depth="3">{{ t('jobs.logMaxTail') }}</n-text>
-          </n-space>
-        </n-space>
-      </n-drawer-content>
-    </n-drawer>
+    <!-- 日志抽屉（两视图共用，实现见 components/JobLogDrawer.vue）：默认 64 KiB，按需放大到 1 MiB -->
+    <JobLogDrawer v-model:show="logShow" :job-id="logJobId" :skipped-count="logSkipped" />
   </n-space>
 </template>
 

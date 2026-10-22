@@ -79,12 +79,20 @@ describe('GlobalStatusBar 全局状态条', () => {
     w.unmount()
   })
 
-  it('Abort 二段暂缺 + 限速入口已裁决砍掉：只渲染一个作业终止按钮（Stop），不得提前造假 UI', () => {
+  it('Abort 二段（P7 A5 落地）：初始只有 Stop；点 Stop 后进入 stopping → 出现 Abort 并外抛 abort', async () => {
     const w = mountBar()
-    const buttons = w.element.querySelectorAll('.rw-status-bar__actions button')
-    expect(buttons).toHaveLength(1) // 仅 Stop（限速按钮按 owner 2026-10-22 任务级裁决移除）
-    expect(w.text()).not.toContain('Abort')
-    expect(w.text()).not.toContain('强杀')
+    let buttons = w.element.querySelectorAll('.rw-status-bar__actions button')
+    expect(buttons).toHaveLength(1) // 未请求停止前不暴露强杀（限速按钮按 2026-10-22 裁决已移除）
+
+    ;(buttons[0] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await w.vm.$nextTick()
+    expect(w.emitted('stop')).toHaveLength(1)
+    buttons = w.element.querySelectorAll('.rw-status-bar__actions button')
+    expect(buttons).toHaveLength(2) // Stop（禁用）+ Abort 二段
+    expect(w.text()).toContain('强制中止')
+
+    ;(buttons[1] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(w.emitted('abort')).toHaveLength(1)
     w.unmount()
   })
 

@@ -209,6 +209,8 @@ export default {
     // pending the backend gap — see component comment)
     statusBar: {
       stop: 'Stop',
+      stopping: 'Stopping…',
+      abort: 'Force abort',
       limit: 'Upload {up} · Download {down} KiB/s',
       unlimited: 'Unlimited',
     },
@@ -219,12 +221,12 @@ export default {
       restoreDesc: 'Retrieve files from a snapshot to any location',
     },
     view: {
+      aria: 'Switch view',
       list: 'List',
       details: 'Details',
-      listDesc: 'Card view',
-      detailsDesc: 'Table view',
     },
     time: {
+      aria: 'Time display mode',
       relative: 'Relative',
       actual: 'Actual',
     },
@@ -293,6 +295,18 @@ export default {
     edit: 'Edit task',
     delete: 'Delete task',
     export: 'Export task config',
+    // Menu groups (§4.5.6: Operations / Advanced / Reporting + Danger)
+    groupAdvanced: 'Advanced',
+    groupReporting: 'Reporting',
+    // Export password dialog (P7 A3; ≥10 chars matches ConfigExportRequest)
+    exportTitle: 'Export task config',
+    exportHint:
+      'Export task "{name}" as an encrypted config pack (includes its repository and credentials; credentials are encrypted with the passphrase). At least 10 characters — keep it, importing requires the same passphrase.',
+    exportPassword: 'Passphrase (min 10 characters)',
+    exportPasswordTooShort: 'At least 10 characters',
+    exportBtn: 'Export',
+    exportDone: 'Config pack downloaded',
+    noLogYet: 'No job log available for this task yet',
     menu: 'More actions',
     actions: 'Actions',
     start: 'Run now',
@@ -841,6 +855,7 @@ export default {
     cancel: 'Cancel job',
     cancelConfirm: 'Cancel this job? It will terminate into the cancelled state.',
     cancelSubmitted: 'Cancel requested (SIGTERM → 30s grace)',
+    abortSubmitted: 'Force-aborted (skipped grace, SIGKILL)',
     firstBackupSlowNote: 'The first backup is expected to be the slowest; later runs only process changed data',
     logTitle: 'Job log',
     logLoadMore: 'Load more (grow tail window)',
