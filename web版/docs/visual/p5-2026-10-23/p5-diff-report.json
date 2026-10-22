@@ -1,0 +1,361 @@
+{
+  "threshold": 8,
+  "themes": {
+    "light": {
+      "dashboard": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 42226,
+        "changed_ratio": 3.055,
+        "bbox": [
+          8,
+          13,
+          1416,
+          938
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-dashboard-sbs.png"
+      },
+      "repo": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 103168,
+        "changed_ratio": 7.463,
+        "bbox": [
+          8,
+          13,
+          1425,
+          960
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-repo-sbs.png"
+      },
+      "settings": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 67155,
+        "changed_ratio": 4.858,
+        "bbox": [
+          8,
+          13,
+          1416,
+          955
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-settings-sbs.png"
+      },
+      "jobs": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 37122,
+        "changed_ratio": 2.685,
+        "bbox": [
+          8,
+          13,
+          1416,
+          297
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-jobs-sbs.png"
+      },
+      "snapshots": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 293331,
+        "changed_ratio": 21.219,
+        "bbox": [
+          8,
+          13,
+          1416,
+          955
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-snapshots-sbs.png"
+      },
+      "restore": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 5626,
+        "changed_ratio": 0.407,
+        "bbox": [
+          8,
+          13,
+          1416,
+          943
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-restore-sbs.png"
+      },
+      "audit": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 21853,
+        "changed_ratio": 1.581,
+        "bbox": [
+          8,
+          13,
+          1416,
+          656
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-audit-sbs.png"
+      },
+      "notifications": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 69409,
+        "changed_ratio": 5.021,
+        "bbox": [
+          8,
+          13,
+          1416,
+          885
+        ],
+        "sbs_path": ".e2e\\p5-diff\\light-notifications-sbs.png"
+      }
+    },
+    "dark": {
+      "dashboard": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 36010,
+        "changed_ratio": 2.605,
+        "bbox": [
+          8,
+          13,
+          1416,
+          938
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-dashboard-sbs.png"
+      },
+      "repo": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 113511,
+        "changed_ratio": 8.211,
+        "bbox": [
+          8,
+          13,
+          1425,
+          960
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-repo-sbs.png"
+      },
+      "settings": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 116406,
+        "changed_ratio": 8.421,
+        "bbox": [
+          8,
+          13,
+          1416,
+          954
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-settings-sbs.png"
+      },
+      "jobs": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 46421,
+        "changed_ratio": 3.358,
+        "bbox": [
+          8,
+          13,
+          1416,
+          297
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-jobs-sbs.png"
+      },
+      "snapshots": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 357466,
+        "changed_ratio": 25.858,
+        "bbox": [
+          8,
+          13,
+          1416,
+          955
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-snapshots-sbs.png"
+      },
+      "restore": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 5503,
+        "changed_ratio": 0.398,
+        "bbox": [
+          8,
+          13,
+          1416,
+          942
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-restore-sbs.png"
+      },
+      "audit": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 29561,
+        "changed_ratio": 2.138,
+        "bbox": [
+          8,
+          13,
+          1416,
+          656
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-audit-sbs.png"
+      },
+      "notifications": {
+        "base_size": [
+          1440,
+          960
+        ],
+        "after_size": [
+          1440,
+          960
+        ],
+        "size_changed": false,
+        "height_delta": 0,
+        "compared_px": 1382400,
+        "changed_px": 158204,
+        "changed_ratio": 11.444,
+        "bbox": [
+          8,
+          13,
+          1416,
+          884
+        ],
+        "sbs_path": ".e2e\\p5-diff\\dark-notifications-sbs.png"
+      }
+    }
+  }
+}

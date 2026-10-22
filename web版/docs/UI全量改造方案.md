@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.17（2026-10-22 十七次修订：**P7 D8 收口（details 视图接入菜单 + restore/verify 接线）**——补做首批遗漏：① dashboard 此前未监听 `@restore`/`@verify`，TaskCard 菜单「恢复/校验」为**死键**（`createJob('check')` 全库无调用点可证）；现补监听，restore 跳 `/restore`、verify = `createJob('check', { taskId })`（复用 onStart 的 JOB_CONFLICT 口径）。② details 视图操作列由按钮组占位换成 `TaskActionsMenu`（与 TaskCard 同三组口径；列宽 200→100，使列宽总和 = `scroll-x` 920）。新增双语 `task.verifySubmitted`；补 `page-render-smoke` 两条防死键护栏（菜单 select → 断言 `createJob('check', { taskId })`）。v1.16（2026-10-22 十六次修订：**P7 D6/D7/D8 任务卡落地**——TaskCard 加耗时指标 `durationText`（`last_duration_ms` → `HH:MM:SS`/`MM:SS`，null 不渲染）+ 版本数 chip（`snapshot_count`，null 不渲染，`task.snapshotCount` 双语）+ 三点菜单复用 P6 `TaskActionsMenu`（Operations:编辑/恢复 / Advanced:校验备份 / Danger:删除[运行中禁用]，emit 分发 edit/delete/restore/verify 至主页）；新增双语 `task.duration`/`restore`/`verify`/`snapshotCount`；零后端改动（契约 `last_duration_ms`/`snapshot_count` 此前已在 P1 补）。v1.15（2026-10-22 十五次修订：**P7 D3/D4/D5 工具栏 + 双视图落地**——主页工具栏 SegmentedTabs 视图切换 list/details（localStorage 持久化）+ 时间口径 Relative/Actual 切换 + 排序下拉（仅 list，纯前端 name/last_run/next_run/status）；details 用 NDataTable 九列（含耗时/快照数）；relativeTime 纯函数 + 双语文案；TaskCard 加 timeMode 受时间口径驱动。v1.14（2026-10-22 十四次修订：**P7 D2 全局状态条挂载落地**——主页顶部按层级①挂载 `GlobalStatusBar`（进行中作业常驻条：全局进度 + Stop + 任务级限速只读展示，砍 pause/resume 与运行中限速入口），消费 `tasks` 列表首个 `running_job_id` 派生 jobId/title/limitText；为驱动 `limitText` 新增后端契约 `TaskCardOut.limit_up`/`limit_down`（纯派生 `task.limit_up_kibps`/`limit_down_kibps`，无查询无迁移）+ 前端 `TaskCard` 同名字段 + 双语 `dashboard.statusBar.limit`/`unlimited`。v1.13（2026-10-22 十三次修订：**限速按任务级裁决落地**——owner 指令「那就按任务级裁决吧」：§4.5.3 ② 状态条形态去「限速入口」（砍 pause/resume + 限速入口；限速 = 任务级配置、任务表单设置、创建时生效，状态条仅 limitText 只读展示）；§4.5.4 限速行纠正「仓库级」误标（0001 policies 与 0002 backup_tasks 两处均任务级）并重估难度（表单控件低 / 运行中入口不可行——restic CLI 无控制通道）；GlobalStatusBar 砍限速按钮与 throttle 事件、删 IconGauge 与 statusBar.throttle 双语键（spec 同步：按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前恒 0）。零后端改动、零契约变更。v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 版本：v1.18（2026-10-23 十八次修订：**A 组裁决全量落地（owner 逐条裁决 A1–A11）**——① **A1 以 §4.5.6 为准**：list 视图改 `TaskRowCard` 行卡（旧 `TaskCard` 删除），D8 行「list 视图经 TaskCard」为错记，已更正；② **A5 Abort 二段落地**：E16 增 `?force=true`（grace=0 直杀）+ 审计 `job.abort`（规范 §3.1 S6 15→16）；③ **A3/A4 菜单补齐 Export（口令弹窗）/ Log（共用 `JobLogDrawer`）**；④ **A6 校验后跳 E22**（`?job=<id>` 自动开抽屉）；⑤ **A9 导入侧按 kind 分流**；⑥ **A2 P7 验收门 4 条 spec 补齐**；⑦ A7 加载态并入 P12、A8 像素 diff 补做存档、A10 端点表登记、A11 A+ 拍板措辞分层。v1.17（2026-10-22 十七次修订：**P7 D8 收口（details 视图接入菜单 + restore/verify 接线）**——补做首批遗漏：① dashboard 此前未监听 `@restore`/`@verify`，TaskCard 菜单「恢复/校验」为**死键**（`createJob('check')` 全库无调用点可证）；现补监听，restore 跳 `/restore`、verify = `createJob('check', { taskId })`（复用 onStart 的 JOB_CONFLICT 口径）。② details 视图操作列由按钮组占位换成 `TaskActionsMenu`（与 TaskCard 同三组口径；列宽 200→100，使列宽总和 = `scroll-x` 920）。新增双语 `task.verifySubmitted`；补 `page-render-smoke` 两条防死键护栏（菜单 select → 断言 `createJob('check', { taskId })`）。v1.16（2026-10-22 十六次修订：**P7 D6/D7/D8 任务卡落地**——TaskCard 加耗时指标 `durationText`（`last_duration_ms` → `HH:MM:SS`/`MM:SS`，null 不渲染）+ 版本数 chip（`snapshot_count`，null 不渲染，`task.snapshotCount` 双语）+ 三点菜单复用 P6 `TaskActionsMenu`（Operations:编辑/恢复 / Advanced:校验备份 / Danger:删除[运行中禁用]，emit 分发 edit/delete/restore/verify 至主页）；新增双语 `task.duration`/`restore`/`verify`/`snapshotCount`；零后端改动（契约 `last_duration_ms`/`snapshot_count` 此前已在 P1 补）。v1.15（2026-10-22 十五次修订：**P7 D3/D4/D5 工具栏 + 双视图落地**——主页工具栏 SegmentedTabs 视图切换 list/details（localStorage 持久化）+ 时间口径 Relative/Actual 切换 + 排序下拉（仅 list，纯前端 name/last_run/next_run/status）；details 用 NDataTable 九列（含耗时/快照数）；relativeTime 纯函数 + 双语文案；TaskCard 加 timeMode 受时间口径驱动。v1.14（2026-10-22 十四次修订：**P7 D2 全局状态条挂载落地**——主页顶部按层级①挂载 `GlobalStatusBar`（进行中作业常驻条：全局进度 + Stop + 任务级限速只读展示，砍 pause/resume 与运行中限速入口），消费 `tasks` 列表首个 `running_job_id` 派生 jobId/title/limitText；为驱动 `limitText` 新增后端契约 `TaskCardOut.limit_up`/`limit_down`（纯派生 `task.limit_up_kibps`/`limit_down_kibps`，无查询无迁移）+ 前端 `TaskCard` 同名字段 + 双语 `dashboard.statusBar.limit`/`unlimited`。v1.13（2026-10-22 十三次修订：**限速按任务级裁决落地**——owner 指令「那就按任务级裁决吧」：§4.5.3 ② 状态条形态去「限速入口」（砍 pause/resume + 限速入口；限速 = 任务级配置、任务表单设置、创建时生效，状态条仅 limitText 只读展示）；§4.5.4 限速行纠正「仓库级」误标（0001 policies 与 0002 backup_tasks 两处均任务级）并重估难度（表单控件低 / 运行中入口不可行——restic CLI 无控制通道）；GlobalStatusBar 砍限速按钮与 throttle 事件、删 IconGauge 与 statusBar.throttle 双语键（spec 同步：按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前恒 0）。零后端改动、零契约变更。v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -232,16 +232,17 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 #### 4.5.2 本项目差距（D1–D8）
 
-| # | 模版 | 本项目现状（`pages/dashboard/index.vue` 454 行） | 处置 |
-|---|---|---|---|
-| D1 | 双行动卡 | 无（顶部为 KPI 四格） | 新增行动卡行（→新建任务 / →恢复） |
-| D2 | StatusBar 全局条 | 无 | 新建降级版（见 4.5.3 ②） |
-| D3 | 视图切换 + localStorage 持久化 | 仅卡片列表 | ✅ 已落地：SegmentedTabs 切换 list/details + localStorage 持久化；details = NDataTable 九列（含耗时/快照） |
-| D4 | 时间 Relative/Actual | 仅绝对时间 | ✅ 已落地：relativeTime 纯函数 + 双语文案；工具栏时间口径切换同时驱动 list 卡片与 details 表格 |
-| D5 | 排序下拉 | 无 | ✅ 已落地：纯前端排序（name/last_run/next_run/status），仅 list 模式显示排序下拉 |
-| D6 | 卡片 6 项指标 | 仅 `last_run_at` / `next_run_at` | ✅ 已落地：耗时 `durationText`（`last_duration_ms` → `HH:MM:SS`/`MM:SS`，null 不渲染）；size 走替代口径（4.5.4：版本数 chip 顶替，见 D7） |
-| D7 | 类型 chip / 版本数 chip | 无 | ✅ 已落地：版本数 chip = 该任务快照数（`snapshot_count`，null 不渲染，`task.snapshotCount` 双语）；仓库类型由既有 StatusTag/分类表达 |
-| D8 | 三点菜单 7 项 | 编辑/删除 | ✅ 已落地：复用 P6 `TaskActionsMenu`（Operations:编辑/恢复 / Advanced:校验备份 / Danger:删除[运行中禁用]）；list 视图经 TaskCard emit、details 视图经 `renderRowActions` 渲染菜单，两端均分发 edit/delete/restore/verify（verify = `createJob('check', { taskId })`，restore 跳 `/restore`）；Export 属 P2 新端点、Commandline/Database 隐藏（§4.5.4） |
+| #   | 模版                      | 本项目现状（`pages/dashboard/index.vue` 454 行） | 处置                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ----------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | 双行动卡                    | 无（顶部为 KPI 四格）                            | 新增行动卡行（→新建任务 / →恢复）                                                                                                                                                                                                                                                                                                                                                |
+| D2  | StatusBar 全局条           | 无                                        | ✅ 已落地：`GlobalStatusBar`（全局进度 + **Stop/Abort 二段** + 限速只读；Abort 于 2026-10-23 补 `?force=true`）。**差异登记**：行卡不再嵌 `JobProgress`（同一作业开第二条 SSE 无收益），运行中进度只由本状态条承担                                                                                                                                                                                                           |
+| D3  | 视图切换 + localStorage 持久化 | 仅卡片列表                                    | ✅ 已落地：SegmentedTabs 切换 list/details + localStorage 持久化；details = NDataTable 九列（含耗时/快照）。**加载态**按 owner 2026-10-23 裁决（A7）并入 **P12** 统一处理（P7 只交付空态）                                                                                                                                                                                                                   |
+| D4  | 时间 Relative/Actual      | 仅绝对时间                                    | ✅ 已落地：relativeTime 纯函数 + 双语文案；工具栏时间口径切换同时驱动 list 卡片与 details 表格                                                                                                                                                                                                                                                                                                    |
+| D5  | 排序下拉                    | 无                                        | ✅ 已落地：纯前端排序（name/last_run/next_run/status），仅 list 模式显示排序下拉                                                                                                                                                                                                                                                                                                         |
+| D6  | 卡片指标（原计划 6 项 → **实际 4 项**：上次 / 下次 / 耗时 / 版本数；Source·Dest size 两项按 §4.5.4 替代口径不做 —— C8 2026-10-23 如实化）                | 仅 `last_run_at` / `next_run_at`          | ✅ 已落地：耗时 `durationText`（`last_duration_ms` → `HH:MM:SS`/`MM:SS`，null 不渲染）；size 走替代口径（4.5.4：版本数 chip 顶替，见 D7）                                                                                                                                                                                                                                                       |
+| D7  | 类型 chip / 版本数 chip      | 无                                        | ✅ 已落地：版本数 chip = 该任务快照数（`snapshot_count`，null 不渲染，`task.snapshotCount` 双语）；仓库类型由既有 StatusTag/分类表达                                                                                                                                                                                                                                                                  |
+| D8  | 三点菜单 7 项                | 编辑/删除                                    | ✅ 已落地：复用 P6 `TaskActionsMenu`（Operations:编辑/恢复 / Advanced:校验备份 / Danger:删除[运行中禁用]）；list 视图经 **TaskRowCard** emit（原文误记为 TaskCard——owner 2026-10-23 裁决以 §4.5.6 为准，D8 该处为错记，已更正）、details 视图经 `renderRowActions` 渲染菜单，两端均分发 edit/delete/restore/verify（verify = `createJob('check', { taskId })`，restore 跳 `/restore`）；Export 属 P2 新端点、Commandline/Database 隐藏（§4.5.4） |
+
 
 #### 4.5.3 owner 裁决（2026-10-22）
 
@@ -251,7 +252,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | ② | 状态条按「**全局进度 + Stop/Abort 二段**」做，**砍 pause/resume + 限速入口**（2026-10-22 补充裁决：限速 = **任务级配置**，任务表单设置、创建时生效；状态条不设运行中入口，仅 limitText 只读展示） |
 | ③ | Duration **补后端 `last_duration_ms` 派生字段** |
 | ④ | Export **走后端端点**（单任务配置导出，复用 configTransfer 加密打包管线） |
-| ⑤ | 视觉方案 A / A+ / B 三选一，**推荐 A+**（见 4.5.8，待 owner 最终拍板） |
+| ⑤ | 视觉方案 A / A+ / B 三选一，**已拍板 A+**（见 4.5.8）。**分层口径**：形态 = A+（依据 v1.9 owner 指令「整个项目都要 A+ 视觉效果」）；强度 = 彻底（§4.6.4 裁决）——两者是不同维度 |
 
 #### 4.5.4 能力可行性实证（本轮取证，含对首轮判断的纠正）
 
@@ -277,25 +278,26 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | 项 | 内容 | 红线约束 |
 |---|---|---|
 | `TaskCardOut.last_duration_ms` | 该任务最近一次**终态** backup job 的 `finished_at - started_at`（毫秒）；无则 `null`。装配点 `_to_card`（`routers/backup_tasks.py:437`） | A1：须经 `app/db/repositories/` 新增查询，路由不直写 SQL；零新迁移（纯派生） |
-| `TaskCardOut.snapshot_count` | 按 `task.tag` 分组的快照数。实现：在任务列表接口内**取一次快照列表**（复用 E30 30s 服务端缓存）按 tag 分组计数；缓存不可用则 `null` | 同上；不得退化为 N 次 `stats` 调用（违反 `snapshots.py:12` 裁决） |
+| `TaskCardOut.snapshot_count` | 按 `task.tag` 分组的快照数。实现：在任务列表接口内**取一次快照列表**（**同款 30s 独立缓存** `SNAPSHOT_LIST_CACHE_SECONDS`：与 E30 状态缓存同一失效点、但各自可调——B6 2026-10-23 裁决保持独立）按 tag 分组计数；缓存不可用则 `null` | 同上；不得退化为 N 次 `stats` 调用（违反 `snapshots.py:12` 裁决） |
 | `TaskCardOut.limit_up` / `limit_down` | 任务级限速（KiB/s，0=不限）。**纯派生**：直接抄 `task.limit_up_kibps` / `limit_down_kibps`，无新查询、无迁移。用途：状态条 `limitText` 只读展示（owner 2026-10-22 任务级裁决——运行中不可改，前端不设入口） | 同上；只读展示，不新增修改端点 |
-| `POST /api/backup-tasks/{id}/export` | 单任务配置导出：复用 `config_transfer` 加密打包管线，口令入参同 `exportConfig`；返回加密包 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文；i18n 双份 |
+| `POST /api/repos/{repo_id}/backup-tasks/{id}/export`（E36b，repo 作用域同 E34–E36；原文缺前缀已更正） | 单任务配置导出：复用 `config_transfer` 加密打包管线，口令入参同 `exportConfig`；返回加密包 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文；i18n 双份 |
 
 前端同步：`api/types.ts` 的 `TaskCard` 加 `last_duration_ms` / `snapshot_count` / `limit_up` / `limit_down` 字段、`api/backupTasks.ts` 加 `exportBackupTask()`、`i18n` 双语加键（`dashboard.statusBar.limit` / `unlimited` 等）。
 
 #### 4.5.6 组件与文件规划
 
-| 文件                                         | 职责                                                                       |
-| ------------------------------------------ | ------------------------------------------------------------------------ |
-| `components/dashboard/ActionCard.vue`      | 行动卡（插图 + 标题 + 描述 + 右按钮；整卡可点 + Enter/Space；`router` 跳转）                   |
+| 文件                                         | 职责                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------- |
+| `components/dashboard/ActionCard.vue`      | 行动卡（插图 + 标题 + 描述 + **可选**右按钮 `actionLabel`；整卡可点 + Enter/Space）。主页与仓库页均**不传**右按钮——Duplicati add-new 卡本身无按钮，避免同一动作两个入口（C5，2026-10-23） |
 | `components/dashboard/GlobalStatusBar.vue` | 全局条：当前作业进度（SSE）+ Stop/Abort 二段 + 限速只读展示（任务级派生；无运行中入口，owner 2026-10-22 裁决） |
-| `components/dashboard/TaskRowCard.vue`     | list 视图卡片行（名称 + 类型 chip + 快照数 chip / 指标区 / 操作区）                          |
-| `components/dashboard/TaskActionsMenu.vue` | 三点菜单（Operations / Advanced / Reporting 分组 + divider；loading/success 图标态） |
-| `components/icons/HomeIcons.ts`            | **新增 ~30 个内联 SVG 图标**（见 4.5.9 风险 R-1）                                    |
-| `pages/dashboard/index.vue`                | 重写：KPI 带 → 行动卡行 → 工具栏（视图/时间/排序）→ 双视图 → 空态/加载态                            |
-| `utils/__tests__/relativeTime.spec.ts`     | 相对/绝对时间格式化单测                                                             |
+| `components/dashboard/TaskRowCard.vue`     | **list 视图任务行**（名称 + 状态徽章 + 快照数 chip / 指标区 / 操作区；含三点菜单 Export·Log）——P7 起为 list 视图唯一形态，旧 `TaskCard` 已删除 |
+| `components/JobLogDrawer.vue`             | 作业日志抽屉（E27 尾部逐级放大；jobs 页与主页任务行**共用**，A4 裁决 Q2a） |
+| `components/dashboard/TaskActionsMenu.vue` | 三点菜单（Operations / Advanced / Reporting 分组 + divider；loading/success 图标态）  |
+| `components/icons/HomeIcons.ts`            | **新增 ~30 个内联 SVG 图标**（见 4.5.9 风险 R-1）                                     |
+| `pages/dashboard/index.vue`                | 重写：KPI 带 → 行动卡行 → 工具栏（视图/时间/排序）→ 双视图 → 空态/加载态                             |
+| `utils/__tests__/relativeTime.spec.ts`     | 相对/绝对时间格式化单测                                                              |
 
-#### 4.5.8 视觉方案三选一（待 owner 拍板，推荐 A+）
+#### 4.5.8 视觉方案三选一（**A+ 已拍板**：形态 = A+，强度 = 彻底）
 
 | 对比项 | A 形似 | **A+ 推荐** | B 像素级 |
 |---|---|---|---|
@@ -316,7 +318,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | # | 风险 | 对策 |
 |---|---|---|
 | R-1 | **图标是隐性大头**：项目无 `@vicons`（`package.json` 仅 naive-ui/`@vueuse`/tanstack），图标为内联 SVG，需新绘 ~30 个 | 新增 `HomeIcons.ts` 集中管理；`naive-imports.spec.ts` 显式导入纪律同步适用 |
-| R-2 | 30 个任务 × 快照计数若退化为 N 次仓库调用会拖垮列表 | 强制「一次快照列表 + 按 tag 分组」，复用 E30 30s 缓存 |
+| R-2 | 30 个任务 × 快照计数若退化为 N 次仓库调用会拖垮列表 | 强制「一次快照列表 + 按 tag 分组」，走**同款 30s 独立缓存**（非复用 E30 常量，B6） |
 | R-3 | `n-grid` 响应式只能用**命名档**（`1 l:2`），数字断点永不命中（P4 实测教训） | 行动卡/卡片行一律命名档；移动端断点走查复验 |
 | R-4 | Abort 直杀可能留仓库锁 | Abort 后引导 unlock；走既有 `AUDIT_*` 埋点 |
 | R-5 | 单任务导出若复用全局导出的覆盖语义会造成误导入 | 导出包自带 `kind=backup-task` 标记，导入侧按 kind 分流（随 B2 定稿） |
@@ -390,18 +392,18 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 | 批次 | 内容 | 依赖 | 验收门 | 风险 / 对策 |
 |---|---|---|---|---|
-| **P1** | 后端：`TaskCardOut.last_duration_ms`（最近终态 backup job 的 `finished_at - started_at`）、`snapshot_count`（一次快照列表按 tag 分组计数，复用 E30 30s 缓存） | — | `pytest` 全绿 + `ruff`；新增单测覆盖「无历史 job → null」「快照缓存不可用 → null」 | A1 红线：须经 `app/db/repositories/` 新查询，路由不直写 SQL；禁止退化成 N 次 `stats`（`snapshots.py:12` 既有裁决） |
-| **P2** | 后端：`POST /api/backup-tasks/{id}/export` 单任务配置导出（复用 config_transfer 加密管线）+ 审计埋点 + 导出包带 `kind=backup-task` 标记 | — | `pytest` + 审计留痕断言 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文 |
+| **P1** | 后端：`TaskCardOut.last_duration_ms`（最近终态 backup job 的 `finished_at - started_at`）、`snapshot_count`（一次快照列表按 tag 分组计数，走**同款 30s 独立缓存** `SNAPSHOT_LIST_CACHE_SECONDS`；B6 裁决保持独立、失败按 5s 超时 + 指数退避） | — | `pytest` 全绿 + `ruff`；新增单测覆盖「无历史 job → null」「快照缓存不可用 → null」 | A1 红线：须经 `app/db/repositories/` 新查询，路由不直写 SQL；禁止退化成 N 次 `stats`（`snapshots.py:12` 既有裁决） |
+| **P2** | 后端：`POST /api/repos/{repo_id}/backup-tasks/{id}/export`（E36b）单任务配置导出（复用 config_transfer 加密管线）+ 审计埋点 + 导出包带 `kind=backup-task` 标记 | — | `pytest` + 审计留痕断言 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文 |
 | **P3** | 后端：`POST /api/snapshots/{id}/files/search` 快照内文件搜索（`{query, limit, cursor}` → `{items, next_cursor}`，游标与 E18 同口径） | — | `pytest` + 分页上限单测 | 上限沿用 `SNAPSHOT_FILES_MAX_LIMIT`（`constants.py:213`）；过滤下推，**禁止前端全量拉取再过滤** |
 | **P4** | L3 图标集：`components/icons/` 扩展 ~30 个统一风格 SVG（统一描边 1.5 / 尺寸 20），含主页与恢复向导所需全部图标 | — | `typecheck` + `naive-imports` 护栏 + 目视 | 无图标库，全自绘；集中在单一文件，禁止散落 |
 | **P5** | L1 令牌层**彻底档**：`tokens.ts` 圆角（common 12 / small 8 / Card 16 / Button 10 / Tag 999 / Input 10 / Modal 16）+ 控件密度（行高 32/36/40）+ **间距节奏 4/8/12/16/24/32** + 卡片三档阴影 + 标签无边框实心五态；**亮/暗同批改** | P4 | 全站基线截图存档 → 改后**桌面零漂移像素 diff** + 亮/暗双模式截图 | 风险最高的一批：改前必须先存档全站基线；暗色值必须同批给（否则暗底黑边）；间距常量只落 `tokens.ts` + `skin.css`，页面零硬编码 |
 | **P6** | L2 共用形态层：行动卡 / 行卡片 / 分段控件 / 菜单分组 / 全局状态条 → 提升为**全站共用组件** + `theme/skin.css` | P5 | `typecheck` + 新 spec（分段选中态、菜单分组渲染） | S-4：必须是共用组件 + 单一 skin 文件，**禁止逐页各写一份**（否则退化成第二套） |
-| **P7** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段；限速仅只读展示）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P4 P6 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段） | 限速 = 任务级表单配置（TaskWizard 控件，创建时生效；运行中入口已裁决砍掉）；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
+| **P7** | **仪表板主页复刻**（§4.5）：KPI 带保留 → 行动卡行 → 工具栏（视图切换 localStorage / 时间 Relative-Actual / 排序）→ list-details 双视图 → 空态/加载态 → 状态条（全局进度 + Stop/Abort 二段；限速仅只读展示）→ 三点菜单（Restore / Export / Delete / Verify / Log） | P1 P2 P4 P6 | `typecheck` + 新 spec（视图持久化、时间切换、排序三态、Stop→Abort 二段）——**2026-10-23 已补齐**：前三项在 `page-render-smoke.spec.ts`「P7 验收门」组，Abort 在 `GlobalStatusBar.spec.ts` | 限速 = 任务级表单配置（TaskWizard 控件，创建时生效；运行中入口已裁决砍掉）；Abort = `cancel()` grace=0；Verify = `createJob('check')` |
 | **P8** | **恢复入口页 + 路由重排**（§4.8.5）：`/restore` 改造成入口页；新增 `/restore/:id/{select-files,options,progress}` | — | `typecheck` + **快照页 `?snapshot=` 直达入口实测**（V-1） | 路由重排不得破坏 `snapshots/index.vue:118-123` 的预选直达 |
 | **P9** | **恢复向导外壳**（§4.8.5）：可跳步步骤条（键盘可达）+ `inactive` 态 + 全宽/满高切换 + 离开确认 | P8 | 新 spec（跳步/确认/全宽类） | V-2：跳步前校验，未过步骤置 `inactive`（沿用模版语义） |
-| **P10** | **恢复步骤重组**：select-files（版本下拉补 size/label + **搜索框**：结果计数 / Clear / spinner）+ options 四分区（恢复到哪 / 已存在文件 / Metadata / 高级）+ 页脚两端对齐 | P3 P9 | 新 spec | 搜索框依赖 P3 端点；无端点时该项顺延 |
+| **P10** | **恢复步骤重组**：select-files（版本下拉补 size/label + **搜索框**：结果计数 / Clear / spinner；**前端契约（B3，2026-10-23 定）**：debounce ≥300ms 且关键词 ≥2 字符才发请求——后端已加「快照+关键词」30s 缓存，前端仍需防逐键触发）+ options 四分区（恢复到哪 / 已存在文件 / Metadata / 高级）+ 页脚两端对齐 | P3 P9 | 新 spec | 搜索框依赖 P3 端点；无端点时该项顺延 |
 | **P11** | **恢复进度页三卡 + 完成态圆环**（进度 / 通知 / 日志）+ SSE 终态断言 | P9 | 新 spec | V-4：复用既有通知与 job 日志 API，**不新造数据源** |
-| **P12** | 逐页重排**第一批（低风险）**：snapshots → jobs → audit → reports → notifications | P5 P6 | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 + 逐页像素 diff | 表格页需复核 `:scroll-x` 阈值（间距变大后可能溢出） |
+| **P12** | 逐页重排**第一批（低风险）**：snapshots → jobs → audit → reports → notifications；**含主页任务列表加载态**（owner 2026-10-23 裁决 A7 从 P7 并入） | P5 P6 | `typecheck` → `vitest` → `NODE_OPTIONS="" pnpm run build` 三步分跑 + 逐页像素 diff | 表格页需复核 `:scroll-x` 阈值（间距变大后可能溢出） |
 | **P13** | 逐页重排**第二批（高风险）**：repo（自定义 CSS 230 行）→ settings（133 行）→ TaskWizard（58 行）→ login / bootstrap | P12 | 同上 + 向导 5 步与 ConfirmGate 真机断言 | 自定义 CSS 最厚的两页，逐块校准；沿用 §4.2 教训（门禁不得因重排失效） |
 | **P14** | 全站回归：三步门 + **全站逐页桌面零漂移像素 diff** + 移动端 4 视口（1440/960/768/390）走查 + 恢复模块响应式（`-milli` 等价）与 i18n 双语 + 真机 E2E 冒烟 | P13 | 全绿；移动端 4 项断言（参照 §4.3 口径） | 沿用 §4.3 教训：`overflow-x:auto` 会使 margin 不折叠致桌面 +8px 漂移，必须 diff 验收 |
 
