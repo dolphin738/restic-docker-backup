@@ -18,7 +18,9 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { darkThemeOverrides, lightThemeOverrides, spacing } from '../tokens'
 
-const SKIN_CSS = readFileSync(join(process.cwd(), 'src/theme/skin.css'), 'utf8')
+// 归一化换行符：skin.css 在 Windows 经 .gitattributes eol 过滤签出为 CRLF，
+// 而多行 toContain 断言用 \n；归一化后跨 Windows(CRLF)/WSL(LF) 均稳定，不依赖环境换行策略。
+const SKIN_CSS = readFileSync(join(process.cwd(), 'src/theme/skin.css'), 'utf8').replace(/\r\n/g, '\n')
 
 /** 取组件级覆盖（排除 common），用于亮/暗键集比对。 */
 function componentKeys(theme: typeof lightThemeOverrides): string[] {
