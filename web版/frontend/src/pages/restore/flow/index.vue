@@ -6,10 +6,12 @@ import {
   NCard,
   NCheckbox,
   NDataTable,
+  NInput,
   NRadioButton,
   NRadioGroup,
   NSelect,
   NSpace,
+  NSpin,
   NTag,
   NText,
   useMessage,
@@ -18,19 +20,20 @@ import {
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
+import { listSnapshotFiles, listSnapshots, searchSnapshotFiles } from '@/api/snapshots'
 import {
   INPLACE_TARGET_ROOT,
   RESTORE_TARGET_ROOT,
   previewRestore,
   restoreSnapshot,
 } from '@/api/restore'
-import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
+import type { JobDonePayload, RestorePreviewItem, SnapshotFileOut } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import RestoreStepper from '@/components/restore/RestoreStepper.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
+import { formatBytesOr } from '@/utils/format'
 import { useUiStore } from '@/stores/ui'
 
 /** E20 覆盖预览单页条数（游标分页，配合「加载更多」续拉）。 */
@@ -108,8 +111,10 @@ const snapshotItems = computed(() =>
 
 const snapshotOptions = computed(() =>
   snapshotItems.value.map((snapshot) => ({
-    // 缺陷 C：选择项时间收口为本地可读形式；无 time 时回落「无」
-    label: `${formatDateTimeOr(snapshot.time, t('common.none'))} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
+    // 缺陷 C：选择项时间收口为本地可读形式；无 time 时回落「无」。
+    // P10（R5）：补 size（对标 Duplicati 版本下拉的 SourceSizeString），
+    // 与仪表盘共用 `@/utils/format` 的口径，缺值回落「无」。
+    label: `${formatDateTimeOr(snapshot.time, t('common.none'))} · ${formatBytesOr(snapshot.size, t('common.none'))} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
     value: snapshot.id,
   })),
 )
@@ -204,24 +209,78 @@ function onFileSelect(item: TreeItem): void {
 const selectedFileList = computed(() => [...selectedFiles.value])
 const selectedFileCount = computed(() => selectedFiles.value.size)
 
+// ---------------------------------------------------------------- P10 文件搜索（R6 / B3 契约）
+
+/** B3 前端契约（2026-10-23 定）：debounce ≥300ms **且**关键词 ≥2 字符才发请求——
+ *  后端已有「快照+关键词」30s 缓存，但前端仍须防逐键触发。 */
+const SEARCH_DEBOUNCE_MS = 300
+const SEARCH_MIN_QUERY = 2
+
+const searchInput = ref('')
+const searchHits = ref<SnapshotFileOut[]>([])
+const searchTotal = ref<number | null>(null)
+const searching = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+async function runSearch(keyword: string): Promise<void> {
+  const id = snapshotId.value
+  if (!id) {
+    searching.value = false
+    return
+  }
+  try {
+    const data = await searchSnapshotFiles(id, keyword)
+    searchHits.value = data.items
+    searchTotal.value = data.total
+  } catch {
+    // 失败即清空结果区（错误提示走全局消息，不在此吞掉语义）
+    searchHits.value = []
+    searchTotal.value = null
+  } finally {
+    searching.value = false
+  }
+}
+
+watch(searchInput, (value) => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  const keyword = value.trim()
+  if (keyword.length < SEARCH_MIN_QUERY) {
+    // 未达触发门槛：清空结果且不显示 spinner（避免"刚输 1 个字符就转圈"）
+    searchHits.value = []
+    searchTotal.value = null
+    searching.value = false
+    return
+  }
+  searching.value = true
+  searchTimer = setTimeout(() => void runSearch(keyword), SEARCH_DEBOUNCE_MS)
+})
+
+/** 换快照即清空搜索：命中是快照内语义，跨快照不可复用。 */
+watch(snapshotId, () => {
+  searchInput.value = ''
+  searchHits.value = []
+  searchTotal.value = null
+})
+
+/** 命中项与文件树共用同一套勾选集合：key 取 display_path（与 treeLoader 口径一致）。 */
+function toggleHit(hit: SnapshotFileOut): void {
+  onFileSelect({ key: hit.path, name: hit.name, type: hit.type, path: hit.display_path })
+}
+
+onUnmounted(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+})
+
 // ---------------------------------------------------------------- E20 覆盖预览（原位流专用）
 
-/** 字节数展示（与仪表盘/仓库页同口径的 1024 进制单位）。
+/** 字节数展示统一走 `@/utils/format`（单一实现点，仪表盘与恢复页共用同一口径）；
  *  缺值回落 `common.none`——不复用 DATETIME_FALLBACK，避免「字节数缺值」与「时间缺值」共用同一占位符。 */
-const SIZE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return t('common.none')
-  }
-  let size = value
-  let unitIndex = 0
-  while (size >= 1024 && unitIndex < SIZE_UNITS.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-  return `${unitIndex === 0 ? String(size) : size.toFixed(1)} ${SIZE_UNITS[unitIndex]}`
-}
 
 const previewItems = ref<RestorePreviewItem[]>([])
 const previewCursor = ref<string | null>(null)
@@ -279,7 +338,9 @@ async function loadPreview(reset: boolean): Promise<void> {
 }
 
 const previewSizeText = computed(() =>
-  previewStats.value === null ? '' : formatBytes(previewStats.value.totalBytes),
+  previewStats.value === null
+    ? ''
+    : formatBytesOr(previewStats.value.totalBytes, t('common.none')),
 )
 
 const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
@@ -308,13 +369,13 @@ const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
     title: t('restore.preview.colSnapshotSize'),
     key: 'snapshot_size',
     width: 110,
-    render: (row) => formatBytes(row.snapshot_size),
+    render: (row) => formatBytesOr(row.snapshot_size, t('common.none')),
   },
   {
     title: t('restore.preview.colDiskSize'),
     key: 'disk_size',
     width: 110,
-    render: (row) => formatBytes(row.disk_size),
+    render: (row) => formatBytesOr(row.disk_size, t('common.none')),
   },
 ])
 
@@ -496,6 +557,11 @@ function onStepSelect(key: number): void {
   step.value = key
 }
 
+/** 返回恢复入口页（页脚左侧动作，P10 页脚两端对齐）。 */
+function goEntry(): void {
+  void router.push({ name: 'restore' })
+}
+
 // ---------------------------------------------------------------- P9 布局信号（对标 isSelectFilesPage）
 
 /** 满高：仅步骤 1——文件树需要确定高度才能内部滚动。
@@ -569,8 +635,78 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             {{ String(snapshotsQuery.error.value) }}
           </n-alert>
 
+          <!-- P10 步骤重组：目标模式与目标目录已移至 options（步骤 2）的「恢复到哪」分区，
+               覆盖策略移至「已存在文件」分区——步骤 1 只负责「选快照 + 选文件」，
+               对齐 Duplicati 的 select-files / options 划分。 -->
+
+          <!-- B1：文件级多选（可选）；不选 = 整快照 -->
           <n-space vertical :size="6">
-            <n-text strong>{{ t('restore.targetTitle') }}</n-text>
+            <n-text strong>{{ t('restore.filesTitle') }}</n-text>
+            <n-text depth="3">{{ t('restore.filesHint') }}</n-text>
+
+            <!-- P10 搜索框（R6 / B3 契约）：debounce 300ms + 关键词 ≥2 字符才发请求；
+                 命中靠服务端过滤（V-3），前端绝不拉全量再过滤。 -->
+            <n-input
+              v-model:value="searchInput"
+              class="restore__search"
+              :placeholder="t('restore.search.placeholder')"
+              clearable
+              size="small"
+            >
+              <template #suffix>
+                <n-spin v-if="searching" size="small" />
+              </template>
+            </n-input>
+            <n-text v-if="searchTotal !== null" depth="2">
+              {{ t('restore.search.resultCount', { n: searchTotal }) }}
+            </n-text>
+            <n-space v-if="searchHits.length" vertical :size="4">
+              <n-text depth="3">{{ t('restore.search.hint') }}</n-text>
+              <div
+                v-for="hit in searchHits"
+                :key="hit.path"
+                class="restore__hit"
+                :class="{ 'is-selected': selectedFiles.has(hit.display_path) }"
+                @click="toggleHit(hit)"
+              >
+                {{ hit.display_path }}
+              </div>
+            </n-space>
+
+            <VirtualTree
+              v-if="snapshotId"
+              :key="`files-${snapshotId}`"
+              root-path="/"
+              :load-children="treeLoader"
+              :height="treeHeight"
+              select-dir
+              :selected-paths="selectedFiles"
+              @select="onFileSelect"
+            />
+            <n-text v-if="selectedFileCount > 0" depth="2">
+              {{ t('restore.filesSelected', { n: selectedFileCount }) }}
+            </n-text>
+            <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
+          </n-space>
+
+          <!-- P10 页脚两端对齐（对标 Duplicati 向导页脚）：左返回入口 / 右下一步 -->
+          <n-space justify="space-between" align="center">
+            <n-button quaternary @click="goEntry">{{ t('restore.flow.backToEntry') }}</n-button>
+            <n-button type="primary" :disabled="!snapshotId" @click="goConfirm">
+              {{ t('confirm.next') }}
+            </n-button>
+          </n-space>
+        </template>
+
+        <!-- 步骤 2：options —— 分区一「恢复到哪」+ 分区二「已存在文件」（P10 重组）。
+             注：Duplicati 的 options 是**四**分区（恢复到哪 / 已存在文件 / Metadata / 高级）；
+             本项目后端 RestoreRequest 仅 snapshot_id / target / paths / overwrite_mode 四个字段、
+             restic 层无 metadata 参数 → Metadata 与「高级」两分区**无后端支撑**，
+             故不做占位死控件（待后端加契约后再补），此处只落地有后端支撑的两分区。 -->
+        <template v-else-if="step === 2">
+          <!-- 分区一：恢复到哪 -->
+          <n-space vertical :size="6">
+            <n-text strong>{{ t('restore.options.whereTitle') }}</n-text>
             <n-radio-group v-model:value="targetMode" size="small">
               <!-- A7：原位置为默认选项（对齐 Duplicati）；自定义目录 = 时间戳子目录零覆盖流 -->
               <n-radio-button value="inplace" :disabled="inPlaceDisabled">
@@ -594,41 +730,20 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
                 :placeholder="t('restore.inplace.targetPlaceholder')"
               />
               <n-text depth="3">{{ t('restore.inplace.targetHint') }}</n-text>
+            </template>
+          </n-space>
+
+          <!-- 分区二：已存在文件（覆盖策略 + E20 预览清单） -->
+          <n-space vertical :size="6">
+            <n-text strong>{{ t('restore.options.existingTitle') }}</n-text>
+            <template v-if="isInPlace">
               <!-- A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never 跳过已存在文件 -->
               <n-checkbox v-model:checked="overwriteExisting">{{ t('restore.overwrite.label') }}</n-checkbox>
               <n-text depth="3">{{ t('restore.overwrite.hint') }}</n-text>
             </template>
+            <n-text v-else depth="3">{{ t('restore.options.timestampNoOverwrite') }}</n-text>
           </n-space>
 
-          <!-- B1：文件级多选（可选）；不选 = 整快照 -->
-          <n-space vertical :size="6">
-            <n-text strong>{{ t('restore.filesTitle') }}</n-text>
-            <n-text depth="3">{{ t('restore.filesHint') }}</n-text>
-            <VirtualTree
-              v-if="snapshotId"
-              :key="`files-${snapshotId}`"
-              root-path="/"
-              :load-children="treeLoader"
-              :height="treeHeight"
-              select-dir
-              :selected-paths="selectedFiles"
-              @select="onFileSelect"
-            />
-            <n-text v-if="selectedFileCount > 0" depth="2">
-              {{ t('restore.filesSelected', { n: selectedFileCount }) }}
-            </n-text>
-            <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
-          </n-space>
-
-          <n-space justify="end">
-            <n-button type="primary" :disabled="!snapshotId" @click="goConfirm">
-              {{ t('confirm.next') }}
-            </n-button>
-          </n-space>
-        </template>
-
-        <!-- 步骤 2：原位流先摊开 E20 覆盖清单（确认门第①步），复核后再开门 -->
-        <template v-else-if="step === 2">
           <template v-if="isInPlace">
             <n-space vertical :size="8">
               <n-space align="center" :size="10">
@@ -672,7 +787,8 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
             </n-space>
           </template>
           <n-text v-else depth="3">{{ t('restore.stepConfirm') }}</n-text>
-          <n-space justify="end">
+          <!-- P10 页脚两端对齐：左上一步 / 右开门 -->
+          <n-space justify="space-between" align="center">
             <n-button quaternary @click="step = 1">{{ t('confirm.back') }}</n-button>
             <n-button type="primary" :disabled="!canOpenGate" @click="gateShow = true">
               {{ t('confirm.next') }}
@@ -794,5 +910,23 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 .restore__gate-file {
   display: block;
   font-size: 12px;
+}
+
+/* P10 搜索命中项：点击即切换勾选（与文件树共用 selectedFiles 集合）；
+   选中态加粗，hover 用主题 action 色（不硬编码）。 */
+.restore__hit {
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.restore__hit:hover {
+  background: var(--n-action-color, rgba(128, 128, 128, 0.12));
+}
+
+.restore__hit.is-selected {
+  font-weight: 600;
 }
 </style>

@@ -24,11 +24,20 @@ import { lightThemeOverrides } from '@/theme/tokens'
 
 const mocks = vi.hoisted(() => ({
   snapshots: [] as Array<Record<string, unknown>>,
+  searchHits: [] as Array<Record<string, unknown>>,
+  searchTotal: 0,
 }))
 
 vi.mock('@/api/snapshots', () => ({
   listSnapshots: vi.fn(async () => ({ items: mocks.snapshots })),
   listSnapshotFiles: vi.fn(async () => ({ items: [], next_cursor: null })),
+  searchSnapshotFiles: vi.fn(async () => ({
+    snapshot_id: 'snap-1',
+    query: '',
+    items: mocks.searchHits,
+    total: mocks.searchTotal,
+    next_cursor: null,
+  })),
 }))
 
 vi.mock('@/api/restore', () => ({
@@ -49,6 +58,8 @@ beforeEach(() => {
   mocks.snapshots = [
     { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: ['/data'], size: 1024 },
   ]
+  mocks.searchHits = []
+  mocks.searchTotal = 0
 })
 
 describe('RestoreStepper（P9 可跳步步骤条）', () => {
@@ -88,9 +99,8 @@ describe('RestoreStepper（P9 可跳步步骤条）', () => {
  *  离开确认用例会假失败（真实运行时组件由 router-view 渲染，无此问题）。 */
 const RouterHost = { template: '<router-view />' }
 
-describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
-  /** 挂载向导：宿主路由注册三个步骤 name（契约与真实路由表一致）。 */
-  async function mountWizard(initialPath: string) {
+/** 挂载向导：宿主路由注册三个步骤 name（契约与真实路由表一致）。 */
+async function mountWizard(initialPath: string) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const router = createRouter({
       history: createMemoryHistory(),
@@ -113,6 +123,7 @@ describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
     return { wrapper, router }
   }
 
+describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
   it('④ 进入 options 路由 → 步骤条当前步为第 2 步', async () => {
     const { wrapper } = await mountWizard('/restore/snap-1/options')
     await flushPromises()
@@ -161,5 +172,53 @@ describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('P10 文件搜索框（R6 / B3 前端契约）', () => {
+  /** B3 契约：debounce ≥300ms 且关键词 ≥2 字符才发请求——后端虽有 30s 缓存，
+   *  前端仍须防逐键触发。以下三例锁死该契约（含「未到门槛不发」的反向断言）。 */
+  const SEARCH_DEBOUNCE_WAIT = 360
+
+  it('B3-① 关键词 < 2 字符：不发请求', async () => {
+    const { searchSnapshotFiles } = await import('@/api/snapshots')
+    vi.mocked(searchSnapshotFiles).mockClear()
+    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    await flushPromises()
+    await wrapper.find('.restore__search input').setValue('a')
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_WAIT))
+    await flushPromises()
+    expect(searchSnapshotFiles).not.toHaveBeenCalled()
+  })
+
+  it('B3-② 关键词 ≥2 字符：debounce 未到不发，过了才发', async () => {
+    const { searchSnapshotFiles } = await import('@/api/snapshots')
+    vi.mocked(searchSnapshotFiles).mockClear()
+    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    await flushPromises()
+    await wrapper.find('.restore__search input').setValue('etc')
+    // debounce 未到：不应发请求
+    await flushPromises()
+    expect(searchSnapshotFiles).not.toHaveBeenCalled()
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_WAIT))
+    await flushPromises()
+    expect(searchSnapshotFiles).toHaveBeenCalledWith('snap-1', 'etc')
+  })
+
+  it('B3-③ 命中总数展示 + 点命中项加入待恢复清单', async () => {
+    mocks.searchHits = [
+      { name: 'a.txt', type: 'file', path: '/data/a.txt', display_path: '/data/a.txt', size: 1 },
+    ]
+    mocks.searchTotal = 3
+    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    await flushPromises()
+    await wrapper.find('.restore__search input').setValue('data')
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_WAIT))
+    await flushPromises()
+    // total 是命中总数（后端给），不是本页条数
+    expect(wrapper.text()).toContain('命中 3 个结果')
+    await wrapper.find('.restore__hit').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已选 1 个文件/目录')
   })
 })

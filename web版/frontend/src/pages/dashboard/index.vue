@@ -42,6 +42,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import { useCountUp } from '@/composables/useCountUp'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTimeOr } from '@/utils/datetime'
+import { formatBytes } from '@/utils/format'
 import { formatDurationMs, statusKind, timeText } from '@/utils/taskFormat'
 import { IconFolderOpen, IconPlusCircle } from '@/components/icons/HomeIcons'
 
@@ -317,17 +318,6 @@ function toText(error: unknown): string {
     return ''
   }
   return isAppError(error) ? error.message : t('errors.UNKNOWN')
-}
-
-function formatBytes(value: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let size = value
-  let index = 0
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024
-    index += 1
-  }
-  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
 // ---------------------------------------------------------------- 任务操作

@@ -1001,6 +1001,17 @@ export default {
       stepOptions: '恢复选项',
       stepProgress: '执行与结果',
       leaveConfirm: '恢复尚未完成，确定离开吗？',
+      backToEntry: '返回入口',
+    },
+    options: {
+      whereTitle: '恢复到哪',
+      existingTitle: '已存在文件',
+      timestampNoOverwrite: '时间戳子目录为零覆盖语义，不涉及覆盖选项。',
+    },
+    search: {
+      placeholder: '搜索文件名或路径（至少 2 个字符）',
+      resultCount: '命中 {n} 个结果',
+      hint: '点击命中项可加入 / 移出待恢复清单',
     },
   },
   settings: {

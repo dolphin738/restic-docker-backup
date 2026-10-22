@@ -1,11 +1,13 @@
 /** E17 快照列表（limit/offset 分页，可选 tag 精确过滤）+ E18 快照文件树（不透明游标，只透传）+
- * E21 forget 预览（R-016 预览-确认流前半，服务端恒 --dry-run 只读）。 */
+ * E21 forget 预览（R-016 预览-确认流前半，服务端恒 --dry-run 只读）+
+ * P3 快照内文件搜索（R6，恢复向导 select-files 搜索框）。 */
 
 import { passCursor, request } from './http'
 import type {
   ForgetPreviewRequest,
   ForgetPreviewResponse,
   Page,
+  SnapshotFileSearchResponse,
   SnapshotFilesResponse,
   SnapshotOut,
   TagSnapshotsRequest,
@@ -16,6 +18,21 @@ import type {
  * host 为空串/undefined = 不过滤（R-023 多主机视图：按快照主机标识过滤，与当前 X-Repo-Id 仓库叠加生效）。 */
 export function listSnapshots(limit = 50, offset = 0, tag?: string, host?: string): Promise<Page<SnapshotOut>> {
   return request<Page<SnapshotOut>>('/api/snapshots', { query: { limit, offset, tag, host } })
+}
+
+/** P3 快照内文件搜索（R6）：服务端对展示路径做子串匹配 + 游标分页，30s 缓存。
+ *  纪律：**前端绝不拉全量再过滤**（V-3）；关键词非空由调用方保证（后端纯空白 422，
+ *  空关键词等价于全量拉取，正是本端点要禁止的用法）。 */
+export function searchSnapshotFiles(
+  snapshotId: string,
+  query: string,
+  cursor?: string | null,
+  limit = 200,
+): Promise<SnapshotFileSearchResponse> {
+  return request<SnapshotFileSearchResponse>(
+    `/api/snapshots/${encodeURIComponent(snapshotId)}/files/search`,
+    { method: 'POST', body: { query, cursor: passCursor(cursor), limit } },
+  )
 }
 
 /** path 为展示形态（如 /etc），服务端负责还原为快照内路径；cursor 原样透传。 */

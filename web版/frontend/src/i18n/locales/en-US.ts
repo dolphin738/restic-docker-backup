@@ -1004,6 +1004,17 @@ export default {
       stepOptions: 'Restore options',
       stepProgress: 'Run and result',
       leaveConfirm: 'The restore is not finished yet. Leave anyway?',
+      backToEntry: 'Back to start',
+    },
+    options: {
+      whereTitle: 'Where to restore',
+      existingTitle: 'Existing files',
+      timestampNoOverwrite: 'The timestamped subdirectory never overwrites, so there is no overwrite option.',
+    },
+    search: {
+      placeholder: 'Search file name or path (at least 2 characters)',
+      resultCount: '{n} results',
+      hint: 'Click a hit to add it to / remove it from the restore list',
     },
   },
   settings: {

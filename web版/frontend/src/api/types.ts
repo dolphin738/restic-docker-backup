@@ -477,6 +477,16 @@ export interface SnapshotOut {
   size: number | null
 }
 
+/** P3 快照内文件搜索响应（R6）：游标语义与 E18 同口径。
+ *  `total` 是**命中总数**而非本页条数（搜索框要显示「N 个结果」，不该靠翻页累加去猜）。 */
+export interface SnapshotFileSearchResponse {
+  snapshot_id: string
+  query: string
+  items: SnapshotFileOut[]
+  total: number
+  next_cursor: string | null
+}
+
 /** E18 文件树条目（display_path 为原路径语义）。 */
 export interface SnapshotFileOut {
   name: string
