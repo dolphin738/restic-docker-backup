@@ -105,3 +105,5 @@ web版/dev-scripts/.dev-*.pid
 tmp/
 temp/
 .ci-image-tags
+# P4 HomeIcons 目视预览页（一次性验证产物，与 .e2e/ 同口径：本机保留、不入库）
+web版/frontend/icon-preview.html

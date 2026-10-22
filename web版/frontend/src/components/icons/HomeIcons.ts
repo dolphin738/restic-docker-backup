@@ -240,7 +240,7 @@ export const IconLock: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M7.6 9.2V6.6a2.4 2.4 0 0 1 4.8 0v2.6' }),
   ])
 
-/** 覆盖：双文档（options 分区「已存在文件」overwrite 开关）。 */
+/** 覆盖：双文档（options 分区「已存在文件」开关）。 */
 export const IconCopy: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [
     h('rect', { x: 8.2, y: 8.2, width: 9.8, height: 9.8, rx: 1.6 }),
