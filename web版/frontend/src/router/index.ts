@@ -79,6 +79,27 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/pages/restore/index.vue'),
         meta: { titleKey: 'nav.restore' },
       },
+      // P8 恢复向导（§4.8.5）：/restore/:id/{select-files,options,progress}。
+      // 三个子路由暂渲染同一向导组件（向导内部 step 仍是 1/2/3）；
+      // P9 引入 flow 外壳后再按路由分步，届时本注释随之失效。
+      {
+        path: 'restore/:id/select-files',
+        name: 'restore-select-files',
+        component: () => import('@/pages/restore/flow/index.vue'),
+        meta: { titleKey: 'nav.restore' },
+      },
+      {
+        path: 'restore/:id/options',
+        name: 'restore-options',
+        component: () => import('@/pages/restore/flow/index.vue'),
+        meta: { titleKey: 'nav.restore' },
+      },
+      {
+        path: 'restore/:id/progress',
+        name: 'restore-progress',
+        component: () => import('@/pages/restore/flow/index.vue'),
+        meta: { titleKey: 'nav.restore' },
+      },
       {
         path: 'notifications',
         name: 'notifications',

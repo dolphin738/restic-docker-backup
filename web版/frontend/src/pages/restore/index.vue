@@ -1,682 +1,167 @@
 <script setup lang="ts">
+/** 恢复入口页（P8 / 方案 §4.8.5 R1）。
+ *
+ * 形态来源：Duplicati `restore.component.html:1-76` —— 标题「从哪里恢复？」
+ * + 备份列表行动卡 + 分隔线「或者不使用本地配置」 + 备选卡。
+ *
+ * 兼容约束（V-1）：快照页「恢复此快照」走 `{ name: 'restore', query: { snapshot } }`，
+ * 本页负责把该直达语义**原样转发**到向导首步 `/restore/:id/select-files`；
+ * 预选语义不变——向导读 `route.params.id` 作为预选源（见 flow/index.vue）。
+ * 直达场景不再拉取快照列表（`enabled: !requested`），避免无谓请求与一帧空渲染。
+ *
+ * `:id` 语义 = **快照 id**（不是仓库 id）：后端 E17 列表走 `current_repo_id`
+ * 激活仓库模型、不支持按仓库过滤，故入口页直接列当前激活仓库的快照。
+ */
+
 import { useQuery } from '@tanstack/vue-query'
-import {
-  NAlert,
-  NButton,
-  NCard,
-  NCheckbox,
-  NDataTable,
-  NRadioButton,
-  NRadioGroup,
-  NSelect,
-  NSpace,
-  NStep,
-  NSteps,
-  NTag,
-  NText,
-  useMessage,
-  type DataTableColumns,
-} from 'naive-ui'
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { NAlert, NSpin, NText } from 'naive-ui'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
-import {
-  INPLACE_TARGET_ROOT,
-  RESTORE_TARGET_ROOT,
-  previewRestore,
-  restoreSnapshot,
-} from '@/api/restore'
-import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
-import ConfirmGate from '@/components/ConfirmGate.vue'
-import JobProgress from '@/components/JobProgress.vue'
-import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
-import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
-import { useUiStore } from '@/stores/ui'
+import { listSnapshots } from '@/api/snapshots'
+import type { SnapshotOut } from '@/api/types'
+import ActionCard from '@/components/dashboard/ActionCard.vue'
+import { IconDownload, IconServer, IconUpload } from '@/components/icons/HomeIcons'
+import { formatDateTimeOr } from '@/utils/datetime'
 
-/** E20 覆盖预览单页条数（游标分页，配合「加载更多」续拉）。 */
-const PREVIEW_PAGE_SIZE = 200
-/** 确认门预览区最多列出的路径条数（完整清单在步骤 2 的虚拟滚动表里）。 */
-const GATE_PREVIEW_LIMIT = 20
+/** 入口页最多展示的快照数（更多请走快照页）。 */
+const ENTRY_LIMIT = 12
 
 const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
-const ui = useUiStore()
 
-const message = useMessage()
-ui.setMessageApi(message)
-onUnmounted(() => ui.setMessageApi(null))
+/** V-1 直达源：快照页 ?snapshot=<id>；缺省 null（正常浏览入口页）。 */
+const requested = typeof route.query.snapshot === 'string' && route.query.snapshot ? route.query.snapshot : null
 
-/** 1=选快照与目标 2=三步确认 3=执行与结果 */
-const step = ref(1)
-/** 当前选中快照；列表加载后默认取最新版本，之后用户可自由改选。 */
-const snapshotId = ref<string | null>(null)
-/** URL ?snapshot= 预选（快照页「恢复此快照」直达入口，PRD §5 页面 8）；缺省 null。 */
-const requestedSnapshotId = ref<string | null>(
-  typeof route.query.snapshot === 'string' && route.query.snapshot ? route.query.snapshot : null,
-)
-const gateShow = ref(false)
-const restoring = ref(false)
-const result = ref<{
-  jobId: string
-  restoreTarget: string
-  filesDone: number | null
-  summary: string | null
-} | null>(null)
-/** 任务是否已到达终态（用于区分「还没回报」与「回报了但没有计数」）。 */
-const jobFinished = ref(false)
+if (requested) {
+  void router.replace({ name: 'restore-select-files', params: { id: requested } })
+}
 
-/** B1 文件级恢复：已选文件/目录（展示形态，如 /etc、/home/u/x）；
- *  空集合 = 整快照恢复（E19 缺省行为，回归零影响）。 */
-const selectedFiles = ref<Set<string>>(new Set())
-
-/** 恢复目标模式：inplace = 原位置（A7 起默认，对齐 Duplicati）；
- *  timestamp = 自定义目录（/restore 下时间戳子目录，零覆盖语义，E19 传统流）。 */
-const targetMode = ref<'timestamp' | 'inplace'>('inplace')
-const isInPlace = computed(() => targetMode.value === 'inplace')
-
-/** A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never（跳过已存在文件）；
- *  勾选 = always（以快照内容覆盖）。仅原位流有意义。 */
-const overwriteExisting = ref(false)
-
-/** 原位恢复不可用的原因（空串 = 可用）：快照无原目录。
- *  后端有双重锁兜底，这里只是提示性限制——原因逐条对应，便于用户知道该改什么。
- *  （A0 模式收敛：原 ro 档 / 非 host 模式两分支随 host_mount_mode 与 mode 字段删除。） */
-const inPlaceBlockReason = computed(() => {
-  if ((selectedSnapshot.value?.paths.length ?? 0) === 0) {
-    return t('restore.inplace.noPathHint')
-  }
-  return ''
+const snapshotsQuery = useQuery({
+  queryKey: ['snapshots', 'restore-entry'],
+  queryFn: () => listSnapshots(ENTRY_LIMIT),
+  enabled: !requested,
 })
 
-const snapshotsQuery = useQuery({ queryKey: ['snapshots', 'restore-picker'], queryFn: () => listSnapshots(50) })
-
-/** 列表按 time 降序：后端 E17 已保证最新在前，前端再兜底排序一次，首项即最新版本。 */
+/** 按 time 降序：后端 E17 已保证最新在前，前端再兜底排序一次。 */
 const snapshotItems = computed(() =>
   [...(snapshotsQuery.data.value?.items ?? [])].sort((a, b) => (b.time ?? '').localeCompare(a.time ?? '')),
 )
 
-const snapshotOptions = computed(() =>
-  snapshotItems.value.map((snapshot) => ({
-    // 缺陷 C：选择项时间收口为本地可读形式；无 time 时回落「无」
-    label: `${formatDateTimeOr(snapshot.time, t('common.none'))} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
-    value: snapshot.id,
-  })),
-)
-
-const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => snapshot.id === snapshotId.value) ?? null)
-
-const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
-
-/** 入口被置灰时把模式回落到时间戳流：否则用户会停在必然 403 的非法态，
- *  而提示链路要绕到后端报错才看得到原因（radio 置灰本身不可点）。 */
-watch(inPlaceDisabled, (disabled) => {
-  if (disabled) {
-    targetMode.value = 'timestamp'
-  }
-})
-
-// ---------------------------------------------------------------- 原位目标（限快照 paths 命中的目录）
-
-/** 已选原位目标（展示形态，如 /etc/nginx）；null = 未选。 */
-const inplaceTarget = ref<string | null>(null)
-
-/** 候选目标 = 该快照的 paths（E17 已映射为展示形态），即「快照 paths 命中的目录」。 */
-const inplaceTargetOptions = computed(() =>
-  (selectedSnapshot.value?.paths ?? []).map((path) => ({ label: path, value: path })),
-)
-
-/** 提交给后端的容器形态目标：`/sources` + 展示路径（双重锁白名单根，后端再校验一次）。 */
-const inplaceTargetFull = computed(() => {
-  const display = inplaceTarget.value
-  if (!display) {
-    return null
-  }
-  return `${INPLACE_TARGET_ROOT}${display.startsWith('/') ? '' : '/'}${display}`
-})
-
-/** 换快照后把原位目标收敛到该快照的 paths 内（跨快照的原目录不一定命中）。 */
-watch(
-  () => selectedSnapshot.value?.paths ?? [],
-  (paths) => {
-    if (inplaceTarget.value && paths.includes(inplaceTarget.value)) {
-      return
-    }
-    inplaceTarget.value = paths[0] ?? null
-  },
-  { immediate: true },
-)
-
-/** 默认选中：列表就绪后，?snapshot= 预选命中则用之，否则取最新版本；
- *  当前选择仍有效（含用户改选）时不打扰；预选 id 不存在时忽略并回落默认最新。 */
-watch(
-  snapshotItems,
-  (items) => {
-    if (snapshotId.value && items.some((item) => item.id === snapshotId.value)) {
-      return
-    }
-    const requested = requestedSnapshotId.value
-    snapshotId.value = (requested ? items.find((item) => item.id === requested)?.id : undefined) ?? items[0]?.id ?? null
-  },
-  { immediate: true },
-)
-
-/** 换快照即清空已选文件：文件路径是快照内相对语义，跨快照不通用。 */
-watch(snapshotId, () => {
-  selectedFiles.value = new Set()
-})
-
-// ---------------------------------------------------------------- 文件树多选（B1，E18）
-function treeLoader(path: string, cursor?: string): Promise<TreePage> {
-  const id = snapshotId.value ?? ''
-  return listSnapshotFiles(id, path, cursor).then((data) => ({
-    items: data.items.map((item) => ({
-      key: item.path,
-      name: item.name,
-      type: item.type,
-      path: item.display_path,
-    })),
-    nextCursor: data.next_cursor,
-  }))
+/** 卡片标题：快照时间 + 备份路径（无路径时回落短 id）。 */
+function describe(snapshot: SnapshotOut): string {
+  const time = formatDateTimeOr(snapshot.time, t('common.none'))
+  const paths = snapshot.paths.join(', ')
+  return paths ? `${time} · ${paths}` : `${time} · ${snapshot.id.slice(0, 8)}`
 }
 
-/** 点目录名（selectDir）/文件名 = 勾选/取消勾选；展开由行首三角形负责。 */
-function onFileSelect(item: TreeItem): void {
-  const next = new Set(selectedFiles.value)
-  if (next.has(item.path)) {
-    next.delete(item.path)
-  } else {
-    next.add(item.path)
-  }
-  selectedFiles.value = next
+function openWizard(snapshotId: string): void {
+  void router.push({ name: 'restore-select-files', params: { id: snapshotId } })
 }
 
-const selectedFileList = computed(() => [...selectedFiles.value])
-const selectedFileCount = computed(() => selectedFiles.value.size)
-
-// ---------------------------------------------------------------- E20 覆盖预览（原位流专用）
-
-/** 字节数展示（与仪表盘/仓库页同口径的 1024 进制单位）。
- *  缺值回落 `common.none`——不复用 DATETIME_FALLBACK，避免「字节数缺值」与「时间缺值」共用同一占位符。 */
-const SIZE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return t('common.none')
-  }
-  let size = value
-  let unitIndex = 0
-  while (size >= 1024 && unitIndex < SIZE_UNITS.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-  return `${unitIndex === 0 ? String(size) : size.toFixed(1)} ${SIZE_UNITS[unitIndex]}`
+/** 配置导入复用设置页既有实现（importConfig），不复制一份上传 UI。 */
+function goSettingsTransfer(): void {
+  void router.push({ path: '/settings', hash: '#sec-transfer' })
 }
 
-const previewItems = ref<RestorePreviewItem[]>([])
-const previewCursor = ref<string | null>(null)
-const previewLoading = ref(false)
-const previewLoadingMore = ref(false)
-const previewError = ref('')
-/** 整次预览的汇总值（非当前页）：overwrite_count / total_bytes / truncated。 */
-const previewStats = ref<{ overwriteCount: number; totalBytes: number; truncated: boolean } | null>(null)
-
-/** 快照、目标或模式一变，已加载的清单即刻失效（避免拿旧清单去确认覆盖）。 */
-watch([snapshotId, inplaceTarget, targetMode], () => {
-  previewItems.value = []
-  previewCursor.value = null
-  previewStats.value = null
-  previewError.value = ''
-})
-
-/** reset=true 拉首页并清空；false 用 next_cursor 续拉追加。 */
-async function loadPreview(reset: boolean): Promise<void> {
-  const id = snapshotId.value
-  const target = inplaceTargetFull.value
-  if (!id || !target) {
-    return
-  }
-  if (reset) {
-    previewItems.value = []
-    previewCursor.value = null
-    previewStats.value = null
-    previewError.value = ''
-    previewLoading.value = true
-  } else {
-    if (previewLoadingMore.value || previewCursor.value === null) {
-      return
-    }
-    previewLoadingMore.value = true
-  }
-  try {
-    const data = await previewRestore(id, target, {
-      limit: PREVIEW_PAGE_SIZE,
-      cursor: reset ? null : previewCursor.value,
-    })
-    previewItems.value = previewItems.value.concat(data.items)
-    previewCursor.value = data.next_cursor
-    previewStats.value = {
-      overwriteCount: data.overwrite_count,
-      totalBytes: data.total_bytes,
-      truncated: data.truncated,
-    }
-  } catch (error) {
-    previewError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    previewLoading.value = false
-    previewLoadingMore.value = false
-  }
+/** 单激活仓库模型：换仓库在仓库页进行，回本页再选快照。 */
+function goRepo(): void {
+  void router.push({ name: 'repo' })
 }
-
-const previewSizeText = computed(() =>
-  previewStats.value === null ? '' : formatBytes(previewStats.value.totalBytes),
-)
-
-const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
-  {
-    title: t('restore.preview.colPath'),
-    key: 'display_path',
-    // 虚拟滚动下必须定宽：否则列宽随内容抖动、横向滚动条宽度算不准
-    width: 300,
-    ellipsis: { tooltip: true },
-    // S1：只展示原路径语义，容器形态 path 不面向用户
-    render: (row) => row.display_path,
-  },
-  {
-    title: t('restore.preview.colSnapshotMtime'),
-    key: 'snapshot_mtime',
-    width: 170,
-    render: (row) => formatDateTimeOr(row.snapshot_mtime, DATETIME_FALLBACK),
-  },
-  {
-    title: t('restore.preview.colDiskMtime'),
-    key: 'disk_mtime',
-    width: 170,
-    render: (row) => formatDateTimeOr(row.disk_mtime, DATETIME_FALLBACK),
-  },
-  {
-    title: t('restore.preview.colSnapshotSize'),
-    key: 'snapshot_size',
-    width: 110,
-    render: (row) => formatBytes(row.snapshot_size),
-  },
-  {
-    title: t('restore.preview.colDiskSize'),
-    key: 'disk_size',
-    width: 110,
-    render: (row) => formatBytes(row.disk_size),
-  },
-])
-
-/** 原位流必须先有预览结果才允许开门（传统流无此约束，保持既有行为）。 */
-const canOpenGate = computed(() => (isInPlace.value ? previewStats.value !== null : true))
-
-/** 确认门关键词：时间戳流保持既有 RESTORE 关键词门；原位流 A7 起**无关键词**
- *  （S7 v1.4：三重确认门 → 单次确认，对齐 Duplicati 无关键词确认）。 */
-const gateKeyword = computed(() => (isInPlace.value ? undefined : 'RESTORE'))
-const gateTitle = computed(() =>
-  isInPlace.value ? t('restore.confirm.title') : t('restore.gateTitle'),
-)
-/** 原位流描述随覆盖布尔变化（never = 跳过 / always = 覆盖）。 */
-const gateDesc = computed(() => {
-  if (!isInPlace.value) {
-    return t('restore.gateDesc')
-  }
-  return overwriteExisting.value ? t('restore.confirm.descOverwrite') : t('restore.confirm.descSkip')
-})
-
-/** 预览区策略行：同一份「已存在文件清单」在两种覆盖布尔下的不同归宿。 */
-const previewPolicy = computed(() =>
-  overwriteExisting.value ? t('restore.preview.policyOverwrite') : t('restore.preview.policySkip'),
-)
-
-function goConfirm(): void {
-  if (!snapshotId.value) {
-    message.warning(t('restore.needSnapshot'))
-    return
-  }
-  if (isInPlace.value && !inplaceTarget.value) {
-    message.warning(t('restore.preview.needTarget'))
-    return
-  }
-  step.value = 2
-  if (isInPlace.value) {
-    // 原位流：先在步骤 2 摊开覆盖清单，用户复核后再自己开门
-    void loadPreview(true)
-    return
-  }
-  gateShow.value = true
-}
-
-/** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。
- *  时间戳流请求体与 P1 逐字一致（无任何覆盖语义字段，零回归）；
- *  原位流带 overwrite_mode（never/always 布尔，A7 起无 keyword）。 */
-async function onConfirmed(): Promise<void> {
-  const id = snapshotId.value
-  if (!id) {
-    return
-  }
-  const target = isInPlace.value ? inplaceTargetFull.value : RESTORE_TARGET_ROOT
-  if (!target) {
-    return
-  }
-  restoring.value = true
-  try {
-    const data = await restoreSnapshot(
-      id,
-      target,
-      selectedFileList.value,
-      isInPlace.value ? { overwrite_mode: overwriteExisting.value ? 'always' : 'never' } : {},
-    )
-    result.value = { jobId: data.job_id, restoreTarget: data.restore_target, filesDone: null, summary: null }
-    jobFinished.value = false
-    step.value = 3
-  } finally {
-    restoring.value = false
-  }
-}
-
-/** SSE 终态帧带回 files_done / summary：结果区展示本次恢复的文件数与（原位流）计数回报。 */
-function onJobDone(payload: JobDonePayload): void {
-  if (result.value) {
-    result.value.filesDone = payload.files_done
-    result.value.summary = payload.summary
-  }
-  jobFinished.value = true
-}
-
-function onJobFailed(payload: JobDonePayload): void {
-  if (result.value) {
-    result.value.summary = payload.summary
-  }
-  jobFinished.value = true
-}
-
-/** jobs.summary 的实际覆盖/失败计数（Q4 口径：TOCTOU 窗口内以执行后实际值为准）。
- *
- * 后端 T08 尚未冻结 summary 的落盘形态，这里做「有则显示、无则不显示」的容错：
- * 只有 summary 是可解析的 JSON 对象且含数值型 overwritten/failed 时才取用，
- * 其余形态（纯文本、缺字段）一律返回 null —— 前端不展示任何数字，绝不编造。 */
-const summaryCounts = computed<{ overwritten: number | null; failed: number | null } | null>(() => {
-  const raw = result.value?.summary
-  if (!raw) {
-    return null
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return null
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return null
-  }
-  const record = parsed as Record<string, unknown>
-  const overwritten = readCount(record['overwritten'])
-  const failed = readCount(record['failed'])
-  return overwritten === null && failed === null ? null : { overwritten, failed }
-})
-
-function readCount(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-const overwrittenCount = computed(() => summaryCounts.value?.overwritten ?? null)
-const failedCount = computed(() => summaryCounts.value?.failed ?? null)
-/** 终态已到但后端没回计数：明确说没回报，不猜数字。 */
-const summaryPending = computed(
-  () => isInPlace.value && jobFinished.value && summaryCounts.value === null,
-)
-
-function goJobs(): void {
-  void router.push({ name: 'jobs' })
-}
-
-const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
 </script>
 
 <template>
-  <n-space vertical :size="16">
-    <n-card :title="t('nav.restore')" size="small">
-      <n-steps :current="step" :status="stepStatus" size="small">
-        <n-step :title="t('restore.stepPick')" />
-        <n-step :title="t('restore.stepConfirm')" />
-        <n-step :title="t('restore.stepRun')" />
-      </n-steps>
+  <div v-if="!requested" class="restore-entry">
+    <header class="restore-entry__head">
+      <h1 class="restore-entry__title">{{ t('restore.entry.title') }}</h1>
+      <n-text depth="3">{{ t('restore.entry.subtitle') }}</n-text>
+    </header>
 
-      <n-space vertical :size="14" class="restore__body">
-        <!-- 步骤 1：选快照 + 目标模式 + 文件多选 -->
-        <template v-if="step === 1">
-          <n-select
-            v-model:value="snapshotId"
-            :options="snapshotOptions"
-            :loading="snapshotsQuery.isFetching.value"
-            :placeholder="t('restore.pickPlaceholder')"
-            filterable
-          />
-          <n-alert v-if="snapshotsQuery.error.value" type="error" :show-icon="false">
-            {{ String(snapshotsQuery.error.value) }}
-          </n-alert>
+    <section>
+      <h2 class="restore-entry__h2">{{ t('restore.entry.snapshotTitle') }}</h2>
+      <n-spin v-if="snapshotsQuery.isLoading.value" size="small" />
+      <n-alert v-else-if="!snapshotItems.length" type="default" :bordered="false">
+        {{ t('restore.entry.empty') }}
+      </n-alert>
+      <div v-else class="restore-entry__grid">
+        <ActionCard
+          v-for="snapshot in snapshotItems"
+          :key="snapshot.id"
+          :icon="IconDownload"
+          :title="describe(snapshot)"
+          :action-label="t('restore.entry.restore')"
+          @click="openWizard(snapshot.id)"
+        />
+      </div>
+    </section>
 
-          <n-space vertical :size="6">
-            <n-text strong>{{ t('restore.targetTitle') }}</n-text>
-            <n-radio-group v-model:value="targetMode" size="small">
-              <!-- A7：原位置为默认选项（对齐 Duplicati）；自定义目录 = 时间戳子目录零覆盖流 -->
-              <n-radio-button value="inplace" :disabled="inPlaceDisabled">
-                {{ t('restore.targetInPlace') }}
-              </n-radio-button>
-              <n-radio-button value="timestamp">{{ t('restore.targetTimestamp') }}</n-radio-button>
-            </n-radio-group>
-            <n-text depth="3">
-              {{ isInPlace ? t('restore.targetInPlaceNote') : t('restore.targetTimestampNote') }}
-            </n-text>
-            <!-- 原位恢复不可用时置灰 + 原因（后端双重锁兜底，前端只做提示性限制） -->
-            <n-alert v-if="inPlaceDisabled" type="warning" :show-icon="false">
-              <n-text depth="3">{{ inPlaceBlockReason }}</n-text>
-            </n-alert>
-            <!-- 原位目标：限该快照 paths 命中的目录（后端双重锁兜底，前端只做提示性限制） -->
-            <template v-if="isInPlace">
-              <n-text strong>{{ t('restore.inplace.targetTitle') }}</n-text>
-              <n-select
-                v-model:value="inplaceTarget"
-                :options="inplaceTargetOptions"
-                :placeholder="t('restore.inplace.targetPlaceholder')"
-              />
-              <n-text depth="3">{{ t('restore.inplace.targetHint') }}</n-text>
-              <!-- A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never 跳过已存在文件 -->
-              <n-checkbox v-model:checked="overwriteExisting">{{ t('restore.overwrite.label') }}</n-checkbox>
-              <n-text depth="3">{{ t('restore.overwrite.hint') }}</n-text>
-            </template>
-          </n-space>
+    <div class="restore-entry__divider">
+      <span>{{ t('restore.entry.divider') }}</span>
+    </div>
 
-          <!-- B1：文件级多选（可选）；不选 = 整快照 -->
-          <n-space vertical :size="6">
-            <n-text strong>{{ t('restore.filesTitle') }}</n-text>
-            <n-text depth="3">{{ t('restore.filesHint') }}</n-text>
-            <VirtualTree
-              v-if="snapshotId"
-              :key="`files-${snapshotId}`"
-              root-path="/"
-              :load-children="treeLoader"
-              :height="300"
-              select-dir
-              :selected-paths="selectedFiles"
-              @select="onFileSelect"
-            />
-            <n-text v-if="selectedFileCount > 0" depth="2">
-              {{ t('restore.filesSelected', { n: selectedFileCount }) }}
-            </n-text>
-            <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
-          </n-space>
-
-          <n-space justify="end">
-            <n-button type="primary" :disabled="!snapshotId" @click="goConfirm">
-              {{ t('confirm.next') }}
-            </n-button>
-          </n-space>
-        </template>
-
-        <!-- 步骤 2：原位流先摊开 E20 覆盖清单（确认门第①步），复核后再开门 -->
-        <template v-else-if="step === 2">
-          <template v-if="isInPlace">
-            <n-space vertical :size="8">
-              <n-space align="center" :size="10">
-                <n-text strong>{{ t('restore.preview.title') }}</n-text>
-                <n-button size="tiny" quaternary :loading="previewLoading" @click="loadPreview(true)">
-                  {{ t('restore.preview.reload') }}
-                </n-button>
-              </n-space>
-              <n-text v-if="previewStats" depth="2">
-                {{ t('restore.preview.overwriteCount', { n: previewStats.overwriteCount }) }}
-                · {{ t('restore.preview.totalBytes', { size: previewSizeText }) }}
-              </n-text>
-              <n-text v-if="previewStats" depth="3">{{ previewPolicy }}</n-text>
-              <n-alert v-if="previewStats?.truncated" type="warning" :show-icon="false">
-                {{ t('restore.preview.truncated') }}
-              </n-alert>
-              <n-alert v-if="previewError" type="error" :show-icon="false">{{ previewError }}</n-alert>
-              <!-- 大列表纪律：虚拟滚动 + 固定行高；游标分页靠下方「加载更多」续拉 -->
-              <n-data-table
-                v-if="previewItems.length > 0"
-                size="small"
-                :columns="previewColumns"
-                :data="previewItems"
-                :max-height="320"
-                :loading="previewLoading"
-                virtual-scroll
-                :row-key="(row: RestorePreviewItem) => row.path"
-              />
-              <n-text v-else-if="!previewLoading && !previewError" depth="3">
-                {{ t('restore.preview.empty') }}
-              </n-text>
-              <n-button
-                v-if="previewCursor"
-                size="tiny"
-                quaternary
-                :loading="previewLoadingMore"
-                @click="loadPreview(false)"
-              >
-                {{ t('restore.preview.loadMore') }}
-              </n-button>
-            </n-space>
-          </template>
-          <n-text v-else depth="3">{{ t('restore.stepConfirm') }}</n-text>
-          <n-space justify="end">
-            <n-button quaternary @click="step = 1">{{ t('confirm.back') }}</n-button>
-            <n-button type="primary" :disabled="!canOpenGate" @click="gateShow = true">
-              {{ t('confirm.next') }}
-            </n-button>
-          </n-space>
-        </template>
-
-        <!-- 步骤 3：执行结果 -->
-        <template v-else>
-          <n-alert type="success" :show-icon="false">{{ t('restore.submitted') }}</n-alert>
-          <n-space vertical :size="4">
-            <n-text>
-              {{ t('restore.restoreTarget') }}：<n-tag size="small">{{ result?.restoreTarget }}</n-tag>
-            </n-text>
-            <n-text v-if="result?.filesDone !== null && result?.filesDone !== undefined" depth="3">
-              {{ t('job.filesOnly', { done: result.filesDone }) }}
-            </n-text>
-            <!-- 原位流：任务回报的实际覆盖/失败计数（后端未回填则不显示，不编造数字） -->
-            <template v-if="isInPlace">
-              <n-text v-if="overwrittenCount !== null" depth="2">
-                {{ t('restore.summary.overwritten', { n: overwrittenCount }) }}
-              </n-text>
-              <n-text v-if="failedCount !== null" depth="2">
-                {{ t('restore.summary.failed', { n: failedCount }) }}
-              </n-text>
-              <n-text v-if="summaryPending" depth="3">{{ t('restore.summary.pending') }}</n-text>
-            </template>
-            <n-text depth="3">
-              {{ isInPlace ? t('restore.inplace.runNote') : t('restore.targetNote') }}
-            </n-text>
-          </n-space>
-          <JobProgress
-            v-if="result"
-            :job-id="result.jobId"
-            :title="result.jobId"
-            @done="onJobDone"
-            @failed="onJobFailed"
-          />
-          <n-space justify="end">
-            <n-button secondary @click="goJobs">{{ t('restore.goJobs') }}</n-button>
-          </n-space>
-        </template>
-      </n-space>
-    </n-card>
-
-    <!-- 确认门：时间戳流 = 预览 → 输入 RESTORE → 红色二次确认；
-         原位流（A7）= 预览 → 红色二次确认（无关键词，对齐 Duplicati） -->
-    <ConfirmGate
-      v-model:show="gateShow"
-      :title="gateTitle"
-      :keyword="gateKeyword"
-      :description="gateDesc"
-      :confirm-label="isInPlace ? t('restore.confirm.confirmLabel') : undefined"
-      :loading="restoring"
-      @confirm="onConfirmed"
-    >
-      <template #preview>
-        <n-space vertical :size="4">
-          <!-- 缺陷 C：确认门快照时间同样收口；无 time 时回落快照 id（保持原兜底语义） -->
-          <n-text>{{ t('restore.gateSnapshot') }}：{{ formatDateTimeOr(selectedSnapshot?.time, selectedSnapshot ? DATETIME_FALLBACK : (snapshotId ?? DATETIME_FALLBACK)) }}</n-text>
-          <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
-          <n-text>{{ t('restore.gateTarget') }}：{{ isInPlace ? inplaceTargetFull : RESTORE_TARGET_ROOT }}</n-text>
-          <!-- 原位流：停止服务提示 + 已存在文件汇总 + 策略行 + 清单摘要（完整清单在步骤 2） -->
-          <template v-if="isInPlace">
-            <n-alert type="error" :show-icon="false">{{ t('restore.stop_services') }}</n-alert>
-            <template v-if="previewStats">
-              <n-text strong>
-                {{ t('restore.confirm.overwriteCount', { n: previewStats.overwriteCount }) }}
-              </n-text>
-              <n-text depth="3">
-                {{ t('restore.confirm.totalBytes', { size: previewSizeText }) }}
-              </n-text>
-              <n-text depth="3">{{ previewPolicy }}</n-text>
-            </template>
-            <template v-if="previewItems.length > 0">
-              <n-text strong>
-                {{ t('restore.confirm.previewList', { n: GATE_PREVIEW_LIMIT, m: previewStats?.overwriteCount ?? previewItems.length }) }}
-              </n-text>
-              <n-text
-                v-for="item in previewItems.slice(0, GATE_PREVIEW_LIMIT)"
-                :key="item.path"
-                depth="3"
-                class="restore__gate-file"
-              >
-                {{ item.display_path }}
-              </n-text>
-            </template>
-          </template>
-          <!-- B1：已选文件清单（前 N 条 + 共 M 条）；空 = 整快照 -->
-          <template v-if="selectedFileCount > 0">
-            <n-text strong>{{ t('restore.gateFiles', { n: GATE_PREVIEW_LIMIT, m: selectedFileCount }) }}</n-text>
-            <n-text
-              v-for="path in selectedFileList.slice(0, GATE_PREVIEW_LIMIT)"
-              :key="path"
-              depth="3"
-              class="restore__gate-file"
-            >
-              {{ path }}
-            </n-text>
-          </template>
-          <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
-        </n-space>
-      </template>
-    </ConfirmGate>
-  </n-space>
+    <div class="restore-entry__grid">
+      <ActionCard
+        :icon="IconUpload"
+        :title="t('restore.entry.fromConfig')"
+        :description="t('restore.entry.fromConfigDesc')"
+        @click="goSettingsTransfer"
+      />
+      <ActionCard
+        :icon="IconServer"
+        :title="t('restore.entry.fromOtherRepo')"
+        :description="t('restore.entry.fromOtherRepoDesc')"
+        @click="goRepo"
+      />
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.restore__body {
-  margin-top: 16px;
+.restore-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
-.restore__gate-file {
-  display: block;
-  font-size: 12px;
+.restore-entry__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 标题不设 color：继承当前主题文本色（暗色皮肤挂 documentElement，继承有效）。 */
+.restore-entry__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.restore-entry__h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.restore-entry__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.restore-entry__divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--n-text-color-3, #8a8a8a);
+  font-size: 13px;
+}
+
+.restore-entry__divider::before,
+.restore-entry__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--n-border-color, rgba(128, 128, 128, 0.35));
 }
 </style>

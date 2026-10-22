@@ -985,6 +985,18 @@ export default {
     restoreTarget: '恢复目标',
     targetNote: '时间戳子目录由服务端计算返回，进度区实时刷新。',
     goJobs: '前往任务历史',
+    entry: {
+      title: '从哪里恢复？',
+      subtitle: '选择一个快照进入恢复向导；也可以从配置文件或另一个仓库恢复。',
+      snapshotTitle: '从此仓库的快照恢复',
+      restore: '恢复此快照',
+      empty: '当前激活仓库还没有快照。请先执行一次备份，或到仓库页切换仓库。',
+      divider: '或者不使用本地配置',
+      fromConfig: '从配置恢复',
+      fromConfigDesc: '在设置页「配置导入导出」分区导入此前导出的配置文件。',
+      fromOtherRepo: '从其他仓库恢复',
+      fromOtherRepoDesc: '前往仓库页切换激活仓库，再回到本页选择快照。',
+    },
   },
   settings: {
     // P6：SegmentedTabs 分段条 aria-label（共用组件消费位）

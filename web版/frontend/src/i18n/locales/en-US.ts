@@ -988,6 +988,18 @@ export default {
     restoreTarget: 'Restore target',
     targetNote: 'The timestamped subdirectory is computed and returned by the server; progress updates live below.',
     goJobs: 'Go to jobs',
+    entry: {
+      title: 'Where do you want to restore from?',
+      subtitle: 'Pick a snapshot to enter the restore wizard, or restore from a config file or another repository.',
+      snapshotTitle: 'Restore from a snapshot in this repository',
+      restore: 'Restore this snapshot',
+      empty: 'The active repository has no snapshots yet. Run a backup first, or switch repositories.',
+      divider: 'Or without a local configuration',
+      fromConfig: 'Restore from config',
+      fromConfigDesc: 'Import a previously exported config file from the settings page.',
+      fromOtherRepo: 'Restore from another repository',
+      fromOtherRepoDesc: 'Switch the active repository on the repository page, then pick a snapshot here.',
+    },
   },
   settings: {
     // P6: aria-label for the SegmentedTabs bar (shared component consumer)
