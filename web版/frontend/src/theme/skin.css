@@ -29,6 +29,14 @@
 
   /* 与 naive cubicBezierEaseInOut 同值；skin 自有类（portal 内）不依赖 naive 变量作用域 */
   --rw-ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 控件圆角（Select 族对齐 Input/Button 的 10px）：与 tokens.ts CONTROL_RADIUS 同源（spec 护栏）。
+     Select/AutoComplete/Cascader/TreeSelect 的 trigger 是 InternalSelection（_internal/selection），
+     其主题 self(vars) 把 common.borderRadius 原样透传，公开覆盖键 Select: { borderRadius } 到不了
+     peer 主题（实测无效），故只能经本文件的单类规则对齐。.n-base-selection 的边框层与内部子元素
+     均为 border-radius: inherit，覆根元素即全树一致。 */
+  --rw-radius-control: 10px;
+
 }
 
 /* 暗色三档阴影：低透明度黑。§4.6.4 要求「亮/暗各一套值」；强度刻意克制，
@@ -37,6 +45,7 @@
   --rw-shadow-rest: 0 1px 3px rgba(0, 0, 0, 0.32);
   --rw-shadow-hover: 0 1px 2px rgba(0, 0, 0, 0.4);
   --rw-shadow-pressed: 0 1px 1px rgba(0, 0, 0, 0.48);
+
 }
 
 /* ─── 间距工具类：六档 × gap / padding / padding-inline / padding-block / margin-top / margin-bottom ───
@@ -86,12 +95,17 @@
 
 /* ─── 卡片层级：1px 边框（naive 既有）+ 三档阴影 + hover 内缩过渡 100ms ───
  *
- * rest 档：naive 基础 .n-card 无 box-shadow 规则，此处无同特异性竞争，直接生效。
+ * 源序实证（2026-10-22 深潜，dev :5173 + prod preview :4173 双环境）：css-render 的
+ * mount.js 把 naive 运行时样式 insertBefore 到 head 第一个 style/link 之前——应用 CSS
+ * 同特异性下源序在后稳赢。故此处双类选择器是「双保险」（特异性决胜，不依赖源序），
+ * 并非单类写不赢；P5 提交时「naive 源序在后故需双类」的记录有误，以此为准。
+ *
+ * rest 档：naive 基础 .n-card 无 box-shadow 规则，无竞争，直接生效。
  * hover 档：naive 的 .n-card--hoverable:hover { box-shadow: var(--n-box-shadow) } 特异性 0-2-0，
- *   且 naive 样式运行时注入、源序在本文件之后——单类规则写不赢，故双类提升至 0-3-0。
+ *   双类提升至 0-3-0 稳压。
  *   （本应用暂无页面使用 hoverable prop；此规则服务 P6/P7 行动卡与日后显式 hoverable 卡片。）
  * 过渡：仅把 box-shadow 时长改为 100ms（方案「hover 阴影内缩过渡 100ms」），
- *   其余三项维持 naive 原值；双类提升同理（naive 基础 .n-card 也声明了 transition）。
+ *   其余三项维持 naive 原值；双类同理（naive 基础 .n-card 也声明了 transition）。
  * pressed 档：n-card 无按压态，供 P6/P7 行卡片 / 行动卡按压时挂载。 */
 .n-card {
   box-shadow: var(--rw-shadow-rest);
@@ -112,3 +126,19 @@
 .rw-card--pressed {
   box-shadow: var(--rw-shadow-pressed);
 }
+
+/* ─── Select 族圆角对齐（owner 2026-10-22 裁决方案 A）─────────────────────────
+ *
+ * 背景：§4.6.4 彻底档「Input/Select 10」中 Select 一档无法经主题变量达成——trigger 是
+ * InternalSelection（naive peer 主题），self(vars) 从 common 透传 borderRadius，公开覆盖键
+ * Select: { borderRadius } 实测无效（peer 主题公开 API 到不了）。P5 后 select 随 common=12，
+ * 与 Input/Button=10 形成 2px 偏差；按本规则对齐（dev + 生产构建双环境实证生效）。
+ *
+ * 范围：.n-base-selection 覆盖 n-select / n-cascader / n-tree-select 的 trigger
+ * （AutoComplete 不渲染 base-selection，trigger 复用 Input，本就=10，不受影响）；
+ * 下拉菜单 .n-base-select-menu 圆角同样随 common=12，维持不动（与 Card 16 同层级语言，
+ * 方案未规定菜单圆角——记此偏差待日后裁决）。 */
+.n-base-selection {
+  border-radius: var(--rw-radius-control);
+}
+

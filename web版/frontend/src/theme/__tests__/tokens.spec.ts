@@ -6,7 +6,12 @@
  * ② 亮/暗结构同批——两份 GlobalThemeOverrides 的组件级键集（含各组件内部键）必须一致，
  *    防「只调亮色」漏暗色（§4.6.5 S-3）；
  * ③ 跨文件同源——skin.css 的间距变量/工具类必须与 tokens.ts 的 spacing 常量一致；
- * ④ 阴影单一文件——三档阴影只允许定义在 skin.css（:root + .rw-dark 各一套，共 6 处）。
+ * ④ 阴影单一文件——三档阴影只允许定义在 skin.css（:root + .rw-dark 各一套，共 6 处）；
+ * ⑤ Select 族圆角对齐——skin.css 的 --rw-radius-control 与 Input 圆角跨文件同源，
+ *    且只允许命中 .n-base-selection 根选择器（不改 Naive 内部结构，§4.6.3）；
+ * ⑥ P6 表面变量——普通 div 形态（行卡片/状态条/chip）取不到 naive 的 --n-* 变量
+ *    （只存在于 naive 组件根），故 skin.css 自持 --rw-border/surface/surface-hover/focus
+ *    亮暗各一套；--rw-border 与 tokens.ts common.borderColor 跨文件同源，形态类禁裸 --n-*。
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -49,7 +54,7 @@ describe('P5 令牌层：圆角档（§4.6.4 彻底档）', () => {
     }
   })
 
-  it('输入圆角 10（亮暗同值；Select 族无主题变量、随 common=12 为已知偏差，见 tokens.ts 注释）', () => {
+  it('输入圆角 10（亮暗同值；Select 族经 skin.css --rw-radius-control 对齐，见下一节护栏）', () => {
     expect(lightThemeOverrides.Input?.borderRadius).toBe('10px')
     expect(darkThemeOverrides.Input?.borderRadius).toBe('10px')
   })
@@ -122,6 +127,23 @@ describe('P5 令牌层：亮/暗同批（S-3 护栏）', () => {
   })
 })
 
+describe('P5 Select 族圆角对齐：tokens.ts ↔ skin.css 跨文件同源（owner 2026-10-22 方案 A）', () => {
+  it('skin.css 定义 --rw-radius-control 且与 Input 圆角（亮暗两份）相等', () => {
+    expect(SKIN_CSS).toContain('--rw-radius-control: 10px;')
+    expect(lightThemeOverrides.Input?.borderRadius).toBe('10px')
+    expect(darkThemeOverrides.Input?.borderRadius).toBe('10px')
+  })
+
+  it('.n-base-selection 单类规则消费该变量（dev + prod 双环境实证生效）', () => {
+    expect(SKIN_CSS).toContain('.n-base-selection {\n  border-radius: var(--rw-radius-control);\n}')
+  })
+
+  it('不写内部结构覆盖：规则只允许命中 .n-base-selection 根选择器', () => {
+    // §4.6.3 纪律：不改 Naive 内部结构——禁止 __border 等内部类选择器混入
+    expect(SKIN_CSS).not.toContain('.n-base-selection__')
+  })
+})
+
 describe('P5 间距节奏：tokens.ts ↔ skin.css 同源', () => {
   it('spacing 常量为六档 4/8/12/16/24/32', () => {
     expect(Object.keys(spacing)).toEqual(['1', '2', '3', '4', '5', '6'])
@@ -174,3 +196,4 @@ describe('P5 卡片三档阴影：skin.css 唯一定义处 + 亮暗各一套', (
     expect(SKIN_CSS).toContain('box-shadow 100ms var(--rw-ease)')
   })
 })
+

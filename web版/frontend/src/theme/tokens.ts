@@ -30,10 +30,12 @@ const CONTROL_HEIGHTS = {
 
 /** 控件圆角（按钮/输入）：§4.6.4 彻底档 10px。
  *
- *  已知偏差（待 owner 仲裁）：naive 2.43 的 Select / AutoComplete / Cascader / TreeSelect
- *  无独立主题变量，trigger 圆角随 common.borderRadius（12px）——方案表「Input/Select 10」中
- *  Select 一档无法经主题变量达成；按 §4.6.3「不改 Naive 内部结构」纪律，不写内部类选择器覆盖，
- *  故 Select 族落 12、Input/Button 落 10。若 naive 后续提供 Select.borderRadius 再对齐。 */
+ *  Select 族对齐（owner 2026-10-22 裁决，原「待仲裁」偏差已修复）：naive 2.43 的
+ *  Select / Cascader / TreeSelect 的 trigger 是 InternalSelection（peer 主题），
+ *  self(vars) 从 common 透传 borderRadius，公开覆盖键 Select: { borderRadius } 到不了
+ *  peer（实测无效）→ 经 skin.css 的 --rw-radius-control 单类规则对齐（.n-base-selection），
+ *  spec 护栏校验跨文件同源。AutoComplete 不受影响：其 trigger 直接复用 Input 组件
+ *  （auto-complete/src/AutoComplete.mjs import input/src/Input.mjs），本就随 Input=10。 */
 const CONTROL_RADIUS = '10px'
 
 /** 卡片 / 弹层圆角（Card / Dialog；n-modal preset=card 的内层卡片随 Card）。 */
