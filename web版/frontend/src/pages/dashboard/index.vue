@@ -654,7 +654,10 @@ async function onDeleteConfirmed(): Promise<void> {
         v-model="viewMode"
         :aria-label="t('dashboard.view.aria')"
       />
-      <n-space :size="8" :wrap="false" align="center">
+      <!-- 右侧组刻意用原生 flex 而非 n-space：naive Space 展平插槽子节点时按索引发 key，
+           组内两个 v-if（排序文案 + 排序下拉）会让子节点数在视图切换时 3↔1 抖动，
+           展平索引相撞 → [Vue warn] Duplicate keys found during update: 1。 -->
+      <div class="home__toolbar-right">
         <SegmentedTabs
           :items="timeItems"
           v-model="timeType"
@@ -670,7 +673,7 @@ async function onDeleteConfirmed(): Promise<void> {
           :placeholder="t('dashboard.sort.label')"
           style="width: 140px"
         />
-      </n-space>
+      </div>
     </n-space>
 
     <!-- 运行告警行（原状态卡内 alerts 上提为整宽） -->
@@ -857,6 +860,14 @@ async function onDeleteConfirmed(): Promise<void> {
 /* D3 工具栏：两端对齐；窄屏断点内可换行（默认不换行避免移动端挤压） */
 .home__toolbar {
   flex-wrap: wrap;
+}
+
+/* 工具栏右侧组（时间口径 + 排序）：替代原 n-space，见模板处注释（避免 duplicate key 告警）。 */
+.home__toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .home__sort-label {
