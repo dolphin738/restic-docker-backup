@@ -321,6 +321,10 @@ export default {
     progress: 'Progress',
     pruneDue: 'Retention prune due',
     pruneDueNote: 'More than the prune interval since the last successful backup: automatic pruning is not enabled yet — this is a reminder only, watch repository capacity.',
+    duration: 'Duration',
+    restore: 'Restore from snapshot',
+    verify: 'Verify backup',
+    snapshotCount: '{n} snapshots',
   },
   wizard: {
     step1: 'Basics',

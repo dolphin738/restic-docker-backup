@@ -323,6 +323,10 @@ export default {
     progress: '运行进度',
     pruneDue: '保留清理已到期',
     pruneDueNote: '距上次成功备份已超 prune 间隔：自动清理尚未开放，仅作提醒，请留意仓库容量。',
+    duration: '耗时',
+    restore: '从快照恢复',
+    verify: '校验备份',
+    snapshotCount: '{n} 个快照',
   },
   wizard: {
     step1: '基础信息',

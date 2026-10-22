@@ -6,12 +6,13 @@
  * 状态徽章色用 Naive 语义色；卡片高度由调用方（仪表盘虚拟列表）固定，内容超高地截断。
  */
 
-import { NButton, NCard, NDropdown, NSpace, NText, NTooltip } from 'naive-ui'
+import { NButton, NCard, NSpace, NTag, NText, NTooltip } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import JobProgress from '@/components/JobProgress.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
 import { formatDateTime, formatDateTimeOr } from '@/utils/datetime'
 import { relativeTime } from '@/utils/relativeTime'
 
@@ -52,6 +53,8 @@ const emit = defineEmits<{
   (e: 'cancel', jobId: string): void
   (e: 'edit', taskId: number): void
   (e: 'delete', taskId: number): void
+  (e: 'restore', taskId: number): void
+  (e: 'verify', taskId: number): void
 }>()
 
 const { t } = useI18n()
@@ -108,18 +111,53 @@ const lastResultText = computed(() => {
   return text === key ? result : text
 })
 
-const menuOptions = computed(() => [
-  { label: t('task.edit'), key: 'edit' },
-  { label: t('task.delete'), key: 'delete', disabled: isActive.value },
+/** D7：版本数 chip——该任务快照数（按 tag 分组计数；null=不可知时不渲染）。 */
+const snapshotLabel = computed(() =>
+  props.task.snapshot_count === null ? '' : t('task.snapshotCount', { n: props.task.snapshot_count }),
+)
+
+/** D6：耗时指标——最近一次终态 backup 的 finished_at - started_at（毫秒）；null 不渲染。 */
+const durationText = computed(() => {
+  const ms = props.task.last_duration_ms
+  if (ms === null || ms < 0) {
+    return ''
+  }
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+  return `${m}:${String(s).padStart(2, '0')}`
+})
+
+/** D8：三点菜单（Operations / Advanced / Danger 分组），复用 P6 TaskActionsMenu。 */
+const menuGroups = computed(() => [
+  {
+    actions: [
+      { key: 'edit', label: t('task.edit') },
+      { key: 'restore', label: t('task.restore') },
+    ],
+  },
+  {
+    actions: [{ key: 'verify', label: t('task.verify') }],
+  },
+  {
+    label: t('delete.title') ?? t('task.delete'),
+    actions: [{ key: 'delete', label: t('task.delete'), disabled: isActive.value }],
+  },
 ])
 
-function onMenuSelect(key: string | number): void {
+function onMenuSelect(key: string): void {
   if (key === 'edit') {
     emit('edit', props.task.id)
-    return
-  }
-  if (key === 'delete') {
+  } else if (key === 'delete') {
     emit('delete', props.task.id)
+  } else if (key === 'restore') {
+    emit('restore', props.task.id)
+  } else if (key === 'verify') {
+    emit('verify', props.task.id)
   }
 }
 
@@ -146,23 +184,29 @@ function openLogs(): void {
           </template>
           {{ t('task.pruneDueNote') }}
         </n-tooltip>
+        <!-- D7：版本数 chip（该任务快照数；不可知时不渲染） -->
+        <n-tag v-if="snapshotLabel" size="small" :bordered="false" type="default" class="task-card__chip">
+          {{ snapshotLabel }}
+        </n-tag>
       </n-space>
     </template>
 
     <template #header-extra>
-      <n-dropdown trigger="click" :options="menuOptions" @select="onMenuSelect">
-        <n-button size="tiny" quaternary :aria-label="t('task.menu')">⋯</n-button>
-      </n-dropdown>
+      <!-- D8：三点菜单（Operations / Advanced / Danger 分组），复用 P6 TaskActionsMenu -->
+      <TaskActionsMenu :groups="menuGroups" :aria-label="t('task.menu')" @select="onMenuSelect" />
     </template>
 
     <n-space vertical :size="8" class="task-card__body">
-      <!-- 元信息行：上次/下次运行 -->
+      <!-- 元信息行：上次/下次运行（+ D6 耗时） -->
       <n-space :size="16" class="task-card__meta">
         <n-text depth="3" class="task-card__meta-item">
           {{ t('task.last_run_label') }}<n-text depth="2">{{ lastRunText }}</n-text>
         </n-text>
         <n-text depth="3" class="task-card__meta-item">
           {{ t('task.next_run') }}：<n-text depth="2">{{ nextRunText }}</n-text>
+        </n-text>
+        <n-text v-if="durationText" depth="3" class="task-card__meta-item">
+          {{ t('task.duration') }}：<n-text depth="2">{{ durationText }}</n-text>
         </n-text>
       </n-space>
 
