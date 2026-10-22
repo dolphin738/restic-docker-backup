@@ -6,7 +6,7 @@
 #   # 方式一：dot-source（推荐交互使用，函数留在当前会话）
 #   . .\dev.ps1              # 初始化环境 + 自动安装依赖（幂等，已装则跳过）
 #   . .\dev.ps1 -SkipInstall # 仅设置环境，跳过依赖安装（秒进环境）
-#   . .\dev.ps1 -Force       # 强制重装后端 + 前端依赖
+#   . .\dev.ps1 -Force       # 强制重装后端 + 前端依赖（-Force backend / frontend 只重装一端）
 #   Start-Dev / Stop-Dev                 # 启停前后端（独立窗口）
 #   Start-Backend / Stop-Backend         # 仅启动/停止后端
 #   Start-Frontend / Stop-Frontend       # 仅启动/停止前端
@@ -16,7 +16,7 @@
 #   .\dev.ps1                 # 无参数 -> 初始化 + 弹出数字菜单
 #   .\dev.ps1 start           # 等价于「初始化 + Start-Dev」
 #   .\dev.ps1 stop            # 直接 Stop-Dev（跳过初始化）
-#   .\dev.ps1 start -Force    # 强制重装依赖后启动
+#   .\dev.ps1 start -Force    # 强制重装全部依赖后启动（start backend -Force 只重装后端）
 #   .\dev.ps1 restart                  # 重启前后端（跳过依赖安装）
 #   .\dev.ps1 restart backend          # 仅重启后端
 #   .\dev.ps1 restart frontend         # 仅重启前端
@@ -25,6 +25,12 @@
 #   数据库管理（本项目为 SQLite，启动时自动按 user_version 应用 app/db/migrations/）：
 #     .\dev.ps1 db        # 手动补跑迁移（一般无需，启动即应用）
 #     .\dev.ps1 resetdb   # 删除开发库文件（下次启动自动重建，需确认）
+#
+#   依赖管理（前后端分开；前端安装固定走 npmmirror 镜像）：
+#     .\dev.ps1 init                # 幂等同步前后端依赖（已装则跳过）
+#     .\dev.ps1 init backend        # 只同步后端依赖
+#     .\dev.ps1 init frontend       # 只同步前端依赖
+#     .\dev.ps1 init backend -Force # 只强制重装后端依赖（frontend 同理）
 #
 #   质量工具：
 #     .\dev.ps1 test / lint          # 后端 pytest / ruff
@@ -37,7 +43,7 @@
 #     [1]启动前后端  [2]启动后端  [3]启动前端
 #     [4]停止前后端  [5]停止后端  [6]停止前端
 #     [7]重启前后端  [8]重启后端  [9]重启前端
-#     [10]重装依赖  [11]应用迁移  [12]清空开发库
+#     [10]重装依赖(可选目标)  [11]应用迁移  [12]清空开发库
 #     [13]后端测试  [14]后端lint  [15]前端类型检查
 #     [16]前端测试  [17]红线校验  [18]漏洞扫描
 #     [0]退出
@@ -247,51 +253,74 @@ function Ensure-Venv {
 }
 
 # ---------------------------------------------------------------------------
-# 依赖安装（幂等；-Force 重装）
+# 依赖安装（幂等；-Force 重装；-Scope 限定 backend/frontend/all）
 # ---------------------------------------------------------------------------
 function Init-Dev {
     [CmdletBinding()]
-    param([switch]$Force)
+    param(
+        [switch]$Force,
+        [ValidateSet("all", "backend", "frontend")]
+        [string]$Scope = "all"
+    )
+    $doBackend  = $Scope -in @("all", "backend")
+    $doFrontend = $Scope -in @("all", "frontend")
 
-    if (-not (Ensure-Venv)) { return }
+    if ($doBackend) {
+        if (-not (Ensure-Venv)) { return }
 
-    Write-Host "-> 同步后端依赖 (uv sync --extra dev)" -ForegroundColor Cyan
-    $uv = if (Get-Command uv -ErrorAction SilentlyContinue) { "uv" } else { $UvExe }
-    $env:UV_DEFAULT_INDEX = "https://mirrors.cloud.tencent.com/pypi/simple"
-    $syncArgs = @('sync', '--extra', 'dev')
-    if ($Force) { $syncArgs += '--reinstall' }
-    Push-Location $backend
-    try {
-        & $uv @syncArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  uv sync 失败（退出码 $LASTEXITCODE）。" -ForegroundColor Red
-        }
-    } finally { Pop-Location }
-    Write-Host "-> 后端依赖同步完成" -ForegroundColor Green
-
-    # 前端依赖（必须用 pnpm，避免 npm 覆写 pnpm 布局与 .npmrc 专属配置）
-    $pkg = Join-Path $frontend "package.json"
-    if (Test-Path $pkg) {
-        $nodeModules = Join-Path $frontend "node_modules"
-        if ((-not $Force) -and (Test-Path $nodeModules)) {
-            Write-Host "-> 前端 node_modules 已存在，跳过安装" -ForegroundColor DarkGray
-        } else {
-            $pm = Get-PnpmCommand
-            if (-not $pm) {
-                Write-Host "  未找到 pnpm。前端安装需要 pnpm（勿用 npm，会破坏布局与 .npmrc 配置）。" -ForegroundColor Red
-                return
+        Write-Host "-> 同步后端依赖 (uv sync --extra dev)" -ForegroundColor Cyan
+        $uv = if (Get-Command uv -ErrorAction SilentlyContinue) { "uv" } else { $UvExe }
+        $env:UV_DEFAULT_INDEX = "https://mirrors.cloud.tencent.com/pypi/simple"
+        $syncArgs = @('sync', '--extra', 'dev')
+        if ($Force) { $syncArgs += '--reinstall' }
+        Push-Location $backend
+        try {
+            & $uv @syncArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  uv sync 失败（退出码 $LASTEXITCODE）。" -ForegroundColor Red
             }
-            Write-Host "-> 安装前端依赖 (frontend) via pnpm" -ForegroundColor Cyan
-            Push-Location $frontend
-            try {
-                & $pm install
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Host "  pnpm install 失败（退出码 $LASTEXITCODE）。" -ForegroundColor Red
+        } finally { Pop-Location }
+        Write-Host "-> 后端依赖同步完成" -ForegroundColor Green
+    }
+
+    if ($doFrontend) {
+        # 前端依赖（必须用 pnpm，避免 npm 覆写 pnpm 布局与 .npmrc 专属配置）
+        $pkg = Join-Path $frontend "package.json"
+        if (Test-Path $pkg) {
+            $nodeModules = Join-Path $frontend "node_modules"
+            if ((-not $Force) -and (Test-Path $nodeModules)) {
+                Write-Host "-> 前端 node_modules 已存在，跳过安装" -ForegroundColor DarkGray
+            } else {
+                # 强制重装：先清掉旧 node_modules——半成品残留（如上次安装中断留下的
+                # @esbuild/linux-x64 空壳）会让 pnpm 重建时报 EEXIST 直接失败
+                if ($Force -and (Test-Path $nodeModules)) {
+                    Write-Host "-> 清理旧 node_modules（强制重装）" -ForegroundColor Cyan
+                    Remove-Item -Recurse -Force $nodeModules
                 }
-            } finally { Pop-Location }
+                $pm = Get-PnpmCommand
+                if (-not $pm) {
+                    Write-Host "  未找到 pnpm。前端安装需要 pnpm（勿用 npm，会破坏布局与 .npmrc 配置）。" -ForegroundColor Red
+                    return
+                }
+                Write-Host "-> 安装前端依赖 (frontend) via pnpm（registry=npmmirror）" -ForegroundColor Cyan
+                Push-Location $frontend
+                try {
+                    # 固定国内镜像：npm_config_registry 只在本次安装注入，用完即恢复
+                    $oldReg = $env:npm_config_registry
+                    $env:npm_config_registry = "https://registry.npmmirror.com"
+                    try {
+                        & $pm install
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Host "  pnpm install 失败（退出码 $LASTEXITCODE）。" -ForegroundColor Red
+                        }
+                    } finally {
+                        $env:npm_config_registry = $oldReg   # 旧值为 $null 时等效删除该变量
+                    }
+                } finally { Pop-Location }
+            }
+        } else {
+            Write-Host "-> frontend/ 尚未初始化（无 package.json），跳过前端依赖" -ForegroundColor DarkGray
         }
-    } else {
-        Write-Host "-> frontend/ 尚未初始化（无 package.json），跳过前端依赖" -ForegroundColor DarkGray
     }
 }
 
@@ -605,7 +634,8 @@ function Show-EnvInfo {
     Write-Host "常用命令：" -ForegroundColor Yellow
     Write-Host "  . .\$scriptName              # 初始化环境并安装依赖"
     Write-Host "  . .\$scriptName -SkipInstall # 仅设置环境，跳过依赖安装"
-    Write-Host "  . .\$scriptName -Force       # 强制重装依赖"
+    Write-Host "  . .\$scriptName -Force       # 强制重装依赖（-Force backend/frontend 只重装一端）"
+    Write-Host "  . .\$scriptName init backend # 只同步/重装指定端依赖（init frontend 同理）"
     Write-Host "  .\$scriptName start          # 直接一键启动"
     Write-Host "  .\$scriptName stop           # 直接停止"
     Write-Host "  .\$scriptName restart        # 重启（跳过依赖安装）"
@@ -660,7 +690,7 @@ function Show-DevMenu {
         Write-Host "  [1] 启动前后端          [4] 停止前后端          [7] 重启前后端" -ForegroundColor White
         Write-Host "  [2] 仅启动后端          [5] 仅停止后端          [8] 仅重启后端" -ForegroundColor White
         Write-Host "  [3] 仅启动前端          [6] 仅停止前端          [9] 仅重启前端" -ForegroundColor White
-        Write-Host "  [10] 重装依赖           [11] 应用迁移           [12] 清空开发库" -ForegroundColor Yellow
+        Write-Host "  [10] 重装依赖(可选目标) [11] 应用迁移           [12] 清空开发库" -ForegroundColor Yellow
         Write-Host "  [13] 后端测试           [14] 后端 lint          [15] 前端类型检查" -ForegroundColor Yellow
         Write-Host "  [16] 前端测试           [17] 红线校验           [18] 漏洞扫描" -ForegroundColor Yellow
         Write-Host "  [0] 退出菜单" -ForegroundColor DarkGray
@@ -680,7 +710,13 @@ function Show-DevMenu {
             "7"  { Stop-Dev; Start-Dev }
             "8"  { Stop-Backend; Start-Backend }
             "9"  { Stop-Frontend; Start-Frontend }
-            "10" { Init-Dev -Force:$true }
+            "10" {
+                # 重装目标子选择（交互样式与下载源选择一致，默认全部）
+                Write-Host "  重装目标选择：[1] 全部（后端 + 前端）  [2] 仅后端  [3] 仅前端" -ForegroundColor White
+                $c10 = Read-Host "请选择 [1]"
+                $scope10 = switch ($c10) { "2" { "backend" } "3" { "frontend" } default { "all" } }
+                Init-Dev -Force:$true -Scope $scope10
+            }
             "11" { Update-Db }
             "12" { Reset-Db }
             "13" { Run-BackendTest }
@@ -718,19 +754,23 @@ if ($Run -and -not $Action) {
     }
 }
 
+# Init-Dev 范围：位置参数 $Service 为 backend/frontend 时限定重装/同步目标
+# （如 .\dev.ps1 init backend 只处理后端依赖；start backend -Force 重装后端依赖后启动）
+$initScope = if ($Service -in @("backend", "frontend")) { $Service } else { "all" }
+
 if ($Check -or $Action -eq "check") {
     Set-LightEnv
 } elseif ($Action -eq "stop") {
     # 仅停止，不做任何环境设置（最快）
 } elseif ($Action -eq "restart") {
     Set-LightEnv
-    if ($Force) { Init-Dev -Force:$true }
+    if ($Force) { Init-Dev -Force:$true -Scope $initScope }
 } else {
     Set-LightEnv
     if ($SkipInstall) {
         Write-Host "-> 已跳过依赖安装（-SkipInstall）" -ForegroundColor DarkGray
     } else {
-        Init-Dev -Force:$Force
+        Init-Dev -Force:$Force -Scope $initScope
     }
     # 环境信息（仅非 dot-source 时打印）
     if (-not $isDotSourced) { Show-EnvInfo }
@@ -761,7 +801,7 @@ if ($Check) {
             elseif ($Service -eq "frontend") { Stop-Frontend; Start-Frontend }
             else                             { Stop-Dev; Start-Dev }
         }
-        "init"      { Init-Dev -Force:$Force }
+        "init"      { Init-Dev -Force:$Force -Scope $initScope }
         "db"        { Update-Db }
         "resetdb"   { Reset-Db }
         "test"      { Run-BackendTest }

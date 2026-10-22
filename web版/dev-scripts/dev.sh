@@ -7,7 +7,7 @@
 #   # 方式一：source（推荐交互使用，函数留在当前会话）
 #   source dev.sh              # 初始化环境 + 自动安装依赖（幂等，已装则跳过）
 #   source dev.sh --skip-install  # 仅设置环境，跳过依赖安装（秒进环境）
-#   source dev.sh --force      # 强制重装后端 + 前端依赖
+#   source dev.sh --force      # 强制重装后端 + 前端依赖（--force 后跟 backend/frontend 只重装一端）
 #   start_dev / stop_dev                 # 启停前后端（后台 + 日志文件）
 #   start_backend / stop_backend         # 仅启动/停止后端
 #   start_frontend / stop_frontend       # 仅启动/停止前端
@@ -17,7 +17,7 @@
 #   ./dev.sh                 # 无参数 -> 初始化 + 弹出数字菜单
 #   ./dev.sh start           # 等价于「初始化 + start_dev」
 #   ./dev.sh stop            # 直接 stop_dev（跳过初始化）
-#   ./dev.sh --force start   # 强制重装依赖后启动
+#   ./dev.sh --force start   # 强制重装全部依赖后启动（--force start backend 只重装后端）
 #   ./dev.sh restart                  # 重启前后端（跳过依赖安装）
 #   ./dev.sh restart backend          # 仅重启后端
 #   ./dev.sh restart frontend         # 仅重启前端
@@ -26,6 +26,12 @@
 #   数据库管理（本项目为 SQLite，启动时自动按 user_version 应用 app/db/migrations/）：
 #     ./dev.sh db        # 手动补跑迁移（一般无需，启动即应用）
 #     ./dev.sh resetdb   # 删除开发库文件（下次启动自动重建，需确认）
+#
+#   依赖管理（前后端分开；前端安装固定走 npmmirror 镜像）：
+#     ./dev.sh init                # 幂等同步前后端依赖（已装则跳过）
+#     ./dev.sh init backend        # 只同步后端依赖
+#     ./dev.sh init frontend       # 只同步前端依赖
+#     ./dev.sh init frontend --force  # 只强制重装前端依赖（backend 同理）
 #
 #   质量工具：
 #     ./dev.sh test / lint          # 后端 pytest / ruff
@@ -39,7 +45,7 @@
 #     [1]启动前后端  [2]启动后端  [3]启动前端
 #     [4]停止前后端  [5]停止后端  [6]停止前端
 #     [7]重启前后端  [8]重启后端  [9]重启前端
-#     [10]重装依赖  [11]应用迁移  [12]清空开发库
+#     [10]重装依赖(可选目标)  [11]应用迁移  [12]清空开发库
 #     [13]后端测试  [14]后端lint  [15]前端类型检查
 #     [16]前端测试  [17]红线校验  [18]漏洞扫描
 #     [19]安装环境（uv/Python/Node/pnpm，Linux）
@@ -438,45 +444,67 @@ install_env() {
 }
 
 # ---------------------------------------------------------------------------
-# 依赖安装（幂等；--force 重装；对应 Init-Dev）
+# 依赖安装（幂等；scope 拆分前后端；对应 Init-Dev）
 # ---------------------------------------------------------------------------
+# 用法: init_dev [scope] [reinstall]
+#   scope:     all|''=前后端 / backend / frontend（限定只处理一端）
+#   reinstall: force=强制重装（后端 --reinstall；前端忽略已有 node_modules）
 init_dev() {
-    local force=${1:-}
-    if ! ensure_venv; then return 1; fi
+    local scope=${1:-all} reinstall=${2:-}
+    local do_backend=0 do_frontend=0
+    case $scope in
+        backend)  do_backend=1 ;;
+        frontend) do_frontend=1 ;;
+        *)        do_backend=1; do_frontend=1 ;;
+    esac
 
-    msg cyan "-> 同步后端依赖 (uv sync --extra dev)"
-    export UV_DEFAULT_INDEX="https://mirrors.cloud.tencent.com/pypi/simple"
-    local uv; uv=$(uv_cmd)
-    local sync_args=(sync --extra dev)
-    [[ $force == force ]] && sync_args+=(--reinstall)
-    (cd "$backend" && "$uv" "${sync_args[@]}") \
-        || msg red "  uv sync 失败。"
-    msg green "-> 后端依赖同步完成"
+    if (( do_backend )); then
+        if ! ensure_venv; then return 1; fi
 
-    # 前端依赖（必须用 pnpm，避免 npm 覆写 pnpm 布局与 .npmrc 专属配置）
-    local pkg=$frontend/package.json
-    if [[ -f $pkg ]]; then
-        # WSL 双环境提示：node_modules 是平台相关布局（esbuild 等 native 二进制按平台安装），
-        # Windows 侧装的在 Linux 下跑不了 vite；--force 重装会覆盖为 Linux 布局，Windows 侧需重装恢复
-        if grep -qi microsoft /proc/version 2>/dev/null \
-            && [[ -d $frontend/node_modules ]] \
-            && compgen -G "$frontend/node_modules/@esbuild/win32-x64*" >/dev/null; then
-            msg yellow "  检测到 Windows 布局的 node_modules（WSL 内前端不可用）。"
-            msg yellow "  WSL 内跑前端需 ./dev.sh --force 重装（覆盖为 Linux 布局，Windows 侧需再重装恢复）；仅跑后端不受影响。"
-        fi
-        if [[ $force != force && -d $frontend/node_modules ]]; then
-            msg gray "-> 前端 node_modules 已存在，跳过安装"
-        else
-            local pm
-            if ! pm=$(get_pnpm_cmd); then
-                msg red "  未找到 pnpm。前端安装需要 pnpm（勿用 npm，会破坏布局与 .npmrc 配置）。"
-                return 1
+        msg cyan "-> 同步后端依赖 (uv sync --extra dev)"
+        export UV_DEFAULT_INDEX="https://mirrors.cloud.tencent.com/pypi/simple"
+        local uv; uv=$(uv_cmd)
+        local sync_args=(sync --extra dev)
+        [[ $reinstall == force ]] && sync_args+=(--reinstall)
+        (cd "$backend" && "$uv" "${sync_args[@]}") \
+            || msg red "  uv sync 失败。"
+        msg green "-> 后端依赖同步完成"
+    fi
+
+    if (( do_frontend )); then
+        # 前端依赖（必须用 pnpm，避免 npm 覆写 pnpm 布局与 .npmrc 专属配置）
+        local pkg=$frontend/package.json
+        if [[ -f $pkg ]]; then
+            # WSL 双环境提示：node_modules 是平台相关布局（esbuild 等 native 二进制按平台安装），
+            # Windows 侧装的在 Linux 下跑不了 vite；重装会覆盖为 Linux 布局，Windows 侧需重装恢复
+            if grep -qi microsoft /proc/version 2>/dev/null \
+                && [[ -d $frontend/node_modules ]] \
+                && compgen -G "$frontend/node_modules/@esbuild/win32-x64*" >/dev/null; then
+                msg yellow "  检测到 Windows 布局的 node_modules（WSL 内前端不可用）。"
+                msg yellow "  WSL 内跑前端需 ./dev.sh init frontend --force 重装（覆盖为 Linux 布局，Windows 侧需再重装恢复）；仅跑后端不受影响。"
             fi
-            msg cyan "-> 安装前端依赖 (frontend) via pnpm"
-            (cd "$frontend" && "$pm" install) || msg red "  pnpm install 失败。"
+            if [[ $reinstall != force && -d $frontend/node_modules ]]; then
+                msg gray "-> 前端 node_modules 已存在，跳过安装"
+            else
+                # 强制重装：先清掉旧 node_modules——半成品残留（如上次安装中断留下的
+                # @esbuild/linux-x64 空壳）会让 pnpm 重建时报 EEXIST 直接失败
+                if [[ $reinstall == force && -d $frontend/node_modules ]]; then
+                    msg cyan "-> 清理旧 node_modules（强制重装）"
+                    rm -rf "$frontend/node_modules"
+                fi
+                local pm
+                if ! pm=$(get_pnpm_cmd); then
+                    msg red "  未找到 pnpm。前端安装需要 pnpm（勿用 npm，会破坏布局与 .npmrc 配置）。"
+                    return 1
+                fi
+                msg cyan "-> 安装前端依赖 (frontend) via pnpm（registry=npmmirror）"
+                # 固定国内镜像：npm_config_registry 用前缀赋值只作用于本命令，不污染会话
+                (cd "$frontend" && npm_config_registry=https://registry.npmmirror.com "$pm" install) \
+                    || msg red "  pnpm install 失败。"
+            fi
+        else
+            msg gray "-> frontend/ 尚未初始化（无 package.json），跳过前端依赖"
         fi
-    else
-        msg gray "-> frontend/ 尚未初始化（无 package.json），跳过前端依赖"
     fi
 }
 
@@ -745,7 +773,8 @@ show_env_info() {
     msg yellow "常用命令："
     echo "  source ./$script_name                 # 初始化环境并安装依赖"
     echo "  source ./$script_name --skip-install  # 仅设置环境，跳过依赖安装"
-    echo "  source ./$script_name --force         # 强制重装依赖"
+    echo "  source ./$script_name --force         # 强制重装依赖（--force backend/frontend 只重装一端）"
+    echo "  ./$script_name init backend           # 只同步/重装指定端依赖（init frontend 同理）"
     echo "  ./$script_name start                  # 直接一键启动"
     echo "  ./$script_name stop                   # 直接停止"
     echo "  ./$script_name restart                # 重启（跳过依赖安装）"
@@ -808,7 +837,7 @@ show_dev_menu() {
         msg white "  [1] 启动前后端          [4] 停止前后端          [7] 重启前后端"
         msg white "  [2] 仅启动后端          [5] 仅停止后端          [8] 仅重启后端"
         msg white "  [3] 仅启动前端          [6] 仅停止前端          [9] 仅重启前端"
-        msg yellow "  [10] 重装依赖           [11] 应用迁移           [12] 清空开发库"
+        msg yellow "  [10] 重装依赖(可选目标)  [11] 应用迁移           [12] 清空开发库"
         msg yellow "  [13] 后端测试           [14] 后端 lint          [15] 前端类型检查"
         msg yellow "  [16] 前端测试           [17] 红线校验           [18] 漏洞扫描"
         msg yellow "  [19] 安装环境（uv/Python/Node/pnpm）"
@@ -828,7 +857,19 @@ show_dev_menu() {
             7)  stop_dev; start_dev ;;
             8)  stop_backend; start_backend ;;
             9)  stop_frontend; start_frontend ;;
-            10) init_dev force ;;
+            10)
+                # 重装目标子选择（交互样式与下载源选择一致，默认全部；read 失败时也按全部处理）
+                msg white "  重装目标选择：[1] 全部（后端 + 前端）  [2] 仅后端  [3] 仅前端"
+                local c10
+                if read -r -p "请选择 [1]: " c10; then
+                    case $c10 in
+                        2) init_dev backend force ;;
+                        3) init_dev frontend force ;;
+                        *) init_dev all force ;;
+                    esac
+                else
+                    init_dev all force
+                fi ;;
             11) update_db ;;
             12) reset_db ;;
             13) run_backend_test ;;
@@ -884,6 +925,11 @@ fi
 
 main() {
     local act=$1 svc=$2
+    # init_dev 参数：位置参数 backend/frontend 限定目标；--force 强制重装（未指定目标时全套）
+    local scope=all reinstall=''
+    [[ $svc == backend || $svc == frontend ]] && scope=$svc
+    (( force )) && reinstall=force
+
     if (( check_mode )) || [[ $act == check ]]; then
         set_light_env
     elif [[ $act == stop || $act == installenv ]]; then
@@ -891,13 +937,13 @@ main() {
         :
     elif [[ $act == restart ]]; then
         set_light_env
-        (( force )) && init_dev force
+        (( force )) && init_dev "$scope" "$reinstall"
     else
         set_light_env
         if (( skip_install )); then
             msg gray "-> 已跳过依赖安装（--skip-install）"
         else
-            init_dev "$( ((force)) && echo force || echo '' )"
+            init_dev "$scope" "$reinstall"
         fi
         # 环境信息（仅非 source 时打印）
         if [[ ${BASH_SOURCE[0]} == "$0" ]]; then show_env_info; fi
@@ -924,7 +970,7 @@ main() {
                 if [[ $svc == backend ]]; then stop_backend; start_backend
                 elif [[ $svc == frontend ]]; then stop_frontend; start_frontend
                 else stop_dev; start_dev; fi ;;
-            init)      init_dev "$( ((force)) && echo force || echo '' )" ;;
+            init)      init_dev "$scope" "$reinstall" ;;
             db)        update_db ;;
             resetdb)   reset_db ;;
             test)      run_backend_test ;;
