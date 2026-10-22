@@ -209,6 +209,8 @@ export default {
     // pending the backend gap — see component comment)
     statusBar: {
       stop: 'Stop',
+      limit: 'Upload {up} · Download {down} KiB/s',
+      unlimited: 'Unlimited',
     },
     actions: {
       newTask: 'New backup task',

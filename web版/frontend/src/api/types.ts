@@ -363,6 +363,10 @@ export interface TaskCard {
   last_duration_ms: number | null
   /** 该任务快照数（按 task.tag 分组计数）；不可知为 null（不可退化成 0）。 */
   snapshot_count: number | null
+  /** 任务级限速（KiB/s，0=不限）；状态条只读展示（owner 2026-10-22 任务级裁决）。 */
+  limit_up: number
+  /** 任务级限速（KiB/s，0=不限）。 */
+  limit_down: number
   /** null = 仅手动或已暂停。 */
   next_run_at: string | null
   /** 有活跃 job 时非空（卡片内联进度/取消/日志入口）。 */

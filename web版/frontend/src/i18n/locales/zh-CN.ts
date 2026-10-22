@@ -209,6 +209,8 @@ export default {
     // P6 GlobalStatusBar：全局进度常驻条（Abort 二段按后端缺口暂缺，见组件注释）
     statusBar: {
       stop: '停止',
+      limit: '上传 {up} · 下载 {down} KiB/s',
+      unlimited: '不限速',
     },
     actions: {
       newTask: '新建备份任务',

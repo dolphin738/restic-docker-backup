@@ -25,6 +25,7 @@ import { cancelJob, createJob } from '@/api/jobs'
 import { getRepoStatus } from '@/api/repo'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 import ActionCard from '@/components/dashboard/ActionCard.vue'
+import GlobalStatusBar from '@/components/dashboard/GlobalStatusBar.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TaskCard from '@/components/TaskCard.vue'
@@ -61,6 +62,30 @@ const repoLoading = computed(() => repoQuery.isFetching.value)
 const repoError = computed(() => toText(repoQuery.error.value))
 const tasks = computed<TaskCardModel[]>(() => tasksQuery.data.value?.items ?? [])
 const tasksError = computed(() => toText(tasksQuery.error.value))
+
+// ---------------------------------------------------------------- 全局状态条（D2 / P7 ②裁决）
+/** 当前进行中作业：取列表里首个带 running_job_id 的任务（JOB_CONFLICT 守卫保证同时至多一个）。 */
+const runningTask = computed(() => tasks.value.find((task) => task.running_job_id) ?? null)
+const globalJobId = computed(() => runningTask.value?.running_job_id ?? null)
+const globalTitle = computed(() => runningTask.value?.name ?? '')
+/** 任务级限速只读文案（owner 2026-10-22 任务级裁决：运行中不可改，仅展示）。 */
+const globalLimitText = computed(() => {
+  const task = runningTask.value
+  if (!task) {
+    return ''
+  }
+  const up = task.limit_up ?? 0
+  const down = task.limit_down ?? 0
+  return up === 0 && down === 0
+    ? t('dashboard.statusBar.unlimited')
+    : t('dashboard.statusBar.limit', { up, down })
+})
+
+function onStopGlobal(): void {
+  if (globalJobId.value) {
+    void onCancel(globalJobId.value)
+  }
+}
 
 // ---------------------------------------------------------------- KPI 状态带（P4：三卡合一）
 /** 运行用户档位（A0 后只按运行用户分档；与 TierCard 同口径，仪表盘以 KPI 单元格呈现）。 */
@@ -209,6 +234,16 @@ async function onDeleteConfirmed(): Promise<void> {
 
 <template>
   <n-space vertical :size="16">
+    <!-- D2 全局状态条（P7 ②裁决：全局进度 + Stop + 限速只读；砍 pause/resume 与运行中限速入口）。
+         仅在进行中作业存在时渲染（GlobalStatusBar 内部 v-if=jobId），无作业时整条不占位。 -->
+    <GlobalStatusBar
+      v-if="globalJobId"
+      :job-id="globalJobId"
+      :title="globalTitle"
+      :limit-text="globalLimitText"
+      @stop="onStopGlobal"
+    />
+
     <!-- KPI 状态带（P4+）：四格等高等距——统一「标签行 22px / 主行 36px / 辅出行 18px」固定骨架，
          窄屏 2×2。原①卡因多出「刷新按钮行 + 标签行」且主值字号与②③不一致，四卡高矮不齐；
          现刷新按钮收入标签行右端，状态标签升为主行，容量降为辅出行，四行结构完全同构。

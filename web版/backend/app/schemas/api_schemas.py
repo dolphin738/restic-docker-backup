@@ -447,6 +447,10 @@ class TaskCardOut(_Base):
     last_duration_ms: int | None = Field(default=None, ge=0, description="上次运行时长（毫秒）")
     # P1：该任务 tag 的快照数（一次快照列表按 tag 分组）；不可知为 null，无快照为 0
     snapshot_count: int | None = Field(default=None, ge=0, description="该任务快照数；不可知为 null")
+    # P7 D2：任务级限速（KiB/s，0=不限）；状态条只读展示（owner 2026-10-22 任务级裁决：
+    # 备份进程启动时读入 restic argv，运行中不可改，故前端仅只读展示、不提供运行中入口）
+    limit_up: int = Field(default=0, ge=0, description="上传限速 KiB/s；0=不限")
+    limit_down: int = Field(default=0, ge=0, description="下载限速 KiB/s；0=不限")
     next_run_at: str | None = Field(default=None, description="cron 推导；null=仅手动或已暂停")
     running_job_id: str | None = Field(default=None, description="有活跃 job 时非空（卡片内联进度入口）")
     dry_run_pending: bool = Field(default=False, description="true 时 UI 拦截 Start（R-026-08）")

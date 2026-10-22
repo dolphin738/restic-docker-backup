@@ -560,6 +560,8 @@ async def _to_card(
         last_result=last_result,
         last_duration_ms=last_duration_ms,
         snapshot_count=None if snapshot_counts is None else snapshot_counts.get(task.tag, 0),
+        limit_up=task.limit_up_kibps,
+        limit_down=task.limit_down_kibps,
         next_run_at=next_run_at,
         running_job_id=active_job.id if active_job is not None else None,
         dry_run_pending=task.dry_run_pending,

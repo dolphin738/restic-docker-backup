@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.13（2026-10-22 十三次修订：**限速按任务级裁决落地**——owner 指令「那就按任务级裁决吧」：§4.5.3 ② 状态条形态去「限速入口」（砍 pause/resume + 限速入口；限速 = 任务级配置、任务表单设置、创建时生效，状态条仅 limitText 只读展示）；§4.5.4 限速行纠正「仓库级」误标（0001 policies 与 0002 backup_tasks 两处均任务级）并重估难度（表单控件低 / 运行中入口不可行——restic CLI 无控制通道）；GlobalStatusBar 砍限速按钮与 throttle 事件、删 IconGauge 与 statusBar.throttle 双语键（spec 同步：按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前恒 0）。零后端改动、零契约变更。v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
+> 版本：v1.14（2026-10-22 十四次修订：**P7 D2 全局状态条挂载落地**——主页顶部按层级①挂载 `GlobalStatusBar`（进行中作业常驻条：全局进度 + Stop + 任务级限速只读展示，砍 pause/resume 与运行中限速入口），消费 `tasks` 列表首个 `running_job_id` 派生 jobId/title/limitText；为驱动 `limitText` 新增后端契约 `TaskCardOut.limit_up`/`limit_down`（纯派生 `task.limit_up_kibps`/`limit_down_kibps`，无查询无迁移）+ 前端 `TaskCard` 同名字段 + 双语 `dashboard.statusBar.limit`/`unlimited`。v1.13（2026-10-22 十三次修订：**限速按任务级裁决落地**——owner 指令「那就按任务级裁决吧」：§4.5.3 ② 状态条形态去「限速入口」（砍 pause/resume + 限速入口；限速 = 任务级配置、任务表单设置、创建时生效，状态条仅 limitText 只读展示）；§4.5.4 限速行纠正「仓库级」误标（0001 policies 与 0002 backup_tasks 两处均任务级）并重估难度（表单控件低 / 运行中入口不可行——restic CLI 无控制通道）；GlobalStatusBar 砍限速按钮与 throttle 事件、删 IconGauge 与 statusBar.throttle 双语键（spec 同步：按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前恒 0）。零后端改动、零契约变更。v1.12（2026-10-22 十二次修订：批次**融合定稿**——§4.7 升级为**全项目唯一执行批次表 P1–P14**（恢复模块的搜索端点 P3、入口页+路由 P8、向导外壳 P9、步骤重组 P10、进度页三卡 P11 并入，响应式与 i18n 并入 P14）；§4.5.7（B1–B6）、§4.6.6（S1–S4）、§4.8.6（R1–R6）三处旧批次表**删除**，§4.8.6 位置改为指向 §4.7 的指针；§4.7 新增「通用护栏」小节（承接 §4.5.7 的护栏段）。v1.11 为第八轮 §4.8「恢复模块按 Duplicati 恢复复刻」方案定稿——owner 三项裁决（文件树搜索新增后端端点 / 从备份文件恢复只做到「选已有仓库 + 输密码」/ 批次 R1–R6 挂在 P6 之后），含契约变更（仅 `POST /api/snapshots/{id}/files/search` 一项）、组件与文件规划、排除项 6 类、风险 V-1..V-4；v1.10 为第七轮 §4.7——**统一批次表 P1–P9**（owner 指令重排，合并取代 §4.5.7 的 B1–B6 与 §4.6.6 的 S1–S4）；§4.6.4 强度档 owner 裁决 = **彻底**并补齐数值口径（圆角/控件密度/间距节奏/卡片阴影/标签五态）；v1.9 为第六轮 §4.6——A+ 由「仪表板单页」升级为**全站**（owner 指令「整个项目都要 A+ 视觉效果」）：关键发现 `theme/tokens.ts` 已是令牌唯一源 + `App.vue:15-26` 唯一挂载点，全站 A+ 走「L1 主题覆盖层 / L2 共用形态层 / L3 图标层」三层实现，一处改全站且**仍属单体系**（与方案 B 的界线见 §4.6.3）；含强度三档待裁决与 S1–S4 批次。v1.8 为第五轮「仪表板（主页）按 Duplicati home 复刻」方案定稿 §4.5——owner 五项裁决 + 能力可行性实证（纠正首轮「无 pause/resume/abort/限速」误判）+ 数据契约变更 + B1–B6 批次与视觉 A/A+/B 三案；v1.7 第四轮仓库页「目标位置」模块复刻；v1.6 E4 二次修订；v1.5 第三轮 aria + 移动端；v1.4 E4；v1.3 R1–R4；v1.2 G6/G7；v1.1 2026-10-19；v1.0 2026-10-17 立项）
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -270,15 +270,18 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 > **替代口径**：Source/Dest size 列改为「快照数 + 全局仓库容量」，缺失显示 `-`（Duplicati 缺值时同样显示 `-`）。
 
-#### 4.5.5 数据契约变更（本轮后端改动，仅此两项）
+#### 4.5.5 数据契约变更（本轮后端改动，P1 两项 + D2 一项）
+
+> P1：`last_duration_ms` / `snapshot_count`（派生字段，无迁移）；D2：`limit_up` / `limit_down`（任务级限速，纯抄 `task.limit_up_kibps` / `limit_down_kibps`，无查询、无迁移，仅供状态条 `limitText` 只读展示）。
 
 | 项 | 内容 | 红线约束 |
 |---|---|---|
 | `TaskCardOut.last_duration_ms` | 该任务最近一次**终态** backup job 的 `finished_at - started_at`（毫秒）；无则 `null`。装配点 `_to_card`（`routers/backup_tasks.py:437`） | A1：须经 `app/db/repositories/` 新增查询，路由不直写 SQL；零新迁移（纯派生） |
 | `TaskCardOut.snapshot_count` | 按 `task.tag` 分组的快照数。实现：在任务列表接口内**取一次快照列表**（复用 E30 30s 服务端缓存）按 tag 分组计数；缓存不可用则 `null` | 同上；不得退化为 N 次 `stats` 调用（违反 `snapshots.py:12` 裁决） |
+| `TaskCardOut.limit_up` / `limit_down` | 任务级限速（KiB/s，0=不限）。**纯派生**：直接抄 `task.limit_up_kibps` / `limit_down_kibps`，无新查询、无迁移。用途：状态条 `limitText` 只读展示（owner 2026-10-22 任务级裁决——运行中不可改，前端不设入口） | 同上；只读展示，不新增修改端点 |
 | `POST /api/backup-tasks/{id}/export` | 单任务配置导出：复用 `config_transfer` 加密打包管线，口令入参同 `exportConfig`；返回加密包 | S6 埋 `AUDIT_CONFIG_EXPORT`；S3 响应不含凭据明文；i18n 双份 |
 
-前端同步：`api/types.ts` 的 `TaskCard` 加两字段、`api/backupTasks.ts` 加 `exportBackupTask()`、`i18n` 双语加键。
+前端同步：`api/types.ts` 的 `TaskCard` 加 `last_duration_ms` / `snapshot_count` / `limit_up` / `limit_down` 字段、`api/backupTasks.ts` 加 `exportBackupTask()`、`i18n` 双语加键（`dashboard.statusBar.limit` / `unlimited` 等）。
 
 #### 4.5.6 组件与文件规划
 
@@ -532,6 +535,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ## 修订记录
 
+- v1.14（2026-10-22 十四次修订）：**P7 D2 全局状态条挂载落地**（见上版本头说明）；同步 `docs` §4.5.5 契约表（增补 `limit_up`/`limit_down` 派生字段并纠正「仅此两项」表述）、前端同步清单、P7 行口径。
 - v1.13（2026-10-22 十三次修订）：**限速按任务级裁决落地**（owner 指令「那就按任务级裁决吧」）。§4.5.3 ② 状态条形态修订为「全局进度 + Stop/Abort 二段」，砍 pause/resume + 限速入口；限速定为**任务级配置**（任务表单设置、创建时生效——备份进程启动时读入 restic argv，运行中不可改），状态条仅保留 limitText 只读展示。§4.5.4 限速行实证纠正：①「仓库级」标注错误——`0001_init.sql:57-58` 在 policies 表、`0002:37-38` 在 backup_tasks 表，均为任务级；②运行中限速入口不可行（restic CLI 无控制通道，Duplicati 实时限速靠自带 throttle 流包装层，本项目 shell out 无此层）；③难度重估：任务表单控件低（接 UI）/ 运行中入口降级（同 pause/resume）。代码：GlobalStatusBar 砍限速按钮 + throttle 事件 + NTooltip/IconGauge 引用 + `statusBar.throttle` 双语键（spec 同步：动作按钮数 2→1）；TaskWizard step① 补 limit_up/limit_down 输入控件（KiB/s，0=不限，含编辑回填与提交接真值——此前硬编码 0）。零后端改动、零契约变更。
 - v1.12（2026-10-22 十二次修订）：owner 指令「4.8.6 批次融入 4.7 统一批次，融合后 4.6.6 / 4.5.7 / 4.8.6 都可以删除」。**§4.7 成为全项目唯一执行批次表**，编号重排为 **P1–P14**：P1 `last_duration_ms`+`snapshot_count`／P2 单任务导出／**P3 快照文件搜索端点**／P4 图标集／**P5 令牌层彻底档（分水岭）**／P6 共用形态层／P7 仪表板主页复刻／**P8 恢复入口页+路由重排**／**P9 恢复向导外壳**／**P10 恢复步骤重组（含搜索框）**／**P11 恢复进度页三卡**／P12 逐页重排低风险／P13 逐页重排高风险／P14 全站回归（含恢复模块响应式与 i18n）。删除 §4.5.7、§4.6.6、§4.8.6 三节（§4.8.6 位置改为指向 §4.7 的指针）；§4.5.7 的护栏段升格为 §4.7 的「通用护栏（每批适用）」。批次关系更新：P8–P11 属结构性改造，**不等 P5 令牌层**，可与 P5/P6 并行，视觉打磨在其后复跑。
 - v1.11（2026-10-22 十一次修订）：新增 §4.8 第七轮（排序按模块，文档内第七轮批次另计）——恢复模块按 Duplicati 恢复复刻方案定稿。MCP 图谱索引 `duplicati-ngclient`（2670 节点 / 7897 边，restore-flow 作用域 100/215，热点 `#submitRestore` 等）。对标：入口页（备份卡 + 直接恢复 + 从配置）、向导外壳（可跳步 stepper + 全宽/满高）、状态中枢（三表单 + 错误分诊 + 重试）、5 个步骤形态、单档 `-milli` 响应式。差距 R1–R10。**owner 三项裁决**：① 文件树搜索 → 新增后端端点 `POST /api/snapshots/{id}/files/search`（游标同 E18 口径）；② 从备份文件恢复只做到「选已有仓库 + 输密码」，排除 copytotemp / URL 直填 / app-test-url；③ 批次 R1–R6 挂在 §4.7 的 P6 之后，R-1/R-2/R-3 结构性改造不等令牌层可先行。后端契约变更**仅此一项**，其余零后端改动。排除项 6 类（o365/gsuite/diskimage、Hyper-V、Check permissions、copytotemp、URL 直填、逐备份 passphrase）。兼容硬约束：快照页 `?snapshot=` 直达入口不得破坏。
