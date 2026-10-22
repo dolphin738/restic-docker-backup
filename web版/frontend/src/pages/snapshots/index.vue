@@ -171,9 +171,13 @@ const columns = computed<DataTableColumns<SnapshotOut>>(() => [
   },
   {
     // E17 成本口径：size 恒为 null，优雅显示为 —
+    // P5 后续修复（原 90px → 110px）：td padding 8→9 后内容宽 74→72px，9 位数字
+    // （约 72.9px）被换行成两行、行高 40→61；加宽后内容宽 92px 容 11 位数字，
+    // 并列级 ellipsis（nowrap + 溢出省略）兜底防回归。
     title: t('snap.size'),
     key: 'size',
-    width: 90,
+    width: 110,
+    ellipsis: true,
     render: (row) => (row.size === null || row.size === undefined ? '—' : String(row.size)),
   },
   {
