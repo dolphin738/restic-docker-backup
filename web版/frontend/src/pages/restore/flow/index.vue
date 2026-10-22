@@ -10,16 +10,14 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
-  NStep,
-  NSteps,
   NTag,
   NText,
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { listSnapshotFiles, listSnapshots } from '@/api/snapshots'
 import {
   INPLACE_TARGET_ROOT,
@@ -30,6 +28,7 @@ import {
 import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
+import RestoreStepper from '@/components/restore/RestoreStepper.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { useUiStore } from '@/stores/ui'
@@ -443,17 +442,118 @@ function goJobs(): void {
   void router.push({ name: 'jobs' })
 }
 
-const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
+// ---------------------------------------------------------------- P9 向导外壳：步骤 ↔ 路由
+
+/** 步骤 ↔ 路由名映射（P8 建路由骨架，P9 让 URL 与当前步骤真正同步）。
+ *  语义映射：1=选快照/目标/文件树(select-files) 2=确认(options) 3=执行与结果(progress)。
+ *  注：P10 会把步骤内容重组（options 四分区）、P11 重做 progress 三卡，
+ *  届时只调整本映射与步骤内容，外壳不动。 */
+const STEP_ROUTE: Record<number, string> = {
+  1: 'restore-select-files',
+  2: 'restore-options',
+  3: 'restore-progress',
+}
+const ROUTE_STEP: Record<string, number> = {
+  'restore-select-files': 1,
+  'restore-options': 2,
+  'restore-progress': 3,
+}
+
+const stepItems = computed(() => [
+  { key: 1, title: t('restore.flow.stepSelectFiles') },
+  { key: 2, title: t('restore.flow.stepOptions') },
+  { key: 3, title: t('restore.flow.stepProgress') },
+])
+
+/** V-2 跳步校验：未满足条件者置 inactive（RestoreStepper 内鼠标与键盘双向不可达）。 */
+const stepEnabled = computed<Record<number, boolean>>(() => ({
+  1: true,
+  2: Boolean(snapshotId.value),
+  3: Boolean(result.value),
+}))
+
+/** 路由 → 步骤：首次进入、浏览器前进/后退、入口页跳转都经此。 */
+watch(
+  () => route.name,
+  (name) => {
+    const next = ROUTE_STEP[String(name)]
+    if (next && next !== step.value) {
+      step.value = next
+    }
+  },
+  { immediate: true },
+)
+
+/** 步骤 → 路由：跳步与内部推进都经此，URL 始终反映当前步骤。 */
+watch(step, (value) => {
+  const name = STEP_ROUTE[value]
+  if (name && route.name !== name) {
+    void router.replace({ name, params: { id: route.params.id ?? snapshotId.value ?? '' } })
+  }
+})
+
+function onStepSelect(key: number): void {
+  step.value = key
+}
+
+// ---------------------------------------------------------------- P9 布局信号（对标 isSelectFilesPage）
+
+/** 满高：仅步骤 1——文件树需要确定高度才能内部滚动。
+ *  诚实边界：BasicLayout 内容区没有 height 继承链，真实 flex 撑满需先给布局层高度
+ *  （属 P14 视觉层），故这里以「文件树高度上探」落地，是当前唯一有实际效果的做法。 */
+const isFillHeight = computed(() => step.value === 1)
+const FILE_TREE_HEIGHT_FILL = 520
+const FILE_TREE_HEIGHT_DEFAULT = 300
+const treeHeight = computed(() => (isFillHeight.value ? FILE_TREE_HEIGHT_FILL : FILE_TREE_HEIGHT_DEFAULT))
+
+// ---------------------------------------------------------------- P9 离开确认（R10）
+
+/** 脏判定：已选快照/文件但未走完，或作业未到终态（走到终态即放行）。 */
+const leaveDirty = computed(() => {
+  if (step.value === 3) {
+    return !jobFinished.value
+  }
+  return Boolean(snapshotId.value) || selectedFiles.value.size > 0
+})
+
+/** 路由级离开确认（侧栏导航、浏览器后退均覆盖）。
+ *  沿用 `TaskWizard` 的 window.confirm 模式（E2 离开保护）：不新造弹窗组件，
+ *  也不打断 naive 的消息队列。 */
+onBeforeRouteLeave((to) => {
+  // 向导**内部**步骤切换（跳步 / 内部推进写回 URL）不算「离开」，直接放行——
+  // 否则点步骤条跳一步就弹一次「确定离开吗」，是误报。
+  if (ROUTE_STEP[String(to.name)]) {
+    return true
+  }
+  if (!leaveDirty.value) {
+    return true
+  }
+  return window.confirm(t('restore.flow.leaveConfirm'))
+})
+
+/** 关闭标签页/刷新：浏览器只认 preventDefault + returnValue，文案由浏览器提供。 */
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!leaveDirty.value) {
+    return
+  }
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 </script>
 
 <template>
-  <n-space vertical :size="16">
+  <n-space vertical :size="16" class="restore-flow" :class="{ 'restore-flow--fill': isFillHeight }">
     <n-card :title="t('nav.restore')" size="small">
-      <n-steps :current="step" :status="stepStatus" size="small">
-        <n-step :title="t('restore.stepPick')" />
-        <n-step :title="t('restore.stepConfirm')" />
-        <n-step :title="t('restore.stepRun')" />
-      </n-steps>
+      <RestoreStepper
+        :steps="stepItems"
+        :current="step"
+        :enabled="stepEnabled"
+        :aria-label="t('restore.flow.stepsAria')"
+        @select="onStepSelect"
+      />
 
       <n-space vertical :size="14" class="restore__body">
         <!-- 步骤 1：选快照 + 目标模式 + 文件多选 -->
@@ -509,7 +609,7 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
               :key="`files-${snapshotId}`"
               root-path="/"
               :load-children="treeLoader"
-              :height="300"
+              :height="treeHeight"
               select-dir
               :selected-paths="selectedFiles"
               @select="onFileSelect"
@@ -683,6 +783,12 @@ const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
 <style scoped>
 .restore__body {
   margin-top: 16px;
+}
+
+/* P9 满高：步骤 1 的主体给到更大可用高度（文件树高度同步上探，见 treeHeight）。
+   等 P14 给布局层高度链后，这里可换成真实 flex 撑满（见脚本处注释）。 */
+.restore-flow--fill .restore__body {
+  min-height: 60vh;
 }
 
 .restore__gate-file {

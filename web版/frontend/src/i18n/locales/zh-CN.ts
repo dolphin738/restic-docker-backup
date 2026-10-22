@@ -918,9 +918,7 @@ export default {
     },
   },
   restore: {
-    stepPick: '选择快照',
     stepConfirm: '确认执行',
-    stepRun: '恢复进度',
     pickPlaceholder: '选择要恢复的快照',
     needSnapshot: '请先选择一个快照',
     targetTitle: '恢复到哪里',
@@ -996,6 +994,13 @@ export default {
       fromConfigDesc: '在设置页「配置导入导出」分区导入此前导出的配置文件。',
       fromOtherRepo: '从其他仓库恢复',
       fromOtherRepoDesc: '前往仓库页切换激活仓库，再回到本页选择快照。',
+    },
+    flow: {
+      stepsAria: '恢复向导步骤',
+      stepSelectFiles: '选择文件',
+      stepOptions: '恢复选项',
+      stepProgress: '执行与结果',
+      leaveConfirm: '恢复尚未完成，确定离开吗？',
     },
   },
   settings: {

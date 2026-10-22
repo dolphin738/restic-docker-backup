@@ -921,9 +921,7 @@ export default {
     },
   },
   restore: {
-    stepPick: 'Pick snapshot',
     stepConfirm: 'Confirm',
-    stepRun: 'Restore progress',
     pickPlaceholder: 'Pick a snapshot to restore',
     needSnapshot: 'Pick a snapshot first',
     targetTitle: 'Restore target',
@@ -999,6 +997,13 @@ export default {
       fromConfigDesc: 'Import a previously exported config file from the settings page.',
       fromOtherRepo: 'Restore from another repository',
       fromOtherRepoDesc: 'Switch the active repository on the repository page, then pick a snapshot here.',
+    },
+    flow: {
+      stepsAria: 'Restore wizard steps',
+      stepSelectFiles: 'Select files',
+      stepOptions: 'Restore options',
+      stepProgress: 'Run and result',
+      leaveConfirm: 'The restore is not finished yet. Leave anyway?',
     },
   },
   settings: {
