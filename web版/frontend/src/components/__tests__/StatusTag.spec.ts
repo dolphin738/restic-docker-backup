@@ -1,5 +1,5 @@
 /**
- * StatusTag 契约护栏（UI界面设计方案 §6 / §10 PV-2）。
+ * StatusTag 契约护栏（UI全量改造方案 §6（原《UI界面设计方案》） §6 / §10 PV-2）。
  *
  * 锁定语义：
  * - 五语义态透传 NTag type：以 `--n-text-color` 内联变量为断言锚点

@@ -173,7 +173,7 @@ describe('P5 卡片三档阴影：skin.css 唯一定义处 + 亮暗各一套', (
     expect(matches.length).toBe(6)
   })
 
-  it('亮色 rest 档取 UI界面设计方案 §3.3 卡片值', () => {
+  it('亮色 rest 档取 UI全量改造方案 §6（原《UI界面设计方案》） §3.3 卡片值', () => {
     expect(SKIN_CSS).toContain('--rw-shadow-rest: 0 1px 3px rgba(15, 23, 42, 0.08);')
   })
 

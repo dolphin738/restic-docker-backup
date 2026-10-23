@@ -51,7 +51,7 @@ body,
     v-sans, system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
-/* 全局工具类（UI界面设计方案 §3.1 / §6 / §11 AB-1，P1 随令牌批次落地）：
+/* 全局工具类（UI全量改造方案 §6（原《UI界面设计方案》） §3.1 / §6 / §11 AB-1，P1 随令牌批次落地）：
    .code-text —— 数据 / 路径 / id / cron 的等宽展示块；半透明中性底，亮/暗主题自适应；
    .tabular-nums —— 等宽数字，避免 15s 轮询刷新时数值列跳动。 */
 .code-text {

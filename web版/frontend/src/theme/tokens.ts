@@ -1,7 +1,7 @@
 /** 设计令牌：全项目唯一色值 / 等宽字体 / 间距节奏 / 圆角与密度档位来源。
  *
- * 基线：docs/UI界面设计方案.md（视觉令牌唯一权威）；docs/UI全量改造方案.md v1.5 管第二轮功能面
- * （文档管理规范 v1.9：owner 已撤销其「已作废」判定，两文档分工 = 视觉基线 ↔ 功能面呈现）。
+ * 基线：视觉令牌唯一权威 = UI全量改造方案.md §6 视觉设计基线（原《UI界面设计方案》，2026-10-23 作废归档，内容并入 §6）；docs/UI全量改造方案.md v1.5 管第二轮功能面
+ * （文档管理规范 v1.18：2026-10-23 合并后本文件为 UI 视觉与功能面唯一权威，原分工关系终止）。
  *
  * P5（§4.7 统一批次表，2026-10-22）起新增组件级覆盖：口径 = §4.6.4 彻底档唯一数值表，
  * 亮/暗两份同批同键（__tests__/tokens.spec.ts 护栏）；卡片三档阴影只落 theme/skin.css
@@ -11,8 +11,8 @@
  * - 其他文件不得硬编码此处色值（单一事实来源）；
  * - 界面字体维持系统栈（App.vue #app 规则，不引入 webfont）；等宽场景一律引用 fontFamilyMono
  *   （启动时注入为全局 CSS 变量 --font-family-mono，portal 内容同样可达，见 main.ts）；
- * - 色值按 WCAG 2.1 AA 对比度实测选取（方案 §2.3 实测表）；
- * - success/warning/error 的 hover/pressed/suppl 与次级面 hover/pressed 为同色系邻近档派生值（方案只给定基准色 / 次级面基色 #F5F6FA）。
+ * - 色值按 WCAG 2.1 AA 对比度实测选取（UI全量改造方案 §6.2 实测表）；
+ * - success/warning/error 的 hover/pressed/suppl 与次级面 hover/pressed 为同色系邻近档派生值（UI全量改造方案只给定基准色 / 次级面基色 #F5F6FA）。
  */
 
 import type { GlobalThemeOverrides } from 'naive-ui'
@@ -108,7 +108,7 @@ export const spacing = {
   6: 32,
 } as const
 
-/** 亮色主题覆盖：UI界面设计方案 §2.1（AA 对比度实测值）+ §4.6.4 彻底档组件级形态。 */
+/** 亮色主题覆盖：UI全量改造方案 §6（原《UI界面设计方案》） §2.1（AA 对比度实测值）+ §4.6.4 彻底档组件级形态。 */
 export const lightThemeOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#3D5BD9',
@@ -151,7 +151,7 @@ export const lightThemeOverrides: GlobalThemeOverrides = {
   ...controlShapeOverrides,
 }
 
-/** 暗色主题覆盖：UI界面设计方案 §2.2（独立调校，非反色）；
+/** 暗色主题覆盖：UI全量改造方案 §6（原《UI界面设计方案》） §2.2（独立调校，非反色）；
  * success/warning/error 三组色值方案未列改动，沿用既有暗色值；
  * 组件级形态与亮色同批同值（§4.6.4「亮/暗同批改」）。 */
 export const darkThemeOverrides: GlobalThemeOverrides = {
@@ -193,7 +193,7 @@ export const darkThemeOverrides: GlobalThemeOverrides = {
   ...controlShapeOverrides,
 }
 
-/** 数据 / 路径 / id / cron 等宽字体栈（UI界面设计方案 §3.1）。
+/** 数据 / 路径 / id / cron 等宽字体栈（UI全量改造方案 §6（原《UI界面设计方案》） §3.1）。
  *
  * 原 4 处硬编码（ScheduleRetentionForm / audit / jobs / repo）统一收口到本常量；
  * 界面正文字体不设常量，维持 App.vue 的系统栈规则。
