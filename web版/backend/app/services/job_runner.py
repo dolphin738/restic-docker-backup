@@ -51,7 +51,9 @@ from app.errors import JobConflictError, NotCancellableError, NotFoundError, Val
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
+from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
+from app.services.path_mapper import PathMapper
 from app.services.repo_keys import neutralize_repo_key
 from app.services.restic import (
     ResticCmd,
@@ -1131,9 +1133,33 @@ class JobRunner:
             sources = list(params.get("sources") or policy.get("sources") or [])
             if not sources:
                 raise ValidationError("备份任务未指定备份源（请在策略或请求中提供 sources）")
+            # 批次②：exclude_spec 为唯一事实源时在此展平（--exclude/--iexclude/大小/
+            # 标记文件/缓存）；否则回落到 excludes 列（旧任务，行为不变）。
+            spec_raw = policy.get("exclude_spec")
+            if spec_raw:
+                flat = flatten_exclude_spec(
+                    spec_from_wire(spec_raw), PathMapper(self._settings)
+                )
+                backup_excludes = tuple(
+                    _dedupe(builtin + list(flat.excludes) + list(params.get("excludes") or []))
+                )
+                iexcludes = flat.iexcludes
+                larger_than = flat.larger_than
+                if_present = flat.if_present
+                caches = flat.caches
+            else:
+                backup_excludes = excludes
+                iexcludes = ()
+                larger_than = None
+                if_present = ()
+                caches = False
             return WhitelistArgs(
                 targets=tuple(str(item) for item in sources),
-                excludes=excludes,
+                excludes=backup_excludes,
+                iexcludes=iexcludes,
+                exclude_larger_than=larger_than,
+                exclude_if_present=if_present,
+                exclude_caches=caches,
                 tags=tags,
                 # --host 取自 repos 表该仓库的 host_tag（仓库级配置，非任务列），由
                 # TaskRepo.get_dict 透传；空值不加 flag。值仍走 WhitelistArgs.host

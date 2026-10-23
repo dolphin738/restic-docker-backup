@@ -33,6 +33,7 @@ from app.constants import MIRROR_REPO_IDS_MAX, RETRY_COUNT_DEFAULT, RETRY_COUNT_
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
+from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import _assert_safe_value, _normalize_duration
 from app.services.scheduler import _cron_trigger
@@ -76,6 +77,8 @@ class TaskService:
             "display_sources": [self._display_of(item) for item in task.sources],
             "excludes": list(task.excludes),
             "display_excludes": [self._display_of(item) for item in task.excludes],
+            # 批次② 结构化过滤条件（原样回传；前端据此预填快捷卡/规则列表）
+            "exclude_spec": task.exclude_spec,
             "keep_last": task.keep_last,
             "keep_hourly": task.keep_hourly,
             "keep_daily": task.keep_daily,
@@ -133,7 +136,17 @@ class TaskService:
         values["name"] = str(raw_name).strip()
         values["enabled"] = 1 if payload.get("enabled", True) else 0
         values["sources"] = self._normalize_sources(payload.get("sources") or [])
-        values["excludes"] = self._normalize_excludes(payload.get("excludes") or [])
+        raw_spec = payload.get("exclude_spec")
+        if raw_spec:
+            # 批次②：spec 为唯一事实源——此处展平一次以**前置校验**（glob 语法 / 大小阈值 /
+            # negate∧icase → 422），并保持 excludes 列置空，避免与 spec 各存一份漂移；
+            # 真实拼装在 JobRunner 与 dry-run 端点经 flatten_exclude_spec 展开。
+            flatten_exclude_spec(spec_from_wire(raw_spec), self._path_mapper)
+            values["exclude_spec"] = raw_spec
+            values["excludes"] = []
+        else:
+            values["excludes"] = self._normalize_excludes(payload.get("excludes") or [])
+            values["exclude_spec"] = None
         for key in (
             "keep_last",
             "keep_hourly",

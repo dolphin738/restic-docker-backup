@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.errors import ValidationError
 from app.services.path_mapper import PathMapper
@@ -141,6 +142,33 @@ def _normalize_rule_pattern(pattern: str, mapper: PathMapper) -> str:
     if pattern.startswith("/"):
         return mapper.to_snapshot(pattern)
     return pattern
+
+
+def spec_from_wire(raw: dict[str, Any]) -> ExcludeSpec:
+    """前端/DB 的 camelCase dict → :class:`ExcludeSpec`（缺字段容错，非法条目跳过）。
+
+    线上/落库形态与前端 TS 同形（``nameContains`` / ``largerThan`` / ``ifPresent``），
+    后端内部统一转 snake_case 数据类——单一转换点，避免两套命名漂移。
+    """
+    quick_raw = raw.get("quick") or {}
+    rules_raw = raw.get("rules") or []
+    quick = QuickExcludes(
+        extensions=tuple(str(x) for x in (quick_raw.get("extensions") or []) if str(x).strip()),
+        name_contains=str(quick_raw.get("nameContains") or ""),
+        larger_than=(str(quick_raw.get("largerThan")) if quick_raw.get("largerThan") else None),
+        if_present=tuple(str(x) for x in (quick_raw.get("ifPresent") or []) if str(x).strip()),
+        caches=bool(quick_raw.get("caches")),
+    )
+    rules = tuple(
+        ExcludeRule(
+            pattern=str(rule.get("pattern") or ""),
+            negate=bool(rule.get("negate")),
+            icase=bool(rule.get("icase")),
+        )
+        for rule in rules_raw
+        if isinstance(rule, dict)
+    )
+    return ExcludeSpec(quick=quick, rules=rules)
 
 
 def flatten_exclude_spec(spec: ExcludeSpec, mapper: PathMapper) -> FlattenedExcludes:

@@ -51,6 +51,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.config_transfer import PACK_KIND_TASK, build_export_pack
 from app.services.env_sync import load_credentials
+from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
@@ -253,7 +254,11 @@ async def update_task(
     values = service.normalize(payload.model_dump())
     await _validate_mirror_ids(request, repo_id, values.get("mirror_repo_ids") or [])
     # US-026-02 AC2：sources/excludes 与库中现值不同 → 重新出现 dry-run 门
-    if values["sources"] != existing.sources or values["excludes"] != existing.excludes:
+    if (
+        values["sources"] != existing.sources
+        or values["excludes"] != existing.excludes
+        or values.get("exclude_spec") != existing.exclude_spec
+    ):
         values["dry_run_pending"] = 1
     updated = await task_repo.update(task_id, values)
     if updated is None:  # pragma: no cover - 前置已确认存在，理论不可达
@@ -436,13 +441,27 @@ async def dry_run_task(
         _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
         for item in raw_sources
     )
-    user_excludes = normalize_user_excludes(
-        list(raw_excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
-    )
-    excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
+    # 批次②：已保存任务优先用结构化 spec（含大小/标记/缓存/icase），与真实备份同口径；
+    # 无 spec（旧任务或新建未存）→ 回落到扁平 excludes。
+    if task.exclude_spec:
+        flat = flatten_exclude_spec(spec_from_wire(task.exclude_spec), mapper)
+        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + list(flat.excludes)))
+        iexcludes, larger_than = flat.iexcludes, flat.larger_than
+        if_present, caches = flat.if_present, flat.caches
+    else:
+        user_excludes = normalize_user_excludes(
+            list(raw_excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
+        )
+        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
+        iexcludes, larger_than = (), None
+        if_present, caches = (), False
     args = WhitelistArgs(
         targets=sources,
         excludes=excludes,
+        iexcludes=iexcludes,
+        exclude_larger_than=larger_than,
+        exclude_if_present=if_present,
+        exclude_caches=caches,
         json_output=True,
         dry_run=True,
         verbose=True,

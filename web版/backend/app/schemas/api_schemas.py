@@ -387,6 +387,9 @@ class TaskOut(_Base):
     display_excludes: list[str] = Field(
         default_factory=list, description="excludes 的展示形态（剥前缀，原路径语义；UI 直消费）"
     )
+    exclude_spec: dict[str, Any] | None = Field(
+        default=None, description="批次② 结构化过滤条件（原样回传；None=旧任务，回落 excludes）"
+    )
     keep_last: int = 0
     keep_hourly: int = 0
     keep_daily: int = 0
@@ -468,6 +471,10 @@ class TaskUpsertRequest(_Base):
     enabled: bool = True
     sources: list[str] = Field(default_factory=list, description="备份源（展示形态，如 /etc）")
     excludes: list[str] = Field(default_factory=list, description="用户追加排除（展示形态/纯 glob）")
+    exclude_spec: dict[str, Any] | None = Field(
+        default=None,
+        description="批次② 结构化过滤条件（camelCase）；存在时 excludes 置空、以 spec 为唯一事实源",
+    )
     keep_last: int = 0
     keep_hourly: int = 0
     keep_daily: int = 0

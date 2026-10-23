@@ -24,7 +24,7 @@ from app.utils.time import utc_iso
 __all__ = ["DEFAULT_REPO_ID", "Task", "TaskRepo"]
 
 _COLUMNS = (
-    "id", "repo_id", "name", "enabled", "tag", "sources", "excludes",
+    "id", "repo_id", "name", "enabled", "tag", "sources", "excludes", "exclude_spec",
     "keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly",
     "keep_within", "keep_within_hourly", "keep_within_daily", "keep_within_weekly",
     "keep_within_monthly", "keep_within_yearly", "keep_tags",
@@ -47,6 +47,8 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "tag": "pending",  # 插入后同方法内回写为 task-<id>
     "sources": "[]",
     "excludes": "[]",
+    # 批次② 结构化过滤条件（JSON；NULL = 旧任务，回落到 excludes 列）
+    "exclude_spec": None,
     "keep_last": 0,
     "keep_hourly": 0,
     "keep_daily": 0,
@@ -90,6 +92,8 @@ class Task:
     tag: str
     sources: list[str] = field(default_factory=list)
     excludes: list[str] = field(default_factory=list)
+    # 批次② 结构化过滤条件（原始 dict，camelCase 与前端同形；None = 旧任务）
+    exclude_spec: dict[str, Any] | None = None
     keep_last: int = 0
     keep_hourly: int = 0
     keep_daily: int = 0
@@ -186,6 +190,7 @@ class TaskRepo:
             "host_tag": repo.host_tag if repo is not None else None,
             "sources": list(task.sources),
             "excludes": list(task.excludes),
+            "exclude_spec": task.exclude_spec,
             "tag": task.tag,
             "group_by": task.group_by,
             "one_file_system": task.one_file_system,
@@ -317,9 +322,11 @@ def _assert_columns(values: dict[str, Any], *, allow_row_stamps: bool) -> None:
 
 
 def _serialize(value: Any) -> Any:
-    """把列表字段序列化为 JSON 文本，其余原样返回。"""
+    """把列表/字典字段序列化为 JSON 文本，其余原样返回。"""
     if isinstance(value, list | tuple):
         return json.dumps(list(value), ensure_ascii=False)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
     return value
 
 
@@ -333,6 +340,7 @@ def _to_task(row: Any) -> Task:
         tag=str(row["tag"]),
         sources=_load_list(row["sources"]),
         excludes=_load_list(row["excludes"]),
+        exclude_spec=_load_dict(row["exclude_spec"]),
         keep_last=int(row["keep_last"] or 0),
         keep_hourly=int(row["keep_hourly"] or 0),
         keep_daily=int(row["keep_daily"] or 0),
@@ -380,3 +388,16 @@ def _load_list(raw: Any) -> list[str]:
     if isinstance(parsed, list):
         return [str(item) for item in parsed]
     return []
+
+
+def _load_dict(raw: Any) -> dict[str, Any] | None:
+    """把 JSON 文本列解析为字典；空/异常返回 None（旧任务 exclude_spec=NULL 时回落）。"""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
