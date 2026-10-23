@@ -603,7 +603,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 ### 6.6 核心组件规范（原 §6；标注被取代项）
 
-- **StatusTag**（新增，`components/StatusTag.vue`）：圆点 6px + 文案，五语义态（success / error / warning / default / info），info 供 audit 只读动作；props 覆盖 jobs 的 `cancelled` 与 audit 的「无 type」。全站收口 23 处（P3a-c）。✅ 已落地，spec 护栏。
+- **StatusTag**（新增，`components/StatusTag.vue`）：圆点 6px + 文案，五语义态（success / error / warning / default / info），info 供 audit 只读动作；props 覆盖 jobs 的 `cancelled` 与 audit 的「无 type」。全站收口 P3a-c 批次 23 处（后续批次如恢复向导续增至 36 处）。✅ 已落地，spec 护栏。
 - **ConfirmGate**：交互语义不变（S7）；视觉升级：危险动词红色主按钮 + 目标等宽展示 + 输入式确认仅用于不可逆操作。
 - **JobProgress**：条高 6px 全圆角；百分比等宽（tabular-nums）；完成转绿、失败转红停留。✅。
 - **空态 / 加载态**：空态 = 线稿插画 + 主行动按钮；加载 = NSkeleton 骨架 / 表格 3 行占位（§4.7 P12 A7 加载态已落地）。
@@ -655,7 +655,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | P0 前置验证（NMenu 折叠 / 主题控件形态） | 已落地：§6.4 / §4.4 对应结论（候选 1 / NDropdown） |
 | P1 视觉换肤（纯令牌） | 已落地：等效本文件早期视觉批次（tokens 色值 / 圆角 / 字体），§4.6.4 在其后升级为彻底档 |
 | P2 布局与顶栏重组 | 已落地：§6.4（232px 四分组 + 顶栏两区） |
-| P3a-c StatusTag 收口 | 已落地：§6.6 StatusTag 全站 23 处 |
+| P3a-c StatusTag 收口 | 已落地：§6.6 StatusTag P3a-c 收口 23 处（后续增至 36 处） |
 | P4 页面级（KPI 带 / count-up / 草稿持久化） | 已落地：§4.5 D2/D6、§6.7 count-up、taskWizard 草稿 |
 | P5 ⌘K 命令面板（AB-3，**需先立项**） | **未启动**：仅读动作（页面跳转 / 任务定位 / 仓库切换），不放入写操作；开工闸门 = 先按文档管理规范 §5 在 PRD 增补需求条目。列为可选 backlog，不阻塞 §4.7 任何批次 |
 

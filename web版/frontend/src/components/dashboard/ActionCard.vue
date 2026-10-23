@@ -17,7 +17,7 @@ import { NButton, NCard, NIcon, NText } from 'naive-ui'
 import type { Component } from 'vue'
 
 defineProps<{
-  /** 左侧图标（HomeIcons 成员，FunctionalComponent<SVGAttributes>）。 */
+  /** 左侧图标（图标库 `components/icons/icons.ts` 的成员，FunctionalComponent<SVGAttributes>）。 */
   icon?: Component
   title: string
   description?: string

@@ -65,16 +65,18 @@ certs/
 *.sqlite-shm
 *.db-journal
 
-data/
-cache/
-backups/
-restic-cache/
-restore/
-logs/
-*.log
-# 例外：前端源码目录与运行期目录同名（CI 实测误伤：未入库导致 TS2307）
+/data/
+/cache/
+/backups/
+/restic-cache/
+/restore/
+/logs/
+# 运行期目录改为「仓库根锚定」（前导 /），不再按任意层级匹配——避免吞掉同名源码目录
+# （原裸 `restore/` 会忽略 web版/frontend/src/**/restore/，曾致 CI TS2307）。
+# 下面两条例外作为纵深防御保留（根锚定后已不会误伤，但显式声明意图）。
 !web版/frontend/src/pages/restore/
 !web版/frontend/src/components/restore/
+*.log
 
 # ---------- 编辑器 / 操作系统 ----------
 .DS_Store
