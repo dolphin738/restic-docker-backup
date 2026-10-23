@@ -20,7 +20,7 @@ import { NDropdown, NIcon, NSpin } from 'naive-ui'
 import { describe, expect, it, vi } from 'vitest'
 
 import TaskActionsMenu, { type MenuGroup } from '@/components/dashboard/TaskActionsMenu.vue'
-import { IconCheckCircle } from '@/components/icons/HomeIcons'
+import { IconCheckCircle } from '@/components/icons/icons'
 
 const GROUPS: MenuGroup[] = [
   {

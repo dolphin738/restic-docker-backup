@@ -66,9 +66,9 @@ import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 编辑态类型卡共用
-import { backendIcon } from '@/components/icons/BackendIcons'
+import { backendIcon } from '@/components/icons/icons'
 // add-new 卡图标（Duplicati destinations.html：plus-circle）
-import { IconPlusCircle } from '@/components/icons/HomeIcons'
+import { IconPlusCircle } from '@/components/icons/icons'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'

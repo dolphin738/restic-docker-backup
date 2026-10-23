@@ -21,7 +21,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { listSnapshots } from '@/api/snapshots'
 import type { SnapshotOut } from '@/api/types'
 import ActionCard from '@/components/dashboard/ActionCard.vue'
-import { IconDownload, IconServer, IconUpload } from '@/components/icons/HomeIcons'
+import { IconDownload, IconServer, IconUpload } from '@/components/icons/icons'
 import { formatDateTimeOr } from '@/utils/datetime'
 
 /** 入口页最多展示的快照数（更多请走快照页）。 */

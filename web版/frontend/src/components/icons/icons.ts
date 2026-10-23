@@ -1,20 +1,24 @@
-/** 主页与恢复向导图标集：零依赖（20×20 线性图标，stroke=currentColor）。
- * 裁决依据：docs/UI全量改造方案.md §4.7 统一批次表 P4（L3 图标层）——
- * 「统一描边 1.5 / 尺寸 20，含主页与恢复向导所需全部图标；无图标库，全自绘；
- * 集中在单一文件，禁止散落」。
+/** 全站图标库（单一文件，P15 由 HomeIcons / MenuIcons / BackendIcons 三文件合并）。
+ * 零依赖自绘线性图标（无图标库，禁止散落——新增图标只进本文件）。
  *
- * 与既有两份图标文件的分工（本文件只新增，不改旧文件，旧消费方零影响）：
- * - `MenuIcons.ts`：导航 9 项 + 顶栏控件（24 网格，feather 线稿，P0–P4 视觉批次已落地）；
- * - `BackendIcons.ts`：仓库「目标位置」行卡 / 类型选择卡（24 网格）；
- * - 本文件：主页（P7）与恢复向导（P8–P11）新增表面，**设计网格 20×20**，
- *   描边 1.5 在 20 网格上的视觉重量与 24 网格渲染于 20px 时接近（1.5px vs 1.25px），
- *   同屏并用时以 NIcon 尺寸对齐即可，勿把两套网格的画法混进同一文件。
+ * 裁决依据：docs/UI全量改造方案.md §4.7 批次表
+ *   - P4（L3 图标层）：统一描边 1.5 / 尺寸 20；
+ *   - P15（owner 2026-10-23 裁决 ①重绘 ②合并 ③全上 ⑤留库）：
+ *     MenuIcons 16 个与 BackendIcons 8 个由 24 网格旧画法**重绘**为 20 网格标准
+ *     （旧画法就此淘汰；stroke 在 20 网格下渲染 1.5px，旧 24 网格仅 1.25px）；
+ *     三文件合并为本文件，BACKEND_ICONS 映射与 backendIcon 随迁；
+ *     **全量导出保留当图标库**——当前未被页面引用的图标（如 IconPlay /
+ *     IconSearch / IconFilter…）是留库资产，不因「暂无消费方」删除，
+ *     后续页面图标化（P15-c）与迭代直接取用。
  *
- * 消费方式（与既有图标一致）：`<n-icon :size="20"><IconXxx /></n-icon>`，
- * 颜色随文字色继承（currentColor），亮/暗同源，零硬编码色值。
+ * 画法标准（icons.spec.ts 机械护栏）：
+ *   - viewBox '0 0 20 20' / fill none / stroke currentColor / stroke-width 1.5；
+ *   - 颜色一律继承文字色（亮/暗同源，零硬编码色值）；尺寸由 <n-icon :size> 控制。
+ * 消费方式：`<n-icon :size="20"><IconXxx /></n-icon>`。
  */
 
 import { h, type FunctionalComponent, type SVGAttributes } from 'vue'
+import type { Component } from 'vue'
 
 /** 线性图标公共属性：20 视口 + currentColor 描边 1.5；尺寸由 NIcon 控制。 */
 const LINE_ICON_BASE: SVGAttributes = {
@@ -257,3 +261,218 @@ export const IconInfo: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M10 9.2h.01' }),
     h('path', { d: 'M10 11.8v3.4' }),
   ])
+
+/* ================================================================
+   导航 / 顶栏图标（原 MenuIcons.ts，P15 由 24 网格重绘为 20 网格标准）
+   ================================================================ */
+
+/** 仪表盘：四宫格。 */
+export const IconDashboard: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('rect', { x: 2.5, y: 2.5, width: 6.25, height: 6.25, rx: 1.25 }),
+    h('rect', { x: 11.25, y: 2.5, width: 6.25, height: 6.25, rx: 1.25 }),
+    h('rect', { x: 2.5, y: 11.25, width: 6.25, height: 6.25, rx: 1.25 }),
+    h('rect', { x: 11.25, y: 11.25, width: 6.25, height: 6.25, rx: 1.25 }),
+  ])
+
+/** 仓库配置：数据库圆柱。 */
+export const IconRepo: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('ellipse', { cx: 10, cy: 4.58, rx: 6.67, ry: 2.5 }),
+    h('path', { d: 'M 3.33 4.58 v 10.83 c 0 1.38 2.98 2.5 6.67 2.5 s 6.67 -1.12 6.67 -2.5 v -10.83'}),
+    h('path', { d: 'M 3.33 10 c 0 1.38 2.98 2.5 6.67 2.5 s 6.67 -1.12 6.67 -2.5'}),
+  ])
+
+/** 任务历史：活动线（脉冲）。 */
+export const IconJobs: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 2.5 10 h 3.33 l 2.08 -5.83 3.33 11.67 2.08 -5.83 H 17.5'})
+  ])
+
+/** 快照浏览：层叠方块。 */
+export const IconSnapshots: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 10 2.5 l 7.5 4.08 -7.5 4.08 -7.5 -4.08 z'}),
+    h('path', { d: 'M 2.5 10.5 l 7.5 4.08 7.5 -4.08'}),
+    h('path', { d: 'M 2.5 14.5 l 7.5 4.08 7.5 -4.08'}),
+  ])
+
+/** 恢复向导：回转箭头。 */
+export const IconRestore: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 2.5 10 a 7.5 7.5 0 1 0 7.5 -7.5 8.12 8.12 0 0 0 -5.62 2.28 L 2.5 6.67'}),
+    h('path', { d: 'M 2.5 2.5 v 4.17 h 4.17'}),
+  ])
+
+/** 通知设置：铃铛。 */
+export const IconBell: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 15 6.67 a 5 5 0 1 0 -10 0 c 0 5.83 -2.5 6.67 -2.5 6.67 h 15 s -2.5 -0.83 -2.5 -6.67'}),
+    h('path', { d: 'M 8.58 17.5 a 1.67 1.67 0 0 0 2.83 0'}),
+  ])
+
+/** 系统设置：齿轮（feather settings 线稿）。 */
+export const IconSettings: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 10, cy: 10, r: 2.5 }),
+    h('path', {
+    d: 'M 16.17 12.5 a 1.38 1.38 0 0 0 0.28 1.52 l 0.05 0.05 a 1.67 1.67 0 1 1 -2.36 2.36 l -0.05 -0.05 a 1.38 1.38 0 0 0 -1.52 -0.28 1.38 1.38 0 0 0 -0.83 1.26 V 17.5 a 1.67 1.67 0 1 1 -3.33 0 v -0.07 a 1.38 1.38 0 0 0 -0.83 -1.26 1.38 1.38 0 0 0 -1.52 0.28 l -0.05 0.05 a 1.67 1.67 0 1 1 -2.36 -2.36 l 0.05 -0.05 a 1.38 1.38 0 0 0 0.28 -1.52 1.38 1.38 0 0 0 -1.26 -0.83 H 2.5 a 1.67 1.67 0 1 1 0 -3.33 h 0.07 a 1.38 1.38 0 0 0 1.26 -0.83 1.38 1.38 0 0 0 -0.28 -1.52 l -0.05 -0.05 a 1.67 1.67 0 1 1 2.36 -2.36 l 0.05 0.05 a 1.38 1.38 0 0 0 1.52 0.28 h 0 a 1.38 1.38 0 0 0 0.83 -1.26 V 2.5 a 1.67 1.67 0 1 1 3.33 0 v 0.07 a 1.38 1.38 0 0 0 0.83 1.26 h 0 a 1.38 1.38 0 0 0 1.52 -0.28 l 0.05 -0.05 a 1.67 1.67 0 1 1 2.36 2.36 l -0.05 0.05 a 1.38 1.38 0 0 0 -0.28 1.52 v 0 a 1.38 1.38 0 0 0 1.26 0.83 H 17.5 a 1.67 1.67 0 1 1 0 3.33 h -0.07 a 1.38 1.38 0 0 0 -1.26 0.83 z',
+    }),
+  ])
+
+/** 审计日志：文档 + 行（append-only 台账意象）。 */
+export const IconAudit: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 11.67 1.67 H 5 a 1.67 1.67 0 0 0 -1.67 1.67 v 13.33 a 1.67 1.67 0 0 0 1.67 1.67 h 10 a 1.67 1.67 0 0 0 1.67 -1.67 V 6.67 z'}),
+    h('path', { d: 'M 11.67 1.67 v 5 h 5'}),
+    h('path', { d: 'M 13.33 10.83 H 6.67'}),
+    h('path', { d: 'M 13.33 14.17 H 6.67'}),
+  ])
+
+/** 菜单按钮：汉堡（<960px 顶栏抽屉入口）。 */
+export const IconMenu: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 3.33 5.42 h 13.33 M 3.33 10 h 13.33 M 3.33 14.58 h 13.33'})
+  ])
+
+/** 报表：柱状图（feather bar-chart 线稿；R-024 成功率报表入口）。 */
+export const IconReports: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 5 16.67 V 8.33'}),
+    h('path', { d: 'M 10 16.67 V 3.33'}),
+    h('path', { d: 'M 15 16.67 v -5'}),
+  ])
+
+/** 浅色主题：太阳（feather sun 线稿；顶栏主题下拉）。 */
+export const IconSun: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 10, cy: 10, r: 3.33 }),
+    h('path', { d: 'M 10 1.67 v 1.67'}),
+    h('path', { d: 'M 10 16.67 v 1.67'}),
+    h('path', { d: 'M 4.11 4.11 l 1.18 1.18'}),
+    h('path', { d: 'M 14.72 14.72 l 1.18 1.18'}),
+    h('path', { d: 'M 1.67 10 h 1.67'}),
+    h('path', { d: 'M 16.67 10 h 1.67'}),
+    h('path', { d: 'M 5.28 14.72 l -1.18 1.18'}),
+    h('path', { d: 'M 15.89 4.11 l -1.18 1.18'}),
+  ])
+
+/** 深色主题：月亮（feather moon 线稿；顶栏主题下拉）。 */
+export const IconMoon: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 17.5 10.66 A 7.5 7.5 0 1 1 9.34 2.5 5.83 5.83 0 0 0 17.5 10.66 z'})
+  ])
+
+/** 跟随系统主题：显示器（feather monitor 线稿；顶栏主题下拉）。 */
+export const IconMonitor: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('rect', { x: 1.67, y: 2.5, width: 16.67, height: 11.67, rx: 1.67 }),
+    h('path', { d: 'M 6.67 17.5 h 6.67'}),
+    h('path', { d: 'M 10 14.17 v 3.33'}),
+  ])
+
+/** 当前用户：头像 + 肩（feather user 线稿；顶栏用户菜单触发按钮）。 */
+export const IconUser: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 16.67 17.5 v -1.67 a 3.33 3.33 0 0 0 -3.33 -3.33 H 6.67 a 3.33 3.33 0 0 0 -3.33 3.33 v 1.67'}),
+    h('circle', { cx: 10, cy: 5.83, r: 3.33 }),
+  ])
+
+/** 勾选：对勾（feather check 线稿；主题下拉当前值标记）。 */
+export const IconCheck: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 16.67 5 7.5 14.17 l -4.17 -4.17'})
+  ])
+
+/** 登出：出门箭头（feather log-out 线稿；用户菜单登出项）。 */
+export const IconLogout: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 7.5 17.5 H 4.17 a 1.67 1.67 0 0 1 -1.67 -1.67 V 4.17 a 1.67 1.67 0 0 1 1.67 -1.67 h 3.33'}),
+    h('path', { d: 'M 13.33 14.17 l 4.17 -4.17 -4.17 -4.17'}),
+    h('path', { d: 'M 17.5 10 H 7.5'}),
+  ])
+
+
+/* ================================================================
+   存储后端类型图标（原 BackendIcons.ts，P15 由 24 网格重绘为 20 网格标准）
+   ================================================================ */
+
+/** 本地路径：文件夹（feather folder 线稿）。 */
+export const IconLocal: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', {
+    d: 'M 2.5 5.83 a 1.67 1.67 0 0 1 1.67 -1.67 h 3.33 l 1.67 1.67 h 6.67 a 1.67 1.67 0 0 1 1.67 1.67 v 7.5 a 1.67 1.67 0 0 1 -1.67 1.67 H 4.17 a 1.67 1.67 0 0 1 -1.67 -1.67 z',
+    }),
+  ])
+
+/** S3：云（feather cloud 线稿）。 */
+export const IconS3: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 15 8.33 h -1.05 A 6.67 6.67 0 1 0 7.5 16.67 h 7.5 a 4.17 4.17 0 0 0 0 -8.33 z'}),
+  ])
+
+/** Backblaze B2：存储箱（feather package 线稿，对象存储意象）。 */
+export const IconB2: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', {
+    d: 'M 13.75 7.83 l -7.5 -4.33 M 17.5 13.33 V 6.67 a 1.67 1.67 0 0 0 -0.83 -1.44 l -5.83 -3.33 a 1.67 1.67 0 0 0 -1.67 0 l -5.83 3.33 A 1.67 1.67 0 0 0 2.5 6.67 v 6.67 a 1.67 1.67 0 0 0 0.83 1.44 l 5.83 3.33 a 1.67 1.67 0 0 0 1.67 0 l 5.83 -3.33 A 1.67 1.67 0 0 0 17.5 13.33 z',
+    }),
+    h('path', { d: 'M 2.73 5.8 L 10 10.01 l 7.28 -4.21'}),
+    h('path', { d: 'M 10 18.4 V 10'}),
+  ])
+
+/** SFTP：终端（命令行 + 光标，免密 ssh 意象）。 */
+export const IconSftp: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 3.33 14.17 l 5 -5 -5 -5'}),
+    h('path', { d: 'M 10 15.83 h 6.67'}),
+  ])
+
+/** Azure Blob：数据库圆柱（存储容器意象）。 */
+export const IconAzure: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('ellipse', { cx: 10, cy: 4.58, rx: 6.67, ry: 2.5 }),
+    h('path', { d: 'M 3.33 4.58 v 10.83 c 0 1.38 2.98 2.5 6.67 2.5 s 6.67 -1.12 6.67 -2.5 v -10.83'}),
+    h('path', { d: 'M 3.33 10 c 0 1.38 2.98 2.5 6.67 2.5 s 6.67 -1.12 6.67 -2.5'}),
+  ])
+
+/** Google Cloud Storage：地球（feather globe 线稿）。 */
+export const IconGcs: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 10, cy: 10, r: 7.5 }),
+    h('path', { d: 'M 2.5 10 h 15'}),
+    h('path', { d: 'M 10 2.5 a 12.5 12.5 0 0 1 0 15 a 12.5 12.5 0 0 1 0 -15 z'}),
+  ])
+
+/** REST 服务器：机柜（feather server 线稿）。 */
+export const IconRest: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('rect', { x: 2.5, y: 3.33, width: 15, height: 5.83, rx: 1.67 }),
+    h('rect', { x: 2.5, y: 10.83, width: 15, height: 5.83, rx: 1.67 }),
+    h('path', { d: 'M 5.83 6.25 h 0.01 M 5.83 13.75 h 0.01'}),
+  ])
+
+/** rclone：双向同步（feather refresh-cw 线稿，万能远端意象）。 */
+export const IconRclone: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M 19.17 3.33 v 5 h -5'}),
+    h('path', { d: 'M 0.83 16.67 v -5 h 5'}),
+    h('path', { d: 'M 2.92 7.5 a 7.5 7.5 0 0 1 12.38 -2.8 L 19.17 8.33'}),
+    h('path', { d: 'M 0.83 11.67 l 3.87 3.63 A 7.5 7.5 0 0 0 17.07 12.5'}),
+  ])
+
+
+export const BACKEND_ICONS: Record<string, Component> = {
+  local: IconLocal,
+  s3: IconS3,
+  b2: IconB2,
+  sftp: IconSftp,
+  azure: IconAzure,
+  gcs: IconGcs,
+  rest: IconRest,
+  rclone: IconRclone,
+}
+
+export function backendIcon(type: string): Component {
+  return BACKEND_ICONS[type] ?? IconLocal
+}

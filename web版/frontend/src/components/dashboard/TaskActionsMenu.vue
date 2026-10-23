@@ -14,7 +14,7 @@
 import { NButton, NDropdown, NIcon, NSpin } from 'naive-ui'
 import type { Component, VNodeChild } from 'vue'
 import { computed, h } from 'vue'
-import { IconCheckCircle } from '@/components/icons/HomeIcons'
+import { IconCheckCircle } from '@/components/icons/icons'
 
 export interface MenuAction {
   key: string

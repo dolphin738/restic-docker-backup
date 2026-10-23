@@ -45,7 +45,7 @@ import { useUiStore } from '@/stores/ui'
 import { formatDateTimeOr } from '@/utils/datetime'
 import { formatBytes } from '@/utils/format'
 import { formatDurationMs, statusKind, timeText } from '@/utils/taskFormat'
-import { IconFolderOpen, IconPlusCircle } from '@/components/icons/HomeIcons'
+import { IconFolderOpen, IconPlusCircle } from '@/components/icons/icons'
 
 const { t } = useI18n()
 const router = useRouter()

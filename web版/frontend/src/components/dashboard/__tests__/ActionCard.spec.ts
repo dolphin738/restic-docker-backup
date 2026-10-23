@@ -15,7 +15,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import ActionCard from '@/components/dashboard/ActionCard.vue'
-import { IconPlusCircle } from '@/components/icons/HomeIcons'
+import { IconPlusCircle } from '@/components/icons/icons'
 
 function mountCard(props: Partial<InstanceType<typeof ActionCard>['$props']> = {}) {
   return mount(ActionCard, {

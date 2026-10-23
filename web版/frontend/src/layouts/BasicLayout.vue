@@ -43,7 +43,7 @@ import {
   IconSnapshots,
   IconSun,
   IconUser,
-} from '@/components/icons/MenuIcons'
+} from '@/components/icons/icons'
 import StatusTag from '@/components/StatusTag.vue'
 import logoSrc from '@/assets/restic-logo.png'
 import { useUiStore, type ThemePreference } from '@/stores/ui'

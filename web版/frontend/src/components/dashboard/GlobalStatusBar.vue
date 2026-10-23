@@ -23,7 +23,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useJobStream } from '@/composables/useJobStream'
 import type { JobProgressPayload } from '@/api/types'
-import { IconStop } from '@/components/icons/HomeIcons'
+import { IconStop } from '@/components/icons/icons'
 
 const props = defineProps<{
   /** 当前作业 id；null/空 = 无进行中作业（整条不渲染）。 */
