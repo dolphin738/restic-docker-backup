@@ -9,12 +9,16 @@
  * 条目图标态（方案 §4.5.6「loading/success 图标态」）：loading → 小号 spinner 且条目禁用；
  * success → 勾选图标。二者由本组件统一渲染，消费方只给布尔态。
  * 菜单分组标题样式（弱化小字）只在 skin.css 定义（S-4 单一 skin 文件）。
+ *
+ * 触发器形态（owner 2026-10-24）：与同行「开始 / 编辑」两键**同一形态档**——
+ * size="small" + 有边框的 default 档 + 三点图标，不再是 tiny quaternary 的裸「⋯」字符
+ * （旧形态无边框、尺寸更小，与相邻的按钮明显不同档）。
  */
 
 import { NButton, NDropdown, NIcon, NSpin } from 'naive-ui'
 import type { Component, VNodeChild } from 'vue'
 import { computed, h } from 'vue'
-import { IconCheckCircle } from '@/components/icons/icons'
+import { IconCheckCircle, IconMore } from '@/components/icons/icons'
 
 export interface MenuAction {
   key: string
@@ -88,6 +92,10 @@ function onSelect(key: string): void {
 
 <template>
   <n-dropdown trigger="click" :options="options" @select="onSelect">
-    <n-button size="tiny" quaternary :aria-label="ariaLabel">⋯</n-button>
+    <n-button size="small" :aria-label="ariaLabel">
+      <template #icon>
+        <n-icon :component="IconMore" />
+      </template>
+    </n-button>
   </n-dropdown>
 </template>

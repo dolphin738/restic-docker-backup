@@ -335,6 +335,14 @@ export const IconMenu: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M 3.33 5.42 h 13.33 M 3.33 10 h 13.33 M 3.33 14.58 h 13.33'})
   ])
 
+/** 更多操作：横排三点（任务行三点菜单触发器；实心圆点故子图元单独 fill，描边规范仍在 svg 根。 */
+export const IconMore: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('circle', { cx: 4.17, cy: 10, r: 1.25, fill: 'currentColor', stroke: 'none' }),
+    h('circle', { cx: 10, cy: 10, r: 1.25, fill: 'currentColor', stroke: 'none' }),
+    h('circle', { cx: 15.83, cy: 10, r: 1.25, fill: 'currentColor', stroke: 'none' }),
+  ])
+
 /** 报表：柱状图（feather bar-chart 线稿；R-024 成功率报表入口）。 */
 export const IconReports: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [

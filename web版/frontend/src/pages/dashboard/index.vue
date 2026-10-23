@@ -16,6 +16,7 @@ import {
   NDataTable,
   NGi,
   NGrid,
+  NIcon,
   NInput,
   NModal,
   NSelect,
@@ -45,7 +46,16 @@ import { useUiStore } from '@/stores/ui'
 import { formatDateTimeOr } from '@/utils/datetime'
 import { formatBytes } from '@/utils/format'
 import { formatDurationMs, statusKind, timeText } from '@/utils/taskFormat'
-import { IconFolderOpen, IconPlusCircle } from '@/components/icons/icons'
+import {
+  IconDownload,
+  IconEdit,
+  IconFile,
+  IconFolderOpen,
+  IconPlusCircle,
+  IconRestore,
+  IconShieldCheck,
+  IconTrash,
+} from '@/components/icons/icons'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -250,38 +260,34 @@ const detailColumns = computed(() => [
   },
 ])
 
-/** details 行菜单分组：与 list 视图行卡同一口径（§4.5.6 三组 + Danger），两端零漂移。 */
+/** details 行菜单分组：与 list 视图行卡**逐项同构**（§4.5.6 三组 + Danger），两端零漂移；
+ *  编辑同 list 视图一样提到行内画笔按钮，故菜单不含 edit（改任一处必须同步另一处）。 */
 function rowGroups(row: TaskCardModel) {
   const isActive = row.status === 'running' || row.status === 'pending'
   return [
     {
       actions: [
-        { key: 'edit', label: t('task.edit') },
-        { key: 'restore', label: t('task.restore') },
+        { key: 'restore', label: t('task.restore'), icon: IconRestore },
+        { key: 'export', label: t('task.export'), icon: IconDownload },
       ],
     },
     {
       label: t('task.groupAdvanced'),
-      actions: [
-        { key: 'verify', label: t('task.verify') },
-        { key: 'export', label: t('task.export') },
-      ],
+      actions: [{ key: 'verify', label: t('task.verify'), icon: IconShieldCheck }],
     },
     {
       label: t('task.groupReporting'),
-      actions: [{ key: 'log', label: t('task.logs') }],
+      actions: [{ key: 'log', label: t('task.logs'), icon: IconFile }],
     },
     {
       label: t('delete.title'),
-      actions: [{ key: 'delete', label: t('task.delete'), disabled: isActive }],
+      actions: [{ key: 'delete', label: t('task.delete'), icon: IconTrash, disabled: isActive }],
     },
   ]
 }
 
 function onRowMenuSelect(key: string, row: TaskCardModel): void {
-  if (key === 'edit') {
-    onEdit(row.id)
-  } else if (key === 'delete') {
+  if (key === 'delete') {
     askDelete(row.id)
   } else if (key === 'restore') {
     goRestore()
@@ -294,13 +300,25 @@ function onRowMenuSelect(key: string, row: TaskCardModel): void {
   }
 }
 
-/** details 表格操作区（D8：接入 TaskActionsMenu，与 list 视图 TaskCard 同三组菜单）。 */
+/** details 表格操作区（D8：接入 TaskActionsMenu，与 list 视图行卡同三组菜单）；
+ *  编辑画笔与 list 视图对齐（常用操作不藏进菜单），故与菜单并排渲染。 */
 function renderRowActions(row: TaskCardModel) {
-  return h(TaskActionsMenu, {
-    groups: rowGroups(row),
-    ariaLabel: t('task.menu'),
-    onSelect: (key: string) => onRowMenuSelect(key, row),
-  })
+  return h('div', { class: 'dashboard__row-actions' }, [
+    h(
+      NButton,
+      {
+        size: 'small',
+        'aria-label': t('task.edit'),
+        onClick: () => onEdit(row.id),
+      },
+      { icon: () => h(NIcon, { component: IconEdit }) },
+    ),
+    h(TaskActionsMenu, {
+      groups: rowGroups(row),
+      ariaLabel: t('task.menu'),
+      onSelect: (key: string) => onRowMenuSelect(key, row),
+    }),
+  ])
 }
 
 // ---------------------------------------------------------------- 虚拟滚动（固定行高骨架，仅 list 视图）
@@ -859,6 +877,13 @@ async function onDeleteConfirmed(): Promise<void> {
   display: block;
   margin-top: 10px;
   font-size: 12px;
+}
+
+/* details 表格操作列：编辑画笔 + 三点菜单并排（与 list 视图行卡同一形态） */
+.dashboard__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* D3 工具栏：两端对齐；窄屏断点内可换行（默认不换行避免移动端挤压） */

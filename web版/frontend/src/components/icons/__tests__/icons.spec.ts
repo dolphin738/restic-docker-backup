@@ -23,15 +23,16 @@ import { BACKEND_ICONS, backendIcon } from '../icons'
 
 const SRC_FILE = join(process.cwd(), 'src/components/icons/icons.ts')
 
-/** 登记在册的导出总数：57 图标 + BACKEND_ICONS 映射 + backendIcon 函数 = 59。
+/** 登记在册的导出总数：58 图标 + BACKEND_ICONS 映射 + backendIcon 函数 = 60。
  *  变更必须 deliberate（防静默增删）。P15 = 33(Home) + 16(Menu 重绘) + 8(Backend 重绘)，
- *  Backend 的 IconPlusCircle 与 Home 重复定义已去重（保留 Home 版）。 */
-const REGISTERED_COUNT = 59
+ *  Backend 的 IconPlusCircle 与 Home 重复定义已去重（保留 Home 版）；
+ *  +1 = IconMore（三点菜单触发器，实心圆点，2026-10-24 任务行三键统一时新增）。 */
+const REGISTERED_COUNT = 60
 
 describe('全站图标库 icons.ts（P4 + P15 合并重绘）', () => {
   it('导出规模与登记表一致（57 图标 + 映射 + 解析函数）', () => {
     expect(Object.keys(icons).length).toBe(REGISTERED_COUNT)
-    expect(Object.keys(icons).filter((n) => n.startsWith('Icon')).length).toBe(57)
+    expect(Object.keys(icons).filter((n) => n.startsWith('Icon')).length).toBe(58)
   })
 
   it('导出命名：图标全部 Icon 前缀 + PascalCase；映射与函数名固定', () => {
@@ -130,7 +131,7 @@ describe('全站图标库 icons.ts（P4 + P15 合并重绘）', () => {
     const iconEntries = Object.entries(icons).filter(([name]) =>
       name.startsWith('Icon'),
     ) as Array<[string, Component]>
-    expect(iconEntries.length).toBe(57)
+    expect(iconEntries.length).toBe(58)
     for (const [name, component] of iconEntries) {
       const wrapper = mount(component)
       const svg = wrapper.element

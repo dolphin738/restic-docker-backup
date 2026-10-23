@@ -766,9 +766,14 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
             />
           </n-space>
 
-          <n-space align="center" :size="8">
-            <n-switch v-model:value="form.enabled" size="small" :aria-label="t('wizard.enabled')" />
-            <n-text depth="3">{{ t('wizard.enabled') }}</n-text>
+          <!-- 任务总闸：控制的是整个任务的启用/暂停（不只是调度）——关闭只停自动，手动仍可跑。
+               文案修正前为「启用调度」，与它在后端实际作用（tasks.enabled → 卡片「已暂停」）不符。 -->
+          <n-space vertical :size="4">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="form.enabled" size="small" :aria-label="t('wizard.enabled')" />
+              <n-text depth="3">{{ t('wizard.enabled') }}</n-text>
+            </n-space>
+            <n-text depth="3" class="wizard__note">{{ t('wizard.enabledHint') }}</n-text>
           </n-space>
 
           <n-text strong>{{ t('wizard.modeCard') }}</n-text>
@@ -871,6 +876,11 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
         <!-- ④ 调度 -->
         <template v-else-if="step === 4">
+          <!-- 暂停提示：总闸在第 1 步、被它控制的东西在第 4 步，中间隔两步——
+               不提示的话用户会在第 4 步配半天 cron 才发现根本不触发。 -->
+          <n-alert v-if="!form.enabled" type="warning" :show-icon="false" class="wizard__paused-alert">
+            {{ t('wizard.schedulePausedHint') }}
+          </n-alert>
           <ScheduleRetentionForm :model-value="scheduleValue" @update:model-value="onScheduleUpdate" />
         </template>
 

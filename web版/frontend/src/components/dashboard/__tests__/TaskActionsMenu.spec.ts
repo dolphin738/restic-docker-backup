@@ -40,8 +40,9 @@ const GROUPS: MenuGroup[] = [
   },
 ]
 
+/** 消费方始终传 ariaLabel（图标按钮的可访问名），本 spec 同步带上传真。 */
 function mountMenu(groups: MenuGroup[] = GROUPS) {
-  return mount(TaskActionsMenu, { props: { groups } })
+  return mount(TaskActionsMenu, { props: { groups, ariaLabel: '更多操作' } })
 }
 
 /** 取 NDropdown 的 options prop（分组数据契约的主断言源）。 */
@@ -138,11 +139,17 @@ describe('TaskActionsMenu select 过滤与渲染', () => {
     w.unmount()
   })
 
-  it('触发按钮渲染（tiny quaternary ⋯）', () => {
+  it('触发按钮：small 档 + 三点图标 + aria-label（与同行开始/编辑同形态，owner 2026-10-24）', () => {
     const w = mountMenu()
     const btn = w.element.querySelector('button')
     expect(btn).not.toBeNull()
-    expect(btn?.textContent).toBe('⋯')
+    // 同形态档：small（非 tiny）、非 quaternary 裸图标
+    expect(btn!.className).toContain('n-button--small')
+    expect(btn!.className).not.toContain('quaternary')
+    // 图标按钮（三点）无文本，可访问名靠 aria-label
+    expect(btn!.textContent?.trim()).toBe('')
+    expect(btn!.querySelector('svg')).not.toBeNull()
+    expect(btn!.getAttribute('aria-label')).toBeTruthy()
     w.unmount()
   })
 
