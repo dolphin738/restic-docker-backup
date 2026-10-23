@@ -34,6 +34,7 @@ from app.constants import (
     AUDIT_REPO_PASSWORD_SET,
     AUDIT_REPO_REBUILD,
     AUDIT_REPO_TEST,
+    KEY_OPERATION_TIMEOUT_SECONDS,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
     REPO_INIT_TIMEOUT_SECONDS,
@@ -51,6 +52,8 @@ from app.schemas.api_schemas import (
     RepoCapacity,
     RepoCreateRequest,
     RepoIdSuggestion,
+    RepoKeyOut,
+    RepoKeysOut,
     RepoOut,
     RepoPasswordRequest,
     RepoPasswordResponse,
@@ -60,6 +63,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
+from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.utils.time import now_utc
@@ -847,6 +851,17 @@ async def rebuild_repo(
         logger.warning("仓库 %s 重建初始化失败：%s", repo_id, reason)
         raise ResticFailedError(f"重建初始化失败：{reason}", exit_code=exit_code)
 
+    # 3.1) key 中性化：``keys/`` 是仓库里唯一的明文文件，含 username/hostname/created
+    #      （KDF 参数无法加密——口令派生的硬约束；但身份标注可换）。init 后立刻把唯一
+    #      key 换成中性标识并移除旧 key，避免云端/存储侧推断真实机器与账号。
+    #      失败只记日志、不阻塞重建（仓库已可用，旧 key 仍有效）。
+    await neutralize_repo_key(
+        restic,
+        repo_id=repo_id,
+        env=env,
+        password_file=path,
+    )
+
     # 4) default 凭据根：清除旧 enc:v2 凭据（旧密钥已丢失，无法解密）
     crypto = request.app.state.encryption.crypto
     cleared = 0
@@ -937,6 +952,63 @@ async def repo_status(
         status = await _probe_repo_status(request, repo_id)
         _status_cache[repo_id] = (time.monotonic(), status)
         return status
+
+
+@router.get(
+    "/repos/{repo_id}/keys",
+    response_model=RepoKeysOut,
+    summary="仓库密钥身份（只读；keys/ 是仓库唯一的明文文件）",
+    dependencies=_PROTECTED,
+)
+async def repo_keys(
+    repo_id: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RepoKeysOut:
+    """``restic key list --json`` 的中性化视图（**不缓存**：安全判定不吃 TTL）。
+
+    用途：确认 init 后的身份中性化是否生效、发现历史遗留的真实身份 key、识别多 key
+    接入。只返回展示白名单字段（`id`/`id_full`/`user`/`host`/`created`/`created_tz`/
+    `current`/`neutral`）——``data``（master key 密文）与 ``salt/N/r/p``（KDF 参数）
+    一律不进响应。
+
+    失败不抛 5xx：地址未配置 / 未初始化 / 锁残留都回 ``overall=unknown`` +
+    ``probe_error``（与 E30 只读探测的既有口径一致，UI 必须显示原因而非空白）。
+    """
+    del session
+    _validate_repo_id(repo_id)
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    if repo is None:
+        raise RepoNotFoundError(repo_id)
+    if not repo.url:
+        return RepoKeysOut(repo_id=repo_id, probe_error="仓库地址未配置（请先填写仓库地址）")
+
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    env = restic.build_env(
+        repo_url=repo.url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    argv = restic.build("key", args=WhitelistArgs(json_output=True, key_target="list"))
+    probe = await restic.run_json(argv, env=env, timeout_seconds=KEY_OPERATION_TIMEOUT_SECONDS)
+    if probe.exit_code != 0:
+        return RepoKeysOut(
+            repo_id=repo_id,
+            probe_error=failure_reason(probe.exit_code, probe.lines, KEY_OPERATION_TIMEOUT_SECONDS),
+        )
+
+    # restic 的 created 是按子进程 TZ 渲染的无时区字符串（build_env 注入 settings.tz），
+    # 原样透出会与用户本地时间差出偏移且无从判断 → 把该 TZ 一并标注（不换算，C8）
+    overall, items = classify_keys(
+        parse_key_list(probe.lines), created_tz=request.app.state.settings.tz
+    )
+    return RepoKeysOut(
+        repo_id=repo_id,
+        overall=overall,
+        keys=[RepoKeyOut.model_validate(item) for item in items],
+        # 成功但读不到 key：仓库可能尚未初始化（空仓库上 key list 的行为随版本而异）
+        probe_error=None if items else "未读取到任何密钥（仓库可能尚未初始化）",
+    )
 
 
 def invalidate_repo_status_cache() -> None:

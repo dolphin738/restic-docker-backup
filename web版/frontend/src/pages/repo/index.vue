@@ -65,6 +65,8 @@ import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
+// 密钥身份小节（keys/ 是仓库唯一明文文件；只读展示，确认中性化是否生效）
+import KeyIdentity from './KeyIdentity.vue'
 // 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 编辑态类型卡共用
 import { backendIcon } from '@/components/icons/icons'
 // add-new 卡图标（Duplicati destinations.html：plus-circle）
@@ -1352,35 +1354,50 @@ function formatBytes(value: number): string {
           {{ t('common.refresh') }}
         </n-button>
       </template>
-      <n-space vertical :size="12">
-        <n-space align="center" :size="8">
-          <!-- P3c 收口：连接态 / 锁定态（映射不变） -->
-          <StatusTag
-            :kind="repoStatus?.connected ? 'success' : 'error'"
-            :label="repoStatus?.connected ? t('dashboard.repoConnected') : t('dashboard.repoDisconnected')"
-          />
-          <StatusTag
-            :kind="repoStatus?.locked ? 'warning' : 'default'"
-            :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
-          />
-          <!-- 容量紧跟锁标签（原 NStatistic 独立行 → 行内文案，省一行） -->
-          <n-text depth="3" class="repo__capacity-inline tabular-nums">
-            {{ t('dashboard.repoCapacity') }} {{ capacityText }}
-          </n-text>
-          <!-- 「设置仓库密码」入口已与「初始化」一样下放到仓库列表行内（每仓一行，按行判定），
-               此处不再放按钮——状态卡只负责展示，动作统一在列表行内，避免两处入口各判一套。 -->
-        </n-space>
-        <n-alert v-if="repoStatus?.last_error" type="error" :show-icon="false">
-          {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
-        </n-alert>
-        <n-alert v-if="passfileMissing" type="warning" :show-icon="false">
-          {{ t('repo.passfileMissingAlert') }}
-        </n-alert>
-        <!-- 锁残留属状态信号（留在状态卡）；对应动作按钮已收进下方「仓库维护」分区 -->
-        <n-alert v-if="repoStatus?.locked" type="warning" :show-icon="false">
-          {{ t('repo.lockedNote') }}
-        </n-alert>
-      </n-space>
+      <!-- 状态卡左右分栏（用户 2026-10-23 布局指令）：左 = 连接态/容量，右 = 密钥身份，
+           两者用【纵向】分隔线并列，不再上下堆叠；≤640px 回落为上下。
+           分隔线必须紧贴左内容（左栏按内容收缩，不撑满整行）：撑满会把分隔线推到卡片
+           2/3 处，中间留一大片空白、分隔线悬空（用户 2026-10-23 截图反馈）。 -->
+      <div class="repo__status-split">
+        <div class="repo__status-main">
+          <n-space align="center" :size="8">
+            <!-- P3c 收口：连接态 / 锁定态（映射不变） -->
+            <StatusTag
+              :kind="repoStatus?.connected ? 'success' : 'error'"
+              :label="repoStatus?.connected ? t('dashboard.repoConnected') : t('dashboard.repoDisconnected')"
+            />
+            <StatusTag
+              :kind="repoStatus?.locked ? 'warning' : 'default'"
+              :label="repoStatus?.locked ? t('dashboard.repoLocked') : t('dashboard.repoUnlocked')"
+            />
+            <!-- 容量紧跟锁标签（原 NStatistic 独立行 → 行内文案，省一行） -->
+            <n-text depth="3" class="repo__capacity-inline tabular-nums">
+              {{ t('dashboard.repoCapacity') }} {{ capacityText }}
+            </n-text>
+            <!-- 「设置仓库密码」入口已与「初始化」一样下放到仓库列表行内（每仓一行，按行判定），
+                 此处不再放按钮——状态卡只负责展示，动作统一在列表行内，避免两处入口各判一套。 -->
+          </n-space>
+        </div>
+        <!-- 密钥身份（只读）：keys/ 是仓库唯一明文文件，这里确认 init 后的中性化
+             是否真的生效、有没有历史遗留的真实身份 key（《云端仓库安全基线》§5）。
+             不设 v-if：currentRepoId 恒有值（statusQuery 同样直接依赖它），右栏恒定存在，
+             分栏宽度也就不会随条件跳动。 -->
+        <div class="repo__status-keys">
+          <KeyIdentity :repo-id="currentRepoId" />
+        </div>
+      </div>
+      <!-- 告警通栏置于分栏下方：告警是全卡级信号（错误/锁残留/口令文件缺失），
+           不属于左栏事实行；留在左栏会被压到内容宽度、字挤成多行。 -->
+      <n-alert v-if="repoStatus?.last_error" class="repo__status-alert" type="error" :show-icon="false">
+        {{ t('dashboard.repoLastError') }}：{{ repoStatus.last_error }}
+      </n-alert>
+      <n-alert v-if="passfileMissing" class="repo__status-alert" type="warning" :show-icon="false">
+        {{ t('repo.passfileMissingAlert') }}
+      </n-alert>
+      <!-- 锁残留属状态信号（留在状态卡）；对应动作按钮已收进下方「仓库维护」分区 -->
+      <n-alert v-if="repoStatus?.locked" class="repo__status-alert" type="warning" :show-icon="false">
+        {{ t('repo.lockedNote') }}
+      </n-alert>
     </n-card>
     <!-- 仓库列表（R-023）：对齐 Duplicati「目标位置」模块（ngclient backup/destination）——
          新增入口 = add-new 行动卡（用户 2026-10-22 指令：由卡右上角按钮改回 Duplicati 原样式；
@@ -1396,6 +1413,10 @@ function formatBytes(value: number): string {
           :description="t('repo.listAddDesc')"
           @click="openCreate"
         />
+        <!-- 分界线：新建仓库操作卡 ↔ 仓库列表（用户 2026-10-24 指令）。
+             与列表行同生同灭（repos 为空时不渲染），不会单独抖动——避免 n-space
+             展平插槽子节点按索引发 key 时索引相撞（本项目既有纪律）。 -->
+        <div v-if="repos.length > 0" class="repo__list-divider"></div>
         <!-- 仓库行卡：整行点击 = 设为当前；当前行高亮且点击空转（已是选中态）。
              交互形态照搬 Duplicati destination.component.html：div + role=button + tabindex=0
              + keydown.enter/space（避免 button 嵌 button 的非法 HTML——行内还有删除按钮）。 -->
@@ -2461,8 +2482,57 @@ function formatBytes(value: number): string {
   font-size: 13px;
 }
 
+/* 状态卡左右分栏：左（连接态/容量）←→ 右（密钥身份），横向并排、不用分隔线
+   （用户 2026-10-23 指令：分隔线去掉）。
+   两栏都按内容收缩（左栏不撑满），否则右栏会被推到卡片最右侧、中间一大片空白；
+   垂直居中对齐，左栏单行时不会吊在右栏块顶部。
+   右栏上限 50%：超长 host 名时不至于把左栏挤没；空间不足时 key 行自带 flex-wrap 换行。 */
+.repo__status-split {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+.repo__status-main {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.repo__status-keys {
+  flex: 0 1 auto;
+  max-width: 50%;
+  min-width: 0;
+}
+
+/* 告警通栏：位于分栏下方，全卡宽度（不参与分栏，否则会被压成窄栏多行） */
+.repo__status-alert {
+  margin-top: 12px;
+}
+
+/* ≤640px：并排会挤，回落为上下堆叠（无分隔线，仅靠行间距分组） */
+@media (max-width: 640px) {
+  .repo__status-split {
+    flex-direction: column;
+    align-items: stretch; /* 纵向堆叠时 center 会变成「水平居中」，须复位 */
+    gap: 12px;
+  }
+
+  .repo__status-keys {
+    flex: none;
+    width: 100%;
+    max-width: none; /* 纵向堆叠时 50% 上限失效，须显式解除 */
+  }
+}
+
 .repo__status-action {
   margin-left: auto;
+}
+
+/* 「新建仓库」操作卡 ↔ 仓库列表的分界线（用户 2026-10-24 指令）。
+   取 --n-divider-color，与本页其它分隔线同源，暗色下自动跟随主题。 */
+.repo__list-divider {
+  height: 0;
+  border-top: 1px solid var(--n-divider-color, rgba(128, 128, 140, 0.16));
 }
 
 /* 仓库行卡：[类型图标][名称+状态标签 / 地址·主机标识][类型][删除]（Duplicati destination-list-item） */

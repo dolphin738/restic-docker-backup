@@ -14,6 +14,7 @@ import type {
   RepoIdSuggestion,
   RcloneRemotesOut,
   RepoKeyRotateRequest,
+  RepoKeysOut,
   RepoOut,
   RepoPasswordRequest,
   RepoPasswordResponse,
@@ -70,6 +71,16 @@ export function getRepoStatus(id: string): Promise<RepoStatusResponse> {
 /** E29 仓库连通性测试（失败不静默：ok=false + reason）。 */
 export function testRepo(id: string): Promise<RepoTestResponse> {
   return request<RepoTestResponse>(`/api/repos/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}
+
+/**
+ * 只读密钥身份（GET /api/repos/{id}/keys）：`restic key list --json` 的展示子集。
+ *
+ * 用途：确认 init 后的身份中性化是否生效、发现历史遗留的真实身份 key / 多 key 接入。
+ * 无缓存（安全判定不吃 TTL）；探测失败也回 200 + `probe_error`，调用方须显示原因。
+ */
+export function getRepoKeys(id: string): Promise<RepoKeysOut> {
+  return request<RepoKeysOut>(`/api/repos/${encodeURIComponent(id)}/keys`)
 }
 
 /**

@@ -52,6 +52,7 @@ from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
+from app.services.repo_keys import neutralize_repo_key
 from app.services.restic import (
     ResticCmd,
     ResticProcess,
@@ -499,6 +500,21 @@ class JobRunner:
                     skipped_count=aggregate.skipped_count,
                     last_event_id=line_no,
                 )
+                # init 成功后 neutral 化 key：把唯一密钥的明文身份标注（username/hostname）
+                # 换成中性值并移除旧 key（``keys/`` 是仓库唯一明文文件，见 repo_keys 模块）。
+                # 失败只记日志、绝不翻转已落库的 success 终态（加固步骤不能反噬主流程）。
+                if (
+                    status == "success"
+                    and job.type == "init"
+                    and env.get("RESTIC_PASSWORD_FILE")
+                ):
+                    with contextlib.suppress(Exception):
+                        await neutralize_repo_key(
+                            self._restic,
+                            repo_id=repo_id,
+                            env=env,
+                            password_file=env["RESTIC_PASSWORD_FILE"],
+                        )
                 if snapshot_id and snapshot_id != job.snapshot_id:
                     await self._jobs.set_snapshot(job.id, snapshot_id)
                 await self._audit.record(
