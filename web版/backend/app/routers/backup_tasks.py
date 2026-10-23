@@ -441,10 +441,11 @@ async def dry_run_task(
         _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
         for item in raw_sources
     )
-    # 批次②：已保存任务优先用结构化 spec（含大小/标记/缓存/icase），与真实备份同口径；
-    # 无 spec（旧任务或新建未存）→ 回落到扁平 excludes。
-    if task.exclude_spec:
-        flat = flatten_exclude_spec(spec_from_wire(task.exclude_spec), mapper)
+    # 批次②：优先用请求体 spec（向导未保存改动），否则任务存量 spec（含大小/标记/
+    # 缓存/icase），与真实备份同口径；两者皆无（旧任务或新建未存）→ 回落扁平 excludes。
+    spec_raw = payload.exclude_spec or task.exclude_spec
+    if spec_raw:
+        flat = flatten_exclude_spec(spec_from_wire(spec_raw), mapper)
         excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + list(flat.excludes)))
         iexcludes, larger_than = flat.iexcludes, flat.larger_than
         if_present, caches = flat.if_present, flat.caches

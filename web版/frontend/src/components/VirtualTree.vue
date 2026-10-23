@@ -9,6 +9,8 @@ export interface TreeItem {
   /** dir | file | other */
   type: string
   path: string
+  /** 是否为容器挂载点（E05/E33 标注；供行末徽章）。 */
+  is_mountpoint?: boolean
 }
 
 /** 单层加载结果；nextCursor 为服务端给的不透明游标，本组件只透传。 */
@@ -19,9 +21,10 @@ export interface TreePage {
 </script>
 
 <script setup lang="ts">
-import { NButton, NSpin } from 'naive-ui'
+import { NButton, NIcon, NSpin } from 'naive-ui'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { IconServer } from '@/components/icons/icons'
 
 const ROW_HEIGHT = VIRTUAL_TREE_ROW_HEIGHT
 const OVERSCAN = 5
@@ -259,6 +262,14 @@ watch(
               {{ isDir(row.item) ? (expanded.has(row.item.path) ? '▾' : '▸') : '' }}
             </span>
             <span class="vtree__name" @click.stop="onRowClick(row)">{{ row.item.name }}</span>
+            <n-icon
+              v-if="row.item.is_mountpoint"
+              class="vtree__mount"
+              :size="12"
+              :title="t('tree.mountpoint')"
+            >
+              <IconServer />
+            </n-icon>
           </template>
           <n-button v-else size="tiny" quaternary :loading="row.loadingMore" @click.stop="loadMore(row.dirPath)">
             {{ t('tree.loadMore') }}
@@ -329,6 +340,13 @@ watch(
 .vtree__name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 挂载点徽章（行末小图标，说明该目录是独立挂载点） */
+.vtree__mount {
+  flex: none;
+  margin-left: 6px;
+  color: var(--muted-foreground, #999);
 }
 
 .vtree__loading {

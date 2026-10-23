@@ -62,17 +62,24 @@ onUnmounted(() => ui.setMessageApi(null))
 
 // ---------------------------------------------------------------- 左栏：目录树（E05）
 const currentPath = ref('/')
+/** 挂载点快跳（展示形态；仅根目录响应带，点击即跳转）。 */
+const mountChips = ref<string[]>([])
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
-  return browseSources(path, cursor).then((page) => ({
-    items: page.items.map((item) => ({
-      key: item.display_path,
-      name: item.name,
-      type: item.type,
-      path: item.display_path,
-    })),
-    nextCursor: page.next_cursor,
-  }))
+  return browseSources(path, cursor).then((page) => {
+    // 非根目录 mounts 为空数组 → 同步清空快跳
+    mountChips.value = page.mounts ?? []
+    return {
+      items: page.items.map((item) => ({
+        key: item.display_path,
+        name: item.name,
+        type: item.type,
+        path: item.display_path,
+        is_mountpoint: item.is_mountpoint,
+      })),
+      nextCursor: page.next_cursor,
+    }
+  })
 }
 
 /** 点目录/文件即加入已选（去重）；展开由行首三角形负责，不与选中冲突。 */
@@ -206,6 +213,27 @@ function onSpecUpdate(next: ExcludeSpec): void {
     <!-- 左栏：源数据（目录树） -->
     <section class="sources-picker__left">
       <n-text strong class="sources-picker__title">{{ t('wizard.sources') }}</n-text>
+      <!-- 挂载点快跳（批次③ §3.4）：根 + 各挂载点，点击即跳转 -->
+      <div class="sources-picker__mounts">
+        <n-button
+          size="tiny"
+          round
+          :type="currentPath === '/' ? 'primary' : 'default'"
+          @click="currentPath = '/'"
+        >
+          /
+        </n-button>
+        <n-button
+          v-for="m in mountChips"
+          :key="m"
+          size="tiny"
+          round
+          :type="currentPath === m ? 'primary' : 'default'"
+          @click="currentPath = m"
+        >
+          {{ m }}
+        </n-button>
+      </div>
       <VirtualTree
         :root-path="currentPath"
         :load-children="treeLoader"
@@ -368,6 +396,14 @@ function onSpecUpdate(next: ExcludeSpec): void {
   display: block;
   margin-bottom: 8px;
   font-size: 12px;
+}
+
+/* 挂载点快跳 chips（批次③ §3.4：根 + 各挂载点） */
+.sources-picker__mounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .sources-picker__rows {

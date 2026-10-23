@@ -261,12 +261,15 @@ export interface SourceItem {
   name: string
   type: string
   display_path: string
+  /** 是否为容器挂载点（供源树节点徽章）。 */
+  is_mountpoint: boolean
 }
 
-/** E05 目录浏览响应（游标分页）。 */
+/** E05 目录浏览响应（游标分页；mounts 仅根目录请求返回，供快跳 chips）。 */
 export interface SourceBrowseResponse {
   path: string
   items: SourceItem[]
+  mounts: string[]
   next_cursor: string | null
 }
 
@@ -505,6 +508,8 @@ export interface TaskUpsertRequest {
 export interface TaskDryRunRequest {
   sources?: string[]
   excludes?: string[]
+  /** 批次② 结构化过滤条件（向导未保存改动时下发，预览与真实备份同口径）。 */
+  exclude_spec?: ExcludeSpec
 }
 
 /** E17 快照条目（paths 为原路径语义；P1 size 恒为 null）。 */

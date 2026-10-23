@@ -34,6 +34,7 @@ from app.db.repositories.repo_repo import ReposRepo
 from app.dependencies import current_repo_id
 from app.errors import PathOutOfPrefixError
 from app.exclusions import ExclusionRules, normalize_user_excludes
+from app.routers.fs import _mount_points as read_mount_points
 from app.schemas.api_schemas import (
     DryRunItem,
     DryRunRequest,
@@ -43,11 +44,14 @@ from app.schemas.api_schemas import (
     SourceBrowseResponse,
     SourceItem,
 )
+from app.services.deploy_mode import host_deny_prefixes
 from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
 from app.services.env_sync import load_credentials
+from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper, browse_allowed_prefixes, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
+from app.settings import Settings
 from app.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
@@ -90,6 +94,8 @@ async def browse_sources(
     )
 
     entries = await scan_dir_async(container_path)
+    # 挂载点集合（与 E33 同源）：任意层级的条目都可据此标 is_mountpoint，根目录再派生快跳列表
+    mount_targets = await asyncio.to_thread(read_mount_points)
     start_index = cursor_index(entries, cursor)
 
     window = entries[start_index : start_index + limit]
@@ -98,12 +104,42 @@ async def browse_sources(
             name=name,
             type=kind,
             display_path=mapper.to_display(f"{container_path.rstrip('/')}/{name}"),
+            is_mountpoint=f"{container_path.rstrip('/')}/{name}" in mount_targets,
         )
         for name, kind in window
     ]
     has_more = start_index + limit < len(entries)
     next_cursor = encode_cursor(window[-1][0]) if (has_more and window) else None
-    return SourceBrowseResponse(path=mapper.to_display(container_path), items=items, next_cursor=next_cursor)
+    mounts = _source_mounts(container_path, settings, mapper, mount_targets)
+    return SourceBrowseResponse(
+        path=mapper.to_display(container_path), items=items, mounts=mounts, next_cursor=next_cursor
+    )
+
+
+def _source_mounts(
+    container_path: str,
+    settings: Settings,
+    mapper: PathMapper,
+    mount_targets: set[str],
+) -> list[str]:
+    """根目录请求时返回挂载点快跳（展示形态，设计方案 §3.4）。
+
+    ``mount_targets`` 为 :func:`app.routers.fs._mount_points` 的原始结果（/proc/mounts
+    解析 + 伪目录/数据卷过滤），按当前源根过滤（只保留源根内挂载点），并剔除 deny 前缀——
+    host 模式下仓库存储位置与应用数据目录虽在 ``/`` 下，但**不是可备份面**，不应出现在快跳里。
+    """
+    if container_path != settings.browse_root:
+        return []
+    root = (settings.browse_root or "").rstrip("/")
+    denies = host_deny_prefixes(settings)
+    out: list[str] = []
+    for target in sorted(mount_targets):
+        if root and not (target == root or target.startswith(root + "/")):
+            continue
+        if any(target == deny or target.startswith(deny + "/") for deny in denies):
+            continue
+        out.append(mapper.to_display(target))
+    return out
 
 
 @router.get(
@@ -167,13 +203,27 @@ async def dry_run(
         _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
         for item in payload.sources
     )
-    user_excludes = normalize_user_excludes(
-        list(payload.excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
-    )
-    excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
+    # 批次②：payload 带 spec（向导未保存改动）时按 spec 展平，与真实备份同口径；
+    # 否则回落扁平 excludes（旧行为）。
+    if payload.exclude_spec:
+        flat = flatten_exclude_spec(spec_from_wire(payload.exclude_spec), mapper)
+        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + list(flat.excludes)))
+        iexcludes, larger_than = flat.iexcludes, flat.larger_than
+        if_present, caches = flat.if_present, flat.caches
+    else:
+        user_excludes = normalize_user_excludes(
+            list(payload.excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
+        )
+        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
+        iexcludes, larger_than = (), None
+        if_present, caches = (), False
     args = WhitelistArgs(
         targets=sources,
         excludes=excludes,
+        iexcludes=iexcludes,
+        exclude_larger_than=larger_than,
+        exclude_if_present=if_present,
+        exclude_caches=caches,
         json_output=True,
         dry_run=True,
         verbose=True,

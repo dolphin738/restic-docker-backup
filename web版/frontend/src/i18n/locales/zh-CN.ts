@@ -557,6 +557,7 @@ export default {
   },
   tree: {
     loadMore: '加载更多',
+    mountpoint: '挂载点',
   },
   repo: {
     type: '仓库类型',

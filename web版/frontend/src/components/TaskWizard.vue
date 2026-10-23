@@ -507,8 +507,12 @@ async function onDryRun(): Promise<void> {
   dryRunResult.value = null
   try {
     dryRunResult.value = isEdit.value
-      ? await dryRunBackupTask(props.taskId!, { sources: form.sources, excludes: form.excludes })
-      : await dryRunSources(form.sources, form.excludes)
+      ? await dryRunBackupTask(props.taskId!, {
+          sources: form.sources,
+          excludes: form.excludes,
+          exclude_spec: form.excludeSpec,
+        })
+      : await dryRunSources(form.sources, form.excludes, form.excludeSpec)
     // 记录本次预览的源集合指纹（S-1 stale 判定基准）；无论成功与否都按本次请求口径记
     previewedFingerprint.value = sourcesFingerprint()
     if (isEdit.value && isDryRunOk(dryRunResult.value)) {

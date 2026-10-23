@@ -273,6 +273,7 @@ class SourceItem(_Base):
     name: str
     type: str = Field(description="dir|file|other")
     display_path: str = Field(description="剥掉容器前缀后的原路径语义")
+    is_mountpoint: bool = Field(default=False, description="是否为容器挂载点（供源树节点徽章）")
 
 
 class SourceBrowseResponse(_Base):
@@ -280,6 +281,9 @@ class SourceBrowseResponse(_Base):
 
     path: str = Field(description="展示形态的当前路径（如 /etc）")
     items: list[SourceItem] = Field(default_factory=list)
+    mounts: list[str] = Field(
+        default_factory=list, description="挂载点快跳（展示形态；仅根目录请求返回，供 chips 使用）"
+    )
     next_cursor: str | None = None
 
 
@@ -288,6 +292,9 @@ class DryRunRequest(_Base):
 
     sources: list[str] = Field(min_length=1, description="容器内路径（/sources 前缀）")
     excludes: list[str] = Field(default_factory=list, description="用户追加排除规则（内置集自动叠加）")
+    exclude_spec: dict[str, Any] | None = Field(
+        default=None, description="批次② 结构化过滤条件；存在时忽略 excludes（spec 为唯一事实源）"
+    )
 
 
 class TaskDryRunRequest(_Base):
@@ -299,6 +306,9 @@ class TaskDryRunRequest(_Base):
 
     sources: list[str] | None = Field(default=None, description="展示形态备份源；None=取任务存量值")
     excludes: list[str] | None = Field(default=None, description="展示形态/纯 glob 排除；None=取任务存量值")
+    exclude_spec: dict[str, Any] | None = Field(
+        default=None, description="批次② 结构化过滤条件（未保存改动）；None=取任务存量 spec"
+    )
 
 
 class DryRunItem(_Base):

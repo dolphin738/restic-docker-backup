@@ -183,3 +183,51 @@ async def test_e31_restic_failure_reports_error(app_client):
 
 def _json_line(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- 批次③：挂载点快跳
+
+
+async def test_e05_root_returns_mounts_docker(app_client, monkeypatch):
+    """docker 模式：根目录回挂载点快跳（源根内、剔 deny、越出源根的 /repo 被过滤）。"""
+    import app.routers.sources as sources_module
+
+    monkeypatch.setattr(sources_module, "scan_dir_async", _fake_scan_dir_async([("data", "dir"), ("etc", "dir")]))
+    monkeypatch.setattr(
+        sources_module,
+        "read_mount_points",
+        lambda: {"/sources/data", "/sources/backups", "/repo", "/sources/proc"},
+    )
+    await finish_bootstrap(app_client)
+
+    resp = await app_client.client.get("/api/sources")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mounts"] == ["/backups", "/data", "/proc"]
+    # 徽章任意层级生效：/sources/data 是挂载点、/sources/etc 不是
+    flags = {item["display_path"]: item["is_mountpoint"] for item in body["items"]}
+    assert flags["/data"] is True
+    assert flags["/etc"] is False
+
+    # 非根目录：mounts 恒空（快跳只在根目录给）
+    resp2 = await app_client.client.get("/api/sources", params={"path": "/etc"})
+    assert resp2.json()["mounts"] == []
+
+
+async def test_e05_root_mounts_host_denies_repo(make_app, monkeypatch):
+    """host 模式：源根为 /，快跳仍剔除 deny（仓库存储位置不是可备份面）。"""
+    import app.routers.sources as sources_module
+
+    ns = await make_app({"DEPLOY_MODE": "host"})
+    monkeypatch.setattr(sources_module, "scan_dir_async", _fake_scan_dir_async([]))
+    monkeypatch.setattr(
+        sources_module, "read_mount_points", lambda: {"/home", "/repo", "/mnt/x"}
+    )
+    await finish_bootstrap(ns)
+
+    resp = await ns.client.get("/api/sources")
+    assert resp.status_code == 200
+    mounts = resp.json()["mounts"]
+    assert "/home" in mounts
+    assert "/mnt/x" in mounts
+    assert "/repo" not in mounts

@@ -555,6 +555,7 @@ export default {
   },
   tree: {
     loadMore: 'Load more',
+    mountpoint: 'Mount point',
   },
   repo: {
     type: 'Repository type',

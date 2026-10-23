@@ -15,6 +15,7 @@
 
 import { getActivePinia } from 'pinia'
 import { passCursor, request } from './http'
+import type { ExcludeSpec } from '@/utils/excludeSpec'
 import { useUiStore } from '@/stores/ui'
 import type {
   BackupTask,
@@ -90,9 +91,13 @@ export function browseSources(
 }
 
 /** E31 无实体 dry-run 预览（向导新建流）；命中伪文件系统目录名回 warnings（黄色，不拦截）。 */
-export function dryRunSources(sources: string[], excludes: string[]): Promise<DryRunResponse> {
+export function dryRunSources(
+  sources: string[],
+  excludes: string[],
+  excludeSpec?: ExcludeSpec,
+): Promise<DryRunResponse> {
   return request<DryRunResponse>('/api/sources/dry-run', {
     method: 'POST',
-    body: { sources, excludes },
+    body: { sources, excludes, exclude_spec: excludeSpec },
   })
 }

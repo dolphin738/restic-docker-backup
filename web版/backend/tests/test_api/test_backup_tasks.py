@@ -516,3 +516,49 @@ async def test_e36_dry_run_out_of_prefix_sources_400(app_client):
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "PATH_OUT_OF_PREFIX"
+
+
+async def test_e36_dry_run_uses_task_exclude_spec(app_client):
+    """批次②：任务域 dry-run 按存量 exclude_spec 展平（大小/标记/缓存/icase）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    spec = {
+        "quick": {
+            "extensions": [],
+            "nameContains": "",
+            "largerThan": "100M",
+            "ifPresent": [".nobackup"],
+            "caches": True,
+        },
+        "rules": [{"pattern": "*.TMP", "negate": False, "icase": True}],
+    }
+    created = await _create_task(ns, exclude_spec=spec)
+    argv_log = _patch_restic_spawn(ns, _DRY_RUN_LINES, exit_code=0)
+
+    resp = await ns.client.post(
+        f"/api/repos/default/backup-tasks/{created['id']}/dry-run", json={}, headers=ORIGIN
+    )
+    assert resp.status_code == 200, resp.text
+    argv = argv_log[0]
+    assert argv[argv.index("--exclude-larger-than") + 1] == "100M"
+    assert argv[argv.index("--exclude-if-present") + 1] == ".nobackup"
+    assert "--exclude-caches" in argv
+    assert argv[argv.index("--iexclude") + 1] == "*.TMP"
+
+
+async def test_e31_dry_run_uses_payload_exclude_spec(app_client):
+    """批次②：向导未保存改动的 E31 预览按请求体 exclude_spec 展平（不再缺 larger/caches）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    argv_log = _patch_restic_spawn(ns, _DRY_RUN_LINES, exit_code=0)
+    spec = {"quick": {"largerThan": "1g", "caches": True}, "rules": []}
+
+    resp = await ns.client.post(
+        "/api/sources/dry-run",
+        json={"sources": ["/etc"], "excludes": [], "exclude_spec": spec},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+    argv = argv_log[0]
+    assert argv[argv.index("--exclude-larger-than") + 1] == "1g"
+    assert "--exclude-caches" in argv
