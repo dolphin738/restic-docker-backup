@@ -482,8 +482,11 @@ async def test_due_for_prune_never_submits_forget(tmp_path, monkeypatch):
     """
     db, scheduler, task_repo, job_repo, config_repo, runner = await make_scheduler(tmp_path)
     task = await create_task(task_repo, "prune 到期", cron="0 3 * * *", prune_interval_days=7)
-    # 从未 forget 过 + 有成功 backup → 首次到期（新语义）
-    await insert_success_job(job_repo, "job-old-ok", task.id, utc_iso(now_utc() - timedelta(days=10)))
+    # 从未 forget 过 + 有成功 backup → 首次到期（新语义）。
+    # 基准必须锚定 FIXED_NOW（调度器被冻结到该时刻）而非真实 now_utc()——否则随着真实日期
+    # 推移，now_utc()-10d 会越过 FIXED_NOW 当天的触发点，catchup 误判「当天已成功」而跳过
+    # （date-bomb：2026-10-24 曾因此由绿转红）。
+    await insert_success_job(job_repo, "job-old-ok", task.id, utc_iso(FIXED_NOW - timedelta(days=10)))
     await config_repo.set(SCHEDULE_JITTER_KEY, "0")  # 去掉随机睡眠，保证测试确定性
 
     assert await scheduler._due_for_prune(task) is True
