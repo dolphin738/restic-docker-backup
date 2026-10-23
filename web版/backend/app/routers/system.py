@@ -19,9 +19,15 @@ from fastapi import APIRouter, Depends, Request
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
-from app.constants import AUDIT_TIME_SYNC
+from app.constants import AUDIT_TIME_SYNC, DEPLOY_MODE_HOST
 from app.db.repositories.config_repo import ConfigRepo
-from app.schemas.api_schemas import NtpProbeOut, SystemTimeOut, TimeSyncOut
+from app.schemas.api_schemas import (
+    NtpProbeOut,
+    SystemRuntimeOut,
+    SystemTimeOut,
+    TimeSyncOut,
+)
+from app.services.deploy_mode import host_deny_prefixes
 from app.services.scheduler import TIMEZONE_KEY
 from app.services.time_sync import (
     NTP_BACKUP_KEY,
@@ -53,6 +59,35 @@ async def _resolve_ntp_chain(config: ConfigRepo) -> list[str]:
     primary = (await config.get_value(NTP_PRIMARY_KEY)) or ""
     backup = (await config.get_value(NTP_BACKUP_KEY)) or ""
     return resolve_ntp_servers(primary, backup)
+
+
+@router.get(
+    "/runtime",
+    response_model=SystemRuntimeOut,
+    summary="部署形态与浏览根（设计方案 §3.2 单一事实源）",
+    dependencies=_PROTECTED,
+)
+async def get_runtime(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> SystemRuntimeOut:
+    """部署形态 + 备份源浏览根 + deny 前缀（前端双模式树的唯一取数入口）。
+
+    ``browse_root`` 由后端在启动时按部署形态算一次（docker→``/sources``、host→``/``），
+    经本端点下发前端——UI 允许选的路径与后端接受写入的路径因此同源（S2 的前置条件）。
+    ``deny_prefixes`` 仅 host 模式非空：docker 的浏览面已被 ``/sources`` 白名单界定，
+    无需额外 deny；host 模式则须挡掉仓库存储位置与应用数据目录（防递归备份 / 泄露）。
+    """
+    del session
+    settings = request.app.state.settings
+    host_mode = settings.deploy_mode_effective == DEPLOY_MODE_HOST
+    return SystemRuntimeOut(
+        deploy_mode=settings.deploy_mode_effective,
+        browse_root=settings.browse_root,
+        sources_root=settings.sources_root,
+        restore_root=settings.restore_root,
+        deny_prefixes=list(host_deny_prefixes(settings)) if host_mode else [],
+    )
 
 
 @router.get(

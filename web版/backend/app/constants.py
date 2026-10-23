@@ -35,21 +35,48 @@ REPO_ID_MAX_LENGTH: int = 64
 
 # ---------------------------------------------------------------- 路径白名单（§7.3 PathMapper）
 
-# 可被选为备份源的根前缀（A0 模式收敛：host 模式已删除，只剩 /sources）
-SOURCE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
+# 备份源根 / 恢复根的**默认容器路径**（settings 的默认值来源）
+DEFAULT_SOURCES_ROOT = "/sources"
+DEFAULT_RESTORE_ROOT = "/restore"
+# ⚠️ 备份源的**生效白名单不再是常量**——它由部署形态派生（设计方案 §3.2 单一事实源）：
+#     docker → (DEFAULT_SOURCES_ROOT,)    host → ("/",)
+#   派生实现见 :func:`app.services.path_mapper.source_allowed_prefixes`，
+#   运行期一律走它（或 ``settings.browse_root``）；此处刻意**不**保留第二份白名单常量，
+#   否则 UI 可选路径与后端接受写入的路径会再次漂移（S2 argv 白名单的前置条件）。
 # 恢复目标白名单（P1 仅"恢复到时间戳子目录"，目标限定在可写挂载点）
-RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/restore",)
+RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = (DEFAULT_RESTORE_ROOT,)
 # 原位恢复目标白名单（R-015 Q1 裁决，A0 收敛后 = 备份源根 ``/sources``）。
 # 与 RESTORE_ALLOWED_PREFIXES 分离——避免 /restore 的时间戳语义被覆盖语义污染。
-INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
+# 注：原位恢复写回的是快照内的**容器绝对路径**，与部署形态无关，故保持固定值。
+INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = (DEFAULT_SOURCES_ROOT,)
 # 原位恢复**执行层**的 --target 固定值（S7 v1.3「执行层落点纪律」）：
 # restic 的落点是「--target + 快照内绝对路径」的拼接（非替换），而本项目快照存的是
 # 容器绝对路径（/sources/etc/...），故只有 "/" 才是真原位（写回 /sources/etc/...）；
 # 传 <目标目录> 会嵌套成 /sources/etc/sources/etc/... ——一个目标文件都不会被覆盖。
 # S1：该字面量的唯一出处（ResticCmd 只在显式放行分支里引用它）。
 INPLACE_RESTORE_TARGET_ROOT = "/"
-# E05 目录浏览允许的前缀
-BROWSE_ALLOWED_PREFIXES: tuple[str, ...] = ("/sources",)
+# 注：E05 目录浏览允许的前缀与备份源同源，派生于 :func:`app.services.path_mapper
+# .source_allowed_prefixes`；此处不再保留常量副本（理由同上）。
+
+# ---------------------------------------------------------------- 部署形态检测（设计方案 §3.1）
+
+# 显式覆盖环境变量：DEPLOY_MODE=docker|host|auto（默认 auto = 自动检测）。
+# 自动检测**只决定默认值，不充当安全边界**——安全边界恒为 deny 清单（见下）+ 本变量显式覆盖。
+DEPLOY_MODE_ENV = "DEPLOY_MODE"
+DEPLOY_MODE_AUTO = "auto"
+DEPLOY_MODE_DOCKER = "docker"
+DEPLOY_MODE_HOST = "host"
+DEPLOY_MODE_VALUES: tuple[str, ...] = (DEPLOY_MODE_AUTO, DEPLOY_MODE_DOCKER, DEPLOY_MODE_HOST)
+# 自动检测链：① ``/.dockerenv`` 存在（绝大多数运行时的既定落点）；
+#             ② 兜底：``/proc/self/mountinfo`` 中根挂载点 fstype 以 overlay 开头
+DOCKER_ENV_FILE = "/.dockerenv"
+MOUNTINFO_PATH = "/proc/self/mountinfo"
+OVERLAY_FSTYPE_PREFIX = "overlay"
+# host 模式的浏览根：整文件系统。可备份面 = 该根，安全边界由 deny 前缀承担（§3.1 原则）。
+HOST_BROWSE_ROOT = "/"
+# host 模式 deny 前缀基底：系统伪目录（E33 既有口径）；运行时再叠加仓库存储位置与
+# 应用数据目录（见 :func:`app.services.deploy_mode.host_deny_prefixes`）。
+HOST_DENY_BASE_PREFIXES: tuple[str, ...] = ("/proc", "/sys", "/dev", "/run")
 
 # ---------------------------------------------------------------- HTTP 方法
 

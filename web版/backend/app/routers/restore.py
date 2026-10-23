@@ -57,7 +57,7 @@ from app.services.compare import CompareService, OverwriteItem, in_snapshot_path
 from app.services.env_sync import load_credentials
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser, SnapshotRecord
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.settings import Settings
 from app.utils.cursor import decode_cursor, encode_cursor
@@ -461,7 +461,7 @@ def _normalize_include_paths(
             continue
         try:
             container = mapper.validate(
-                mapper.to_snapshot(item), allowed_prefixes=(settings.mode_root,)
+                mapper.to_snapshot(item), allowed_prefixes=source_allowed_prefixes(settings)
             )
         except PathOutOfPrefixError as exc:
             raise PathOutOfPrefixError(

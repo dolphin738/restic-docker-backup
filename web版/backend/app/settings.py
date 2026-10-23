@@ -12,7 +12,13 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.constants import DB_BUSY_TIMEOUT_MS, SSE_HEARTBEAT_SECONDS
+from app.constants import (
+    DB_BUSY_TIMEOUT_MS,
+    DEFAULT_RESTORE_ROOT,
+    DEFAULT_SOURCES_ROOT,
+    DEPLOY_MODE_AUTO,
+    SSE_HEARTBEAT_SECONDS,
+)
 
 try:  # pragma: no cover - Windows 等非 POSIX 平台无 pwd 模块
     import pwd
@@ -33,9 +39,12 @@ class Settings(BaseSettings):
     cache_dir: str = "/cache/restic"
     # 备份源根（A0 模式收敛后唯一形态：只认容器内可见目录树，对齐 Duplicati）。
     # 远端数据（NFS/SMB/S3/B2…）经宿主机挂载或 rclone mount 映射进本前缀。
-    sources_root: str = "/sources"
-    restore_root: str = "/restore"
+    sources_root: str = DEFAULT_SOURCES_ROOT
+    restore_root: str = DEFAULT_RESTORE_ROOT
     repo_root: str = "/repo"
+    # 部署形态（设计方案 §3.1）：docker | host | auto（默认 auto = 自动检测）。
+    # 自动检测只决定**默认值**（浏览根），不充当安全边界；安全边界是 deny 前缀 + 此处显式覆盖。
+    deploy_mode: str = DEPLOY_MODE_AUTO
     # 仓库密码文件**根目录**（E5 per-repo 布局）：实际路径 = <passfile_root>/<repo_id>/password。
     # 当前仅 `default` 一行 → /data/repos/default/password；R-023 多仓库时按 repo_id 派生。
     passfile_root: str = "/data/repos"
@@ -96,9 +105,25 @@ class Settings(BaseSettings):
         return Path(self.data_dir) / "dump"
 
     @property
-    def mode_root(self) -> str:
-        """备份源的根前缀（A0 收敛后恒为 ``sources_root``，property 名保留供调用点沿用）。"""
-        return self.sources_root
+    def browse_root(self) -> str:
+        """备份源树的浏览根（设计方案 §3.2 的**单一事实源**）。
+
+        ``docker`` → ``sources_root``（默认 ``/sources``）；``host`` → ``/``。
+        启动时算一次（进程内缓存），``PathMapper``、源路径校验、排除规则前缀映射
+        **全部改读本值**——UI 允许选的路径与后端接受写入的路径因此永不不一致
+        （S2 argv 白名单的前置条件）。
+        """
+        # 延迟导入：deploy_mode 依赖本模块，顶层导入会成环
+        from app.services.deploy_mode import effective_browse_root
+
+        return effective_browse_root(self)
+
+    @property
+    def deploy_mode_effective(self) -> str:
+        """生效的部署形态（``docker`` / ``host``；``auto`` 已解析为具体值）。"""
+        from app.services.deploy_mode import detect_deploy_mode
+
+        return detect_deploy_mode(self)
 
     @property
     def run_user(self) -> str:

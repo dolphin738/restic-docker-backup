@@ -23,11 +23,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
-    BROWSE_ALLOWED_PREFIXES,
     DRY_RUN_MAX_ITEMS,
     DRY_RUN_TIMEOUT_SECONDS,
     PSEUDO_FS_NAMES,
-    SOURCE_ALLOWED_PREFIXES,
     SOURCE_BROWSE_DEFAULT_LIMIT,
     SOURCE_BROWSE_MAX_LIMIT,
 )
@@ -48,7 +46,7 @@ from app.schemas.api_schemas import (
 from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, browse_allowed_prefixes, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.utils.ulid import new_ulid
 
@@ -86,9 +84,9 @@ async def browse_sources(
     settings = request.app.state.settings
     mapper: PathMapper = request.app.state.path_mapper
     container_path = (
-        _to_container_path(mapper, path, allowed_prefixes=BROWSE_ALLOWED_PREFIXES)
+        _to_container_path(mapper, path, allowed_prefixes=browse_allowed_prefixes(settings))
         if path
-        else mapper.validate(settings.mode_root, allowed_prefixes=BROWSE_ALLOWED_PREFIXES)
+        else mapper.validate(settings.browse_root, allowed_prefixes=browse_allowed_prefixes(settings))
     )
 
     entries = await scan_dir_async(container_path)
@@ -166,11 +164,11 @@ async def dry_run(
     config_repo: ConfigRepo = request.app.state.config_repo
 
     sources = tuple(
-        _to_container_path(mapper, item, allowed_prefixes=SOURCE_ALLOWED_PREFIXES)
+        _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
         for item in payload.sources
     )
     user_excludes = normalize_user_excludes(
-        list(payload.excludes), mapper, source_prefixes=(settings.mode_root,)
+        list(payload.excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
     )
     excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
     args = WhitelistArgs(

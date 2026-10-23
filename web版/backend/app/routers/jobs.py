@@ -33,6 +33,7 @@ from app.schemas.api_schemas import (
     Page,
 )
 from app.schemas.enums import JobStatus, JobType
+from app.services.path_mapper import source_allowed_prefixes
 from app.utils.time import parse_utc_bound, utc_iso
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ async def create_job(
         params["excludes"] = normalize_user_excludes(
             list(params["excludes"]),
             request.app.state.path_mapper,
-            source_prefixes=(request.app.state.settings.mode_root,),
+            source_prefixes=source_allowed_prefixes(request.app.state.settings),
         )
     job = await runner.submit(
         str(payload.type),

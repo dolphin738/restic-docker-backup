@@ -5,7 +5,12 @@
  */
 
 import { request } from './http'
-import type { SystemTimeResponse, TimeSyncResponse } from './types'
+import type { SystemRuntimeResponse, SystemTimeResponse, TimeSyncResponse } from './types'
+
+/** 部署形态与浏览根（设计方案 §3.2 单一事实源）：源树根 / deny 前缀的唯一取数来源。 */
+export function getRuntime(): Promise<SystemRuntimeResponse> {
+  return request<SystemRuntimeResponse>('/api/system/runtime')
+}
 
 /** E39 服务器时间快照：UTC 时刻 + 生效时区本地时间 + NTP 偏差（探测 30s 服务端缓存）。 */
 export function getSystemTime(): Promise<SystemTimeResponse> {

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import weakref
 from types import SimpleNamespace
 
 import httpx
 import pytest
+
+# 测试进程统一按 **docker 形态** 运行：整套断言针对 docker 契约（展示 /etc ↔ 存储
+# /sources/etc 的前缀换算）。放在模块顶层（而非仅 api_env 夹具）是因为单元测试会直接
+# 构造 Settings()，不经过夹具；不钉死则 WSL/主机上自检为 host（browse_root="/"）导致漂移。
+# host 形态由 tests/test_deploy_mode.py 显式传入 Settings(deploy_mode="host") 覆盖，不受影响。
+os.environ["DEPLOY_MODE"] = "docker"
 
 # 测试内所有写方法请求携带的同源 Origin（与 httpx base_url 的 host 匹配）
 ORIGIN = {"Origin": "http://testserver"}
@@ -90,6 +97,10 @@ def api_env(tmp_path, monkeypatch):
     # 登录锁定测试需要连续多次请求，把进程内限流阈值放大避免 429 RATE_LIMITED 干扰
     monkeypatch.setenv("LOGIN_RATE_LIMIT", "100")
     monkeypatch.setenv("RESTIC_BINARY", "restic-not-invoked-in-api-tests")
+    # 部署形态：测试套件针对 **docker 契约**（展示路径 /etc ↔ 存储 /sources/etc 的前缀换算）。
+    # 显式钉死，避免在 WSL/主机上被自动检测判成 host（browse_root="/"）后行为漂移，让 91 处
+    # /sources 断言无端变红。host 形态由 tests/test_deploy_mode.py 单独覆盖。
+    monkeypatch.setenv("DEPLOY_MODE", "docker")
 
     for name in (
         "RESTIC_REPOSITORY",
@@ -105,9 +116,12 @@ def api_env(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
 
+    from app.services.deploy_mode import invalidate_deploy_mode_cache
     from app.settings import get_settings
 
     get_settings.cache_clear()
+    # 检测结果按 (DEPLOY_MODE, SOURCES_ROOT) 进程级缓存，跨用例必须清，否则串味
+    invalidate_deploy_mode_cache()
 
     import app.routers.repos as repos_module
 
@@ -129,9 +143,12 @@ async def make_app(api_env, monkeypatch):
             monkeypatch.setenv(key, value)
 
         from app.main import create_app
+        from app.services.deploy_mode import invalidate_deploy_mode_cache
         from app.settings import get_settings
 
         get_settings.cache_clear()
+        # env_extra 可能改写 DEPLOY_MODE（host 形态用例），缓存必须同步失效
+        invalidate_deploy_mode_cache()
         application = create_app()
         await stack.enter_async_context(application.router.lifespan_context(application))
         transport = httpx.ASGITransport(app=application, client=("10.0.0.1", 12345))

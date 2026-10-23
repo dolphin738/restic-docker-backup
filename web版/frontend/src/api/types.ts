@@ -102,6 +102,40 @@ export interface RepoStatusResponse {
   failure_kind: string | null
 }
 
+/** 仓库密钥身份的一条记录（GET /api/repos/{id}/keys）。
+ *
+ * 只含展示字段：`data`（master key 密文）与 KDF 参数 `salt/N/r/p` **不经 API 下发**
+ * （它们是暴破难度指纹，对用户无操作价值）。
+ */
+export interface RepoKeyOut {
+  /** 8 位短 id（与 `restic key list` 表格列一致）。 */
+  id: string
+  /** 完整 64 位 hex（复制到 CLI 排障，如 `restic key remove`）。 */
+  id_full: string
+  user: string
+  host: string
+  created: string
+  /** restic 的 created 按子进程时区渲染且无时区标记 → 后端带上该时区（默认 UTC）。
+   *  原样显示即可（不做换算，避免展示层引入第二套时间语义）。 */
+  created_tz: string
+  /** 是否为当前访问仓库所用的 key（restic 保证唯一）。 */
+  current: boolean
+  /** user/host 是否均为中性值（`svc-backup@repo`）。 */
+  neutral: boolean
+}
+
+/** 仓库密钥身份整体状态：neutralized / exposing / mixed / unknown。 */
+export type RepoKeysOverall = 'neutralized' | 'exposing' | 'mixed' | 'unknown'
+
+/** 只读密钥身份（`restic key list --json` 的展示子集）。 */
+export interface RepoKeysOut {
+  repo_id: string
+  overall: RepoKeysOverall
+  keys: RepoKeyOut[]
+  /** 探测失败原因；非空时 keys 必为空（UI 须显示原因，不留空白）。 */
+  probe_error: string | null
+}
+
 /** R-023 仓库输出（repos 表事实源；type 派生不落库，passfile_status 只读派生）。 */
 export interface RepoOut {
   id: string
@@ -749,6 +783,17 @@ export interface TimeSyncResponse {
   offset_ms: number | null
   server: string | null
   reason: string | null
+}
+
+/** 部署形态与浏览根（GET /api/system/runtime，设计方案 §3.2 单一事实源）。
+ * `browse_root` 是源树根的唯一取数来源（docker→/sources、host→/）；
+ * `deny_prefixes` 仅 host 模式非空，供源树隐藏不可选区域（后端仍二次拦截）。 */
+export interface SystemRuntimeResponse {
+  deploy_mode: 'docker' | 'host'
+  browse_root: string
+  sources_root: string
+  restore_root: string
+  deny_prefixes: string[]
 }
 
 // ---------------------------------------------------------------- 批次 B（R-017 check 视图）

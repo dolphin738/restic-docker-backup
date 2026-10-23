@@ -33,7 +33,7 @@ from app.constants import MIRROR_REPO_IDS_MAX, RETRY_COUNT_DEFAULT, RETRY_COUNT_
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import _assert_safe_value, _normalize_duration
 from app.services.scheduler import _cron_trigger
 from app.settings import Settings, get_settings
@@ -215,18 +215,20 @@ class TaskService:
             raise ValidationError("任务至少需要一个备份源")
         result: list[str] = []
         seen: set[str] = set()
-        container_prefixes = (ExclusionRules.SOURCES_PREFIX,)
-        mode_root = self._settings.mode_root
+        browse_root = self._settings.browse_root
+        # "已是容器形态"判定前缀 = 当前源根（docker 取 /sources、host 取 /，均由配置派生）——
+        # host 模式下浏览根本身是根路径，绝对路径即容器形态，to_snapshot 亦幂等。
+        container_prefixes = (browse_root,)
         for raw in sources:
             item = str(raw).strip()
             try:
                 if item.startswith(container_prefixes):
                     # 已是容器形态：不二次叠加源根，直接按源根校验（跨形态 → 422）
-                    container = self._path_mapper.validate(item, allowed_prefixes=(mode_root,))
+                    container = self._path_mapper.validate(item, allowed_prefixes=(browse_root,))
                 else:
                     # 展示形态 → 还原为容器形态后校验（normpath 折叠 ../ 防穿越）
                     container = self._path_mapper.validate(
-                        self._path_mapper.to_snapshot(item), allowed_prefixes=(mode_root,)
+                        self._path_mapper.to_snapshot(item), allowed_prefixes=(browse_root,)
                     )
             except PathOutOfPrefixError as exc:
                 raise ValidationError(
@@ -246,7 +248,7 @@ class TaskService:
         语义错误，应尽早 422 显式失败。
         """
         normalized = normalize_user_excludes(
-            list(excludes), self._path_mapper, source_prefixes=(self._settings.mode_root,)
+            list(excludes), self._path_mapper, source_prefixes=source_allowed_prefixes(self._settings)
         )
         builtin = set(self._exclusions.built_in())
         return [item for item in normalized if item not in builtin]

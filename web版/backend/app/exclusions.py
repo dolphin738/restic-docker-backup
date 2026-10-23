@@ -1,15 +1,16 @@
-"""内置排除集（A0 模式收敛后唯一形态：备份源根恒为 ``/sources``）——D8 决策的唯一实现点。
+"""内置排除集——D8 决策的唯一实现点。
 
-语义核心集（8 条目）统一派生 ``/sources`` 容器前缀，再叠加 sources 形态附加条目
+锚定前缀派生自**部署形态的浏览根**（``settings.browse_root``，设计方案 §3.2 单一事实源）：
+docker → ``/sources``（内置项形如 ``/sources/proc``）；host → ``/``（形如 ``/proc``）。
+语义核心集（8 条目）按该前缀展开，再叠加 sources 形态附加条目
 （仓库/缓存特征路径，防止仓库数据被自己备份，命中时 UI 警告）。
 排除集为代码常量、不入库，UI 可追加不可删减（"不可删减"由本模块保证）。
 """
 
 from __future__ import annotations
 
-from app.constants import SOURCE_ALLOWED_PREFIXES
 from app.errors import PathOutOfPrefixError, ValidationError
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.settings import Settings, get_settings
 
 # 用户排除规则的"锚定路径 vs 纯 glob 模式"分界：以 / 开头一律视为锚定路径（含 glob 通配）
@@ -31,8 +32,6 @@ class ExclusionRules:
         "lost+found",
     )
 
-    SOURCES_PREFIX = "/sources"
-
     # sources 形态附加：仓库/缓存特征路径（防止仓库数据被自己备份，命中时 UI 警告）
     SOURCES_EXTRA: tuple[str, ...] = ("repo", "restic-repo", "restic-cache", "cache")
 
@@ -40,9 +39,18 @@ class ExclusionRules:
         """构造排除集生成器。
 
         Args:
-            settings: 运行期配置；缺省取进程单例。
+            settings: 运行期配置；缺省取进程单例（决定内置项的锚定前缀）。
         """
         self._settings = settings or get_settings()
+
+    def _anchor(self, item: str) -> str:
+        """把核心集/附加项锚定到当前浏览根（docker→``/sources/x``，host→``/x``）。
+
+        浏览根为 ``/`` 时 ``rstrip("/")`` 得到空串，此时直接拼一层 ``/item``——
+        既不会产生 ``//proc``，也不会留下 host 上无对应挂载的 ``/sources/proc``（静默失效）。
+        """
+        root = (self._settings.browse_root or "").strip().rstrip("/")
+        return f"{root}/{item}" if root else f"/{item}"
 
     # ---------------------------------------------------------------- 公开接口（§7.3）
 
@@ -53,9 +61,8 @@ class ExclusionRules:
             按字符串去重且保持原始顺序的排除路径列表（避免同一路径重复出现在
             restic ``--exclude`` 参数中）。
         """
-        prefix = self.SOURCES_PREFIX
-        rules = [f"{prefix}/{item}" for item in self.CORE]
-        rules.extend(f"{prefix}/{item}" for item in self.SOURCES_EXTRA)
+        rules = [self._anchor(item) for item in self.CORE]
+        rules.extend(self._anchor(item) for item in self.SOURCES_EXTRA)
         return _dedupe(rules)
 
     def is_builtin(self, rule: str) -> bool:
@@ -74,8 +81,7 @@ class ExclusionRules:
 
     def core(self) -> list[str]:
         """仅返回核心集派生结果（不含附加条目），供 UI 分组展示。"""
-        prefix = self.SOURCES_PREFIX
-        return [f"{prefix}/{item}" for item in self.CORE]
+        return [self._anchor(item) for item in self.CORE]
 
 
 def _dedupe(rules: list[str]) -> list[str]:
@@ -94,7 +100,7 @@ def normalize_user_excludes(
     excludes: list[str],
     mapper: PathMapper,
     *,
-    source_prefixes: tuple[str, ...] = SOURCE_ALLOWED_PREFIXES,
+    source_prefixes: tuple[str, ...] | None = None,
 ) -> list[str]:
     """用户追加排除规则的**三分类归一**（形态换算的单一实现点，主理人裁决定稿）。
 
@@ -115,7 +121,8 @@ def normalize_user_excludes(
     Args:
         excludes: 用户追加的排除规则（展示形态、容器形态或纯 glob 模式）。
         mapper: 路径映射器。
-        source_prefixes: 锚定路径允许落进的容器前缀白名单（**应传当前源根**）。
+        source_prefixes: 锚定路径允许落进的容器前缀白名单；缺省取
+            :func:`app.services.path_mapper.source_allowed_prefixes`（由部署形态派生）。
 
     Returns:
         去重保序后的容器形态排除规则（供入库与 ``--exclude`` 下游直用）。
@@ -125,7 +132,11 @@ def normalize_user_excludes(
     """
     result: list[str] = []
     seen: set[str] = set()
-    container_prefixes = (ExclusionRules.SOURCES_PREFIX,)
+    prefixes = source_prefixes if source_prefixes is not None else source_allowed_prefixes()
+    # "已是容器形态"判定前缀 = 当前源根（docker="/sources"、host="/"）。
+    # host 模式下源根本身是 "/"，任意绝对路径都算容器形态；to_snapshot 对 "/" 前缀幂等，
+    # 不会把 /etc 二次叠成 //etc 或 /sources/etc。
+    container_prefixes = (prefixes[0],)
     for raw in excludes:
         item = str(raw).strip()
         if not item or item in seen:
@@ -137,7 +148,7 @@ def normalize_user_excludes(
         # 已是容器形态：不二次叠加源根，直接校验
         container = item if item.startswith(container_prefixes) else mapper.to_snapshot(item)
         try:
-            container = mapper.validate(container, allowed_prefixes=source_prefixes)
+            container = mapper.validate(container, allowed_prefixes=prefixes)
         except PathOutOfPrefixError as exc:
             raise ValidationError(
                 f"排除规则 {item!r} 不在当前源根范围内", data={"exclude": item}

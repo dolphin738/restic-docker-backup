@@ -3,6 +3,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { fetchMe } from '@/api/auth'
 import { hasCode } from '@/api/http'
+import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
 
 declare module 'vue-router' {
@@ -138,6 +139,9 @@ router.beforeEach(async (to) => {
   }
   try {
     ui.setMe(await fetchMe())
+    // 部署形态与浏览根（设计方案 §3.2）：登录后拉一次，供批次③双模式源树取数。
+    // init 内部吞异常并保持 docker 缺省，不会因它失败而阻断导航。
+    await useRuntimeStore().init()
     return true
   } catch (error) {
     if (hasCode(error, 'UNAUTHORIZED')) {

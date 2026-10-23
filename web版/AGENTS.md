@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > 面向 AI 编码代理（engineer / QA）的工作规范。**写代码前必读**，违反 🔴 红线的实现会被审查直接打回。  
-> 详细审查标准见 `docs/代码审查规范.md`；技术决策见 `docs/架构设计文档.md` §1.3 与 `docs/Web版改造方案.md`（v2.3.4）；需求边界见 `docs/Web版PRD.md`；多仓库/多备份任务演进位（R-023 / 选项② R-026）见 `docs/架构设计文档.md` §13。
+> 详细审查标准见 `docs/代码审查规范.md`；技术决策见 `docs/架构设计文档.md` §1.3 与 `docs/Web版改造方案.md`（v2.3.4）；需求边界见 `docs/Web版PRD.md`；多仓库/多备份任务演进位（R-023 / 选项② R-026）见 `docs/架构设计文档.md` §13；**远端仓库暴露面与加固（`keys/` 明文面、口令强度、云凭据最小权限）见 `docs/云端仓库安全基线.md`**。
 >
 > 文档体系（分层/权威裁决/归档规则）见 `docs/文档管理规范.md`——**新建、移动或归档任何文档前必读**；Duplicati 流程对齐背景见 `docs/archive/对齐Duplicati的改造方案.md`（已归档 2026-10-15：结论归入 Web版PRD.md 与架构设计文档）。
 >
@@ -42,9 +42,9 @@ pwsh dev-scripts/dev.ps1            # 菜单式；restart backend 已内置 --lo
 
 > 括号内为规范 §3.1 的条目编号，**编号即锚点**；`自查：` 行可直接粘贴到终端执行。
 
-1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；文件系统前缀白名单是 **`/sources`、`/restore` 两个**（A0 模式收敛 2026-10-17：host 模式与 `/host` 前缀已整体退役；根路径定义在 `app/settings.py` 的 `sources_root`/`restore_root`，白名单常量在 `app/constants.py`，**新增前缀只改这两处**）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
+1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；**备份源白名单由 `browse_root` 单一派生**（`path_mapper.source_allowed_prefixes`：docker→`/sources`、host→`/`；`settings.browse_root` 由 `DEPLOY_MODE`/自动检测决定，**不再保留第二份白名单常量**），恢复目标恒 `/restore`、原位恢复恒 `/sources`；**host 模式**（浏览根 `/`）安全边界由 **deny 前缀**承担——`validate` 对源根命中时强制拒绝 `deploy_mode.host_deny_prefixes`（`/proc` `/sys` `/dev` `/run` + `repo_root` + `data_dir` + `passfile_root`，防递归备份/泄露应用数据）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
 
-   *豁免：文件系统前缀字面量只允许出现在 `settings.py`（根路径定义）、`constants.py`（白名单常量）、`exclusions.py`（排除集派生）、`path_mapper.py`（校验实现）；路由声明里的 `"/restore"`、`"/sources"` 是 **API 路径**，与此无关。任何位置再出现 `"/host"` 前缀字面量即视为 host 模式复活 = Blocker。*
+   *豁免：文件系统前缀字面量只允许出现在 `settings.py`（根路径默认值 + 部署形态）、`constants.py`（默认根 + 部署形态常量）、`exclusions.py`（排除集派生前缀）、`path_mapper.py`（白名单派生 + 校验实现）；路由声明里的 `"/restore"`、`"/sources"` 是 **API 路径**，与此无关。任何位置再出现 `"/host"` 前缀字面量即视为 `/host` 挂载前缀复活 = Blocker（**host 作为部署形态**合法，`/host` **挂载前缀**不复活）。*
 
    自查：`grep -rn '"/host"\|"/sources"\|"/restore"' backend/app frontend/src --include=*.py | grep -v settings.py | grep -v constants.py | grep -v exclusions.py | grep -v path_mapper.py | grep -v routers/`
 

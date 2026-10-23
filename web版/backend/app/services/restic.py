@@ -32,7 +32,7 @@ from app.constants import (
     SUBPROCESS_LOOP_HINT,
 )
 from app.errors import ResticFailedError, ValidationError
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.settings import Settings, get_settings
 
 # verb 白名单（§7.1 九类 + 批次 3 为 E30 容量探测新增只读 verb ``stats``）
@@ -164,6 +164,14 @@ class WhitelistArgs:
     # key add / key passwd 的 --new-password-file（**路径**，不是口令本身——
     # 口令绝不进 argv，S3）。
     new_password_file: str | None = None
+    # 中性化 key（init 后抹去 keys/ 文件的明文身份元数据）：``key add`` 的
+    # ``--user`` / ``--host``。值经 :func:`_assert_safe_value`（防 flag 注入），
+    # 仅 ``key add`` 拼装（passwd / remove 无此语义）。
+    key_user: str | None = None
+    key_host: str | None = None
+    # ``--key-hint``（全局 flag）：强制优先尝试指定 key 解密，使「当前 key」可控——
+    # 中性化时把当前 key 切到新 key，才能删掉旧 key（restic deleteKey 拒绝删当前 key）。
+    key_hint: str | None = None
 
 
 class ResticProcess:
@@ -402,6 +410,10 @@ class ResticCmd:
             flags.extend(["--limit-upload", str(int(args.limit_up_kibps))])
         if args.limit_down_kibps and args.limit_down_kibps > 0:
             flags.extend(["--limit-download", str(int(args.limit_down_kibps))])
+        if args.key_hint:
+            # --key-hint 是全局选项（verb 之前）：强制 restic 优先尝试指定 key，
+            # 中性化删旧 key 时必须让「当前 key」指向新 key（deleteKey 拒绝删当前 key）。
+            flags.extend(["--key-hint", _assert_key_id(args.key_hint)])
         return flags
 
     def _verb_flags(self, verb: str, args: WhitelistArgs) -> list[str]:
@@ -441,7 +453,7 @@ class ResticCmd:
                     [
                         "--include",
                         self._path_mapper.validate(
-                            include, allowed_prefixes=(self._settings.mode_root,)
+                            include, allowed_prefixes=source_allowed_prefixes(self._settings)
                         ),
                     ]
                 )
@@ -579,6 +591,13 @@ class ResticCmd:
                 flags.extend(
                     ["--new-password-file", _assert_safe_value(args.new_password_file, "new_password_file")]
                 )
+            if target == "add":
+                # 中性化 key：自定义新 key 的身份标注（不暴露真实机器/账号）。
+                # 值过 _assert_safe_value 防 flag 注入（S2）。
+                if args.key_user:
+                    flags.extend(["--user", _assert_safe_value(args.key_user, "key_user")])
+                if args.key_host:
+                    flags.extend(["--host", _assert_safe_value(args.key_host, "key_host")])
             if target == "remove":
                 # restic 端要求且仅接受 1 个 key id（cmd_key_remove.go：len(args) != 1
                 # → "key remove expects one argument as the key id"），前移到本层 422。

@@ -30,7 +30,6 @@ from app.constants import (
     DRY_RUN_MAX_ITEMS,
     DRY_RUN_TIMEOUT_SECONDS,
     PSEUDO_FS_NAMES,
-    SOURCE_ALLOWED_PREFIXES,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
@@ -53,7 +52,7 @@ from app.schemas.api_schemas import (
 from app.services.config_transfer import PACK_KIND_TASK, build_export_pack
 from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
-from app.services.path_mapper import PathMapper
+from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.scheduler import SchedulerService
 from app.services.snapshot_catalog import SnapshotCatalog
@@ -434,11 +433,11 @@ async def dry_run_task(
         raise ValidationError("任务尚未配置备份源（请先保存 sources 后再预览）", data={"task_id": task_id})
 
     sources = tuple(
-        _to_container_path(mapper, item, allowed_prefixes=SOURCE_ALLOWED_PREFIXES)
+        _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
         for item in raw_sources
     )
     user_excludes = normalize_user_excludes(
-        list(raw_excludes), mapper, source_prefixes=(settings.mode_root,)
+        list(raw_excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
     )
     excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
     args = WhitelistArgs(

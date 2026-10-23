@@ -852,6 +852,38 @@ class RepoStatusResponse(_Base):
     failure_kind: str | None = None
 
 
+class RepoKeyOut(_Base):
+    """仓库密钥身份的一条记录（``restic key list --json`` 的展示子集）。
+
+    只含展示必需字段：``data``（master key 密文）与 ``salt/N/r/p``（KDF 参数）
+    **不进入 API**——它们是暴破难度指纹，对用户没有操作价值。
+    """
+
+    id: str  # 8 位短 id（与 restic key list 表格列一致）
+    id_full: str  # 完整 64 位 hex（供复制到 CLI 排障）
+    user: str
+    host: str
+    created: str
+    # restic 按子进程 TZ 渲染的无时区字符串 → 带上该 TZ 标注（settings.tz，默认 UTC），
+    # 否则用户看到的建库时间会与自己本地时间差出时区偏移且无从判断（不做换算，C8）
+    created_tz: str = "UTC"
+    current: bool = False
+    neutral: bool = False  # user/host 均为中性值（svc-backup@repo）
+
+
+class RepoKeysOut(_Base):
+    """仓库密钥身份（只读）。
+
+    ``overall`` 四态见 ``services/repo_keys.KEY_OVERALL_*``；``probe_error`` 非空时
+    ``keys`` 为空，前端必须显示原因（不留空白）。
+    """
+
+    repo_id: str
+    overall: str = "unknown"
+    keys: list[RepoKeyOut] = Field(default_factory=list)
+    probe_error: str | None = None
+
+
 class ReportBucketOut(_Base):
     """R-024 报表单日桶（按配置时区；无运行日 total=0、ratio=null）。"""
 
@@ -914,6 +946,22 @@ class TimeSyncOut(_Base):
     offset_ms: float | None
     server: str | None
     reason: str | None
+
+
+class SystemRuntimeOut(_Base):
+    """部署形态与浏览根快照（设计方案 §3.2 单一事实源）。
+
+    ``browse_root`` 是 UI 允许选源与后端接受写入路径的**同一来源**——前端据此决定树根
+    （docker→``/sources``，host→``/``），不再自行写死。``deny_prefixes`` 仅在 host 模式非空
+    （docker 的浏览面已被 ``/sources`` 白名单界定），供前端在源树中隐藏不可选区域；
+    真正的安全拦截在后端 :meth:`app.services.path_mapper.PathMapper.validate`。
+    """
+
+    deploy_mode: str
+    browse_root: str
+    sources_root: str
+    restore_root: str
+    deny_prefixes: list[str]
 
 
 class RepoOut(_Base):

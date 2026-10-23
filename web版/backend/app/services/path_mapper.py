@@ -9,6 +9,7 @@ from __future__ import annotations
 import posixpath
 
 from app.errors import PathOutOfPrefixError
+from app.services.deploy_mode import host_deny_prefixes
 from app.settings import Settings, get_settings
 
 
@@ -29,8 +30,8 @@ class PathMapper:
 
     @property
     def PREFIX(self) -> str:  # noqa: N802 - 与 §7.3 签名保持一致
-        """备份源根前缀（A0 收敛后恒为 ``/sources``）。"""
-        return self._settings.mode_root
+        """备份源根前缀（由部署形态派生，见 :func:`source_allowed_prefixes`）。"""
+        return source_allowed_prefixes(self._settings)[0]
 
     def to_snapshot(self, display_path: str) -> str:
         """展示路径 → 快照内存储路径（``/etc/nginx`` → ``/sources/etc/nginx``）。
@@ -43,6 +44,9 @@ class PathMapper:
         """
         normalized = self._normalize(display_path)
         prefix = self.PREFIX
+        if prefix == "/":
+            # host 模式：浏览根即 /，展示形态与容器形态同一（无前缀可叠加）
+            return normalized
         if normalized == prefix or normalized.startswith(prefix + "/"):
             return normalized
         if normalized == "/":
@@ -61,7 +65,10 @@ class PathMapper:
         if not stored_path:
             return ""
         normalized = self._normalize(stored_path)
-        prefix = self._settings.sources_root
+        prefix = self._settings.browse_root
+        if prefix == "/":
+            # host 模式：无前缀可剥，存储形态即展示形态
+            return normalized
         if normalized == prefix:
             return "/"
         if normalized.startswith(prefix + "/"):
@@ -72,28 +79,71 @@ class PathMapper:
         self,
         path: str,
         *,
-        allowed_prefixes: tuple[str, ...] = ("/sources", "/restore"),
+        allowed_prefixes: tuple[str, ...] | None = None,
+        deny_prefixes: tuple[str, ...] | None = None,
     ) -> str:
-        """规范化路径并校验其落在白名单前缀内（方案 §6 注入防护）。
+        """规范化路径并校验其落在白名单前缀内（方案 §6 注入防护）+ deny 边界。
 
         Args:
             path: 待校验路径（容器内绝对路径）。
-            allowed_prefixes: 允许的前缀集合。
+            allowed_prefixes: 允许的前缀集合；缺省为「备份源根 + 恢复根」——
+                两者**均派生于当前部署形态**（设计方案 §3.2），不写死 ``/sources``，
+                否则 host 模式下 UI 可选路径与后端接受写入的路径会不一致。
+            deny_prefixes: 拒绝前缀集合（仅对**备份源根**下的路径生效）；缺省取
+                :func:`app.services.deploy_mode.host_deny_prefixes`。host 模式用于禁止
+                把仓库自身存储位置 / 应用数据目录选作备份源（防递归备份、防泄露）。
 
         Returns:
             规范化后的安全路径。
 
         Raises:
-            PathValidationError: 路径为空、含非法字符或越出白名单前缀（400）。
+            PathValidationError: 路径为空、含非法字符、越出白名单前缀，或（源根下）
+                落在 deny 区域内（400）。
         """
         normalized = self._normalize(path)
-        for prefix in allowed_prefixes:
-            if normalized == prefix or normalized.startswith(prefix + "/"):
-                return normalized
-        raise PathValidationError(
-            f"路径 {path!r} 不在允许的前缀范围内（{', '.join(allowed_prefixes)}）",
-            data={"path": path, "allowed_prefixes": list(allowed_prefixes)},
+        prefixes = (
+            allowed_prefixes
+            if allowed_prefixes is not None
+            else (self._settings.browse_root, self._settings.restore_root)
         )
+        matched: str | None = None
+        for prefix in prefixes:
+            if self._is_under(normalized, prefix):
+                matched = prefix
+                break
+        if matched is None:
+            raise PathValidationError(
+                f"路径 {path!r} 不在允许的前缀范围内（{', '.join(prefixes)}）",
+                data={"path": path, "allowed_prefixes": list(prefixes)},
+            )
+        if matched == self._settings.browse_root:
+            # deny 边界（设计方案 §3.3）：host 模式浏览根为 "/"，安全边界由 deny 承担——
+            # 仓库自身存储位置（防递归备份）与应用数据目录（DB / 密码文件）不可作为备份源。
+            # 仅对**备份源根**生效：恢复目标（/restore）与快照内路径不受影响。
+            denies = (
+                deny_prefixes
+                if deny_prefixes is not None
+                else host_deny_prefixes(self._settings)
+            )
+            for deny in denies:
+                if self._is_under(normalized, deny):
+                    raise PathValidationError(
+                        f"路径 {path!r} 落在禁止备份的区域内（{deny}）："
+                        "仓库存储位置与应用数据目录不可作为备份源",
+                        data={"path": path, "denied_prefix": deny},
+                    )
+        return normalized
+
+    @staticmethod
+    def _is_under(normalized: str, prefix: str) -> bool:
+        """判断规范化绝对路径是否落在 ``prefix`` 之内。
+
+        ``prefix == "/"``（host 模式浏览根）不能用 ``startswith("//")`` 判定——任何正常
+        路径都不匹配 ``//``——改为「是绝对路径即命中」，覆盖全部绝对路径。
+        """
+        if prefix == "/":
+            return normalized.startswith("/")
+        return normalized == prefix or normalized.startswith(prefix + "/")
 
     @staticmethod
     def _normalize(path: str) -> str:
@@ -120,3 +170,23 @@ class PathMapper:
         if not normalized.startswith("/"):
             raise PathValidationError(f"路径 {path!r} 无法解析为绝对路径")
         return normalized
+
+
+def source_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]:
+    """备份源**生效白名单**（设计方案 §3.2：由 browse_root 单一派生）。
+
+    取代原先硬编码的 ``SOURCE_ALLOWED_PREFIXES`` 常量——host 模式下浏览根是 ``/``，
+    可备份面随之放开，安全边界由 deny 前缀承担（方案 §3.1 原则）。
+
+    Args:
+        settings: 运行期配置；缺省取进程单例。
+
+    Returns:
+        单元素前缀元组（``("/sources",)`` 或 ``("/",)``）。
+    """
+    return ((settings or get_settings()).browse_root,)
+
+
+def browse_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]:
+    """E05/E33 浏览允许的前缀：与备份源同源（见 :func:`source_allowed_prefixes`）。"""
+    return source_allowed_prefixes(settings)
