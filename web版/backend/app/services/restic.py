@@ -32,6 +32,7 @@ from app.constants import (
     SUBPROCESS_LOOP_HINT,
 )
 from app.errors import ResticFailedError, ValidationError
+from app.services.exclude_spec import validate_size
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.settings import Settings, get_settings
 
@@ -107,6 +108,15 @@ class WhitelistArgs:
     tags: tuple[str, ...] = ()
     excludes: tuple[str, ...] = ()
     include: tuple[str, ...] = ()  # B1 文件级恢复：restore --include（容器形态，过 PathMapper 校验）
+    # 批次②（设计方案 §2.2/§2.5）扩展过滤参数——**全部 backup-only**，均过 S2 argv 白名单：
+    # iexcludes = --iexclude（大小写不敏感孪生，独立 flag 列表）；
+    # exclude_larger_than = --exclude-larger-than（大小阈值，如 100M）；
+    # exclude_if_present = --exclude-if-present（标记文件，多值各一条）；
+    # exclude_caches = --exclude-caches（CACHEDIR.TAG 缓存目录开关）。
+    iexcludes: tuple[str, ...] = ()
+    exclude_larger_than: str | None = None
+    exclude_if_present: tuple[str, ...] = ()
+    exclude_caches: bool = False
     host: str | None = None
     group_by: str | None = None
     keep_last: int | None = None
@@ -439,6 +449,17 @@ class ResticCmd:
                 flags.append("--dry-run")
             if args.verbose:
                 flags.append("--verbose")
+            # 批次② 过滤参数（backup 专属；全过 S2 argv 白名单，值经安全校验）
+            for pattern in args.iexcludes:
+                flags.extend(["--iexclude", _assert_safe_value(pattern, "iexclude")])
+            if args.exclude_larger_than:
+                flags.extend(["--exclude-larger-than", validate_size(args.exclude_larger_than)])
+            for name in args.exclude_if_present:
+                flags.extend(
+                    ["--exclude-if-present", _assert_safe_value(name, "exclude-if-present")]
+                )
+            if args.exclude_caches:
+                flags.append("--exclude-caches")
             return flags
 
         if verb == "restore":

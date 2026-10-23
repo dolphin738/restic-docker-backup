@@ -10,6 +10,7 @@ docker → ``/sources``（内置项形如 ``/sources/proc``）；host → ``/``�
 from __future__ import annotations
 
 from app.errors import PathOutOfPrefixError, ValidationError
+from app.services.exclude_spec import validate_glob
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.settings import Settings, get_settings
 
@@ -142,16 +143,25 @@ def normalize_user_excludes(
         if not item or item in seen:
             continue
         seen.add(item)
-        if not item.startswith(_ANCHOR_PREFIX):
-            result.append(item)  # 纯 glob 模式：形态无关，原样透传
+        # 先剥 !（负向）再分类——否则 !/etc 会走"非锚定"分支原样透传，被 restic 锚定到
+        # 文件系统根 → 静默失效（存量缺陷②：负向规则须先剥 ! 再做前缀映射）。
+        negate = item.startswith("!")
+        body = item[1:].strip() if negate else item
+        if not body:
+            continue
+        if not body.startswith(_ANCHOR_PREFIX):
+            # 纯 glob 模式：形态无关，原样透传（语法非法仍 422，防 [abc 打死备份）
+            validate_glob(body)
+            result.append(f"!{body}" if negate else body)
             continue
         # 已是容器形态：不二次叠加源根，直接校验
-        container = item if item.startswith(container_prefixes) else mapper.to_snapshot(item)
+        container = body if body.startswith(container_prefixes) else mapper.to_snapshot(body)
         try:
             container = mapper.validate(container, allowed_prefixes=prefixes)
         except PathOutOfPrefixError as exc:
             raise ValidationError(
                 f"排除规则 {item!r} 不在当前源根范围内", data={"exclude": item}
             ) from exc
-        result.append(container)
+        validate_glob(container)  # 语法非法 → 422（存量缺陷①）
+        result.append(f"!{container}" if negate else container)
     return result
