@@ -36,7 +36,12 @@ import ExcludeEditor from '@/components/task/ExcludeEditor.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
-import { flattenExcludes, specFromFlatExcludes, type ExcludeSpec } from '@/utils/excludeSpec'
+import {
+  anchorPattern,
+  flattenExcludes,
+  specFromFlatExcludes,
+  type ExcludeSpec,
+} from '@/utils/excludeSpec'
 
 const props = defineProps<{
   /** 已选备份源（展示形态，如 /etc）。 */
@@ -206,6 +211,35 @@ function onSpecUpdate(next: ExcludeSpec): void {
   emit('update:excludeSpec', next)
   emit('update:excludes', flattenExcludes(next, sourceRoot.value).excludes)
 }
+
+/** 已排除的展示路径（来自 spec 的非负向规则）→ 树内置灰 + ⊘ 激活态。 */
+const excludedPaths = computed(() => {
+  const out = new Set<string>()
+  for (const rule of spec.value.rules) {
+    if (rule.negate) {
+      continue
+    }
+    out.add(anchorPattern(rule.pattern, sourceRoot.value))
+  }
+  return out
+})
+
+/** 树标记排除（批次③ ⊘）：命中即移除对应锚定规则，否则追加一条。
+ * 生成的是**精确锚定路径**（无尾随斜杠）——绕开 restic ``-/dir/`` 被忽略的静默失效坑。 */
+function onToggleExclude(item: TreeItem): void {
+  const anchored = anchorPattern(item.path, sourceRoot.value)
+  const index = spec.value.rules.findIndex(
+    (rule) => !rule.negate && anchorPattern(rule.pattern, sourceRoot.value) === anchored,
+  )
+  if (index >= 0) {
+    onSpecUpdate({ ...spec.value, rules: spec.value.rules.filter((_, i) => i !== index) })
+    return
+  }
+  onSpecUpdate({
+    ...spec.value,
+    rules: [...spec.value.rules, { pattern: item.path, negate: false, icase: false }],
+  })
+}
 </script>
 
 <template>
@@ -238,8 +272,10 @@ function onSpecUpdate(next: ExcludeSpec): void {
         :root-path="currentPath"
         :load-children="treeLoader"
         :height="320"
+        :excluded-paths="excludedPaths"
         select-dir
         @select="onTreeSelect"
+        @toggle-exclude="onToggleExclude"
       />
       <n-text depth="3" class="sources-picker__hint">{{ t('wizard.sourcesHint') }}</n-text>
     </section>

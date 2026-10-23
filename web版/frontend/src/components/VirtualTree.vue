@@ -43,10 +43,14 @@ const props = defineProps<{
   selectedPath?: string | null
   /** 多选态：命中集合的行走绿勾样式（B1 文件级恢复；仅样式，不改点击语义）。 */
   selectedPaths?: Set<string> | null
+  /** 已排除路径（展示形态）：命中的行置灰，⊘ 按钮呈激活态（批次③树标记排除）。 */
+  excludedPaths?: Set<string> | null
 }>()
 
 const emit = defineEmits<{
   (e: 'select', item: TreeItem): void
+  /** 树标记排除：点行末 ⊘ 切换（父组件据此增删锚定规则）。 */
+  (e: 'toggle-exclude', item: TreeItem): void
 }>()
 
 const { t } = useI18n()
@@ -165,6 +169,11 @@ function onRowClick(row: Row): void {
   emit('select', item)
 }
 
+/** 树标记排除：行末 ⊘ 点击（父组件据此增删锚定规则）。 */
+function onToggleExclude(item: TreeItem): void {
+  emit('toggle-exclude', item)
+}
+
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
   const walk = (path: string, depth: number): void => {
@@ -250,6 +259,8 @@ watch(
               row.kind === 'item' && !!selectedPath && row.item.path === selectedPath,
             'vtree__row--checked':
               row.kind === 'item' && !!selectedPaths && selectedPaths.has(row.item.path),
+            'vtree__row--excluded':
+              row.kind === 'item' && !!excludedPaths?.has(row.item.path),
           }"
           :style="{
             top: `${row.top}px`,
@@ -270,6 +281,18 @@ watch(
             >
               <IconServer />
             </n-icon>
+            <n-button
+              class="vtree__exclude"
+              :class="{ 'vtree__exclude--active': !!excludedPaths?.has(row.item.path) }"
+              size="tiny"
+              quaternary
+              :aria-label="
+                excludedPaths?.has(row.item.path) ? t('tree.unexclude') : t('tree.exclude')
+              "
+              @click.stop="onToggleExclude(row.item)"
+            >
+              ⊘
+            </n-button>
           </template>
           <n-button v-else size="tiny" quaternary :loading="row.loadingMore" @click.stop="loadMore(row.dirPath)">
             {{ t('tree.loadMore') }}
@@ -347,6 +370,25 @@ watch(
   flex: none;
   margin-left: 6px;
   color: var(--muted-foreground, #999);
+}
+
+/* 树标记排除（批次③ ⊘）：行末小按钮，激活态 = 已排除 */
+.vtree__exclude {
+  flex: none;
+  margin-left: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted-foreground, #999);
+}
+
+.vtree__exclude--active {
+  color: #d03050;
+}
+
+/* 已排除行置灰 + 删除线（一眼看出不在备份范围） */
+.vtree__row--excluded .vtree__name {
+  opacity: 0.5;
+  text-decoration: line-through;
 }
 
 .vtree__loading {

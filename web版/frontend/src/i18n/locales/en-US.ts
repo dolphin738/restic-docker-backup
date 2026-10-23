@@ -556,6 +556,8 @@ export default {
   tree: {
     loadMore: 'Load more',
     mountpoint: 'Mount point',
+    exclude: 'Exclude this',
+    unexclude: 'Remove exclusion',
   },
   repo: {
     type: 'Repository type',

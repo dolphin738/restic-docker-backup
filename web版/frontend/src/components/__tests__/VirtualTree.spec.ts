@@ -129,3 +129,40 @@ describe('VirtualTree 展开与选中分工', () => {
     expect(wrapper.text()).toContain('无权限读取目录')
   })
 })
+
+describe('VirtualTree 批次③：挂载徽章与树标记排除 ⊘', () => {
+  it('点行末 ⊘ → emit toggle-exclude（带完整 item）', async () => {
+    const wrapper = mountTree()
+    await flushLoads()
+    await rowsOf(wrapper)[0].find('.vtree__exclude').trigger('click')
+    const emits = wrapper.emitted('toggle-exclude')
+    expect(emits).toHaveLength(1)
+    expect((emits![0][0] as { path: string }).path).toBe('/a')
+  })
+
+  it('excludedPaths 命中 → 行置灰 + ⊘ 激活态（可访问名切为 Remove exclusion）', async () => {
+    const wrapper = mountTree({ excludedPaths: new Set(['/a']) })
+    await flushLoads()
+    expect(rowsOf(wrapper)[0].classes()).toContain('vtree__row--excluded')
+    const active = wrapper.find('.vtree__exclude--active')
+    expect(active.exists()).toBe(true)
+    expect(active.attributes('aria-label')).toBe('Remove exclusion')
+  })
+
+  it('挂载点条目渲染徽章', async () => {
+    const wrapper = mount(VirtualTree, {
+      props: {
+        rootPath: '/',
+        loadChildren: () =>
+          Promise.resolve({
+            items: [{ key: '/m', name: 'm', type: 'dir', path: '/m', is_mountpoint: true }],
+            nextCursor: null,
+          }),
+      },
+      global: { plugins: [i18n, naive] },
+      attachTo: document.body,
+    })
+    await flushLoads()
+    expect(wrapper.find('.vtree__mount').exists()).toBe(true)
+  })
+})
