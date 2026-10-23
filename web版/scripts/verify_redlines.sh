@@ -160,7 +160,8 @@ section 'S7 覆盖语义仅限原位恢复路径'
 #      （restic.py 拼装 + job_runner.py 注入，界面无入口）；
 #   ② 原位恢复（R-015）：restore 路由门禁（routers/restore.py）+ CompareService
 #      （services/compare.py）+ 白名单常量（constants.py）+ 前端原位确认流
-#      （frontend/src/pages/restore/index.vue）。
+#      （frontend/src/pages/restore/ —— P8–P11 起拆为入口 index.vue + 向导 flow/*，
+#       二者同属该流，故豁免整个目录而非单个文件）。
 # 其余任何出现 = 越界引入覆盖能力（Blocker）。i18n locales 是文案，一并排除。
 #
 # 最后三道是**收窄豁免**（2026-10-15 owner 裁决）：请求/响应模型
@@ -174,7 +175,7 @@ out=$(grep -rIn 'overwrite' backend/app frontend/src \
            --include=*.py --include=*.ts --include=*.vue 2>/dev/null \
       | grep -v 'restic.py' | grep -v 'job_runner.py' | grep -v 'routers/restore.py' \
       | grep -v 'services/compare.py' | grep -v 'constants.py' \
-      | grep -v 'locales' | grep -v 'pages/restore/index.vue' \
+      | grep -v 'locales' | grep -v 'pages/restore/' \
       | grep -v 'overwrite_mode' | grep -v 'overwrite_count' | grep -v 'overwrite=')
 if [ -n "$out" ]; then
   violation 'S7 overwrite 出现在两类合法调用点之外'
