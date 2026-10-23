@@ -585,8 +585,17 @@ async function runTest(): Promise<void> {
           </template>
         </n-form>
 
-        <n-space :size="10">
-          <n-button size="small" type="primary" :loading="savingChannel" :disabled="!channelType" @click="saveChannel">
+        <!-- P12 加载态：配置未到位时列表整体不渲染——否则首载会闪「四个渠道全部未配置」
+             + noChannel 警告（误导）；saveRules/saveChannel 的 patch 是**全量字段**语义，
+             加载未完成就保存等于把表单默认值写回后端，故保存按钮同步禁用（仅首载）。 -->
+        <n-space :size="8">
+          <n-button
+            size="small"
+            type="primary"
+            :loading="savingChannel"
+            :disabled="!channelType || configQuery.isLoading.value"
+            @click="saveChannel"
+          >
             {{ t('common.save') }}
           </n-button>
         </n-space>
@@ -595,38 +604,41 @@ async function runTest(): Promise<void> {
 
     <!-- ② 已保存的渠道列表 -->
     <n-card :title="t('notify.list.title')" size="small">
-      <n-space vertical :size="10">
-        <n-alert v-if="!hasAnyChannel" type="warning" :show-icon="false">{{ t('notify.noChannel') }}</n-alert>
+      <n-space vertical :size="12">
+        <template v-if="configQuery.data.value">
+          <n-alert v-if="!hasAnyChannel" type="warning" :show-icon="false">{{ t('notify.noChannel') }}</n-alert>
 
-        <n-space v-for="key in CHANNEL_KEYS" :key="key" align="center" class="notify__row">
-          <StatusTag
-            :kind="isConfigured(key, configQuery.data.value) ? 'success' : 'default'"
-            :label="isConfigured(key, configQuery.data.value) ? t('notify.list.configured') : t('notify.list.unconfigured')"
-          />
-          <n-text class="notify__row-name">{{ t(`notify.channel.${key}`) }}</n-text>
-          <n-text depth="3" class="notify__row-summary">{{ channelSummary(key) }}</n-text>
-          <n-space :size="6">
-            <n-button size="tiny" secondary @click="loadChannel(key)">{{ t('notify.list.edit') }}</n-button>
-            <n-button
-              size="tiny"
-              quaternary
-              type="warning"
-              :disabled="!isConfigured(key, configQuery.data.value)"
-              @click="onClearClick(key)"
-            >
-              {{ t('notify.list.clear') }}
-            </n-button>
+          <n-space v-for="key in CHANNEL_KEYS" :key="key" align="center" class="notify__row">
+            <StatusTag
+              :kind="isConfigured(key, configQuery.data.value) ? 'success' : 'default'"
+              :label="isConfigured(key, configQuery.data.value) ? t('notify.list.configured') : t('notify.list.unconfigured')"
+            />
+            <n-text class="notify__row-name">{{ t(`notify.channel.${key}`) }}</n-text>
+            <n-text depth="3" class="notify__row-summary">{{ channelSummary(key) }}</n-text>
+            <n-space :size="8">
+              <n-button size="tiny" secondary @click="loadChannel(key)">{{ t('notify.list.edit') }}</n-button>
+              <n-button
+                size="tiny"
+                quaternary
+                type="warning"
+                :disabled="!isConfigured(key, configQuery.data.value)"
+                @click="onClearClick(key)"
+              >
+                {{ t('notify.list.clear') }}
+              </n-button>
+            </n-space>
           </n-space>
-        </n-space>
+        </template>
+        <n-text v-else depth="3">{{ t('common.loading') }}</n-text>
 
-        <n-space :size="10">
+        <n-space :size="8">
           <n-button size="small" secondary :loading="testing" :disabled="!hasAnyChannel" @click="runTest">
             {{ t('notify.test') }}
           </n-button>
         </n-space>
 
         <!-- E24 逐渠道结果（失败必须带原因，禁止静默） -->
-        <n-space v-if="testResult" vertical :size="6">
+        <n-space v-if="testResult" vertical :size="8">
           <n-space align="center" :size="8">
             <StatusTag
               :kind="testResult.ok ? 'success' : 'error'"
@@ -647,7 +659,7 @@ async function runTest(): Promise<void> {
 
     <!-- ③ 告警规则（全局） -->
     <n-card :title="t('notify.rules.title')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-text depth="3">{{ t('notify.rules.desc') }}</n-text>
         <n-form label-placement="left" label-width="160" size="small" class="notify__form">
           <n-form-item :label="t('notify.onSuccess')">
@@ -663,7 +675,7 @@ async function runTest(): Promise<void> {
             </n-space>
           </n-form-item>
         </n-form>
-        <n-button size="small" type="primary" :loading="savingRules" @click="saveRules">
+        <n-button size="small" type="primary" :loading="savingRules" :disabled="configQuery.isLoading.value" @click="saveRules">
           {{ t('common.save') }}
         </n-button>
       </n-space>

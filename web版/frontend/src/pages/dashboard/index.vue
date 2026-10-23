@@ -19,6 +19,7 @@ import {
   NInput,
   NModal,
   NSelect,
+  NSkeleton,
   NSpace,
   NText,
   useMessage,
@@ -74,6 +75,10 @@ const repoLoading = computed(() => repoQuery.isFetching.value)
 const repoError = computed(() => toText(repoQuery.error.value))
 const tasks = computed<TaskCardModel[]>(() => tasksQuery.data.value?.items ?? [])
 const tasksError = computed(() => toText(tasksQuery.error.value))
+/** A7 加载态（P12）：isLoading = 尚无数据（首载），与 15s 轮询的 isFetching 区分——
+ *  轮询不闪骨架，只有首载显示。加载与空态必须可区分：否则首载时 sortedTasks
+ *  为空会闪「空态引导卡」，误导用户去新建第一个任务（其实只是还没加载完）。 */
+const tasksLoading = computed(() => tasksQuery.isLoading.value)
 
 // ---------------------------------------------------------------- KPI 状态带（P4：三卡合一）
 /** 运行用户档位（A0 后只按运行用户分档；与 TierCard 同口径，仪表盘以 KPI 单元格呈现）。 */
@@ -686,6 +691,14 @@ async function onDeleteConfirmed(): Promise<void> {
         {{ t('dashboard.loadFailed', { message: tasksError }) }}
       </n-alert>
 
+      <!-- A7 加载态（P12 补做）：首载骨架行，行高与 TaskRowCard 的 ITEM_HEIGHT(92) 对齐，
+           加载完成时不跳高；仅首载显示（tasksLoading = isLoading，不含 15s 轮询） -->
+      <div v-else-if="tasksLoading" class="tasks__skeleton" role="status" aria-busy="true" :aria-label="t('common.loading')">
+        <div v-for="n in 3" :key="n" class="tasks__skeleton-row">
+          <n-skeleton text :repeat="2" />
+        </div>
+      </div>
+
       <!-- 空态：新建首个任务引导卡 -->
       <div v-else-if="sortedTasks.length === 0" class="tasks__empty">
         <n-text strong class="tasks__empty-title">{{ t('task.empty.title') }}</n-text>
@@ -726,6 +739,7 @@ async function onDeleteConfirmed(): Promise<void> {
         :row-key="detailRowKey"
         size="small"
         :scroll-x="920"
+        :loading="tasksLoading"
         :virtual-scroll="sortedTasks.length > 50"
         :max-height="560"
       />
@@ -871,6 +885,13 @@ async function onDeleteConfirmed(): Promise<void> {
 
 /* 固定行卡骨架：ITEM_HEIGHT = ROW_HEIGHT(84) + ROW_GAP(8) = 92，间距用 padding-bottom 实现 */
 .tasks__item {
+  height: 92px;
+  padding-bottom: 8px;
+  box-sizing: border-box;
+}
+
+/* A7 加载骨架（P12）：行高与行卡一致（92），首载 → 数据到达不跳高 */
+.tasks__skeleton-row {
   height: 92px;
   padding-bottom: 8px;
   box-sizing: border-box;

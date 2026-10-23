@@ -239,12 +239,12 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
 <template>
   <n-space vertical :size="16">
     <n-card :title="t('nav.audit')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <!-- S6 UI 面：append-only 声明，无编辑/删除入口 -->
         <n-text depth="3">{{ t('audit.readonlyNote') }}</n-text>
 
         <!-- 筛选区 -->
-        <n-space align="center" :size="10" class="audit__filters">
+        <n-space align="center" :size="8" class="audit__filters">
           <n-select
             v-model:value="draftAction"
             :options="actionOptions"

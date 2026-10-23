@@ -364,7 +364,7 @@ onMounted(() => {
 
         <template v-if="jobs.length">
           <n-card v-for="job in jobs" :key="job.id" size="small">
-            <n-space vertical :size="10">
+            <n-space vertical :size="12">
               <n-space align="center" justify="space-between">
                 <n-space align="center" :size="8">
                   <!-- P3b 收口：类别 default + 状态（cancelled→warning 语义不动） -->
@@ -372,7 +372,7 @@ onMounted(() => {
                   <StatusTag :kind="jobStatusTagType(job.status)" :label="t(`jobs.status.${job.status}`)" />
                   <n-text depth="3">{{ formatDateTime(job.created_at) }}</n-text>
                 </n-space>
-                <n-space :size="6">
+                <n-space :size="8">
                   <n-button size="tiny" secondary @click="openLog(job)">{{ t('job.viewLog') }}</n-button>
                   <n-popconfirm @positive-click="onCancel(job.id)">
                     <template #trigger>
@@ -398,12 +398,12 @@ onMounted(() => {
 
       <!-- ================= 全量历史（E13 完整版：缺省不过滤，条件显式传入） ================= -->
       <n-tab-pane name="history" :tab="t('jobs.tabHistory')">
-        <n-space vertical :size="10">
+        <n-space vertical :size="12">
           <n-text depth="3">{{ t('jobs.historyLimitNote', { n: HISTORY_PAGE_SIZE }) }}</n-text>
 
           <!-- 筛选区：type / status（含终态）/ task_id / 开始时间范围 -->
           <n-card size="small">
-            <n-space align="center" :size="10" class="jobs__filters">
+            <n-space align="center" :size="8" class="jobs__filters">
               <n-select
                 v-model:value="draftType"
                 :options="typeOptions"

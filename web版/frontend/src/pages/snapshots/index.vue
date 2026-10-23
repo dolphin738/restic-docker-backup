@@ -354,8 +354,8 @@ async function applyTag(): Promise<void> {
 
     <n-card :title="t('nav.snapshots')" size="small">
       <!-- R-026-10：tag 筛选 + 分组头（当前筛选维度摘要） -->
-      <n-space vertical :size="10" class="snapshots__filter">
-        <n-space :size="10" :wrap="false" class="snapshots__filters">
+      <n-space vertical :size="12" class="snapshots__filter">
+        <n-space :size="8" :wrap="false" class="snapshots__filters">
           <n-select
             v-model:value="tagFilter"
             :options="tagOptions"
@@ -406,9 +406,9 @@ async function applyTag(): Promise<void> {
       <template #header-extra>
         <n-text depth="3" class="snapshots__forget-note">{{ t('snapshot.forget.note') }}</n-text>
       </template>
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-alert type="warning" :show-icon="false">{{ t('snapshot.forget.desc') }}</n-alert>
-        <n-space align="center" :size="10" class="snapshots__forget-form">
+        <n-space align="center" :size="8" class="snapshots__forget-form">
           <n-select
             v-model:value="forgetTag"
             :options="tagOptions.filter((option) => option.value !== '')"
@@ -450,7 +450,7 @@ async function applyTag(): Promise<void> {
             class="snapshots__forget-num"
             :placeholder="t('snapshot.forget.keepTags')"
           />
-          <n-space align="center" :size="6" :wrap="false">
+          <n-space align="center" :size="8" :wrap="false">
             <n-switch v-model:value="forgetPrune" size="small" :aria-label="t('snapshot.forget.prune')" />
             <n-text depth="2" class="snapshots__forget-note">{{ t('snapshot.forget.prune') }}</n-text>
           </n-space>
@@ -476,9 +476,9 @@ async function applyTag(): Promise<void> {
       <template #header-extra>
         <n-text depth="3" class="snapshots__tag-note">{{ t('snapshot.tag.note') }}</n-text>
       </template>
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-alert type="info" :show-icon="false">{{ t('snapshot.tag.desc') }}</n-alert>
-        <n-space align="center" :size="10" :wrap="false" class="snapshots__tag-form">
+        <n-space align="center" :size="8" :wrap="false" class="snapshots__tag-form">
           <n-input
             v-model:value="tagAddText"
             size="small"
@@ -554,7 +554,7 @@ async function applyTag(): Promise<void> {
     <!-- 文件树抽屉：懒加载 + 虚拟滚动 + 游标只透传 -->
     <n-drawer v-model:show="treeShow" :width="720" placement="right">
       <n-drawer-content :title="`${t('snap.filesTitle')} ${activeSnapshot?.id.slice(0, 8) ?? ''}`" closable>
-        <n-space vertical :size="10">
+        <n-space vertical :size="12">
           <n-space align="center" justify="space-between">
             <n-text depth="3">{{ activeSnapshot?.paths.join(', ') }}</n-text>
             <n-button size="small" secondary type="primary" @click="restoreActiveSnapshot">

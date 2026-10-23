@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   repoStatus: null as Record<string, unknown> | null,
   statuses: {} as Record<string, Record<string, unknown> | null>,
   backupTasks: [] as Array<Record<string, unknown>>,
+  /** A7：true = 任务列表查询挂起（首载未完成），用于加载态断言。 */
+  tasksPending: false as boolean,
 }))
 
 vi.mock('@/api/repo', () => ({
@@ -52,7 +54,11 @@ vi.mock('@/api/repo', () => ({
 }))
 
 vi.mock('@/api/backupTasks', () => ({
-  listBackupTasks: vi.fn(async () => ({ items: mocks.backupTasks, total: mocks.backupTasks.length })),
+  listBackupTasks: vi.fn(() =>
+    mocks.tasksPending
+      ? new Promise(() => {}) // 挂起：模拟首载未完成（A7 加载态）
+      : Promise.resolve({ items: mocks.backupTasks, total: mocks.backupTasks.length }),
+  ),
   deleteBackupTask: vi.fn(async () => ({ ok: true })),
   // P7 A3：导出端点（菜单 Export → 口令弹窗 → 下载）
   exportBackupTask: vi.fn(async () => ({ format: 'restic-web-config-export', created_at: '2026-10-23T00:00:00Z' })),
@@ -865,5 +871,66 @@ describe('P7 验收门：视图持久化 / 时间切换 / 排序三态', () => {
     expect(rowNames(w)).toEqual(['Charlie', 'Bravo', 'Alpha'])
 
     w.unmount()
+  })
+})
+
+/**
+ * P12 A7 验收门（owner 2026-10-23 裁决：主页任务列表加载态从 P7 并入 P12）。
+ *
+ * 存在理由：原实现只有空态——tasksQuery 首载未完成时 sortedTasks 为空亦真，
+ * 「空态引导卡」会先闪一拍，把「还在加载」误呈现为「没有任务、去新建」。
+ * 本用例锁死分支顺序：error → 骨架（isLoading）→ 空态 → list/details。
+ */
+describe('P12 A7：任务列表加载态（加载与空态必须可区分）', () => {
+  it('首载未完成显示三行骨架而非空态引导卡', async () => {
+    // detectLocale 在 happy-dom 下可能解析为 en-US（navigator.language）→ 显式切 zh-CN 再断言中文可访问名，用完还原
+    const prevLocale = i18n.global.locale.value
+    i18n.global.locale.value = 'zh-CN'
+    mocks.tasksPending = true
+    mocks.backupTasks = []
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+
+    expect(w.findAll('.tasks__skeleton-row')).toHaveLength(3)
+    expect(w.find('.tasks__empty').exists()).toBe(false)
+    expect(w.findAllComponents(TaskRowCard)).toHaveLength(0)
+    // a11y：加载区 role=status + aria-busy + 可访问名（复用 common.loading，零新键）
+    expect(w.find('.tasks__skeleton').attributes('aria-busy')).toBe('true')
+    expect(w.find('.tasks__skeleton').attributes('aria-label')).toBe('加载中…')
+
+    mocks.tasksPending = false
+    i18n.global.locale.value = prevLocale
+    w.unmount()
+  })
+
+  it('数据到达后骨架让位：空数据走空态、有数据走行卡', async () => {
+    mocks.tasksPending = false
+    mocks.backupTasks = []
+    const w = mountPage(DashboardPage)
+    await flushPromises()
+    expect(w.find('.tasks__skeleton').exists()).toBe(false)
+    expect(w.find('.tasks__empty').exists()).toBe(true)
+
+    mocks.backupTasks = [
+      {
+        id: 21,
+        name: 'Delta',
+        enabled: true,
+        tag: 'task-21',
+        cron: '0 3 * * *',
+        status: 'success',
+        last_run_at: '2026-10-20T03:00:00Z',
+        last_result: 'success',
+        next_run_at: null,
+      },
+    ]
+    w.unmount()
+    const w2 = mountPage(DashboardPage)
+    await flushPromises()
+    expect(w2.find('.tasks__skeleton').exists()).toBe(false)
+    expect(w2.find('.tasks__empty').exists()).toBe(false)
+    expect(w2.findAllComponents(TaskRowCard)).toHaveLength(1)
+
+    w2.unmount()
   })
 })

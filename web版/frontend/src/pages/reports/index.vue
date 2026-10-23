@@ -122,12 +122,14 @@ const columns = computed<DataTableColumns<ReportBucket>>(() => [
           >
         </n-space>
 
+        <!-- P12 加载态：去掉 v-if="report"——首载时表格以 loading 态存在（空数据 + naive
+             加载遮罩），避免「窗口选择器之下大片空白」；摘要区仍 v-if（数字不应猜） -->
         <n-data-table
-          v-if="report"
           :columns="columns"
-          :data="report.buckets"
+          :data="report?.buckets ?? []"
           :bordered="false"
           size="small"
+          :loading="reportQuery.isFetching.value"
           :scroll-x="520"
         />
       </n-space>
