@@ -763,7 +763,7 @@ function onSectionChange(id: string): void {
 
     <!-- DB dump（批次 B 实装：dump.* 八键 + 密码三态） -->
     <n-card v-if="activeSection === 'dump'" id="sec-dump" class="settings__panel" :title="t('settings.dump.title')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.dump.desc') }}</n-text>
         <n-alert v-if="showPgVersionNote" type="warning" :show-icon="false">
           {{ t('settings.dump.pgVersionNote') }}
@@ -788,7 +788,7 @@ function onSectionChange(id: string): void {
             </n-form-item>
           </n-space>
           <n-form-item :label="t('settings.dump.password')">
-            <n-space vertical :size="6" class="settings__full">
+            <n-space vertical :size="8" class="settings__full">
               <n-space align="center" :size="8">
                 <!-- P3c 收口：口令已设/未设 + env 来源（色/文案不变，形态统一 pill） -->
                 <StatusTag
@@ -852,21 +852,21 @@ function onSectionChange(id: string): void {
         <n-text depth="3">{{ t('settings.behavior.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
           <n-space vertical :size="12">
-            <n-space vertical :size="2">
+            <n-space vertical :size="4">
               <n-space align="center" :size="8">
                 <n-switch v-model:value="behaviorAutoInit" size="small" :aria-label="t('settings.behavior.autoInit')" />
                 <n-text>{{ t('settings.behavior.autoInit') }}</n-text>
               </n-space>
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoInitHint') }}</n-text>
             </n-space>
-            <n-space vertical :size="2">
+            <n-space vertical :size="4">
               <n-space align="center" :size="8">
                 <n-switch v-model:value="behaviorAutoUnlock" size="small" :aria-label="t('settings.behavior.autoUnlock')" />
                 <n-text>{{ t('settings.behavior.autoUnlock') }}</n-text>
               </n-space>
               <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoUnlockHint') }}</n-text>
             </n-space>
-            <n-space vertical :size="2">
+            <n-space vertical :size="4">
               <n-space align="center" :size="8">
                 <n-switch v-model:value="behaviorCheckEnabled" size="small" :aria-label="t('settings.behavior.checkEnabled')" />
                 <n-text>{{ t('settings.behavior.checkEnabled') }}</n-text>
@@ -879,7 +879,7 @@ function onSectionChange(id: string): void {
               :feedback="behaviorDenominatorValid ? undefined : t('settings.behavior.invalidDenominator')"
               class="settings__ratio-item"
             >
-              <n-space align="center" :size="10">
+              <n-space align="center" :size="8">
                 <n-input-number
                   v-model:value="behaviorCheckSubsetDenominator"
                   :min="0"
@@ -891,7 +891,7 @@ function onSectionChange(id: string): void {
                 <n-text depth="3">{{ t('settings.behavior.checkSubsetDenominatorHint', { percent: behaviorDailyPercent }) }}</n-text>
               </n-space>
             </n-form-item>
-            <n-space vertical :size="2">
+            <n-space vertical :size="4">
               <n-space align="center" :size="8">
                 <n-switch v-model:value="behaviorMonthlyFullEnabled" size="small" :aria-label="t('settings.behavior.monthlyFullEnabled')" />
                 <n-text>{{ t('settings.behavior.monthlyFullEnabled') }}</n-text>
@@ -904,7 +904,7 @@ function onSectionChange(id: string): void {
               :feedback="behaviorDayValid ? undefined : t('settings.behavior.invalidDay')"
               class="settings__ratio-item"
             >
-              <n-space align="center" :size="10">
+              <n-space align="center" :size="8">
                 <n-input-number
                   v-model:value="behaviorMonthlyFullDay"
                   :min="1"
@@ -928,7 +928,7 @@ function onSectionChange(id: string): void {
 
     <!-- 凭据加密（R-025 / P3-A：密钥源自仓库密码文件，默认开） -->
     <n-card v-else-if="activeSection === 'credential'" id="sec-credential" class="settings__panel" :title="t('settings.credential.title')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.credential.desc') }}</n-text>
         <n-alert v-if="!credEncryptionAvailable" type="warning" :show-icon="false">
           {{ t('settings.credential.unavailable') }}
@@ -950,7 +950,7 @@ function onSectionChange(id: string): void {
 
     <!-- Prometheus 指标（R-024 / P3-B：抓取令牌三态 + 端点提示） -->
     <n-card v-else-if="activeSection === 'metrics'" id="sec-metrics" class="settings__panel" :title="t('settings.metrics.title')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
           <n-space align="center" :size="8">
@@ -1000,7 +1000,7 @@ function onSectionChange(id: string): void {
         </n-space>
 
         <!-- 服务器实时时钟（以服务器时刻为基准）+ NTP 偏差 -->
-        <n-space vertical :size="6">
+        <n-space vertical :size="8">
           <n-space align="center" :size="8" wrap>
             <n-text depth="2">{{ t('settings.timezone.serverTime') }}</n-text>
             <n-text strong class="settings__clock">{{ serverClockText }}</n-text>
@@ -1025,7 +1025,7 @@ function onSectionChange(id: string): void {
         </n-space>
 
         <!-- NTP 对时服务器（E39：主备两地址；皆空回落内置默认链） -->
-        <n-space vertical :size="6">
+        <n-space vertical :size="8">
           <n-text depth="2">{{ t('settings.timezone.ntpServersTitle') }}</n-text>
           <n-text depth="3">{{ t('settings.timezone.ntpServersDesc') }}</n-text>
           <n-form label-placement="top" class="settings__form">
@@ -1086,7 +1086,7 @@ function onSectionChange(id: string): void {
         </n-form>
 
         <!-- 时间同步（NTP 校准系统时钟；结果必须可见，禁止静默） -->
-        <n-space vertical :size="6">
+        <n-space vertical :size="8">
           <n-text depth="2">{{ t('settings.timezone.syncTitle') }}</n-text>
           <n-text depth="3">{{ t('settings.timezone.syncDesc') }}</n-text>
           <n-space align="center" :size="8" wrap>
@@ -1333,7 +1333,7 @@ function onSectionChange(id: string): void {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 10px 0 2px;
+  padding: 12px 0 4px;
   background: var(--n-color, #fff);
   border-top: 1px solid var(--n-border-color, rgba(125, 133, 152, 0.28));
 }

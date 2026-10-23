@@ -1352,7 +1352,7 @@ function formatBytes(value: number): string {
           {{ t('common.refresh') }}
         </n-button>
       </template>
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-space align="center" :size="8">
           <!-- P3c 收口：连接态 / 锁定态（映射不变） -->
           <StatusTag
@@ -1389,7 +1389,7 @@ function formatBytes(value: number): string {
          行卡 = [类型图标][名称 + 状态标签][地址·主机标识][右侧操作]，整行点击 = 设为当前
          （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。 -->
     <n-card :title="t('repo.listTitle')" size="small">
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <ActionCard
           :icon="IconPlusCircle"
           :title="t('repo.listAddTitle')"
@@ -1885,7 +1885,7 @@ function formatBytes(value: number): string {
 
               <!-- 仓库 ID（仅新建态；留空服务端自动生成 r<YYMMDD>-xxxxxx） -->
               <n-form-item v-if="creatingNew" :label="t('repo.colId')">
-                <n-space vertical :size="6" class="repo__cred">
+                <n-space vertical :size="8" class="repo__cred">
                   <n-space :size="8" align="center">
                     <n-input v-model:value="repoForm.id" :placeholder="t('repo.idAutoHint')" class="repo__id-input" />
                     <n-button size="small" secondary :loading="generatingId" @click="regenerateRepoId">
@@ -1905,7 +1905,7 @@ function formatBytes(value: number): string {
                 <n-form-item v-for="field in credFields" :key="field.suffix" :label="t(field.labelKey)">
                   <n-space vertical :size="4" class="repo__cred">
                     <!-- 编辑态才显示已配置/未配置与 env 覆盖（itemOf 读当前仓库命名空间，新建态无意义） -->
-                    <n-space v-if="!creatingNew" align="center" :size="6">
+                    <n-space v-if="!creatingNew" align="center" :size="8">
                       <StatusTag
                         size="tiny"
                         :kind="itemOf(field.suffix)?.has_value ? 'success' : 'default'"
@@ -2101,8 +2101,8 @@ function formatBytes(value: number): string {
       :title="t('repo.browseTitle')"
       style="width: min(640px, calc(100vw - 32px))"
     >
-      <n-space vertical :size="10">
-        <n-space :size="6" class="repo__mounts">
+      <n-space vertical :size="12">
+        <n-space :size="8" class="repo__mounts">
           <n-tag size="small" round @click="jumpTo(CONTAINER_ROOT)">
             {{ t('repo.mountRoot') }}
           </n-tag>
@@ -2256,7 +2256,7 @@ function formatBytes(value: number): string {
       :title="t('repo.copyBtn')"
       style="width: min(560px, calc(100vw - 32px))"
     >
-      <n-space vertical :size="10">
+      <n-space vertical :size="12">
         <n-text depth="3">{{ t('repo.copyDesc') }}</n-text>
         <n-form label-placement="left" label-width="120" size="small">
           <n-form-item :label="t('repo.copyTarget')">
@@ -2355,7 +2355,7 @@ function formatBytes(value: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   margin-top: 8px;
 }
 
@@ -2365,7 +2365,7 @@ function formatBytes(value: number): string {
 
 .repo__mounts {
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .repo__mount {
@@ -2387,7 +2387,7 @@ function formatBytes(value: number): string {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 0;
+  padding: 12px 0;
   border-top: 1px solid var(--n-divider-color, rgba(128, 128, 140, 0.16));
 }
 
@@ -2398,7 +2398,7 @@ function formatBytes(value: number): string {
 .repo__maint-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2412,7 +2412,7 @@ function formatBytes(value: number): string {
 /* A 方案：行内 init 进度条——在仓库行的动作区下方占满整行（抽屉日志是覆盖层不占布局）。 */
 .repo__init-progress {
   width: 100%;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
 /* A5 目的地类型卡片网格（对齐 Duplicati 选择器：图标 + 名称竖排） */
@@ -2431,8 +2431,8 @@ function formatBytes(value: number): string {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 6px;
+  gap: 8px;
+  padding: 12px 8px;
   border: 1px solid var(--n-border-color, #e0e0e6);
   border-radius: 5px;
   background: transparent;
@@ -2471,7 +2471,7 @@ function formatBytes(value: number): string {
   align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 12px 12px;
   border: 1px solid var(--n-border-color, #e0e0e6);
   border-radius: 5px;
   background: transparent;
@@ -2506,7 +2506,7 @@ function formatBytes(value: number): string {
 .repo__dest-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -2515,7 +2515,7 @@ function formatBytes(value: number): string {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2564,7 +2564,7 @@ function formatBytes(value: number): string {
 .repo__form-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--n-divider-color, rgba(128, 128, 140, 0.16));
 }

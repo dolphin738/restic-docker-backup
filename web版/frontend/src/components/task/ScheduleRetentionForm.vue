@@ -254,9 +254,9 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 </script>
 
 <template>
-  <n-space vertical :size="14">
+  <n-space vertical :size="16">
     <!-- A6 调度双模式 -->
-    <n-space vertical :size="6">
+    <n-space vertical :size="8">
       <n-text strong>{{ t('wizard.schedule') }}</n-text>
 
       <n-tabs v-model:value="cronMode" type="segment" size="small" @update:value="onModeChange">
@@ -267,8 +267,8 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
       <!-- 简单模式 -->
       <template v-if="cronMode === 'simple'">
-        <n-space :size="10" wrap>
-          <n-space vertical :size="2" class="schedule-form__field">
+        <n-space :size="8" wrap>
+          <n-space vertical :size="4" class="schedule-form__field">
             <n-text depth="3" class="schedule-form__label">{{ t('wizard.freq.label') }}</n-text>
             <n-select
               v-model:value="simple.frequency"
@@ -279,7 +279,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
             />
           </n-space>
 
-          <n-space v-if="needsTime" vertical :size="2" class="schedule-form__field">
+          <n-space v-if="needsTime" vertical :size="4" class="schedule-form__field">
             <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleTime') }}</n-text>
             <n-space :size="4" align="center">
               <n-input-number
@@ -302,7 +302,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
             </n-space>
           </n-space>
 
-          <n-space v-if="needsMinuteOnly" vertical :size="2" class="schedule-form__field">
+          <n-space v-if="needsMinuteOnly" vertical :size="4" class="schedule-form__field">
             <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleMinute') }}</n-text>
             <n-input-number
               v-model:value="simple.minute"
@@ -314,7 +314,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
             />
           </n-space>
 
-          <n-space v-if="needsIntervalHours" vertical :size="2" class="schedule-form__field">
+          <n-space v-if="needsIntervalHours" vertical :size="4" class="schedule-form__field">
             <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleIntervalHours') }}</n-text>
             <n-input-number
               v-model:value="simple.intervalHours"
@@ -326,7 +326,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
             />
           </n-space>
 
-          <n-space v-if="needsIntervalDays" vertical :size="2" class="schedule-form__field">
+          <n-space v-if="needsIntervalDays" vertical :size="4" class="schedule-form__field">
             <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleIntervalDays') }}</n-text>
             <n-input-number
               v-model:value="simple.intervalDays"
@@ -339,7 +339,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
           </n-space>
         </n-space>
 
-        <n-space v-if="needsWeekdays" vertical :size="2" class="schedule-form__field">
+        <n-space v-if="needsWeekdays" vertical :size="4" class="schedule-form__field">
           <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleWeekdays') }}</n-text>
           <n-checkbox-group v-model:value="simple.daysOfWeek" @update:value="emitSimple">
             <n-space :size="4" wrap>
@@ -348,7 +348,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
           </n-checkbox-group>
         </n-space>
 
-        <n-space v-if="needsDaysOfMonth" vertical :size="2" class="schedule-form__field">
+        <n-space v-if="needsDaysOfMonth" vertical :size="4" class="schedule-form__field">
           <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleDaysOfMonth') }}</n-text>
           <n-select
             v-model:value="simple.daysOfMonth"
@@ -360,7 +360,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
           />
         </n-space>
 
-        <n-space v-if="needsMonth" vertical :size="2" class="schedule-form__field">
+        <n-space v-if="needsMonth" vertical :size="4" class="schedule-form__field">
           <n-text depth="3" class="schedule-form__label">{{ t('wizard.scheduleMonth') }}</n-text>
           <n-select
             v-model:value="simple.month"
@@ -376,7 +376,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
       <!-- 高级模式 -->
       <template v-else-if="cronMode === 'advanced'">
-        <n-space :size="6" wrap>
+        <n-space :size="8" wrap>
           <n-input
             v-model:value="advCron"
             size="small"
@@ -394,17 +394,17 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
       <n-text depth="3" class="schedule-form__note">{{ t('wizard.jitterNote') }}</n-text>
 
       <!-- G5 调度摘要：一句话回读当前计划（aria-live 让屏幕阅读器即时播报改动） -->
-      <n-space :size="6" align="center" class="schedule-form__summary">
+      <n-space :size="8" align="center" class="schedule-form__summary">
         <n-text depth="3">{{ t('wizard.scheduleSummary') }}：</n-text>
         <n-text strong aria-live="polite">{{ scheduleSummary }}</n-text>
       </n-space>
     </n-space>
 
     <!-- 保留策略 -->
-    <n-space vertical :size="6">
+    <n-space vertical :size="8">
       <n-text strong>{{ t('wizard.retention') }}</n-text>
-      <n-space :size="10" wrap>
-        <n-space v-for="field in keepFields" :key="field.key" vertical :size="2" class="schedule-form__keep">
+      <n-space :size="8" wrap>
+        <n-space v-for="field in keepFields" :key="field.key" vertical :size="4" class="schedule-form__keep">
           <n-text depth="3" class="schedule-form__keep-label">{{ field.label }}</n-text>
           <n-input-number
             :value="modelValue[field.key] as number"
@@ -418,8 +418,8 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
       <!-- A2 时间线保留（keep-within*）：与计数档并列，均为「至少一个保留规则」的成员 -->
       <n-text strong>{{ t('wizard.retentionWithin') }}</n-text>
-      <n-space :size="10" wrap>
-        <n-space v-for="field in withinFields" :key="field.key" vertical :size="2" class="schedule-form__keep">
+      <n-space :size="8" wrap>
+        <n-space v-for="field in withinFields" :key="field.key" vertical :size="4" class="schedule-form__keep">
           <n-text depth="3" class="schedule-form__keep-label">{{ field.label }}</n-text>
           <n-input
             :value="modelValue[field.key] as string"
@@ -433,7 +433,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
       <n-text depth="3" class="schedule-form__note">{{ t('wizard.withinNote') }}</n-text>
 
       <!-- A2 keep_tags（--keep-tag）：命中任一的快照保留；逗号分隔 -->
-      <n-space vertical :size="2" class="schedule-form__keep">
+      <n-space vertical :size="4" class="schedule-form__keep">
         <n-text depth="3" class="schedule-form__keep-label">{{ t('wizard.keepTags') }}</n-text>
         <n-input
           :value="modelValue.keep_tags_text"

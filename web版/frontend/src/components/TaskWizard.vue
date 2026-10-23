@@ -745,7 +745,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </n-space>
       </n-alert>
 
-      <n-space vertical :size="14" class="wizard__body">
+      <n-space vertical :size="16" class="wizard__body">
         <!-- ① 基础信息 -->
         <template v-if="step === 1">
           <n-space vertical :size="4">
@@ -869,7 +869,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
             <n-tag size="small" round>{{ loadedTask?.tag ?? '' }}</n-tag>
           </n-space>
 
-          <n-space vertical :size="6">
+          <n-space vertical :size="8">
             <n-text strong>{{ t('wizard.retention') }}</n-text>
             <n-text depth="3">
               keep-last {{ form.keep_last }} · keep-hourly {{ form.keep_hourly }} · keep-daily
@@ -906,14 +906,14 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
               :title="t('wizard.dry_run_pseudo')"
               :show-icon="false"
             >
-              <n-space vertical :size="2">
+              <n-space vertical :size="4">
                 <n-text v-for="warning in dryRunResult.warnings" :key="warning.path" depth="3">
                   {{ warning.path }}
                 </n-text>
               </n-space>
             </n-alert>
             <n-text depth="3">{{ t('wizard.dry_run_count', { n: dryRunResult.items.length }) }}</n-text>
-            <n-space :size="6" class="wizard__preview">
+            <n-space :size="8" class="wizard__preview">
               <n-tag
                 v-for="item in dryRunResult.items.slice(0, 200)"
                 :key="item.display_path"

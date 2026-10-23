@@ -205,7 +205,7 @@ async function autoLogin(newPassword: string): Promise<void> {
 }
 
 .bootstrap__body {
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
 .bootstrap__submit {

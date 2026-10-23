@@ -142,7 +142,7 @@ function removeExclude(rule: string): void {
     <n-text depth="3" class="sources-picker__hint">{{ t('wizard.sourcesHint') }}</n-text>
 
     <n-text v-if="sources.length === 0" depth="3">{{ t('wizard.sourcesEmpty') }}</n-text>
-    <n-space v-else :size="6">
+    <n-space v-else :size="8">
       <n-tag
         v-for="path in sources"
         :key="path"
@@ -156,7 +156,7 @@ function removeExclude(rule: string): void {
 
     <!-- A4：手动输入挂载路径（远端源：宿主 rclone mount 后映射进 /sources 的目录） -->
     <n-text strong>{{ t('wizard.manualPath') }}</n-text>
-    <n-space :size="6">
+    <n-space :size="8">
       <n-input
         v-model:value="manualPath"
         size="small"
@@ -170,14 +170,14 @@ function removeExclude(rule: string): void {
 
     <n-collapse size="small">
       <n-collapse-item :title="t('wizard.exclusionsBuiltin', { n: builtinRules.length })" name="builtin">
-        <n-space :size="6" class="sources-picker__rules">
+        <n-space :size="8" class="sources-picker__rules">
           <n-tag v-for="rule in builtinRules" :key="rule" size="small" round>{{ rule }}</n-tag>
         </n-space>
       </n-collapse-item>
     </n-collapse>
 
     <n-text strong>{{ t('wizard.exclusionsExtra') }}</n-text>
-    <n-space :size="6">
+    <n-space :size="8">
       <n-input
         v-model:value="excludeDraft"
         size="small"
@@ -187,7 +187,7 @@ function removeExclude(rule: string): void {
       />
       <n-button size="small" @click="addExclude">{{ t('wizard.extraExclude') }}</n-button>
     </n-space>
-    <n-space v-if="excludes.length" :size="6">
+    <n-space v-if="excludes.length" :size="8">
       <n-tag
         v-for="rule in excludes"
         :key="rule"
