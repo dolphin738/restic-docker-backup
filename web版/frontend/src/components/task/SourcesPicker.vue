@@ -12,6 +12,7 @@ import {
   NButton,
   NCollapse,
   NCollapseItem,
+  NIcon,
   NInput,
   NSpace,
   NTag,
@@ -22,6 +23,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { browseSources } from '@/api/backupTasks'
 import { getExclusions } from '@/api/exclusions'
+import { IconPlusCircle } from '@/components/icons/icons'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 
@@ -164,7 +166,12 @@ function removeExclude(rule: string): void {
         :placeholder="t('wizard.manualPathPlaceholder')"
         @keydown.enter.prevent="addManualPath"
       />
-      <n-button size="small" @click="addManualPath">{{ t('wizard.manualPathAdd') }}</n-button>
+      <n-button size="small" @click="addManualPath">
+        <template #icon>
+          <n-icon :size="16"><IconPlusCircle /></n-icon>
+        </template>
+        {{ t('wizard.manualPathAdd') }}
+      </n-button>
     </n-space>
     <n-text depth="3" class="sources-picker__hint">{{ t('wizard.manualPathHint') }}</n-text>
 
@@ -185,7 +192,12 @@ function removeExclude(rule: string): void {
         :placeholder="t('wizard.exclusionsExtra')"
         @keydown.enter.prevent="addExclude"
       />
-      <n-button size="small" @click="addExclude">{{ t('wizard.extraExclude') }}</n-button>
+      <n-button size="small" @click="addExclude">
+        <template #icon>
+          <n-icon :size="16"><IconPlusCircle /></n-icon>
+        </template>
+        {{ t('wizard.extraExclude') }}
+      </n-button>
     </n-space>
     <n-space v-if="excludes.length" :size="8">
       <n-tag

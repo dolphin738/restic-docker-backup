@@ -5,6 +5,7 @@ import {
   NCard,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NSpace,
   NStep,
@@ -17,6 +18,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { changePassword, fetchBootstrapPassword, fetchMe, login } from '@/api/auth'
 import { hasCode, isAppError } from '@/api/http'
+import { IconChevronRight, IconCopy, IconLock, IconUser } from '@/components/icons/icons'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -142,9 +144,15 @@ async function autoLogin(newPassword: string): Promise<void> {
             <n-input :value="revealedPassword" readonly />
             <n-space>
               <n-button size="small" secondary @click="copyPassword">
+                <template #icon>
+                  <n-icon :size="16"><IconCopy /></n-icon>
+                </template>
                 {{ t('bootstrap.copyPassword') }}
               </n-button>
               <n-button size="small" type="primary" @click="goChangePassword">
+                <template #icon>
+                  <n-icon :size="16"><IconChevronRight /></n-icon>
+                </template>
                 {{ t('bootstrap.step1Next') }}
               </n-button>
             </n-space>
@@ -171,6 +179,9 @@ async function autoLogin(newPassword: string): Promise<void> {
             class="bootstrap__submit"
             :loading="submitting"
           >
+            <template #icon>
+              <n-icon :size="16"><IconLock /></n-icon>
+            </template>
             {{ submitting ? t('bootstrap.submitting') : t('bootstrap.submit') }}
           </n-button>
         </n-form>
@@ -181,7 +192,12 @@ async function autoLogin(newPassword: string): Promise<void> {
             {{ t('bootstrap.step3Manual') }}
           </n-alert>
           <router-link v-if="autoLoginFailed" :to="{ name: 'login' }">
-            <n-button type="primary">{{ t('bootstrap.goLogin') }}</n-button>
+            <n-button type="primary">
+              <template #icon>
+                <n-icon :size="16"><IconUser /></n-icon>
+              </template>
+              {{ t('bootstrap.goLogin') }}
+            </n-button>
           </router-link>
           <n-text v-else depth="3">{{ t('bootstrap.step3Desc') }}</n-text>
         </template>

@@ -82,8 +82,9 @@ const BASE_TIME = {
 function ntpSaveButton(w: VueWrapper): HTMLButtonElement | undefined {
   const primary = [...w.element.querySelectorAll('input')].find((el) => el.getAttribute('placeholder') === 'pool.ntp.org')
   const form = primary?.closest('form')
+  // P15 图标化后按钮带 #icon 插槽（SVG 无文本但内容节点含换行空白）→ trim 后再比对
   return form
-    ? ([...form.querySelectorAll('button')].find((b) => b.textContent === '保存') as HTMLButtonElement | undefined)
+    ? ([...form.querySelectorAll('button')].find((b) => b.textContent?.trim() === '保存') as HTMLButtonElement | undefined)
     : undefined
 }
 

@@ -11,6 +11,7 @@ import {
   NAlert,
   NCard,
   NDataTable,
+  NIcon,
   NRadioButton,
   NRadioGroup,
   NSpace,
@@ -21,6 +22,7 @@ import { computed, h, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getBackupSuccessReport } from '@/api/reports'
 import type { ReportBucket } from '@/api/types'
+import { IconActivity, IconAlertTriangle, IconCheckCircle, IconClock, IconLayers } from '@/components/icons/icons'
 
 const { t } = useI18n()
 
@@ -92,7 +94,10 @@ const columns = computed<DataTableColumns<ReportBucket>>(() => [
     <n-card :title="t('reports.title')" size="small">
       <n-space vertical :size="12">
         <n-space align="center" :size="12">
-          <n-text depth="3">{{ t('reports.window') }}</n-text>
+          <n-text depth="3" class="reports__kpi">
+            <n-icon :size="16" class="reports__kpi-icon"><IconClock /></n-icon>
+            {{ t('reports.window') }}
+          </n-text>
           <n-radio-group v-model:value="days" size="small">
             <n-radio-button v-for="opt in windowOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
@@ -108,18 +113,22 @@ const columns = computed<DataTableColumns<ReportBucket>>(() => [
         </n-alert>
 
         <n-space :size="24" v-if="report">
-          <n-text depth="3"
-            >{{ t('reports.summaryTotal') }}：<n-text strong>{{ report.total }}</n-text></n-text
-          >
-          <n-text depth="3"
-            >{{ t('reports.summarySuccess') }}：<n-text strong type="success">{{ report.success }}</n-text></n-text
-          >
-          <n-text depth="3"
-            >{{ t('reports.summaryFailed') }}：<n-text strong type="error">{{ report.failed }}</n-text></n-text
-          >
-          <n-text depth="3"
-            >{{ t('reports.summaryRatio') }}：<n-text strong>{{ formatRatio(report.ratio) }}</n-text></n-text
-          >
+          <n-text depth="3" class="reports__kpi">
+            <n-icon :size="16" class="reports__kpi-icon"><IconLayers /></n-icon>
+            {{ t('reports.summaryTotal') }}：<n-text strong>{{ report.total }}</n-text>
+          </n-text>
+          <n-text depth="3" class="reports__kpi">
+            <n-icon :size="16" class="reports__kpi-icon"><IconCheckCircle /></n-icon>
+            {{ t('reports.summarySuccess') }}：<n-text strong type="success">{{ report.success }}</n-text>
+          </n-text>
+          <n-text depth="3" class="reports__kpi">
+            <n-icon :size="16" class="reports__kpi-icon"><IconAlertTriangle /></n-icon>
+            {{ t('reports.summaryFailed') }}：<n-text strong type="error">{{ report.failed }}</n-text>
+          </n-text>
+          <n-text depth="3" class="reports__kpi">
+            <n-icon :size="16" class="reports__kpi-icon"><IconActivity /></n-icon>
+            {{ t('reports.summaryRatio') }}：<n-text strong>{{ formatRatio(report.ratio) }}</n-text>
+          </n-text>
         </n-space>
 
         <!-- P12 加载态：去掉 v-if="report"——首载时表格以 loading 态存在（空数据 + naive
@@ -140,6 +149,12 @@ const columns = computed<DataTableColumns<ReportBucket>>(() => [
 </template>
 
 <style scoped>
+/* KPI 摘要行内图标：与文字基线对齐，右留 4px 气口（节奏值） */
+.reports__kpi-icon {
+  vertical-align: -3px;
+  margin-right: 4px;
+}
+
 .reports__ratio-track {
   width: 120px;
   height: 8px;

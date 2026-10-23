@@ -17,6 +17,7 @@ import {
   NCard,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NInputNumber,
   NSelect,
@@ -29,6 +30,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getNotifyConfig, testNotify, updateNotifyConfig } from '@/api/notify'
 import type { NotifyConfigPatch, NotifyConfigResponse, NotifyTestResponse } from '@/api/types'
+import { IconBell, IconCheckCircle } from '@/components/icons/icons'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 
@@ -596,6 +598,9 @@ async function runTest(): Promise<void> {
             :disabled="!channelType || configQuery.isLoading.value"
             @click="saveChannel"
           >
+            <template #icon>
+              <n-icon :size="16"><IconCheckCircle /></n-icon>
+            </template>
             {{ t('common.save') }}
           </n-button>
         </n-space>
@@ -633,6 +638,9 @@ async function runTest(): Promise<void> {
 
         <n-space :size="8">
           <n-button size="small" secondary :loading="testing" :disabled="!hasAnyChannel" @click="runTest">
+            <template #icon>
+              <n-icon :size="16"><IconBell /></n-icon>
+            </template>
             {{ t('notify.test') }}
           </n-button>
         </n-space>
@@ -676,6 +684,9 @@ async function runTest(): Promise<void> {
           </n-form-item>
         </n-form>
         <n-button size="small" type="primary" :loading="savingRules" :disabled="configQuery.isLoading.value" @click="saveRules">
+          <template #icon>
+            <n-icon :size="16"><IconCheckCircle /></n-icon>
+          </template>
           {{ t('common.save') }}
         </n-button>
       </n-space>

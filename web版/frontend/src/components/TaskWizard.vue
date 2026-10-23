@@ -14,6 +14,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NIcon,
   NInput,
   NInputNumber,
   NSelect,
@@ -41,6 +42,14 @@ import { hasCode, isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
 import { getRepo, getRepoStatus, listRepos, testRepo } from '@/api/repo'
 import type { BackupTask, DryRunResponse, RepoTestResponse, TaskUpsertRequest } from '@/api/types'
+import {
+  IconArrowLeft,
+  IconCheckCircle,
+  IconChevronRight,
+  IconPlay,
+  IconSearch,
+  IconServer,
+} from '@/components/icons/icons'
 import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
 } from '@/components/task/ScheduleRetentionForm.vue'
@@ -823,6 +832,9 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           <!-- G3/E1：测试连接状态机（idle/testing/success/error），成功结果按仓库缓存 -->
           <n-space align="center" :size="8">
             <n-button size="small" secondary :loading="testing" @click="onTestConnection">
+              <template #icon>
+                <n-icon :size="16"><IconServer /></n-icon>
+              </template>
               {{ t('wizard.testConnection') }}
             </n-button>
             <StatusTag
@@ -887,6 +899,9 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
           <n-space vertical :size="8">
             <n-button size="small" secondary :loading="dryRunLoading" @click="onDryRun">
+              <template #icon>
+                <n-icon :size="16"><IconSearch /></n-icon>
+              </template>
               {{ dryRunLoading ? t('wizard.dry_run_running') : t('wizard.dry_run') }}
             </n-button>
             <n-text depth="3" class="wizard__hint">{{ t('wizard.dry_run_hint') }}</n-text>
@@ -927,23 +942,42 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
         <!-- G7：页脚两端对齐（返回← 在左 / 继续→ 在右），对齐 Duplicati form-actions 形态 -->
         <n-space justify="space-between" align="center" class="wizard__footer">
-          <n-button v-if="step > 1" quaternary @click="goPrev">{{ t('confirm.back') }}</n-button>
+          <n-button v-if="step > 1" quaternary @click="goPrev">
+            <template #icon>
+              <n-icon :size="16"><IconArrowLeft /></n-icon>
+            </template>
+            {{ t('confirm.back') }}
+          </n-button>
           <n-space v-else />
           <n-space align="center" :size="8">
-            <n-button v-if="step < 5" type="primary" @click="goNext">{{ t('confirm.next') }}</n-button>
+            <n-button v-if="step < 5" type="primary" @click="goNext">
+              <template #icon>
+                <n-icon :size="16"><IconChevronRight /></n-icon>
+              </template>
+              {{ t('confirm.next') }}
+            </n-button>
             <template v-else>
               <n-button quaternary :loading="saving" @click="onSaveOnly">
+                <template #icon>
+                  <n-icon :size="16"><IconCheckCircle /></n-icon>
+                </template>
                 {{ isEdit ? t('wizard.submitUpdate') : t('wizard.save_only') }}
               </n-button>
               <n-tooltip v-if="!dryRunOk" trigger="hover">
                 <template #trigger>
                   <n-button type="primary" disabled>
+                    <template #icon>
+                      <n-icon :size="16"><IconPlay /></n-icon>
+                    </template>
                     {{ t('wizard.dry_run_confirm') }}
                   </n-button>
                 </template>
                 {{ dryRunBlockHint }}
               </n-tooltip>
               <n-button v-else type="primary" :loading="saving" @click="onSaveAndRun">
+                <template #icon>
+                  <n-icon :size="16"><IconPlay /></n-icon>
+                </template>
                 {{ t('wizard.dry_run_confirm') }}
               </n-button>
             </template>

@@ -19,6 +19,7 @@ import {
   NDrawer,
   NDrawerContent,
   NEmpty,
+  NIcon,
   NPopconfirm,
   NSelect,
   NSpace,
@@ -34,6 +35,7 @@ import { useRoute } from 'vue-router'
 import { listBackupTasks } from '@/api/backupTasks'
 import { cancelJob, createJob, getCheckDetail, getJob, listActiveJobs, listJobsHistory } from '@/api/jobs'
 import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
+import { IconFile, IconFilter, IconShieldCheck, IconX } from '@/components/icons/icons'
 import JobLogDrawer from '@/components/JobLogDrawer.vue'
 import { useUiStore } from '@/stores/ui'
 import { isAppError } from '@/api/http'
@@ -438,9 +440,17 @@ onMounted(() => {
                 class="jobs__filter-range"
               />
               <n-button size="small" type="primary" :loading="historyQuery.isFetching.value" @click="applyHistoryFilters">
+                <template #icon>
+                  <n-icon :size="16"><IconFilter /></n-icon>
+                </template>
                 {{ t('jobs.apply') }}
               </n-button>
-              <n-button size="small" quaternary @click="resetHistoryFilters">{{ t('jobs.reset') }}</n-button>
+              <n-button size="small" quaternary @click="resetHistoryFilters">
+                <template #icon>
+                  <n-icon :size="16"><IconX /></n-icon>
+                </template>
+                {{ t('jobs.reset') }}
+              </n-button>
             </n-space>
           </n-card>
 
@@ -500,6 +510,9 @@ onMounted(() => {
               :loading="repairing"
               @click="repairShow = true"
             >
+              <template #icon>
+                <n-icon :size="16"><IconShieldCheck /></n-icon>
+              </template>
               {{ t('jobs.check.repairBtn') }}
             </n-button>
           </n-space>
@@ -539,7 +552,12 @@ onMounted(() => {
           </template>
 
           <n-space v-if="checkDetail">
-            <n-button size="small" secondary @click="openLog(checkDetail)">{{ t('job.viewLog') }}</n-button>
+            <n-button size="small" secondary @click="openLog(checkDetail)">
+              <template #icon>
+                <n-icon :size="16"><IconFile /></n-icon>
+              </template>
+              {{ t('job.viewLog') }}
+            </n-button>
           </n-space>
 
           <!-- B2 自愈建议链：一键修复确认门（关键词 REPAIR，重建索引不可并发读写） -->

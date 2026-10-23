@@ -29,6 +29,7 @@ import {
   NEl,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NInputNumber,
   NSelect,
@@ -45,6 +46,7 @@ import { exportConfig, importConfig } from '@/api/configTransfer'
 import type { ConfigExportPack, ConfigImportReport, TimeSyncResponse } from '@/api/types'
 import { saveDumpBehaviorConfig } from '@/api/settings'
 import { getSystemTime, syncSystemTime } from '@/api/system'
+import { IconCheckCircle, IconClock, IconDownload, IconLock, IconShieldCheck } from '@/components/icons/icons'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // P6 形态层：分段控件从本页私有实现提升为共用组件（S-4 单一实现）；
@@ -839,6 +841,9 @@ function onSectionChange(id: string): void {
               {{ dumpFormValid ? t('settings.dump.unsavedHint') : t('settings.dump.needRetention') }}
             </n-text>
             <n-button type="primary" :loading="savingDump" :disabled="!dumpFormValid" @click="onSaveDump">
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
               {{ t('common.save') }}
             </n-button>
           </div>
@@ -919,6 +924,9 @@ function onSectionChange(id: string): void {
           </n-space>
           <n-space justify="end">
             <n-button type="primary" :loading="savingBehavior" :disabled="!behaviorFormValid" @click="onSaveBehavior">
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
               {{ t('common.save') }}
             </n-button>
           </n-space>
@@ -978,6 +986,9 @@ function onSectionChange(id: string): void {
               :disabled="!metricsTokenDirty"
               @click="onSaveMetricsToken"
             >
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
               {{ t('settings.metrics.save') }}
             </n-button>
           </n-space>
@@ -1051,6 +1062,9 @@ function onSectionChange(id: string): void {
                 :disabled="!ntpDirty || ntpEnvLocked"
                 @click="onSaveNtpServers"
               >
+                <template #icon>
+                  <n-icon :size="16"><IconCheckCircle /></n-icon>
+                </template>
                 {{ t('common.save') }}
               </n-button>
               <n-text v-if="ntpEnvLocked" depth="3">{{ t('settings.timezone.envLocked') }}</n-text>
@@ -1079,6 +1093,9 @@ function onSectionChange(id: string): void {
               :disabled="!timezoneDirty || !timezoneValue || timezoneEnvLocked"
               @click="onSaveTimezone"
             >
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
               {{ t('common.save') }}
             </n-button>
             <n-text v-if="timezoneEnvLocked" depth="3">{{ t('settings.timezone.envLocked') }}</n-text>
@@ -1091,6 +1108,9 @@ function onSectionChange(id: string): void {
           <n-text depth="3">{{ t('settings.timezone.syncDesc') }}</n-text>
           <n-space align="center" :size="8" wrap>
             <n-button size="small" secondary :loading="syncing" @click="syncGateShow = true">
+              <template #icon>
+                <n-icon :size="16"><IconClock /></n-icon>
+              </template>
               {{ t('settings.timezone.syncNow') }}
             </n-button>
             <template v-if="syncResult">
@@ -1139,6 +1159,9 @@ function onSectionChange(id: string): void {
         <n-text depth="3">{{ t('settings.password.passwordRule') }}</n-text>
         <n-space justify="end">
           <n-button type="primary" :loading="changing" :disabled="!canSubmitPassword" @click="onChangePassword">
+            <template #icon>
+              <n-icon :size="16"><IconLock /></n-icon>
+            </template>
             {{ t('settings.password.submit') }}
           </n-button>
         </n-space>
@@ -1159,6 +1182,9 @@ function onSectionChange(id: string): void {
           />
           <!-- G4：生成强随机口令（对齐 Duplicati export.component.html 的口令区） -->
           <n-button size="small" secondary @click="onGenerateExportPassword">
+            <template #icon>
+              <n-icon :size="16"><IconShieldCheck /></n-icon>
+            </template>
             {{ t('settings.transfer.generatePassword') }}
           </n-button>
           <n-button
@@ -1169,6 +1195,9 @@ function onSectionChange(id: string): void {
             :disabled="exportPassword.length < 10"
             @click="onExport"
           >
+            <template #icon>
+              <n-icon :size="16"><IconDownload /></n-icon>
+            </template>
             {{ t('settings.transfer.exportBtn') }}
           </n-button>
         </n-space>

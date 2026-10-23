@@ -13,6 +13,7 @@ import {
   NCard,
   NDataTable,
   NDatePicker,
+  NIcon,
   NSelect,
   NSpace,
   NText,
@@ -22,6 +23,7 @@ import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { queryAudit } from '@/api/audit'
 import type { AuditOut, AuditResult } from '@/api/types'
+import { IconFilter, IconX } from '@/components/icons/icons'
 import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
 
@@ -271,9 +273,17 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
             class="audit__range"
           />
           <n-button size="small" type="primary" :loading="auditQuery.isFetching.value" @click="applyFilters">
+            <template #icon>
+              <n-icon :size="16"><IconFilter /></n-icon>
+            </template>
             {{ t('audit.apply') }}
           </n-button>
-          <n-button size="small" quaternary @click="resetFilters">{{ t('audit.reset') }}</n-button>
+          <n-button size="small" quaternary @click="resetFilters">
+            <template #icon>
+              <n-icon :size="16"><IconX /></n-icon>
+            </template>
+            {{ t('audit.reset') }}
+          </n-button>
         </n-space>
 
         <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>

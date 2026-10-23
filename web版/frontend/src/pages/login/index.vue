@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NSpace, NText, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCard, NForm, NFormItem, NIcon, NInput, NSpace, NText, useMessage } from 'naive-ui'
 import { computed, onUnmounted, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchMe, login } from '@/api/auth'
 import { getHealth } from '@/api/health'
 import { hasCode, isAppError } from '@/api/http'
+import { IconLock } from '@/components/icons/icons'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -127,6 +128,9 @@ async function onSubmit(): Promise<void> {
             :loading="submitting"
             :disabled="locked || !form.password"
           >
+            <template #icon>
+              <n-icon :size="16"><IconLock /></n-icon>
+            </template>
             {{ submitting ? t('login.submitting') : t('login.submit') }}
           </n-button>
         </n-form>

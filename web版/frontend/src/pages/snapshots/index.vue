@@ -8,6 +8,7 @@ import {
   NDrawer,
   NDrawerContent,
   NEmpty,
+  NIcon,
   NInputNumber,
   NPagination,
   NSelect,
@@ -26,6 +27,7 @@ import { isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
 import { listSnapshotFiles, listSnapshots, previewForget, tagSnapshots } from '@/api/snapshots'
 import type { ForgetPreviewResponse, ForgetPreviewSnapshot, SnapshotOut, TagSnapshotsResponse } from '@/api/types'
+import { IconEdit, IconRestore, IconSearch } from '@/components/icons/icons'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
@@ -462,6 +464,9 @@ async function applyTag(): Promise<void> {
             :disabled="!forgetReady"
             @click="runForgetPreview"
           >
+            <template #icon>
+              <n-icon :size="16"><IconSearch /></n-icon>
+            </template>
             {{ t('snapshot.forget.preview') }}
           </n-button>
         </n-space>
@@ -505,6 +510,9 @@ async function applyTag(): Promise<void> {
             :disabled="tagApplying"
             @click="applyTag"
           >
+            <template #icon>
+              <n-icon :size="16"><IconEdit /></n-icon>
+            </template>
             {{ t('snapshot.tag.apply') }}
           </n-button>
         </n-space>
@@ -558,6 +566,9 @@ async function applyTag(): Promise<void> {
           <n-space align="center" justify="space-between">
             <n-text depth="3">{{ activeSnapshot?.paths.join(', ') }}</n-text>
             <n-button size="small" secondary type="primary" @click="restoreActiveSnapshot">
+              <template #icon>
+                <n-icon :size="16"><IconRestore /></n-icon>
+              </template>
               {{ t('snap.restoreThis') }}
             </n-button>
           </n-space>
