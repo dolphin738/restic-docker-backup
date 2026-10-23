@@ -157,23 +157,25 @@ describe('SourcesPicker 左树右栏与可编辑行', () => {
     w.unmount()
   })
 
-  it('排除规则行同样支持铅笔编辑与垃圾桶删除', async () => {
+  it('排除卡片渲染批次②编辑器（快捷卡 + 规则列表），加规则走 update:excludes', async () => {
     const w = await mountPicker(['/sources/data'], ['*.tmp'])
-    const rows = [...w.element.querySelectorAll('.sources-picker__row')]
-    const ruleRow = rows[rows.length - 2] // 倒数第二行 = 规则行（末行为「添加」输入行）
-    const editBtn = [...ruleRow.querySelectorAll('button')].find(
-      (b) => b.getAttribute('aria-label') === '编辑排除规则',
-    )
-    expect(editBtn).toBeDefined()
-    editBtn!.click()
+    const text = w.element.textContent ?? ''
+    expect(text).toContain('快捷排除')
+    expect(text).toContain('排除规则')
+    // 规则输入框：已有 '*.tmp' 一行 + 末尾「添加」行
+    const inputs = [
+      ...w.element.querySelectorAll('.exclude-editor__rule-input input'),
+    ] as HTMLInputElement[]
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    const addInput = inputs[inputs.length - 1]!
+    addInput.value = '*.log'
+    addInput.dispatchEvent(new Event('input'))
     await nextTick()
-    const input = ruleRow.querySelector('input') as HTMLInputElement
-    input.value = '*.log'
-    input.dispatchEvent(new Event('input'))
+    buttonByLabel(w.element, '添加规则')!.click()
     await nextTick()
-    buttonByLabel(w.element, '保存')!.click()
-    await nextTick()
-    expect(w.findComponent(SourcesPicker).emitted('update:excludes')?.[0]).toEqual([['*.log']])
+    const emitted = w.findComponent(SourcesPicker).emitted('update:excludes')
+    const last = emitted?.[emitted.length - 1]?.[0] as string[]
+    expect(last).toContain('*.log')
     w.unmount()
   })
 })

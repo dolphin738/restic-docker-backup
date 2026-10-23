@@ -42,6 +42,7 @@ import { hasCode, isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
 import { getRepo, getRepoStatus, listRepos, testRepo } from '@/api/repo'
 import type { BackupTask, DryRunResponse, RepoTestResponse, TaskUpsertRequest } from '@/api/types'
+import { emptyExcludeSpec, specFromFlatExcludes, type ExcludeSpec } from '@/utils/excludeSpec'
 import {
   IconArrowLeft,
   IconCheckCircle,
@@ -83,6 +84,8 @@ interface TaskFormState extends ScheduleRetentionValue {
   enabled: boolean
   sources: string[]
   excludes: string[]
+  /** 批次② 结构化过滤条件（快捷卡 + 有序规则）；展平后仍下发 excludes 兼容旧契约。 */
+  excludeSpec: ExcludeSpec
   /** 以下高级字段不在向导 UI 暴露：新建取缺省，编辑时原样往返（TaskUpsertRequest 全量语义）。 */
   group_by: string
   one_file_system: boolean
@@ -108,6 +111,7 @@ function defaultForm(): TaskFormState {
     enabled: true,
     sources: [],
     excludes: [],
+    excludeSpec: emptyExcludeSpec(),
     cron: '',
     keep_last: 0,
     keep_hourly: 0,
@@ -265,6 +269,8 @@ watch(
     form.enabled = task.enabled
     form.sources = [...task.display_sources]
     form.excludes = [...task.display_excludes]
+    // 批次②：有结构化 spec 用 spec，否则由扁平 excludes 反推（旧任务/后端未回 spec 时）
+    form.excludeSpec = task.exclude_spec ?? specFromFlatExcludes(task.display_excludes)
     form.cron = task.cron ?? ''
     form.keep_last = task.keep_last
     form.keep_hourly = task.keep_hourly
@@ -527,6 +533,7 @@ function buildPayload(): TaskUpsertRequest {
     enabled: form.enabled,
     sources: form.sources,
     excludes: form.excludes,
+    exclude_spec: form.excludeSpec,
     keep_last: form.keep_last,
     keep_hourly: form.keep_hourly,
     keep_daily: form.keep_daily,
@@ -813,7 +820,11 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
         <!-- ② 备份源 -->
         <template v-else-if="step === 2">
-          <SourcesPicker v-model:sources="form.sources" v-model:excludes="form.excludes" />
+          <SourcesPicker
+            v-model:sources="form.sources"
+            v-model:excludes="form.excludes"
+            v-model:excludeSpec="form.excludeSpec"
+          />
         </template>
 
         <!-- ③ 存储目标 -->

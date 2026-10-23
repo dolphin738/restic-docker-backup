@@ -27,24 +27,30 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { browseSources } from '@/api/backupTasks'
 import { getExclusions } from '@/api/exclusions'
-import { IconCheck, IconEdit, IconPlusCircle, IconTrash, IconX } from '@/components/icons/icons'
+import { IconPlusCircle } from '@/components/icons/icons'
+import ExcludeEditor from '@/components/task/ExcludeEditor.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
+import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
+import { flattenExcludes, specFromFlatExcludes, type ExcludeSpec } from '@/utils/excludeSpec'
 
 const props = defineProps<{
   /** 已选备份源（展示形态，如 /etc）。 */
   sources: string[]
   /** 用户追加排除规则（展示形态；内置排除集不入库）。 */
   excludes: string[]
+  /** 批次② 结构化过滤条件（快捷卡 + 规则）；缺省由 excludes 反推（编辑预填兼容）。 */
+  excludeSpec?: ExcludeSpec
 }>()
 
 const emit = defineEmits<{
   (e: 'update:sources', value: string[]): void
   (e: 'update:excludes', value: string[]): void
+  (e: 'update:excludeSpec', value: ExcludeSpec): void
 }>()
 
 const { t } = useI18n()
@@ -164,60 +170,34 @@ const exclusionsQuery = useQuery({ queryKey: ['exclusions'], queryFn: () => getE
 /** E32 直接回剥好前缀的展示形态（display_core ⊆ display_items），前端不再做前缀转换。 */
 const builtinRules = computed(() => exclusionsQuery.data.value?.display_items ?? [])
 
-/** 追加排除规则：与路径行同形态的可编辑行（铅笔改、垃圾桶删）。 */
-const editingRule = ref<string | null>(null)
-const ruleDraft = ref('')
-const excludeDraft = ref('')
+// 批次②：结构化过滤条件（快捷卡 + 有序规则），编辑由 ExcludeEditor 承担；
+// 结果同时下发扁平 excludes（兼容 dry-run / 既有契约）与 excludeSpec（新契约）。
+const runtime = useRuntimeStore()
+const sourceRoot = computed(() => runtime.browseRoot || '/sources')
+const spec = ref<ExcludeSpec>(props.excludeSpec ?? specFromFlatExcludes(props.excludes))
 
-function startRuleEdit(rule: string): void {
-  editingRule.value = rule
-  ruleDraft.value = rule
-}
+watch(
+  () => props.excludeSpec,
+  (next) => {
+    if (next) {
+      spec.value = next
+    }
+  },
+)
 
-function cancelRuleEdit(): void {
-  editingRule.value = null
-  ruleDraft.value = ''
-}
+watch(
+  () => props.excludes,
+  (next) => {
+    if (!props.excludeSpec) {
+      spec.value = specFromFlatExcludes(next)
+    }
+  },
+)
 
-function removeExclude(rule: string): void {
-  if (editingRule.value === rule) {
-    cancelRuleEdit()
-  }
-  emit(
-    'update:excludes',
-    props.excludes.filter((item) => item !== rule),
-  )
-}
-
-function commitRuleEdit(): void {
-  const old = editingRule.value
-  if (!old) {
-    return
-  }
-  const value = ruleDraft.value.trim()
-  if (!value || value === old) {
-    cancelRuleEdit()
-    return
-  }
-  if (props.excludes.includes(value)) {
-    message.info(t('wizard.sourceExists', { path: value }))
-    return
-  }
-  emit(
-    'update:excludes',
-    props.excludes.map((item) => (item === old ? value : item)),
-  )
-  cancelRuleEdit()
-}
-
-function addExclude(): void {
-  const value = excludeDraft.value.trim()
-  if (!value || props.excludes.includes(value)) {
-    excludeDraft.value = ''
-    return
-  }
-  emit('update:excludes', [...props.excludes, value])
-  excludeDraft.value = ''
+function onSpecUpdate(next: ExcludeSpec): void {
+  spec.value = next
+  emit('update:excludeSpec', next)
+  emit('update:excludes', flattenExcludes(next, sourceRoot.value).excludes)
 }
 </script>
 
@@ -339,81 +319,11 @@ function addExclude(): void {
           </n-collapse-item>
         </n-collapse>
 
-        <div class="sources-picker__rows">
-          <div v-for="rule in excludes" :key="rule" class="sources-picker__row">
-            <template v-if="editingRule === rule">
-              <n-input
-                v-model:value="ruleDraft"
-                size="small"
-                class="sources-picker__row-input"
-                :placeholder="t('wizard.editRulePlaceholder')"
-                @keydown.enter.prevent="commitRuleEdit"
-              />
-              <n-button
-                size="small"
-                quaternary
-                :aria-label="t('common.save')"
-                @click="commitRuleEdit"
-              >
-                <template #icon>
-                  <n-icon :size="16"><IconCheck /></n-icon>
-                </template>
-              </n-button>
-              <n-button
-                size="small"
-                quaternary
-                :aria-label="t('common.cancel')"
-                @click="cancelRuleEdit"
-              >
-                <template #icon>
-                  <n-icon :size="16"><IconX /></n-icon>
-                </template>
-              </n-button>
-            </template>
-            <template v-else>
-              <n-input :value="rule" size="small" readonly class="sources-picker__row-input" />
-              <n-button
-                size="small"
-                quaternary
-                :aria-label="t('wizard.editRule')"
-                @click="startRuleEdit(rule)"
-              >
-                <template #icon>
-                  <n-icon :size="16"><IconEdit /></n-icon>
-                </template>
-              </n-button>
-              <n-button
-                size="small"
-                quaternary
-                :aria-label="t('wizard.removeRule')"
-                @click="removeExclude(rule)"
-              >
-                <template #icon>
-                  <n-icon :size="16"><IconTrash /></n-icon>
-                </template>
-              </n-button>
-            </template>
-          </div>
-
-          <div class="sources-picker__row">
-            <n-input
-              v-model:value="excludeDraft"
-              size="small"
-              class="sources-picker__row-input"
-              :placeholder="t('wizard.addExcludePlaceholder')"
-              @keydown.enter.prevent="addExclude"
-            />
-            <n-button
-              size="small"
-              :aria-label="t('wizard.extraExclude')"
-              @click="addExclude"
-            >
-              <template #icon>
-                <n-icon :size="16"><IconPlusCircle /></n-icon>
-              </template>
-            </n-button>
-          </div>
-        </div>
+        <ExcludeEditor
+          :model-value="spec"
+          :source-root="sourceRoot"
+          @update:model-value="onSpecUpdate"
+        />
 
         <n-text depth="3" class="sources-picker__hint">{{ t('wizard.first_slow') }}</n-text>
       </n-card>

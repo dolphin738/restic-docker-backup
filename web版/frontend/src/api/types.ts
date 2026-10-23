@@ -1,5 +1,7 @@
 /** 与后端 app/schemas/api_schemas.py 一一对应的响应类型（§5.0 / §5.1）。 */
 
+import type { ExcludeSpec } from '@/utils/excludeSpec'
+
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'interrupted' | 'cancelled'
 export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump' | 'repair' | 'recover'
 
@@ -423,6 +425,8 @@ export interface BackupTask {
   display_sources: string[]
   excludes: string[]
   display_excludes: string[]
+  /** 批次② 结构化过滤条件（后端回传；旧任务/未持久化时缺省，前端由 excludes 反推）。 */
+  exclude_spec?: ExcludeSpec
   keep_last: number
   keep_hourly: number
   keep_daily: number
@@ -464,6 +468,8 @@ export interface TaskUpsertRequest {
   /** 展示形态（如 /etc）；服务端归一为容器形态入库。 */
   sources: string[]
   excludes: string[]
+  /** 批次② 结构化过滤条件（快捷卡 + 规则）；后端据此展平并持久化。 */
+  exclude_spec?: ExcludeSpec
   keep_last: number
   keep_hourly: number
   keep_daily: number
