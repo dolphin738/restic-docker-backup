@@ -35,7 +35,8 @@ import { useRoute } from 'vue-router'
 import { listBackupTasks } from '@/api/backupTasks'
 import { cancelJob, createJob, getCheckDetail, getJob, listActiveJobs, listJobsHistory } from '@/api/jobs'
 import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
-import { IconFile, IconFilter, IconShieldCheck, IconX } from '@/components/icons/icons'
+import { IconFile, IconShieldCheck } from '@/components/icons/icons'
+import FilterBar from '@/components/FilterBar.vue'
 import JobLogDrawer from '@/components/JobLogDrawer.vue'
 import { useUiStore } from '@/stores/ui'
 import { isAppError } from '@/api/http'
@@ -403,56 +404,42 @@ onMounted(() => {
         <n-space vertical :size="12">
           <n-text depth="3">{{ t('jobs.historyLimitNote', { n: HISTORY_PAGE_SIZE }) }}</n-text>
 
-          <!-- 筛选区：type / status（含终态）/ task_id / 开始时间范围 -->
-          <n-card size="small">
-            <n-space align="center" :size="8" class="jobs__filters">
-              <n-select
-                v-model:value="draftType"
-                :options="typeOptions"
-                clearable
-                :placeholder="t('jobs.allTypes')"
-                size="small"
-                class="jobs__filter-select"
-              />
-              <n-select
-                v-model:value="draftStatuses"
-                :options="statusOptions"
-                multiple
-                clearable
-                :placeholder="t('jobs.allStatuses')"
-                size="small"
-                class="jobs__filter-select jobs__filter-select--wide"
-              />
-              <n-select
-                v-model:value="draftTaskId"
-                :options="taskOptions"
-                clearable
-                filterable
-                :placeholder="t('jobs.allTasks')"
-                size="small"
-                class="jobs__filter-select jobs__filter-select--wide"
-              />
-              <n-date-picker
-                v-model:value="draftRange"
-                type="datetimerange"
-                clearable
-                size="small"
-                class="jobs__filter-range"
-              />
-              <n-button size="small" type="primary" :loading="historyQuery.isFetching.value" @click="applyHistoryFilters">
-                <template #icon>
-                  <n-icon :size="16"><IconFilter /></n-icon>
-                </template>
-                {{ t('jobs.apply') }}
-              </n-button>
-              <n-button size="small" quaternary @click="resetHistoryFilters">
-                <template #icon>
-                  <n-icon :size="16"><IconX /></n-icon>
-                </template>
-                {{ t('jobs.reset') }}
-              </n-button>
-            </n-space>
-          </n-card>
+          <!-- 筛选区：type / status（含终态）/ task_id / 开始时间范围（共用形态层 FilterBar） -->
+          <FilterBar :loading="historyQuery.isFetching.value" @apply="applyHistoryFilters" @reset="resetHistoryFilters">
+            <n-select
+              v-model:value="draftType"
+              :options="typeOptions"
+              clearable
+              :placeholder="t('jobs.allTypes')"
+              size="small"
+              class="jobs__filter-select"
+            />
+            <n-select
+              v-model:value="draftStatuses"
+              :options="statusOptions"
+              multiple
+              clearable
+              :placeholder="t('jobs.allStatuses')"
+              size="small"
+              class="jobs__filter-select jobs__filter-select--wide"
+            />
+            <n-select
+              v-model:value="draftTaskId"
+              :options="taskOptions"
+              clearable
+              filterable
+              :placeholder="t('jobs.allTasks')"
+              size="small"
+              class="jobs__filter-select jobs__filter-select--wide"
+            />
+            <n-date-picker
+              v-model:value="draftRange"
+              type="datetimerange"
+              clearable
+              size="small"
+              class="jobs__filter-range"
+            />
+          </FilterBar>
 
           <n-alert v-if="historyQuery.error.value" type="error" :show-icon="false">
             {{ String(historyQuery.error.value) }}

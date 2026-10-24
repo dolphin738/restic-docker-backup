@@ -20,6 +20,7 @@ class JobType(StrEnum):
     DUMP = "dump"
     REPAIR = "repair"  # B1 自愈：restic repair index / repair packs（索引/卷一致性重建）
     RECOVER = "recover"  # B3 自愈：restic recover（找回未快照数据，RecreateDatabase 等价）
+    PRUNE = "prune"  # 独立回收未引用数据块（restic prune；补漏 forget 未勾选 --prune 的遗留空间）
 
 
 class JobStatus(StrEnum):

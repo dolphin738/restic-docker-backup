@@ -17,6 +17,7 @@ JOB_TYPES: tuple[str, ...] = (
     "dump",
     "repair",  # B1 自愈：restic repair index / repair packs
     "recover",  # B3 自愈：restic recover（找回未快照数据）
+    "prune",  # 独立回收未引用数据块（restic prune；补漏 forget 未勾选 --prune 的遗留空间）
 )
 JOB_STATUSES: tuple[str, ...] = ("pending", "running", "success", "failed", "interrupted", "cancelled")
 JOB_TRIGGERS: tuple[str, ...] = ("manual", "scheduled")
@@ -152,6 +153,10 @@ AUDIT_RESTORE_PREVIEW = "restore.preview"
 # R-015 原位恢复：危险操作清单 9 项之一（S6 v1.3）
 AUDIT_RESTORE_INPLACE = "restore.inplace"
 AUDIT_FORGET_PREVIEW = "forget.preview"  # R-016 E21 预览请求（只读，但属敏感动作留痕）
+# 独立回收预览（restic prune --dry-run，只读）：与 forget.preview 同先例，敏感动作留痕
+AUDIT_PRUNE_PREVIEW = "prune.preview"
+# 独立回收执行（restic prune，写入/删块）：危险操作清单项（S6 清单 16→17），detail 不含命令行原文
+AUDIT_PRUNE_RUN = "prune.run"
 AUDIT_JOB_SKIPPED_CONFLICT = "job.skipped_conflict"
 AUDIT_JOB_SUBMIT = "job.submit"
 AUDIT_JOB_CANCEL = "job.cancel"
@@ -264,6 +269,7 @@ SNAPSHOT_SEARCH_QUERY_MAX_LENGTH = 200
 
 FORGET_PREVIEW_TIMEOUT_SECONDS = 60     # forget --dry-run 扫描快照超时（大仓库比 snapshots 慢）
 TAG_OPERATION_TIMEOUT_SECONDS = 60       # A3 restic tag 独占锁修改快照超时（打/去标签）
+PRUNE_PREVIEW_TIMEOUT_SECONDS = 120      # prune --dry-run 扫描全部数据块（比 forget 更重，大仓库分钟级）
 
 # ---------------------------------------------------------------- R-018 通知（E23/E24）
 

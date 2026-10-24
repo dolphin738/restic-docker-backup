@@ -636,7 +636,23 @@ class ForgetPreviewResponse(_Base):
     truncated: bool = False
 
 
-# ---------------------------------------------------------------- A3 快照版本标签（restic tag）
+# ---------------------------------------------------------------- R-016 独立回收预览（restic prune --dry-run）
+
+class PrunePreviewResponse(_Base):
+    """独立回收预览响应（restic ``prune --dry-run`` 只读探测）。
+
+    只回「会被删除的 pack 数 / 可释放字节数」与原始输出行，供前端在确认门前展示
+    「仓库里有没有需要 prune 的数据」。``clean`` 为真表示无需回收（无任何未引用数据块）。
+    """
+
+    would_remove_packs: int = 0
+    freed_bytes: int | None = None
+    freed_text: str | None = None
+    clean: bool = False
+    lines: list[str] = Field(default_factory=list)
+
+
+
 
 class TagSnapshotsRequest(_Base):
     """A3 快照打/去标签请求（restic ``tag --add/--remove``）。

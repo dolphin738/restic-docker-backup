@@ -41,7 +41,7 @@ from app.settings import Settings, get_settings
 # B3 自愈新增 ``recover``（restic recover，找回丢失索引的快照）
 VERBS: tuple[str, ...] = (
     "backup", "restore", "forget", "check", "snapshots", "ls", "unlock", "init", "cat", "stats", "tag",
-    "repair", "recover",
+    "repair", "recover", "prune",
     # C4 多目的地：copy（跨仓库复制快照）+ key（仓库密钥管理，两级子命令）
     "copy", "key",
 )
@@ -526,6 +526,14 @@ class ResticCmd:
                 flags.append("--dry-run")
             if args.prune:
                 flags.append("--prune")
+            return flags
+
+        if verb == "prune":
+            # 独立回收：默认执行真实 prune（不含 dry_run）；预览端点显式传 dry_run=True。
+            # prune 接受的可调参数（--max-unused / --max-repack-size / --repack-cacheable-only）
+            # 本期不暴露前端，保持最小白名单面——后续要调优再开具名字段（S2）。
+            if args.dry_run:
+                flags.append("--dry-run")
             return flags
 
         if verb == "check":

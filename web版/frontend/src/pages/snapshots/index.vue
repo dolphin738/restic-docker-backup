@@ -4,11 +4,14 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCollapse,
+  NCollapseItem,
   NDataTable,
   NDrawer,
   NDrawerContent,
   NEmpty,
   NIcon,
+  NInput,
   NInputNumber,
   NPagination,
   NSelect,
@@ -26,11 +29,21 @@ import { getBackupTask, listBackupTasks } from '@/api/backupTasks'
 import { isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
 import { listSnapshotFiles, listSnapshots, previewForget, tagSnapshots } from '@/api/snapshots'
-import type { ForgetPreviewResponse, ForgetPreviewSnapshot, SnapshotOut, TagSnapshotsResponse } from '@/api/types'
+import type {
+  ForgetPreviewResponse,
+  ForgetPreviewSnapshot,
+  PrunePreviewResponse,
+  SnapshotOut,
+  TagChanged,
+  TagSnapshotsResponse,
+} from '@/api/types'
+import { previewPrune } from '@/api/prune'
 import { IconEdit, IconRestore, IconSearch } from '@/components/icons/icons'
+import FilterBar from '@/components/FilterBar.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
+import { formatBytes, formatBytesOr } from '@/utils/format'
 
 const PAGE_SIZE = 20
 const { t } = useI18n()
@@ -42,6 +55,24 @@ const page = ref(1)
 const tagFilter = ref<string | null>(null)
 /** R-023 多主机视图：按快照主机标识筛选（E17 ?host=；空 = 全部）。 */
 const hostFilter = ref<string | null>(null)
+
+/** 筛选草稿值（对齐任务历史页）：只有点「应用」才落到查询参数。 */
+const draftTag = ref<string | null>(null)
+const draftHost = ref<string | null>(null)
+
+/** 应用筛选：落到查询参数并回到第 1 页（否则深页切筛选沿用旧 offset → 空列表误导）。 */
+function applyFilters(): void {
+  tagFilter.value = draftTag.value
+  hostFilter.value = draftHost.value
+  page.value = 1
+}
+
+/** 重置：清空草稿并立即应用（与任务历史页「重置」同语义）。 */
+function resetFilters(): void {
+  draftTag.value = null
+  draftHost.value = null
+  applyFilters()
+}
 
 /** 标签选项：E34 任务列表 {id,name,tag} + 当前页快照中出现的历史遗留 tag。 */
 const tasksQuery = useQuery({
@@ -64,34 +95,61 @@ const snapshotsQuery = useQuery({
 const snapshots = computed(() => snapshotsQuery.data.value?.items ?? [])
 const total = computed(() => snapshotsQuery.data.value?.total ?? 0)
 
+/** 历史遗留 tag（无对应任务）累积归并：只在见到时并入、**永不移除** ——
+ *  原实现从「当前已筛选的快照页」归并，选中某 tag 后其他历史 tag 会从下拉消失
+ *  （过滤后本页不再含它们），用户切不回去；累积集合杜绝该自噬。 */
+const legacyTags = ref<string[]>([])
+watch(
+  snapshots,
+  (list) => {
+    for (const snapshot of list) {
+      for (const tag of snapshot.tags) {
+        if (!legacyTags.value.includes(tag)) {
+          legacyTags.value.push(tag)
+        }
+      }
+    }
+  },
+  { immediate: true },
+)
+
 const tagOptions = computed(() => {
   const options = [{ label: t('snapshot.allTags'), value: '' }]
   for (const task of tasksQuery.data.value?.items ?? []) {
     options.push({ label: `${task.name}（${task.tag}）`, value: task.tag })
   }
-  // 历史遗留 tag（无对应任务）：从当前（未筛选）页快照归并，去重
+  // 历史遗留 tag（无对应任务）：来自累积集合（筛选后不缩水），去重
   const known = new Set(options.map((option) => option.value))
-  for (const snapshot of snapshots.value) {
-    for (const tag of snapshot.tags) {
-      if (!known.has(tag)) {
-        known.add(tag)
-        options.push({ label: tag, value: tag })
-      }
+  for (const tag of legacyTags.value) {
+    if (!known.has(tag)) {
+      known.add(tag)
+      options.push({ label: tag, value: tag })
     }
   }
   return options
 })
 
-/** 主机选项（R-023 多主机视图）：从当前页快照归并 host 去重 + 全部主机兜底。 */
+/** 主机选项（R-023 多主机视图）：累积归并 + 全部主机兜底。
+ *  与 tag 同款缺陷原样存在过——原实现从「当前已筛选的快照页」归并，
+ *  选中某主机后其它主机从下拉消失（本页不再含它们），用户切不回去。 */
+const knownHosts = ref<string[]>([])
+watch(
+  snapshots,
+  (list) => {
+    for (const snapshot of list) {
+      const host = snapshot.host
+      if (host && !knownHosts.value.includes(host)) {
+        knownHosts.value.push(host)
+      }
+    }
+  },
+  { immediate: true },
+)
+
 const hostOptions = computed(() => {
   const options = [{ label: t('snapshot.allHosts'), value: '' }]
-  const known = new Set<string>([''])
-  for (const snapshot of snapshots.value) {
-    const host = snapshot.host
-    if (host && !known.has(host)) {
-      known.add(host)
-      options.push({ label: host, value: host })
-    }
+  for (const host of knownHosts.value) {
+    options.push({ label: host, value: host })
   }
   return options
 })
@@ -110,9 +168,12 @@ const groupHeaderText = computed(() => {
 // ---------------------------------------------------------------- 文件树抽屉
 const treeShow = ref(false)
 const activeSnapshot = ref<SnapshotOut | null>(null)
+/** E18 输出上限截断标记：任一层命中即在抽屉顶部明示，避免「看着像全的」误判。 */
+const treeTruncated = ref(false)
 
 function openTree(snapshot: SnapshotOut): void {
   activeSnapshot.value = snapshot
+  treeTruncated.value = false
   treeShow.value = true
 }
 
@@ -127,15 +188,37 @@ function restoreActiveSnapshot(): void {
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   const snapshotId = activeSnapshot.value?.id ?? ''
-  return listSnapshotFiles(snapshotId, path, cursor).then((data) => ({
-    items: data.items.map((item) => ({
-      key: item.path,
-      name: item.name,
-      type: item.type,
-      path: item.display_path,
-    })),
-    nextCursor: data.next_cursor,
-  }))
+  return listSnapshotFiles(snapshotId, path, cursor).then((data) => {
+    if (data.truncated) {
+      treeTruncated.value = true
+    }
+    return {
+      items: data.items.map((item) => ({
+        key: item.path,
+        name: item.name,
+        type: item.type,
+        path: item.display_path,
+        // 浏览页核心价值：E18 已返回 size/mtime，原实现整段丢弃
+        meta: fileMeta(item.size, item.mtime),
+      })),
+      nextCursor: data.next_cursor,
+    }
+  })
+}
+
+/** 行末元信息：size（1024 进制）+ 修改时间，二者皆空则不渲染 meta 区。 */
+function fileMeta(size: number | null, mtime: string | null): string | undefined {
+  const parts: string[] = []
+  if (size !== null && size !== undefined) {
+    parts.push(formatBytes(size))
+  }
+  if (mtime) {
+    const text = formatDateTimeOr(mtime, '')
+    if (text) {
+      parts.push(text)
+    }
+  }
+  return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
 const columns = computed<DataTableColumns<SnapshotOut>>(() => [
@@ -180,7 +263,8 @@ const columns = computed<DataTableColumns<SnapshotOut>>(() => [
     key: 'size',
     width: 110,
     ellipsis: true,
-    render: (row) => (row.size === null || row.size === undefined ? '—' : String(row.size)),
+    // 与恢复向导版本下拉同口径（utils/format 单一实现点），不再裸显字节数
+    render: (row) => formatBytesOr(row.size, '—'),
   },
   {
     title: '',
@@ -197,7 +281,12 @@ const columns = computed<DataTableColumns<SnapshotOut>>(() => [
 
 const errorText = computed(() => {
   const error = snapshotsQuery.error.value
-  return error ? String(error) : ''
+  if (!error) {
+    return ''
+  }
+  // AppError.message 是后端给的中文可操作原因（锁残留/凭据缺失…），
+  // String(error) 会带前缀「Error: 」稀释文案
+  return error instanceof Error ? error.message : String(error)
 })
 
 // ---------------------------------------------------------------- E21 forget 预览-确认流（R-016）
@@ -284,14 +373,21 @@ async function runForgetPreview(): Promise<void> {
 async function confirmForget(): Promise<void> {
   const preview = forgetPreview.value
   if (!preview) {
+    // 防御：正常路径不可能（门开着必有预览数据）；静默 return 会把故障表现成
+    // 「点了确认没任何反应」——用户报告过的症状，必须显式报错而不是吞掉。
+    message.error(t('snapshot.forget.previewLost'))
     return
   }
   forgetExecuting.value = true
   try {
     // params 为 E21 响应回显（服务端保证与预览同源），原样透传保证「预览与实际结果一致」
-    await createJob('forget', { params: preview.params })
+    const job = await createJob('forget', { params: preview.params })
     message.success(t('snapshot.forget.submitted'))
     forgetPreview.value = null
+    // forget 是**异步作业**：留在快照页列表不会自己变（用户会以为没生效）。
+    // 复用 A6 既有模式跳任务页 `?job=<id>`（jobs 页按 query 自动开日志抽屉），
+    // 让「是否真的删了 / 失败原因」立刻可见。
+    void router.push({ name: 'jobs', query: { job: job.id } })
   } catch (error) {
     if (isAppError(error)) {
       message.error(error.message)
@@ -303,12 +399,55 @@ async function confirmForget(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- R-016 独立回收（restic prune）
+// 补漏 forget 未勾选 --prune 的遗留空间：预览（--dry-run 只读）→ 确认门 → 提交 prune 作业。
+
+const prunePreview = ref<PrunePreviewResponse | null>(null)
+const pruneShow = ref(false)
+const pruneLoading = ref(false)
+const pruneExecuting = ref(false)
+
+async function runPrunePreview(): Promise<void> {
+  pruneLoading.value = true
+  try {
+    prunePreview.value = await previewPrune()
+    pruneShow.value = true
+  } catch (error) {
+    if (!isAppError(error)) {
+      message.error(t('errors.UNKNOWN'))
+    }
+  } finally {
+    pruneLoading.value = false
+  }
+}
+
+async function confirmPrune(): Promise<void> {
+  pruneExecuting.value = true
+  try {
+    // prune 无 tag/keep 概念，params 恒空；异步作业同样跳任务页跟踪（与 forget 同口径）
+    const job = await createJob('prune', {})
+    message.success(t('snapshot.prune.submitted'))
+    prunePreview.value = null
+    void router.push({ name: 'jobs', query: { job: job.id } })
+  } catch (error) {
+    if (isAppError(error)) {
+      message.error(error.message)
+    } else {
+      message.error(t('errors.UNKNOWN'))
+    }
+  } finally {
+    pruneExecuting.value = false
+  }
+}
+
 // ---------------------------------------------------------------- A3 快照版本标签（restic tag --add/--remove）
 const tagAddText = ref('')
 const tagRemoveText = ref('')
 const tagSnapshotIdsText = ref('')
 const tagApplying = ref(false)
 const tagResultText = ref<string | null>(null)
+/** AC5：改标签会生成新快照对象，原→新 id 映射必须回显（否则用户不知旧 id 已失效）。 */
+const tagChanged = ref<TagChanged[]>([])
 
 /** 逗号/中文逗号分隔 → 去空白去空。 */
 function splitTags(text: string): string[] {
@@ -326,8 +465,15 @@ async function applyTag(): Promise<void> {
     return
   }
   const ids = splitTags(tagSnapshotIdsText.value)
+  // 前置拦截（与后端 422 同口径，但前端先说人话）：ID 与筛选都空 = 会作用于仓库内
+  // **全部**快照——这是 restic 的高危默认，服务端会拒，这里不发请求直接解释原因。
+  if (ids.length === 0 && !tagFilter.value && !hostFilter.value) {
+    message.warning(t('snapshot.tag.needTarget'))
+    return
+  }
   tagApplying.value = true
   tagResultText.value = null
+  tagChanged.value = []
   try {
     const resp: TagSnapshotsResponse = await tagSnapshots({
       snapshot_ids: ids,
@@ -338,6 +484,7 @@ async function applyTag(): Promise<void> {
       host: hostFilter.value || null,
     })
     tagResultText.value = t('snapshot.tag.success', { n: resp.changed_count })
+    tagChanged.value = resp.changed
     message.success(tagResultText.value)
     void snapshotsQuery.refetch() // 刷新快照列表（标签已变）
   } catch (error) {
@@ -355,30 +502,33 @@ async function applyTag(): Promise<void> {
     <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
 
     <n-card :title="t('nav.snapshots')" size="small">
-      <!-- R-026-10：tag 筛选 + 分组头（当前筛选维度摘要） -->
+      <!-- 筛选器（共用形态层 FilterBar，与任务历史页同版式）：draft 值只在点「应用」后
+           才落到查询参数，避免改一次下拉就打一次 restic。 -->
+      <FilterBar :loading="snapshotsQuery.isFetching.value" @apply="applyFilters" @reset="resetFilters">
+        <n-select
+          v-model:value="draftTag"
+          :options="tagOptions"
+          size="small"
+          class="snapshots__tag-select"
+          :placeholder="t('snapshot.tagFilter')"
+          clearable
+        />
+        <n-select
+          v-model:value="draftHost"
+          :options="hostOptions"
+          size="small"
+          class="snapshots__host-select"
+          :placeholder="t('snapshot.hostFilter')"
+          clearable
+        />
+      </FilterBar>
+
       <n-space vertical :size="12" class="snapshots__filter">
-        <n-space :size="8" :wrap="false" class="snapshots__filters">
-          <n-select
-            v-model:value="tagFilter"
-            :options="tagOptions"
-            size="small"
-            class="snapshots__tag-select"
-            :placeholder="t('snapshot.tagFilter')"
-            clearable
-          />
-          <n-select
-            v-model:value="hostFilter"
-            :options="hostOptions"
-            size="small"
-            class="snapshots__host-select"
-            :placeholder="t('snapshot.hostFilter')"
-            clearable
-          />
-        </n-space>
         <n-text v-if="groupHeaderText" depth="2" class="snapshots__group">
           {{ groupHeaderText }}
         </n-text>
       </n-space>
+
 
       <n-alert v-if="!snapshotsQuery.isLoading.value && snapshots.length === 0 && !errorText" type="default" :show-icon="false">
         <n-empty :description="t('snap.empty')" />
@@ -456,6 +606,10 @@ async function applyTag(): Promise<void> {
             <n-switch v-model:value="forgetPrune" size="small" :aria-label="t('snapshot.forget.prune')" />
             <n-text depth="2" class="snapshots__forget-note">{{ t('snapshot.forget.prune') }}</n-text>
           </n-space>
+          <n-text depth="3" class="snapshots__forget-note">{{ t('snapshot.forget.pruneHint') }}</n-text>
+        </n-space>
+        <!-- 预览按钮挪到独立行，与回收空间（prune）卡片同构（用户 2026-10-25 指令） -->
+        <n-space align="center" :size="8">
           <n-button
             size="small"
             type="warning"
@@ -469,10 +623,42 @@ async function applyTag(): Promise<void> {
             </template>
             {{ t('snapshot.forget.preview') }}
           </n-button>
+          <n-text depth="3" class="snapshots__forget-note">{{ t('snapshot.forget.previewHint') }}</n-text>
         </n-space>
         <n-text v-if="!forgetReady" depth="3" class="snapshots__forget-note">
           {{ t('snapshot.forget.needKeep') }}
         </n-text>
+        <!-- 分组维度只读公示：后端 group_by 恒取 restic 默认（任务表单亦无该控件），
+             且拼装层只防注入、不校验维度合法性 → 不给自由输入（非法值会迟到 500）。 -->
+        <n-text depth="3" class="snapshots__forget-note">
+          {{ t('snapshot.forget.groupBy') }}
+        </n-text>
+      </n-space>
+    </n-card>
+
+    <!-- R-016 独立回收（restic prune）：补漏 forget 未勾选 --prune 的遗留空间。
+         preview（--dry-run 只读）→ 确认门 → 提交 prune 异步作业（跳任务页跟踪）。 -->
+    <n-card :title="t('snapshot.prune.title')" size="small">
+      <template #header-extra>
+        <n-text depth="3" class="snapshots__prune-note">{{ t('snapshot.prune.note') }}</n-text>
+      </template>
+      <n-space vertical :size="12">
+        <n-alert type="warning" :show-icon="false">{{ t('snapshot.prune.desc') }}</n-alert>
+        <n-space align="center" :size="8">
+          <n-button
+            size="small"
+            type="warning"
+            secondary
+            :loading="pruneLoading"
+            @click="runPrunePreview"
+          >
+            <template #icon>
+              <n-icon :size="16"><IconSearch /></n-icon>
+            </template>
+            {{ t('snapshot.prune.preview') }}
+          </n-button>
+          <n-text depth="3" class="snapshots__prune-note">{{ t('snapshot.prune.previewHint') }}</n-text>
+        </n-space>
       </n-space>
     </n-card>
 
@@ -487,12 +673,14 @@ async function applyTag(): Promise<void> {
           <n-input
             v-model:value="tagAddText"
             size="small"
+            clearable
             class="snapshots__tag-input"
             :placeholder="t('snapshot.tag.addPlaceholder')"
           />
           <n-input
             v-model:value="tagRemoveText"
             size="small"
+            clearable
             class="snapshots__tag-input"
             :placeholder="t('snapshot.tag.removePlaceholder')"
           />
@@ -518,6 +706,13 @@ async function applyTag(): Promise<void> {
         </n-space>
         <n-text depth="3" class="snapshots__tag-note">{{ t('snapshot.tag.targetHint') }}</n-text>
         <n-alert v-if="tagResultText" type="success" :show-icon="false">{{ tagResultText }}</n-alert>
+        <!-- AC5：新旧 id 映射回显（改标签生成新快照对象，旧 id 立即失效） -->
+        <n-space v-if="tagChanged.length > 0" vertical :size="4" class="snapshots__tag-changed">
+          <n-text depth="2">{{ t('snapshot.tag.changedTitle') }}</n-text>
+          <div v-for="pair in tagChanged" :key="pair.old_snapshot_id" class="snapshots__tag-pair">
+            {{ pair.old_snapshot_id.slice(0, 8) }} → {{ pair.new_snapshot_id.slice(0, 8) }}
+          </div>
+        </n-space>
       </n-space>
     </n-card>
 
@@ -559,10 +754,43 @@ async function applyTag(): Promise<void> {
       </template>
     </ConfirmGate>
 
+    <!-- R-016 独立回收确认门（preview 只读 → keyword 确认 → 提交 prune 作业） -->
+    <ConfirmGate
+      v-model:show="pruneShow"
+      :title="t('snapshot.prune.gateTitle')"
+      keyword="PRUNE"
+      :description="t('snapshot.prune.gateDesc')"
+      :loading="pruneExecuting"
+      :confirm-label="t('snapshot.prune.confirmLabel')"
+      @confirm="confirmPrune"
+    >
+      <template #preview>
+        <n-space vertical :size="8">
+          <n-alert v-if="prunePreview?.clean" type="success" :show-icon="false">
+            {{ t('snapshot.prune.clean') }}
+          </n-alert>
+          <n-alert v-else type="warning" :show-icon="false">
+            {{ t('snapshot.prune.summary', {
+              packs: prunePreview?.would_remove_packs ?? 0,
+              freed: prunePreview?.freed_text ?? '—',
+            }) }}
+          </n-alert>
+          <n-collapse v-if="(prunePreview?.lines ?? []).length > 0">
+            <n-collapse-item :title="t('snapshot.prune.rawTitle')" name="raw">
+              <pre class="snapshots__prune-raw">{{ (prunePreview?.lines ?? []).join('\n') }}</pre>
+            </n-collapse-item>
+          </n-collapse>
+        </n-space>
+      </template>
+    </ConfirmGate>
+
     <!-- 文件树抽屉：懒加载 + 虚拟滚动 + 游标只透传 -->
     <n-drawer v-model:show="treeShow" :width="720" placement="right">
       <n-drawer-content :title="`${t('snap.filesTitle')} ${activeSnapshot?.id.slice(0, 8) ?? ''}`" closable>
         <n-space vertical :size="12">
+          <n-alert v-if="treeTruncated" type="warning" :show-icon="false">
+            {{ t('snap.filesTruncated') }}
+          </n-alert>
           <n-space align="center" justify="space-between">
             <n-text depth="3">{{ activeSnapshot?.paths.join(', ') }}</n-text>
             <n-button size="small" secondary type="primary" @click="restoreActiveSnapshot">
@@ -588,21 +816,20 @@ async function applyTag(): Promise<void> {
   margin-bottom: 4px;
 }
 
+/* 与任务历史页同一口径：用**固定宽度**而非 max-width——flex 容器里没有 min-width 时
+   max-width 会被同行按钮挤成 0 宽（实证：加「应用/重置」后下拉整排消失）。 */
 .snapshots__tag-select {
-  max-width: 320px;
+  width: 220px;
 }
 
 .snapshots__host-select {
-  max-width: 240px;
-}
-
-.snapshots__filters {
-  flex-wrap: wrap;
+  width: 180px;
 }
 
 .snapshots__group {
   font-size: 12px;
 }
+
 
 .snapshots__forget-form {
   flex-wrap: wrap;
@@ -618,5 +845,28 @@ async function applyTag(): Promise<void> {
 
 .snapshots__forget-note {
   font-size: 12px;
+}
+
+/* A3 新旧 id 映射：等宽对齐（tokens.ts fontFamilyMono 经全局变量），
+   批量打标签时列表可能很长 → 夹高度内部滚动，不撑破卡片。 */
+.snapshots__tag-changed {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.snapshots__tag-pair {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+}
+
+/* R-016 prune 原始输出：等宽 + 限高滚动，避免长输出撑破确认门 */
+.snapshots__prune-raw {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

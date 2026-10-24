@@ -25,6 +25,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -42,11 +43,13 @@ from app.constants import (
     AUDIT_KEY_ROTATE,
     AUDIT_NOTIFY_TEST,
     AUDIT_NOTIFY_UPDATE,
+    AUDIT_PRUNE_PREVIEW,
     FORGET_PREVIEW_TIMEOUT_SECONDS,
     HISTORY_QUERY_MAX_LIMIT,
     KEY_OPERATION_TIMEOUT_SECONDS,
     MANUAL_COPY_TIMEOUT_SECONDS,
     PASSFILE_STATUS_CONFIGURED,
+    PRUNE_PREVIEW_TIMEOUT_SECONDS,
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
@@ -73,6 +76,7 @@ from app.schemas.api_schemas import (
     ForgetPreviewSnapshot,
     KeyRotateResponse,
     ManualCopyRequest,
+    PrunePreviewResponse,
     ManualCopyResponse,
     NotifyConfigPatch,
     NotifyConfigResponse,
@@ -343,6 +347,121 @@ async def preview_forget(
         group_count=len(groups),
         params=echo_params,  # type: ignore[arg-type]
         truncated=probe.truncated,
+    )
+
+
+# ---------------------------------------------------------------- R-016 独立回收预览（restic prune --dry-run）
+
+_SIZE_FACTORS = {
+    "B": 1,
+    "KB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "TB": 1000**4,
+    "KIB": 1024,
+    "MIB": 1024**2,
+    "GIB": 1024**3,
+    "TIB": 1024**4,
+    "PIB": 1024**5,
+    "EIB": 1024**6,
+}
+
+
+def _human_to_bytes(value: float, unit: str) -> int:
+    """把 restic 的 humanized 体积（如 ``568.123 MiB``）转字节。"""
+    return int(value * _SIZE_FACTORS.get(unit.upper(), 1))
+
+
+def _parse_prune_preview(lines: list[str]) -> dict[str, object]:
+    """解析 ``restic prune --dry-run`` 输出，提取待删 pack 数与可释放字节。
+
+    restic 0.18 的 dry-run 措辞随版本浮动，这里用多模式正则容错匹配：
+    - 待删 pack：``to delete: N packs`` / ``will delete N packs`` / ``will remove N packs``
+    - 释放量：``total prune: N blobs / X`` / ``this removes N blobs / X`` / ``will free X after this``
+    任一命中即采用；都不命中 → 视为无需回收（clean）。
+    """
+    text = "\n".join(lines)
+    packs = None
+    for pat in (r"to delete:\s*(\d+)\s*packs", r"will (?:delete|remove)\s*(\d+)\s*packs"):
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            packs = int(m.group(1))
+            break
+
+    freed_bytes: int | None = None
+    freed_text: str | None = None
+    for pat in (
+        r"total prune:\s*.*?/\s*([\d.]+)\s*([KMGTPE]i?B)",
+        r"this removes\s*\d+\s*blobs\s*/\s*([\d.]+)\s*([KMGTPE]i?B)",
+        r"will free\s*([\d.]+)\s*([KMGTPE]i?B)\s*after this",
+    ):
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            freed_text = f"{m.group(1)} {m.group(2)}"
+            freed_bytes = _human_to_bytes(float(m.group(1)), m.group(2))
+            break
+
+    clean = (packs or 0) == 0 and freed_bytes is None
+    return {
+        "would_remove_packs": packs or 0,
+        "freed_bytes": freed_bytes,
+        "freed_text": freed_text,
+        "clean": clean,
+    }
+
+
+@router.post(
+    "/prune/preview",
+    response_model=PrunePreviewResponse,
+    summary="R-016 独立回收预览（restic prune --dry-run）",
+    dependencies=_PROTECTED,
+)
+async def preview_prune(
+    request: Request,
+    repo_id: str = Depends(current_repo_id),
+    session: SessionContext = Depends(require_session),
+) -> PrunePreviewResponse:
+    """``prune --dry-run`` 只读探测：回答「仓库里有没有需要 prune 的数据」。
+
+    与 E21 forget 预览同先例——只读、不落任何删除；实际回收必须经 E12
+    ``{"type":"prune"}``（确认门在 UI，执行入审计 ``prune.run``）。预览端点恒以
+    ``dry_run=True``（调用方无法覆盖），restic 0.15+ 支持 ``--dry-run``（本仓 0.18.0）。
+    """
+    del session
+    restic: ResticCmd = request.app.state.restic
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    audit = request.app.state.audit
+
+    repo = await repos_repo.get(repo_id)
+    repo_url = (repo.url if repo is not None else None) or ""
+    if not repo_url:
+        raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
+
+    args = WhitelistArgs(dry_run=True)  # 仅只读探测，prune 本期不带其它可调参数
+    argv = restic.build("prune", args=args)
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    probe = await restic.run_json(argv, env=env, timeout_seconds=PRUNE_PREVIEW_TIMEOUT_SECONDS)
+    if probe.exit_code != 0:
+        reason = failure_reason(probe.exit_code, probe.lines, PRUNE_PREVIEW_TIMEOUT_SECONDS)
+        logger.warning("prune 预览探测失败：%s", reason)
+        raise ResticFailedError(reason, exit_code=probe.exit_code)
+
+    parsed = _parse_prune_preview(probe.lines)
+    await audit.record(
+        AUDIT_PRUNE_PREVIEW,
+        target="prune",
+        detail={"would_remove_packs": parsed["would_remove_packs"], "clean": parsed["clean"]},
+        result="ok",
+    )
+    return PrunePreviewResponse(
+        would_remove_packs=parsed["would_remove_packs"],  # type: ignore[arg-type]
+        freed_bytes=parsed["freed_bytes"],  # type: ignore[arg-type]
+        freed_text=parsed["freed_text"],  # type: ignore[arg-type]
+        clean=parsed["clean"],  # type: ignore[arg-type]
+        lines=probe.lines,
     )
 
 

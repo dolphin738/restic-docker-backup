@@ -693,6 +693,7 @@ class Notifier:
             "unlock": "解锁",
             "repair": "修复",
             "recover": "恢复数据",
+            "prune": "回收空间",
             "dump": "导出",
         }.get(job_type, job_type)
         title = f"restic-web：{type_label}任务成功" if status == "success" else f"restic-web：{type_label}任务失败"

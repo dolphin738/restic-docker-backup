@@ -19,7 +19,10 @@ function walk(dir: string, out: string[] = []): string[] {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
       walk(full, out)
-    } else if (/\.(vue|ts)$/.test(entry.name)) {
+    // 只扫 .vue：`n-*` 模板语法只在 SFC 里出现。.ts（含 spec）里的 `<n-xxx>` 一律是
+    // 字符串字面量或注释（实测 4 处误报：a11y-baseline 断言串 / 本文件注释 /
+    // icons.ts 注释 / wizardEnabledHint.spec 串），纳入扫描只会制造假阳性。
+    } else if (/\.vue$/.test(entry.name)) {
       out.push(full)
     }
   }
@@ -34,12 +37,14 @@ function pascal(tag: string): string {
 }
 
 function missingImports(src: string): string[] {
-  const templates = src.match(/<template[\s\S]*?<\/template>/g) ?? []
+  // 全文扫描 `<n-*`（不再按 <template> 块切分）——原实现用非贪婪 `<template…</template>`
+  // 取块，遇到嵌套 `<template #header-extra>` / `<template #icon>` 的页面会在**第一个**
+  // `</template>` 处截断，其后所有 `n-*` 逃脱检查（实证：快照页 5 处 `n-input` 漏导入，
+  // 护栏却全绿 → 生产环境该组件 unresolved、输入框整片不渲染）。`n-` 前缀只可能出现在
+  // 模板里（script 段是 `h(NInput)` 形态，不含 `<`），故全文扫描安全且更严。
   const used = new Set<string>()
-  for (const block of templates) {
-    for (const m of block.matchAll(/<n-[a-z0-9-]+/g)) {
-      used.add(m[0].slice(1))
-    }
+  for (const m of src.matchAll(/<n-[a-z0-9-]+/g)) {
+    used.add(m[0].slice(1))
   }
   if (used.size === 0) {
     return []

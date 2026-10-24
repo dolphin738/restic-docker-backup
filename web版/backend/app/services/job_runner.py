@@ -51,7 +51,11 @@ from app.errors import JobConflictError, NotCancellableError, NotFoundError, Val
 from app.exclusions import ExclusionRules
 from app.services.dump import DumpService, load_dump_config
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
-from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
+from app.services.exclude_spec import (
+    assemble_excludes,
+    flatten_exclude_spec,
+    spec_from_wire,
+)
 from app.services.parser import JobAggregate, OutputParser, ProgressEvent, SnapshotRecord
 from app.services.path_mapper import PathMapper
 from app.services.repo_keys import neutralize_repo_key
@@ -1126,7 +1130,7 @@ class JobRunner:
 
         builtin = self._exclusions.built_in()
         user_excludes = list(policy.get("excludes") or []) + list(params.get("excludes") or [])
-        excludes = tuple(_dedupe(builtin + user_excludes))
+        excludes = assemble_excludes(user_excludes, builtin)
         tags = tuple(params.get("tags") or ([policy["tag"]] if policy.get("tag") else []))
 
         if job_type == "backup":
@@ -1140,8 +1144,10 @@ class JobRunner:
                 flat = flatten_exclude_spec(
                     spec_from_wire(spec_raw), PathMapper(self._settings)
                 )
-                backup_excludes = tuple(
-                    _dedupe(builtin + list(flat.excludes) + list(params.get("excludes") or []))
+                # A 裁决（owner 2026-10-24）：内置集排**队尾**——restic 后命中者赢，
+                # 内置集因此真强制（负向规则取消不了）；顺序语义单一出处 = assemble_excludes。
+                backup_excludes = assemble_excludes(
+                    list(flat.excludes) + list(params.get("excludes") or []), builtin
                 )
                 iexcludes = flat.iexcludes
                 larger_than = flat.larger_than
@@ -1254,6 +1260,12 @@ class JobRunner:
                 keep_tags=keep_tags,
                 prune=bool(params.get("prune", False)),
             )
+
+        if job_type == "prune":
+            # 独立回收：params 恒空（无 tag/group_by/keep 概念）；执行路径走 restic prune，
+            # 由 _build_args 返回空 WhitelistArgs（dry_run=False → 真实 prune）。
+            # 仅预览端点传 dry_run=True 走只读探测。
+            return WhitelistArgs()
 
         return WhitelistArgs()
 
@@ -1445,12 +1457,3 @@ def _clean_host(value: Any) -> str | None:
     return text or None
 
 
-def _dedupe(values: list[str]) -> list[str]:
-    """按字符串去重并保持顺序。"""
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result

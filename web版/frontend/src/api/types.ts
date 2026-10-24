@@ -3,7 +3,7 @@
 import type { ExcludeSpec } from '@/utils/excludeSpec'
 
 export type JobStatus = 'pending' | 'running' | 'success' | 'failed' | 'interrupted' | 'cancelled'
-export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump' | 'repair' | 'recover'
+export type JobType = 'backup' | 'restore' | 'forget' | 'check' | 'unlock' | 'init' | 'dump' | 'repair' | 'recover' | 'prune'
 
 /** 统一错误响应体（所有非 2xx）。 */
 export interface ErrorBody {
@@ -568,6 +568,20 @@ export interface ForgetPreviewResponse {
   group_count: number
   params: Record<string, unknown>
   truncated: boolean
+}
+
+/** R-016 独立回收预览响应（restic prune --dry-run 只读探测）。 */
+export interface PrunePreviewResponse {
+  /** 本次会删除的 pack 数（>0 即仓库有可回收空间）。 */
+  would_remove_packs: number
+  /** 预计可释放字节数（restic 输出无法稳定解析时为 null）。 */
+  freed_bytes: number | null
+  /** 可释放体积的 humanized 文本（如 "568.123 MiB"，无则 null）。 */
+  freed_text: string | null
+  /** 仓库已干净（无任何未引用数据块，无需回收）。 */
+  clean: boolean
+  /** 原始 dry-run 输出行（前端逐行展示，便于用户自行核对 restic 结论）。 */
+  lines: string[]
 }
 
 /** E21 forget 预览请求（keep_* 不设 = 不启用该维度；至少一个必填，服务端 422 兜底）。 */
