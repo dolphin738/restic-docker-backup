@@ -744,6 +744,48 @@ async def test_backup_success_invokes_callback_and_clears_pending(tmp_path):
 
 
 
+async def test_backup_success_callback_runs_outside_repo_lock(tmp_path):
+    """N3 自死锁回归（真机取证 2026-10-25）：success 回调必须在**锁外**执行。
+
+    现场复现：备份成功后 ``on_task_backup_success`` → ``SchedulerService.maybe_auto_forget``
+    → ``JobRunner.submit("forget")``；旧实现把该回调放在 ``_run`` 的
+    ``async with _repo_lock`` **内部** → ``asyncio.Lock`` 不可重入 → 本任务永久等待
+    自己持有的锁 → 锁永不释放 → 此后每次「开始」都挂死在 ``submit`` 上（UI 表现：
+    点了没反应、无新 job 行、无 console 报错，只有重启后端才恢复）。
+
+    断言两条：①回调执行期间仓库锁已释放（根因的直接不变量）；
+    ②回调内再次 submit + 执行派生任务能在超时内完成（不挂死）。
+    """
+    db, runner, repo, task_repo = await make_runner_with_tasks(tmp_path, lines=BACKUP_LINES)
+    task = await task_repo.create({"name": "自动清理任务", "sources": ["/sources/srv"]})
+
+    lock_held: list[bool] = []
+    followup_ids: list[str] = []
+
+    async def callback(task_id: int) -> None:
+        # 与 scheduler.maybe_auto_forget 同构：读仓库 → submit 一个后续任务
+        repo_url = await runner._repo_url("default")  # noqa: SLF001 - 测试取证内部状态
+        lock_held.append(runner._repo_lock(repo_url).locked())  # noqa: SLF001
+        followup = await runner.submit("unlock", task_id=task_id, trigger="scheduled")
+        followup_ids.append(followup.id)
+
+    runner._on_task_backup_success = callback  # noqa: SLF001 - 测试注入（构造期参数同款能力）
+
+    job = await runner.submit("backup", task_id=task.id)
+    # 5s 超时：旧实现在此永久挂起（TimeoutError），新实现正常返回
+    await asyncio.wait_for(await_job(runner, job.id), timeout=5)
+
+    assert lock_held == [False], "success 回调运行在仓库锁内 → 回调内 submit 会自死锁"
+    assert len(followup_ids) == 1
+    # 回调里 submit 的派生任务同样要在超时内跑完（锁已被正确让出）
+    derived = runner._tasks.get(followup_ids[0])  # noqa: SLF001
+    if derived is not None:
+        await asyncio.wait_for(derived, timeout=5)
+    followup = await repo.get(followup_ids[0])
+    assert followup is not None and followup.status == "success"
+    await db.close()
+
+
 async def test_backup_failure_does_not_invoke_callback(tmp_path):
     """X6：failed 终态 → 不调用回调，dry_run_pending 保持 1（Start 拦截不解除）。"""
     db, runner, repo, task_repo = await make_runner_with_tasks(

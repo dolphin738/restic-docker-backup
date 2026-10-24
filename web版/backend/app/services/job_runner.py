@@ -434,9 +434,16 @@ class JobRunner:
     # ---------------------------------------------------------------- 执行主链路（§6.2）
 
     async def _run(self, job: Job) -> None:
-        """执行单个任务：抢锁 → running → spawn → 逐行解析落库 → 终态 → 审计/通知。"""
+        """执行单个任务：抢锁 → running → spawn → 逐行解析落库 → 终态 → 审计/通知。
+
+        任务级回调（``on_task_backup_success``）**必须在锁外**执行：它可能再次
+        ``submit``（N3 自动 forget），而 ``asyncio.Lock`` 不可重入——锁内 await 会
+        让本任务永久等待自己持有的锁，锁再不释放，后续所有提交一并挂死。
+        """
         repo_id = job.repo_id
         repo_url = await self._repo_url(repo_id)
+        # 锁外回调的入参快照（锁内赋值、锁外消费；None = 不需要回调）
+        backup_success_task_id: int | None = None
         async with self._repo_lock(repo_url):
             line_no = 0
             try:
@@ -548,8 +555,9 @@ class JobRunner:
                 )
                 if status == "success" and job.type == "backup" and job.task_id is not None:
                     # X6（owner 裁决）：「E36 预览成功**或首次成功备份**」清 dry_run_pending
-                    # 的后半——绕过 UI 直接成功备份同样解除 Start 拦截（R-026-08）
-                    await self._notify_task_backup_success(job.task_id)
+                    # 的后半——绕过 UI 直接成功备份同样解除 Start 拦截（R-026-08）。
+                    # 只**记账**不调用：实际回调在锁外执行（见方法 docstring「自死锁」）。
+                    backup_success_task_id = job.task_id
             except asyncio.CancelledError:
                 logger.info("任务 %s 被取消，执行链路退出（终态由 cancel() 落库）", job.id)
                 raise
@@ -575,6 +583,11 @@ class JobRunner:
                 self._params.pop(job.id, None)
                 self._tasks.pop(job.id, None)
                 self._notify_finish()
+
+        # N3 自死锁修复（真机取证 2026-10-25）：此处已在 ``async with`` 之外，仓库锁
+        # 已释放——自动 forget 的 ``submit`` 才能拿到锁。回调内自带异常吞没，无需再包。
+        if backup_success_task_id is not None:
+            await self._notify_task_backup_success(backup_success_task_id)
 
     def _notify_finish(self) -> None:
         """任务终态后的外部回调（当前用途：E30 仓库状态缓存失效）。
