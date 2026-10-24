@@ -66,6 +66,7 @@ async def browse_fs(
     """
     del session
     container = _normalize(path)
+    _reject_app_data_root(container, request.app.state.settings.data_dir)
     _reject_passfile_root(container, request.app.state.settings.passfile_root)
     entries = await scan_dir_async(container)
     mounts = await asyncio.to_thread(_mount_points)
@@ -90,6 +91,37 @@ async def browse_fs(
         mounts=sorted(mounts) if container == "/" else [],
         next_cursor=next_cursor,
     )
+
+
+def _reject_app_data_root(container: str, data_dir: str | Path) -> None:
+    """拒绝浏览**应用数据目录**及其子目录（批次③ owner 裁决 B，2026-10-24）。
+
+    动机：E33 是全文件系统浏览（仓库选径的既定语义），host 模式下会把应用数据目录
+    （SQLite 库、运行日志、任务日志、仓库密码文件）的**目录名**暴露在仓库路径选择器里。
+    方案 B 只挡数据目录这一棵、**保留 ``/repo``**——仓库默认就在 ``settings.repo_root``，
+    把它一起挡掉会让仓库选不到默认位置（功能自相矛盾）。
+
+    与 :func:`_reject_passfile_root` 的分工：后者管「密码文件目录」这棵更细的子树
+    （可独立于 data_dir 配置），本函数管整棵数据目录；两者叠加不冲突（细的先报）。
+
+    判定跟随 ``settings.data_dir``（唯一出处，env ``DATA_DIR`` 可覆盖），不在本文件
+    硬编码路径前缀——改了根目录也不会漏挡。
+
+    Args:
+        container: 已规范化的容器内绝对路径。
+        data_dir: 应用数据目录根（``settings.data_dir``）。
+
+    Raises:
+        ValidationError: 路径落在该根目录内（422；不回任何目录条目）。
+    """
+    root = str(data_dir or "").strip().rstrip("/")
+    if not root:
+        return
+    if container == root or container.startswith(root + "/"):
+        raise ValidationError(
+            f"该路径位于应用数据目录内，不可浏览或选作仓库路径：{container}",
+            data={"path": container, "denied_root": root},
+        )
 
 
 def _reject_passfile_root(container: str, passfile_root: str) -> None:

@@ -33,6 +33,40 @@ def test_reject_passfile_root_boundaries():
         _reject_passfile_root(allowed, "/data/repos")  # 不抛即通过
 
 
+def test_reject_app_data_root_boundaries():
+    """批次③ 方案 B：数据目录整棵子树被拒；同前缀但非子树不误伤。"""
+    from app.errors import ValidationError
+    from app.routers.fs import _reject_app_data_root
+
+    for blocked in ("/data", "/data/restic.db", "/data/repos/default/password"):
+        try:
+            _reject_app_data_root(blocked, "/data")
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"应被拒绝：{blocked}")
+
+    for allowed in ("/data2", "/data-backup", "/", "/repo", "/sources/etc"):
+        _reject_app_data_root(allowed, "/data")  # 不抛即通过
+
+
+async def test_fs_browse_denies_app_data_root(make_app, tmp_path):
+    """批次③ 方案 B：?path=<data_dir>/... → 422；/repo（仓库默认位置）不受影响。"""
+    appdata = tmp_path / "appdata"
+    ns = await make_app({"DATA_DIR": str(appdata), "PASSFILE_ROOT": str(appdata / "repos")})
+    await finish_bootstrap(ns)
+
+    blocked = await ns.client.get("/api/fs/browse", params={"path": f"{appdata}/repos/default"})
+    assert blocked.status_code == 422, blocked.text
+    body = blocked.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["data"]["denied_root"] == str(appdata)
+
+    # /repo 是仓库默认位置（E33 职责所在）：存在与否另说，但绝不能被这道门禁误伤
+    repo = await ns.client.get("/api/fs/browse", params={"path": "/repo"})
+    assert repo.status_code != 422
+
+
 async def test_fs_browse_denies_passfile_root(monkeypatch, make_app):
     """路径层护栏：?path=<passfile_root>/... → 422，其它路径不受影响（仍走既有 404）。"""
     from app.settings import get_settings
