@@ -36,10 +36,19 @@ function childLoader(parentPath: string | undefined): Promise<TreePage> {
   if (parentPath === '/') {
     return loader()
   }
-  return Promise.resolve({
-    items: [{ key: '/a/b', name: 'b', type: 'dir', path: '/a/b' }],
-    nextCursor: null,
-  })
+  if (parentPath === '/a') {
+    return Promise.resolve({
+      items: [{ key: '/a/b', name: 'b', type: 'dir', path: '/a/b' }],
+      nextCursor: null,
+    })
+  }
+  if (parentPath === '/a/b') {
+    return Promise.resolve({
+      items: [{ key: '/a/b/c', name: 'c', type: 'dir', path: '/a/b/c' }],
+      nextCursor: null,
+    })
+  }
+  return Promise.resolve({ items: [], nextCursor: null })
 }
 
 function mountTree(props: Record<string, unknown> = {}) {
@@ -86,6 +95,17 @@ describe('VirtualTree 展开与选中分工', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
+  it('整行可点：行级 click 覆盖名称文字与行尾空白（同一热区）', async () => {
+    const wrapper = mountTree({ selectDir: true })
+    await flushLoads()
+    // 点行尾空白区域（flex 剩余空间，无子元素）也应触发 select
+    const row = rowsOf(wrapper)[0]
+    await row.trigger('click', { clientX: 9999 })
+    const emits = wrapper.emitted('select')
+    expect(emits).toHaveLength(1)
+    expect((emits![0][0] as { path: string }).path).toBe('/a')
+  })
+
   it('默认模式：点目录名 = 展开（旧行为，不 emit select）', async () => {
     const wrapper = mountTree()
     await flushLoads()
@@ -128,25 +148,58 @@ describe('VirtualTree 展开与选中分工', () => {
     expect(wrapper.find('.vtree__error').exists()).toBe(true)
     expect(wrapper.text()).toContain('无权限读取目录')
   })
-})
 
-describe('VirtualTree 批次③：挂载徽章与树标记排除 ⊘', () => {
-  it('点行末 ⊘ → emit toggle-exclude（带完整 item）', async () => {
-    const wrapper = mountTree()
+  it('auto 模式：视口高度 = 内容行数 × 行高（无 height 时不走死高）', async () => {
+    const wrapper = mountTree() // 2 行（/a、/c）
     await flushLoads()
-    await rowsOf(wrapper)[0].find('.vtree__exclude').trigger('click')
-    const emits = wrapper.emitted('toggle-exclude')
-    expect(emits).toHaveLength(1)
-    expect((emits![0][0] as { path: string }).path).toBe('/a')
+    const style = wrapper.find('.vtree__viewport').attributes('style') ?? ''
+    expect(style).toContain('height: 72px') // 2 × 36（VIRTUAL_TREE_ROW_HEIGHT）
   })
 
-  it('excludedPaths 命中 → 行置灰 + ⊘ 激活态（可访问名切为 Remove exclusion）', async () => {
+  it('auto 模式：maxHeight 封顶 → 内容超高时内部滚动', async () => {
+    const wrapper = mountTree({ maxHeight: 36 })
+    await flushLoads()
+    const style = wrapper.find('.vtree__viewport').attributes('style') ?? ''
+    expect(style).toContain('height: 36px') // 2 行内容 72 > 36 → 封顶
+  })
+
+  it('auto 模式：minHeight 保底 → 行数少时视口不塌陷', async () => {
+    const wrapper = mountTree({ minHeight: 360 })
+    await flushLoads()
+    const style = wrapper.find('.vtree__viewport').attributes('style') ?? ''
+    expect(style).toContain('height: 360px') // 2 行内容 72 < 360 → 保底
+  })
+
+  it('固定 height 模式优先（仓库/快照/恢复树不受内容驱动影响）', async () => {
+    const wrapper = mountTree({ height: 520, minHeight: 360 })
+    await flushLoads()
+    expect(wrapper.find('.vtree__viewport').attributes('style')).toContain('height: 520px')
+  })
+})
+
+describe('VirtualTree 高亮与排除视觉（名称点击统一切换，owner 2026-10-24）', () => {
+  it('highlightPaths 前缀命中 → 源目录及其子孙行蓝底高亮', async () => {
+    const wrapper = mountTree({ highlightPaths: new Set(['/a']) })
+    await flushLoads()
+    expect(rowsOf(wrapper)[0].classes()).toContain('vtree__row--highlight')
+    // 展开 /a → 子孙行同样高亮（「文件夹及其所有子目录和文件均显示为选中状态」）
+    await rowsOf(wrapper)[0].find('.vtree__caret').trigger('click')
+    await flushLoads()
+    expect(rowsOf(wrapper)[1].classes()).toContain('vtree__row--highlight')
+  })
+
+  it('excludedPaths 命中 → 行置灰（.vtree__row--excluded）', async () => {
     const wrapper = mountTree({ excludedPaths: new Set(['/a']) })
     await flushLoads()
     expect(rowsOf(wrapper)[0].classes()).toContain('vtree__row--excluded')
-    const active = wrapper.find('.vtree__exclude--active')
-    expect(active.exists()).toBe(true)
-    expect(active.attributes('aria-label')).toBe('Remove exclusion')
+  })
+
+  it('excludedPaths 的后代同样置灰（前缀匹配，无需展开加载单独规则）', async () => {
+    const wrapper = mountTree({ excludedPaths: new Set(['/a']) })
+    await flushLoads()
+    await rowsOf(wrapper)[0].find('.vtree__caret').trigger('click')
+    await flushLoads()
+    expect(rowsOf(wrapper)[1].classes()).toContain('vtree__row--excluded')
   })
 
   it('挂载点条目渲染徽章', async () => {

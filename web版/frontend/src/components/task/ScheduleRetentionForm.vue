@@ -259,7 +259,7 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
     <n-space vertical :size="8">
       <n-text strong>{{ t('wizard.schedule') }}</n-text>
 
-      <n-tabs v-model:value="cronMode" type="segment" size="small" @update:value="onModeChange">
+      <n-tabs v-model:value="cronMode" type="card" @update:value="onModeChange">
         <n-tab-pane name="none" :tab="t('wizard.scheduleMode.none')" />
         <n-tab-pane name="simple" :tab="t('wizard.scheduleMode.simple')" />
         <n-tab-pane name="advanced" :tab="t('wizard.scheduleMode.advanced')" />

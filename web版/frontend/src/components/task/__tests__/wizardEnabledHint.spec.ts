@@ -175,3 +175,119 @@ describe('TaskWizard 第①步「启用任务」语义澄清', () => {
     w.unmount()
   })
 })
+
+/**
+ * 步骤切换不得重复渲染 / 泄漏（regression guard）。
+ *
+ * 背景：原 `.wizard__body` 是 `<n-space>`，其会把每个子节点包进 key 写死为 1 的 div；
+ * 容器下挂 5 个互斥 <template v-if> 步 + footer，步间顶层子节点数量不同，
+ * 两套「全 key=1」列表互 diff 时 Vue 复用错乱，旧步 wrapper 不被卸载 → 来回切步出现
+ * 重复「策略」块、甚至第④步 ScheduleRetentionForm 泄漏进第⑤步。
+ * 这里用 ScheduleRetentionForm 独有的 `.schedule-form__summary` 作为探针：
+ * 第④步应恰有 1 个；第⑤步应 0 个（即使来回切也不许泄漏/累积）。
+ */
+describe('TaskWizard 步骤切换渲染护栏', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    i18n.global.locale.value = 'zh-CN'
+  })
+
+  /** 仅统计「真正挂在 DOM 上」的 ScheduleRetentionForm 个数（含被泄漏的副本）。 */
+  function scheduleFormCount(w: ReturnType<typeof mount>): number {
+    return w.element.querySelectorAll('.schedule-form__summary').length
+  }
+
+  it('第④步：ScheduleRetentionForm 恰渲染一次', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '4')
+    expect(scheduleFormCount(w)).toBe(1)
+    w.unmount()
+  })
+
+  it('第⑤步：不得泄漏第④步的 ScheduleRetentionForm（0 个）', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '4')
+    await gotoStep(w, '5')
+    expect(scheduleFormCount(w)).toBe(0)
+    w.unmount()
+  })
+
+  it('4→5→4→5 来回切步不累积重复/泄漏', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '4')
+    expect(scheduleFormCount(w)).toBe(1)
+    await gotoStep(w, '5')
+    expect(scheduleFormCount(w)).toBe(0)
+    await gotoStep(w, '4')
+    expect(scheduleFormCount(w)).toBe(1)
+    await gotoStep(w, '5')
+    expect(scheduleFormCount(w)).toBe(0)
+    w.unmount()
+  })
+})
+
+/**
+ * 第④步：保留档位汉化 + 调度 tab 醒目（2026-10-24 owner 诉求）。
+ *  - 保留档位标签不得再显示 keep-last / keep-hourly 等英文 flag 名；
+ *  - 调度模式选择器由 segment 小药丸改为 line 下划线 tab（更醒目）且带名字。
+ * 断言走 DOM 文案（zh-CN）+ 结构类，不依赖组件内部变量名。
+ */
+describe('TaskWizard 第④步保留档位汉化 + 调度 tab 醒目', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    i18n.global.locale.value = 'zh-CN'
+  })
+
+  /** 仅取档位小标签（输入框上方 depth-3 文案），不含区块标题与占位符。 */
+  function keepLabels(w: ReturnType<typeof mount>): string[] {
+    const nodes = w.element.querySelectorAll('.schedule-form__keep-label') as NodeListOf<Element>
+    return Array.from(nodes).map((el) => el.textContent?.trim() ?? '')
+  }
+
+  it('保留档位名称已汉化（计数档 + 时间线档），不再出现英文 flag 名', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '4')
+    const labels = keepLabels(w)
+    // 计数档
+    expect(labels).toContain('保留最近')
+    expect(labels).toContain('每小时保留')
+    expect(labels).toContain('每天保留')
+    expect(labels).toContain('每周保留')
+    expect(labels).toContain('每月保留')
+    expect(labels).toContain('每年保留')
+    // 时间线档
+    expect(labels).toContain('总时长内')
+    expect(labels).toContain('每小时时长')
+    expect(labels).toContain('每周时长')
+    // 汉化后不得再出现英文 flag 名作为档位标签
+    expect(labels).not.toContain('keep-last')
+    expect(labels).not.toContain('keep-hourly')
+    expect(labels).not.toContain('keep-within')
+    w.unmount()
+  })
+
+  it('调度模式以醒目的 card tab 呈现且带名字', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '4')
+    const tabs = w.element.querySelector('.n-tabs')
+    expect(tabs).not.toBeNull()
+    // 由 segment 小药丸改为 card 带边框的 tab 页，更醒目、且规避 line 下划线在空面板时不可见的坑
+    expect(tabs!.className).toContain('n-tabs--card-type')
+    // 三个模式 tab 均存在（结构护栏：模式数恒为 3）
+    expect(w.element.querySelectorAll('.n-tabs-tab__label').length).toBe(3)
+    // 三个模式名均为中文（事件级护栏，避开 jsdom 下 naive 标签文本不落 DOM 的坑）
+    expect(i18n.global.t('wizard.scheduleMode.none')).toContain('不调度')
+    expect(i18n.global.t('wizard.scheduleMode.simple')).toContain('简单模式')
+    expect(i18n.global.t('wizard.scheduleMode.advanced')).toContain('高级模式')
+    w.unmount()
+  })
+
+  it('第⑤步：保留摘要已汉化，不再出现英文 keep-last', async () => {
+    const w = await mountWizard()
+    await gotoStep(w, '5')
+    const text = w.element.textContent ?? ''
+    expect(text).toContain('保留最近')
+    expect(text).not.toContain('keep-last')
+    w.unmount()
+  })
+})

@@ -1,8 +1,13 @@
 <script setup lang="ts">
-/** 批次② 过滤条件编辑器（设计方案 §2.1–§2.3）：
- *   ① 快捷排除卡（扩展名 chips / 名称包含 / 文件大于 / 标记文件 / 跳过缓存）
- *   ② 有序规则列表（负向开关 / glob 输入 / 生效预览 / 忽略大小写 / 上下移 / 删除）
- *   ③ 固定提示条：排除不作用于已选源根目录本身
+/** 批次② 过滤条件编辑器（设计方案 §2.1–§2.3 + A 裁决 owner 2026-10-24 优先级重排）。
+ *
+ * 三区块按 **restic 真实执行优先级** 排列（编号即优先级，③ 最高）：
+ *   ① 匹配规则（按顺序生效）——快捷项生成的宽规则排在最前，可被下方规则列表的
+ *      负向（!）取消；规则按列表序，**后命中者赢**。
+ *   ② 独立开关（任一命中即排除）——文件大于 / 标记文件 / 跳过缓存，与规则并行，
+ *      不参与顺序比对（独立 flag，命中即排）。
+ *   ③ 内置排除集（强制生效）——A 裁决后内置集排 `--exclude` **队尾**（后命中者赢），
+ *      负向规则无法取消；只读展示，数据源 E32（`exclusionsQuery`）。
  *
  * 边界（按设计诚实原则，不做假开关）：
  *   - negate 与 icase 互斥：开启负向即关闭该行 icase（探针证明 --exclude 负向无法取消 --iexclude）；
@@ -10,13 +15,12 @@
  *   - 「生效预览」直接展示锚定后的容器形态，静默失效类坑在保存前暴露。
  */
 
-import { NButton, NCard, NIcon, NInput, NSwitch, NTag, NText } from 'naive-ui'
+import { NButton, NIcon, NInput, NSelect, NSwitch, NTag, NText, NTooltip } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { IconPlusCircle, IconTrash } from '@/components/icons/icons'
 import {
   anchorPattern,
-  flattenExcludes,
   isValidSize,
   validateGlob,
   type ExcludeRule,
@@ -29,8 +33,10 @@ const props = withDefaults(
     modelValue: ExcludeSpec
     /** 源根（锚定预览用；由 runtime store 的 browseRoot 注入）。 */
     sourceRoot?: string
+    /** 内置排除集（E32 展示形态，只读；强制生效，A 裁决）。 */
+    builtinRules?: string[]
   }>(),
-  { sourceRoot: '/sources' },
+  { sourceRoot: '/sources', builtinRules: () => [] },
 )
 
 const emit = defineEmits<{
@@ -40,16 +46,60 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const extDraft = ref('')
+const nameDraft = ref('')
 const presentDraft = ref('')
 const ruleDraft = ref('')
 
 const quick = computed(() => props.modelValue.quick)
 const rules = computed(() => props.modelValue.rules)
 
-const flat = computed(() => flattenExcludes(props.modelValue, props.sourceRoot))
 const sizeError = computed(
   () => Boolean(quick.value.largerThan) && !isValidSize(quick.value.largerThan ?? ''),
 )
+
+/** 文件大于拆分：数字部分（含小数）与单位（k/K/m/M/g/G/t/T；裸数字 = 字节）。 */
+const _SIZE_SPLIT = /^(\d+(?:\.\d+)?)([kKmMgGtT]?)$/
+const sizeNumber = computed(() => {
+  const value = quick.value.largerThan
+  if (!value) {
+    return ''
+  }
+  return _SIZE_SPLIT.exec(value.trim())?.[1] ?? value
+})
+const sizeUnit = computed(() => {
+  const value = quick.value.largerThan
+  if (!value) {
+    return 'M'
+  }
+  return _SIZE_SPLIT.exec(value.trim())?.[2] ?? 'M'
+})
+const sizeUnits = computed(() => [
+  { value: 'k', label: t('excludeEditor.sizeUnitK') },
+  { value: 'M', label: t('excludeEditor.sizeUnitM') },
+  { value: 'g', label: t('excludeEditor.sizeUnitG') },
+  { value: 'T', label: t('excludeEditor.sizeUnitT') },
+])
+
+/** 数字与单位任意一者变化即重组成完整值（数字为空 = 关闭该开关）。 */
+function updateSize(number: string, unit: string): void {
+  const n = number.trim()
+  updateQuick({ largerThan: n ? `${n}${unit}` : null })
+}
+
+/** 快捷项生成的 pattern 预览（扩展名 → 任意层级同名文件；名称包含 → 任意层级含名字）。 */
+const generatedPreview = computed(() => {
+  const parts: string[] = []
+  for (const ext of quick.value.extensions) {
+    parts.push(`**/*.${ext.replace(/^\./, '')}`)
+  }
+  for (const name of quick.value.nameContains) {
+    const value = name.trim()
+    if (value) {
+      parts.push(`**/*${value}*`)
+    }
+  }
+  return parts.join('  ')
+})
 
 function update(patch: Partial<ExcludeSpec>): void {
   emit('update:modelValue', { ...props.modelValue, ...patch })
@@ -70,6 +120,19 @@ function addExtension(): void {
 
 function removeExtension(value: string): void {
   updateQuick({ extensions: quick.value.extensions.filter((item) => item !== value) })
+}
+
+function addName(): void {
+  const value = nameDraft.value.trim()
+  nameDraft.value = ''
+  if (!value || quick.value.nameContains.includes(value)) {
+    return
+  }
+  updateQuick({ nameContains: [...quick.value.nameContains, value] })
+}
+
+function removeName(value: string): void {
+  updateQuick({ nameContains: quick.value.nameContains.filter((item) => item !== value) })
 }
 
 function addPresent(): void {
@@ -135,11 +198,14 @@ function preview(rule: ExcludeRule): string {
 
 <template>
   <div class="exclude-editor">
-    <!-- ① 快捷排除卡 -->
-    <n-card size="small" class="exclude-editor__card">
-      <template #header>{{ t('excludeEditor.quickTitle') }}</template>
-      <n-text depth="3" class="exclude-editor__desc">{{ t('excludeEditor.quickDesc') }}</n-text>
+    <!-- ① 匹配规则（按顺序生效）：快捷生成宽规则在前 → 规则列表在后，后命中者赢 -->
+    <section class="exclude-editor__section">
+      <n-text strong class="exclude-editor__section-title">
+        {{ t('excludeEditor.seqTitle') }}
+      </n-text>
+      <n-text depth="3" class="exclude-editor__desc">{{ t('excludeEditor.seqDesc') }}</n-text>
 
+      <!-- 快捷生成（仅 glob 相关的两项：扩展名 / 名称包含） -->
       <div class="exclude-editor__field">
         <n-text class="exclude-editor__label">{{ t('excludeEditor.extLabel') }}</n-text>
         <div class="exclude-editor__chips">
@@ -169,53 +235,24 @@ function preview(rule: ExcludeRule): string {
 
       <div class="exclude-editor__field">
         <n-text class="exclude-editor__label">{{ t('excludeEditor.nameLabel') }}</n-text>
-        <n-input
-          :value="quick.nameContains"
-          size="small"
-          :placeholder="t('excludeEditor.namePlaceholder')"
-          @update:value="(v: string) => updateQuick({ nameContains: v })"
-        />
-      </div>
-
-      <div class="exclude-editor__field">
-        <n-text class="exclude-editor__label">{{ t('excludeEditor.sizeLabel') }}</n-text>
-        <n-input
-          :value="quick.largerThan ?? ''"
-          size="small"
-          :status="sizeError ? 'error' : undefined"
-          :placeholder="t('excludeEditor.sizePlaceholder')"
-          @update:value="(v: string) => updateQuick({ largerThan: v.trim() ? v.trim() : null })"
-        />
-        <n-text v-if="sizeError" type="error" class="exclude-editor__error">
-          {{ t('excludeEditor.errSize') }}
-        </n-text>
-      </div>
-
-      <div class="exclude-editor__field">
-        <n-text class="exclude-editor__label">{{ t('excludeEditor.presentLabel') }}</n-text>
         <div class="exclude-editor__chips">
           <n-tag
-            v-for="name in quick.ifPresent"
+            v-for="name in quick.nameContains"
             :key="name"
             size="small"
             closable
-            @close="removePresent(name)"
+            @close="removeName(name)"
           >
             {{ name }}
           </n-tag>
           <n-input
-            v-model:value="presentDraft"
+            v-model:value="nameDraft"
             size="small"
             class="exclude-editor__inline-input"
-            :placeholder="t('excludeEditor.presentPlaceholder')"
-            @keydown.enter.prevent="addPresent"
+            :placeholder="t('excludeEditor.namePlaceholder')"
+            @keydown.enter.prevent="addName"
           />
-          <n-button
-            size="small"
-            quaternary
-            :aria-label="t('excludeEditor.presentLabel')"
-            @click="addPresent"
-          >
+          <n-button size="small" quaternary :aria-label="t('excludeEditor.nameLabel')" @click="addName">
             <template #icon>
               <n-icon :size="16"><IconPlusCircle /></n-icon>
             </template>
@@ -223,33 +260,28 @@ function preview(rule: ExcludeRule): string {
         </div>
       </div>
 
-      <div class="exclude-editor__field exclude-editor__field--row">
-        <n-text class="exclude-editor__label">{{ t('excludeEditor.cachesLabel') }}</n-text>
-        <n-switch
-          :value="quick.caches"
-          size="small"
-          @update:value="(v: boolean) => updateQuick({ caches: v })"
-        />
-      </div>
-    </n-card>
+      <n-text v-if="generatedPreview" depth="3" class="exclude-editor__generated">
+        {{ t('excludeEditor.generated') }}: {{ generatedPreview }}
+      </n-text>
 
-    <!-- ② 排除规则列表（有序） -->
-    <n-card size="small" class="exclude-editor__card">
-      <template #header>{{ t('excludeEditor.rulesTitle') }}</template>
-      <n-text depth="3" class="exclude-editor__desc">{{ t('excludeEditor.rulesDesc') }}</n-text>
-
+      <!-- 规则列表（有序；负向可取消上面的快捷宽规则） -->
       <n-text v-if="rules.length === 0" depth="3" class="exclude-editor__empty">
         {{ t('excludeEditor.empty') }}
       </n-text>
 
       <div v-for="(rule, index) in rules" :key="index" class="exclude-editor__rule">
         <div class="exclude-editor__rule-line">
-          <n-switch
-            :value="rule.negate"
-            size="small"
-            :aria-label="t('excludeEditor.negateLabel')"
-            @update:value="(v: boolean) => setNegate(index, v)"
-          />
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-switch
+                :value="rule.negate"
+                size="small"
+                :aria-label="t('excludeEditor.negateLabel')"
+                @update:value="(v: boolean) => setNegate(index, v)"
+              />
+            </template>
+            {{ t('excludeEditor.negateTip') }}
+          </n-tooltip>
           <n-input
             :value="rule.pattern"
             size="small"
@@ -258,13 +290,17 @@ function preview(rule: ExcludeRule): string {
             :placeholder="t('excludeEditor.rulePlaceholder')"
             @update:value="(v: string) => patchRule(index, { pattern: v })"
           />
-          <n-switch
-            v-if="!rule.negate"
-            :value="rule.icase"
-            size="small"
-            :aria-label="t('excludeEditor.icaseLabel')"
-            @update:value="(v: boolean) => patchRule(index, { icase: v })"
-          />
+          <n-tooltip v-if="!rule.negate" trigger="hover">
+            <template #trigger>
+              <n-switch
+                :value="rule.icase"
+                size="small"
+                :aria-label="t('excludeEditor.icaseLabel')"
+                @update:value="(v: boolean) => patchRule(index, { icase: v })"
+              />
+            </template>
+            {{ t('excludeEditor.icaseTip') }}
+          </n-tooltip>
           <n-button
             size="tiny"
             quaternary
@@ -316,15 +352,105 @@ function preview(rule: ExcludeRule): string {
           </template>
         </n-button>
       </div>
-    </n-card>
+    </section>
 
-    <!-- ③ 固定提示条 -->
+    <!-- ② 独立开关（任一命中即排除；与规则并行，不参与顺序比对） -->
+    <section class="exclude-editor__section">
+      <n-text strong class="exclude-editor__section-title">
+        {{ t('excludeEditor.switchTitle') }}
+      </n-text>
+      <n-text depth="3" class="exclude-editor__desc">{{ t('excludeEditor.switchDesc') }}</n-text>
+
+      <div class="exclude-editor__field">
+        <n-text class="exclude-editor__label">{{ t('excludeEditor.sizeLabel') }}</n-text>
+        <div class="exclude-editor__size">
+          <n-input
+            :value="sizeNumber"
+            size="small"
+            class="exclude-editor__size-number"
+            :status="sizeError ? 'error' : undefined"
+            :placeholder="t('excludeEditor.sizePlaceholder')"
+            @update:value="(v: string) => updateSize(v, sizeUnit)"
+          />
+          <n-select
+            :value="sizeUnit"
+            size="small"
+            class="exclude-editor__size-unit"
+            :options="sizeUnits"
+            :disabled="!sizeNumber"
+            @update:value="(v: string) => updateSize(sizeNumber, v)"
+          />
+        </div>
+        <n-text depth="3" class="exclude-editor__field-desc">
+          {{ t('excludeEditor.sizeDesc') }}
+        </n-text>
+        <n-text v-if="sizeError" type="error" class="exclude-editor__error">
+          {{ t('excludeEditor.errSize') }}
+        </n-text>
+      </div>
+
+      <div class="exclude-editor__field">
+        <n-text class="exclude-editor__label">{{ t('excludeEditor.presentLabel') }}</n-text>
+        <div class="exclude-editor__chips">
+          <n-tag
+            v-for="name in quick.ifPresent"
+            :key="name"
+            size="small"
+            closable
+            @close="removePresent(name)"
+          >
+            {{ name }}
+          </n-tag>
+          <n-input
+            v-model:value="presentDraft"
+            size="small"
+            class="exclude-editor__inline-input"
+            :placeholder="t('excludeEditor.presentPlaceholder')"
+            @keydown.enter.prevent="addPresent"
+          />
+          <n-button
+            size="small"
+            quaternary
+            :aria-label="t('excludeEditor.presentLabel')"
+            @click="addPresent"
+          >
+            <template #icon>
+              <n-icon :size="16"><IconPlusCircle /></n-icon>
+            </template>
+          </n-button>
+        </div>
+        <n-text depth="3" class="exclude-editor__field-desc">
+          {{ t('excludeEditor.presentDesc') }}
+        </n-text>
+      </div>
+
+      <div class="exclude-editor__field exclude-editor__field--row">
+        <n-text class="exclude-editor__label">{{ t('excludeEditor.cachesLabel') }}</n-text>
+        <n-switch
+          :value="quick.caches"
+          size="small"
+          :aria-label="t('excludeEditor.cachesLabel')"
+          @update:value="(v: boolean) => updateQuick({ caches: v })"
+        />
+        <n-text depth="3" class="exclude-editor__field-desc">
+          {{ t('excludeEditor.cachesDesc') }}
+        </n-text>
+      </div>
+    </section>
+
+    <!-- ③ 内置排除集（强制生效；A 裁决：队尾装配，负向不可取消） -->
+    <section v-if="builtinRules.length" class="exclude-editor__section">
+      <n-text strong class="exclude-editor__section-title">
+        {{ t('excludeEditor.builtinTitle') }}
+      </n-text>
+      <n-text depth="3" class="exclude-editor__desc">{{ t('excludeEditor.builtinDesc') }}</n-text>
+      <div class="exclude-editor__chips">
+        <n-tag v-for="rule in builtinRules" :key="rule" size="small" round>{{ rule }}</n-tag>
+      </div>
+    </section>
+
+    <!-- 固定提示条 -->
     <n-text depth="3" class="exclude-editor__hint">{{ t('excludeEditor.hintRoot') }}</n-text>
-
-    <!-- 生效预览汇总（调试/自检用，实际下发由父组件取 flat） -->
-    <n-text v-if="flat.excludes.length || flat.iexcludes.length" depth="3" class="exclude-editor__summary">
-      {{ t('excludeEditor.summary', { n: flat.excludes.length + flat.iexcludes.length }) }}
-    </n-text>
   </div>
 </template>
 
@@ -332,26 +458,55 @@ function preview(rule: ExcludeRule): string {
 .exclude-editor {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+}
+
+.exclude-editor__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--n-divider-color, rgba(0, 0, 0, 0.08));
+}
+
+.exclude-editor__section:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.exclude-editor__section-title {
+  font-size: 13px;
 }
 
 .exclude-editor__desc,
 .exclude-editor__hint,
 .exclude-editor__empty,
-.exclude-editor__summary {
+.exclude-editor__generated,
+.exclude-editor__field-desc {
   display: block;
   font-size: 12px;
+}
+
+.exclude-editor__desc,
+.exclude-editor__field-desc {
+  margin-bottom: 2px;
+}
+
+.exclude-editor__generated {
   margin-bottom: 6px;
+  font-family: var(--n-font-family-mono, monospace);
+  word-break: break-all;
 }
 
 .exclude-editor__field {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 
 .exclude-editor__field--row {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .exclude-editor__label {
@@ -369,6 +524,21 @@ function preview(rule: ExcludeRule): string {
 
 .exclude-editor__inline-input {
   max-width: 130px;
+}
+
+/* 文件大于：数字输入 + 单位下拉（同排） */
+.exclude-editor__size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.exclude-editor__size-number {
+  max-width: 160px;
+}
+
+.exclude-editor__size-unit {
+  width: 96px;
 }
 
 .exclude-editor__rule {

@@ -17,7 +17,8 @@ export interface ExcludeRule {
 
 export interface QuickExcludes {
   extensions: string[]
-  nameContains: string
+  /** 名称包含（多个；各生成一条 任意层级含名字 的宽规则）。 */
+  nameContains: string[]
   largerThan: string | null
   ifPresent: string[]
   caches: boolean
@@ -42,7 +43,7 @@ export type GlobError = 'empty' | 'brace' | 'unclosed' | 'emptyClass' | null
 const SIZE_RE = /^\d+(?:\.\d+)?[kKmMgGtT]?$/
 
 export function emptyQuick(): QuickExcludes {
-  return { extensions: [], nameContains: '', largerThan: null, ifPresent: [], caches: false }
+  return { extensions: [], nameContains: [], largerThan: null, ifPresent: [], caches: false }
 }
 
 export function emptyExcludeSpec(): ExcludeSpec {
@@ -126,9 +127,11 @@ export function flattenExcludes(spec: ExcludeSpec, sourceRoot: string): Flattene
     }
     excludes.push(`**/*${ext}`)
   }
-  const name = spec.quick.nameContains.trim()
-  if (name) {
-    excludes.push(`**/*${name}*`)
+  for (const raw of spec.quick.nameContains) {
+    const name = raw.trim()
+    if (name) {
+      excludes.push(`**/*${name}*`)
+    }
   }
 
   for (const rule of spec.rules) {

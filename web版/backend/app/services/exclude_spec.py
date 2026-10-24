@@ -12,6 +12,11 @@
    故 ``negate=True 且 icase=True`` 直接 422；UI 负向行隐藏 icase 开关。
 4. **展平顺序**——quick 生成的 pattern 在前、rules 按列表序在后（保证负向能取消
    快捷卡的宽规则）；``negate=False ∧ icase=True`` 进 ``--iexclude``，其余进 ``--exclude``。
+5. **最终装配顺序**（各调用点拼 ``built_in()`` 时统一遵守，A 裁决 owner 2026-10-24）：
+   ``quick 生成 → rules（含 ! 负向）→ 用户扁平 excludes → 内置集（队尾）``。
+   restic 后命中者赢 → **内置集真强制**：负向规则无法取消内置排除，与 UI「强制生效」一致。
+   另两组不走该序列：``--iexclude`` 独立列表；``larger_than``/``if_present``/``caches``
+   为独立开关，任一命中即排除。
 
 与 ``exclusions.normalize_user_excludes`` 的分工：后者负责「展示形态 ↔ 容器形态」的
 前缀换算（PathMapper）；本模块负责**规则语义**（校验/分层/分流）。规则里以 ``/`` 开头的
@@ -21,6 +26,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,10 +48,14 @@ class ExcludeRule:
 
 @dataclass(frozen=True)
 class QuickExcludes:
-    """快捷排除卡（零语法门槛，覆盖 90% 场景）。"""
+    """快捷排除卡（零语法门槛，覆盖 90% 场景）。
+
+    ``names``（名称包含）为**多值**：各生成一条 任意层级含名字 的宽规则；
+    wire 侧 ``nameContains`` 兼容存量**单字符串**形态（见 :func:`spec_from_wire`）。
+    """
 
     extensions: tuple[str, ...] = ()
-    name_contains: str = ""
+    names: tuple[str, ...] = ()
     larger_than: str | None = None
     if_present: tuple[str, ...] = ()
     caches: bool = False
@@ -68,6 +78,34 @@ class FlattenedExcludes:
     larger_than: str | None = None
     if_present: tuple[str, ...] = ()
     caches: bool = False
+
+
+def assemble_excludes(
+    user_patterns: Sequence[str], builtin: Sequence[str]
+) -> tuple[str, ...]:
+    """最终装配（A 裁决 owner 2026-10-24）：**用户 pattern 在前、内置集队尾**，保序去重。
+
+    restic 对 ``--exclude`` 列表逐条匹配、**后命中者赢**，故内置集排最后 = 真强制：
+    用户的 ``!`` 负向规则无法取消内置排除（与 UI「内置集·强制生效」承诺一致）。
+
+    五处调用点（job_runner 存量/批次②、backup_tasks 预览 spec/存量、sources 预览
+    spec/存量）必须经本函数拼装，**不得自拼顺序**——防顺序语义漂移。
+
+    Args:
+        user_patterns: 用户侧 pattern（quick 生成 + rules 含 ``!`` + 扁平 excludes）。
+        builtin: 内置排除集（:meth:`ExclusionRules.built_in`）。
+
+    Returns:
+        保序去重后的 ``--exclude`` 值序列（内置集在尾部）。
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for pattern in list(user_patterns) + list(builtin):
+        if pattern in seen:
+            continue
+        seen.add(pattern)
+        result.append(pattern)
+    return tuple(result)
 
 
 def validate_glob(pattern: str) -> str:
@@ -144,6 +182,20 @@ def _normalize_rule_pattern(pattern: str, mapper: PathMapper) -> str:
     return pattern
 
 
+def _names_from_wire(raw: Any) -> tuple[str, ...]:
+    """``nameContains`` 的 wire 兼容：数组（新形态）或单字符串（存量任务）。
+
+    存量任务的 ``exclude_spec`` JSON 里 ``nameContains`` 是字符串，读取时包一层；
+    新写入统一为数组。两种形态都不丢数据。
+    """
+    value = raw.get("nameContains")
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    return tuple(str(x) for x in value if str(x).strip())
+
+
 def spec_from_wire(raw: dict[str, Any]) -> ExcludeSpec:
     """前端/DB 的 camelCase dict → :class:`ExcludeSpec`（缺字段容错，非法条目跳过）。
 
@@ -154,7 +206,7 @@ def spec_from_wire(raw: dict[str, Any]) -> ExcludeSpec:
     rules_raw = raw.get("rules") or []
     quick = QuickExcludes(
         extensions=tuple(str(x) for x in (quick_raw.get("extensions") or []) if str(x).strip()),
-        name_contains=str(quick_raw.get("nameContains") or ""),
+        names=_names_from_wire(quick_raw),
         larger_than=(str(quick_raw.get("largerThan")) if quick_raw.get("largerThan") else None),
         if_present=tuple(str(x) for x in (quick_raw.get("ifPresent") or []) if str(x).strip()),
         caches=bool(quick_raw.get("caches")),
@@ -195,9 +247,10 @@ def flatten_exclude_spec(spec: ExcludeSpec, mapper: PathMapper) -> FlattenedExcl
         if not suffix.startswith("."):
             suffix = f".{suffix}"
         excludes.append(validate_glob(f"**/*{suffix}"))
-    name = spec.quick.name_contains.strip()
-    if name:
-        excludes.append(validate_glob(f"**/*{name}*"))
+    for name in spec.quick.names:
+        value = name.strip()
+        if value:
+            excludes.append(validate_glob(f"**/*{value}*"))
 
     # ---- rules：按列表序，分流 --exclude / --iexclude ----
     for rule in spec.rules:

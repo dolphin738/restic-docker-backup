@@ -14,7 +14,9 @@ from app.services.exclude_spec import (
     ExcludeRule,
     ExcludeSpec,
     QuickExcludes,
+    assemble_excludes,
     flatten_exclude_spec,
+    spec_from_wire,
     validate_glob,
     validate_size,
 )
@@ -68,7 +70,7 @@ def test_flatten_quick_generates_anchored_patterns():
     spec = ExcludeSpec(
         quick=QuickExcludes(
             extensions=("tmp", ".log"),
-            name_contains="cache",
+            names=("cache",),
             larger_than="100M",
             if_present=(".nobackup", "Thumbs.db"),
             caches=True,
@@ -79,6 +81,22 @@ def test_flatten_quick_generates_anchored_patterns():
     assert flat.larger_than == "100M"
     assert flat.if_present == (".nobackup", "Thumbs.db")
     assert flat.caches is True
+
+
+def test_flatten_quick_multiple_names_each_generate_a_rule():
+    """名称包含为多值：每个名字各生成一条 任意层级含名字 规则。"""
+    spec = ExcludeSpec(quick=QuickExcludes(names=("cache", "thumb")))
+    flat = flatten_exclude_spec(spec, _docker_mapper())
+    assert flat.excludes == ("**/*cache*", "**/*thumb*")
+
+
+def test_spec_from_wire_name_contains_legacy_string_compat():
+    """存量任务的 nameContains 是单字符串 → 包一层数组，不丢数据。"""
+    spec = spec_from_wire({"quick": {"nameContains": "cache"}})
+    assert spec.quick.names == ("cache",)
+    spec_list = spec_from_wire({"quick": {"nameContains": ["cache", "thumb"]}})
+    assert spec_list.quick.names == ("cache", "thumb")
+    assert spec_from_wire({"quick": {}}).quick.names == ()
 
 
 def test_flatten_rules_route_exclude_and_iexclude():
@@ -140,6 +158,28 @@ def test_normalize_rejects_bad_glob():
     mapper = _docker_mapper()
     with pytest.raises(ValidationError):
         normalize_user_excludes(["/sources/[abc"], mapper, source_prefixes=("/sources",))
+
+
+# ---------------------------------------------------------------- 最终装配顺序（A 裁决）
+
+
+def test_assemble_builtin_goes_last():
+    """A 裁决（owner 2026-10-24）：内置集排**队尾**——restic 后命中者赢 → 真强制。"""
+    out = assemble_excludes(["**/*.tmp", "!/sources/keep"], ["**/lost+found"])
+    assert out == ("**/*.tmp", "!/sources/keep", "**/lost+found")
+
+
+def test_assemble_negation_cannot_cancel_builtin():
+    """负向规则排在内置集**之前** → 后命中的内置集赢 → 取消不了内置排除（真强制）。"""
+    out = assemble_excludes(["!**/lost+found"], ["**/lost+found"])
+    negate_index = out.index("!**/lost+found")
+    builtin_index = out.index("**/lost+found")
+    assert negate_index < builtin_index  # restic 后命中者赢 → 内置集最终命中
+
+
+def test_assemble_dedupes_preserving_order():
+    out = assemble_excludes(["*.bak", "*.bak", "!keep"], ["*.bak", "**/.DS_Store"])
+    assert out == ("*.bak", "!keep", "**/.DS_Store")
 
 
 # ---------------------------------------------------------------- WhitelistArgs 拼装

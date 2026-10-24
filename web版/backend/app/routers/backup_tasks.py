@@ -51,7 +51,11 @@ from app.schemas.api_schemas import (
 )
 from app.services.config_transfer import PACK_KIND_TASK, build_export_pack
 from app.services.env_sync import load_credentials
-from app.services.exclude_spec import flatten_exclude_spec, spec_from_wire
+from app.services.exclude_spec import (
+    assemble_excludes,
+    flatten_exclude_spec,
+    spec_from_wire,
+)
 from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
@@ -446,14 +450,15 @@ async def dry_run_task(
     spec_raw = payload.exclude_spec or task.exclude_spec
     if spec_raw:
         flat = flatten_exclude_spec(spec_from_wire(spec_raw), mapper)
-        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + list(flat.excludes)))
+        # A 裁决（owner 2026-10-24）：内置集排**队尾**（后命中者赢 → 真强制）。
+        excludes = assemble_excludes(flat.excludes, ExclusionRules(settings).built_in())
         iexcludes, larger_than = flat.iexcludes, flat.larger_than
         if_present, caches = flat.if_present, flat.caches
     else:
         user_excludes = normalize_user_excludes(
             list(raw_excludes), mapper, source_prefixes=source_allowed_prefixes(settings)
         )
-        excludes = tuple(_dedupe(ExclusionRules(settings).built_in() + user_excludes))
+        excludes = assemble_excludes(user_excludes, ExclusionRules(settings).built_in())
         iexcludes, larger_than = (), None
         if_present, caches = (), False
     args = WhitelistArgs(
@@ -679,12 +684,3 @@ def _dedupe_warnings(warnings: list[DryRunWarning]) -> list[DryRunWarning]:
     return result
 
 
-def _dedupe(values: list[str]) -> list[str]:
-    """按字符串去重并保持顺序。"""
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result

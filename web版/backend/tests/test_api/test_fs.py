@@ -103,12 +103,52 @@ async def test_mount_quick_jump_denies_data_volume(monkeypatch, tmp_path):
     )
     payload = mounts_file.read_text(encoding="utf-8")  # 先取内容，避免补丁递归（同属 Path 类）
     monkeypatch.setattr(fs_module.Path, "read_text", lambda *a, **k: payload)
+    # 只保留目录型挂载（owner 2026-10-24）：合成挂载表里的路径在测试机不存在，
+    # 需按目标字符串判定 is_dir，否则会被目录过滤误伤
+    real_is_dir = fs_module.Path.is_dir
+    monkeypatch.setattr(
+        fs_module.Path,
+        "is_dir",
+        lambda self: str(self) in {"/repo", "/data", "/run/secrets"} or real_is_dir(self),
+    )
 
     mounts = fs_module._mount_points()
     assert "/repo" in mounts
     assert "/data" not in mounts
     assert not any(m.startswith("/run") for m in mounts)
     assert "/proc" not in mounts
+
+
+async def test_mount_points_skips_file_mounts(monkeypatch, tmp_path):
+    """文件/socket 型挂载点不标挂载点（owner 2026-10-24：WSL 把 init 二进制 bind mount
+    到 /init，/proc/mounts 里大量非目录挂载——给二进制打「挂载点」徽章是纯噪声）。"""
+    from app.routers import fs as fs_module
+
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text(
+        "\n".join(
+            [
+                "/dev/sda1 / ext4 rw 0 0",
+                "rootfs /init ext4 rw 0 0",  # 文件型 bind mount（WSL init）
+                "/dev/sdb1 /repo ext4 rw 0 0",  # 目录型（保留）
+                "tmpfs /tmp/.X11-unix tmpfs rw 0 0",  # socket 型（剔除）
+            ]
+        ),
+        encoding="utf-8",
+    )
+    payload = mounts_file.read_text(encoding="utf-8")
+    monkeypatch.setattr(fs_module.Path, "read_text", lambda *a, **k: payload)
+    real_is_dir = fs_module.Path.is_dir
+    monkeypatch.setattr(
+        fs_module.Path,
+        "is_dir",
+        lambda self: str(self) == "/repo" or real_is_dir(self),
+    )
+
+    mounts = fs_module._mount_points()
+    assert "/repo" in mounts
+    assert "/init" not in mounts
+    assert "/tmp/.X11-unix" not in mounts
 
 
 async def test_fs_browse_root_lists_entries(make_app):

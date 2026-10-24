@@ -175,6 +175,9 @@ def _mount_points() -> set[str]:
     """读取 ``/proc/mounts`` 得到容器挂载点集合；不可读（如 Windows 开发机）返回空集。
 
     过滤：伪文件系统类型、系统伪目录前缀、根目录本身；八进制转义（\\040 空格）还原。
+    **只保留目录**（owner 2026-10-24：WSL 把 init 二进制 bind mount 到 ``/init``，
+    /proc/mounts 里大量文件/socket 型挂载——给二进制文件打「挂载点」徽章是纯噪声，
+    备份场景里挂载点徽章只对数据卷有意义）。
     """
     try:
         text = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
@@ -190,6 +193,9 @@ def _mount_points() -> set[str]:
         if fstype in _PSEUDO_FS_TYPES or target == "/":
             continue
         if target.startswith(_MOUNT_PREFIX_DENY):
+            continue
+        # 文件/socket 型挂载点剔除（/init、/tmp/.X11-unix 等）；is_dir 对无权限目录仍为 True
+        if not Path(target).is_dir():
             continue
         mounts.add(target)
     return mounts

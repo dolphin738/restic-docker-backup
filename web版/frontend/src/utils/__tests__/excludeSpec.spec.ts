@@ -51,7 +51,7 @@ describe('flattenExcludes', () => {
     const spec = {
       quick: {
         extensions: ['tmp', '.log'],
-        nameContains: 'cache',
+        nameContains: ['cache'],
         largerThan: '100M',
         ifPresent: ['.nobackup'],
         caches: true,
@@ -72,7 +72,7 @@ describe('flattenExcludes', () => {
 
   it('锚定规则补源根', () => {
     const spec = {
-      quick: { extensions: [], nameContains: '', largerThan: null, ifPresent: [], caches: false },
+      quick: { extensions: [], nameContains: [], largerThan: null, ifPresent: [], caches: false },
       rules: [{ pattern: '/etc/*.conf', negate: false, icase: false }],
     }
     expect(flattenExcludes(spec, '/sources').excludes).toEqual(['/sources/etc/*.conf'])

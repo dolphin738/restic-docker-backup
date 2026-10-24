@@ -1,6 +1,7 @@
 <script lang="ts">
-/** 固定行高常量：虚拟滚动的几何基准，快照列表等场景复用同一值，避免行高漂移。 */
-export const VIRTUAL_TREE_ROW_HEIGHT = 32
+/** 固定行高常量：虚拟滚动的几何基准（owner 2026-10-24：32 → 36，对齐 Duplicati 树行尺寸）。
+ *  注意：仅本组件使用（曾预期快照列表复用，实际无外部消费方）。 */
+export const VIRTUAL_TREE_ROW_HEIGHT = 36
 
 /** 树节点（路径为展示形态原路径语义）。 */
 export interface TreeItem {
@@ -11,6 +12,9 @@ export interface TreeItem {
   path: string
   /** 是否为容器挂载点（E05/E33 标注；供行末徽章）。 */
   is_mountpoint?: boolean
+  /** 行末元信息（可选，如快照文件树的 `size · mtime`）——调用方拼好文案传入，
+   *  本组件不解析、不格式化；未传即无该区（E05 / E33 三处消费方零影响）。 */
+  meta?: string
 }
 
 /** 单层加载结果；nextCursor 为服务端给的不透明游标，本组件只透传。 */
@@ -21,14 +25,33 @@ export interface TreePage {
 </script>
 
 <script setup lang="ts">
+/** 目录树（Duplicati file-tree 视觉复刻 + 名称点击统一切换，owner 2026-10-24）。
+ *
+ * 行结构：[caret][folder/file 图标][名称][挂载徽章]——**无复选框、无行末按钮**，
+ * 视觉对齐 Duplicati 截图：行点击统一切换备份成员资格（emit select，父组件裁决）。
+ *   - highlightPaths（备份源，展示形态）：自身或祖先命中 → 蓝底高亮，
+ *     选一个目录作源即「整棵子树显示为选中」；
+ *   - excludedPaths（排除规则，展示形态）：自身或祖先命中 → 置灰 + 删除线，
+ *     后代同样置灰（前缀匹配，无需展开加载）——「未选中」的持久视觉；
+ *   - 展开/收起始终由 caret 触发；点名称在 selectDir 模式下 emit select；
+ *   - 高度：固定 height（仓库/快照/恢复树）或**内容驱动**（源树：行数×行高，
+ *     min/maxHeight 夹住；曾用 height:100%+ResizeObserver，百分比链在 flex 自动
+ *     高度容器里不可靠——盒子被撑高出现死空白，已废）。
+ */
 import { NButton, NIcon, NSpin } from 'naive-ui'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { IconServer } from '@/components/icons/icons'
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconFile,
+  IconFolder,
+  IconFolderOpen,
+  IconServer,
+} from '@/components/icons/icons'
 
 const ROW_HEIGHT = VIRTUAL_TREE_ROW_HEIGHT
 const OVERSCAN = 5
-const DEFAULT_HEIGHT = 360
 
 const props = defineProps<{
   /** 根目录（展示形态；首次挂载即加载该层直接子项）。 */
@@ -36,21 +59,26 @@ const props = defineProps<{
   /** 单层加载器：调用方适配 E05 / E18 / E33；一次请求只取一层直接子项，游标只透传。 */
   loadChildren: (path: string, cursor?: string) => Promise<TreePage>
   height?: number
+  /** auto 模式（未传 height 时）：视口高度 = 内容行数 × 行高，并用 min/maxHeight 夹住。 */
+  minHeight?: number
+  maxHeight?: number
   /** true：点目录名 = 选中（emit select）并同步展开；false（默认）：点目录名只展开。
    *  展开/收起**始终**由行首三角形触发，避免与选中手势互相打架。 */
   selectDir?: boolean
   /** 高亮行（当前选中/生效路径）。 */
   selectedPath?: string | null
-  /** 多选态：命中集合的行走绿勾样式（B1 文件级恢复；仅样式，不改点击语义）。 */
+  /** 多选态：命中集合的行打勾样式（B1 文件级恢复；仅样式，不改点击语义）。 */
   selectedPaths?: Set<string> | null
-  /** 已排除路径（展示形态）：命中的行置灰，⊘ 按钮呈激活态（批次③树标记排除）。 */
+  /** 高亮路径（备份源，展示形态）：**自身或祖先命中即高亮**——选一个目录作源，
+   *  其整个子树视觉上都是「已选中」（owner 2026-10-24：点名称切换加入/取消）。
+   *  Duplicati 实为蓝底高亮（非复选框），本 prop 复刻该视觉。 */
+  highlightPaths?: Set<string> | null
+  /** 已排除路径（展示形态，与行 path 同空间）：命中行及其**后代**全部置灰。 */
   excludedPaths?: Set<string> | null
 }>()
 
 const emit = defineEmits<{
   (e: 'select', item: TreeItem): void
-  /** 树标记排除：点行末 ⊘ 切换（父组件据此增删锚定规则）。 */
-  (e: 'toggle-exclude', item: TreeItem): void
 }>()
 
 const { t } = useI18n()
@@ -76,7 +104,16 @@ const dirStates = reactive(new Map<string, DirState>())
 const expanded = ref(new Set<string>())
 const scrollTop = ref(0)
 
-const viewportHeight = computed(() => props.height ?? DEFAULT_HEIGHT)
+// ---- 视口高度：固定值，或内容驱动（行数 × 行高，min/max 夹住） ----
+const viewportHeight = computed(() => {
+  if (props.height !== undefined) {
+    return props.height
+  }
+  const content = rows.value.length * ROW_HEIGHT
+  const floor = props.minHeight ?? 0
+  const cap = props.maxHeight ?? Number.POSITIVE_INFINITY
+  return Math.min(Math.max(content, floor), cap)
+})
 
 function isDir(item: TreeItem): boolean {
   return item.type === 'dir'
@@ -169,9 +206,56 @@ function onRowClick(row: Row): void {
   emit('select', item)
 }
 
-/** 树标记排除：行末 ⊘ 点击（父组件据此增删锚定规则）。 */
-function onToggleExclude(item: TreeItem): void {
-  emit('toggle-exclude', item)
+// ---- 排除三态（Duplicati 语义）：展示形态路径直接比对 ----
+
+type ExcludeState = 'included' | 'excluded' | 'partial'
+
+/** 行的排除态：自身/祖先命中 = excluded（置灰删除线）；后代命中（前缀）= partial；否则 included。 */
+function excludeStateOf(path: string): ExcludeState {
+  const set = props.excludedPaths
+  if (!set || set.size === 0) {
+    return 'included'
+  }
+  let cursor = path
+  for (;;) {
+    if (set.has(cursor)) {
+      return 'excluded'
+    }
+    const idx = cursor.lastIndexOf('/')
+    if (idx <= 0) {
+      break
+    }
+    cursor = cursor.slice(0, idx)
+  }
+  for (const ex of set) {
+    if (ex.startsWith(`${path}/`)) {
+      return 'partial'
+    }
+  }
+  return 'included'
+}
+
+/** 行末点击之外的全部手势收口：名称点击 = 切换备份成员资格（加入源 / 取消 / 排除），
+ *  由父组件（SourcesPicker）按 sources 与排除规则现状裁决，本组件只透传 select。 */
+
+/** 高亮态：自身或祖先命中备份源集合（选目录作源 → 整棵子树视觉已选中）。 */
+function isHighlighted(path: string): boolean {
+  const set = props.highlightPaths
+  if (!set || set.size === 0) {
+    return false
+  }
+  let cursor = path
+  for (;;) {
+    if (set.has(cursor)) {
+      return true
+    }
+    const idx = cursor.lastIndexOf('/')
+    if (idx <= 0) {
+      break
+    }
+    cursor = cursor.slice(0, idx)
+  }
+  return false
 }
 
 const rows = computed<Row[]>(() => {
@@ -259,42 +343,46 @@ watch(
               row.kind === 'item' && !!selectedPath && row.item.path === selectedPath,
             'vtree__row--checked':
               row.kind === 'item' && !!selectedPaths && selectedPaths.has(row.item.path),
+            'vtree__row--highlight':
+              row.kind === 'item' && isHighlighted(row.item.path),
             'vtree__row--excluded':
-              row.kind === 'item' && !!excludedPaths?.has(row.item.path),
+              row.kind === 'item' && excludeStateOf(row.item.path) === 'excluded',
           }"
           :style="{
             top: `${row.top}px`,
             height: `${ROW_HEIGHT}px`,
-            paddingLeft: `${row.depth * 16 + 8}px`,
+            paddingLeft: `${row.depth * 18 + 10}px`,
           }"
+          @click.stop="onRowClick(row)"
         >
           <template v-if="row.kind === 'item'">
-            <span class="vtree__caret" @click.stop="toggle(row.item)">
-              {{ isDir(row.item) ? (expanded.has(row.item.path) ? '▾' : '▸') : '' }}
+            <span
+              class="vtree__caret"
+              :class="{ 'vtree__caret--open': expanded.has(row.item.path) }"
+              @click.stop="toggle(row.item)"
+            >
+              <n-icon v-if="isDir(row.item)" :size="14">
+                <IconChevronDown v-if="expanded.has(row.item.path)" />
+                <IconChevronRight v-else />
+              </n-icon>
             </span>
-            <span class="vtree__name" @click.stop="onRowClick(row)">{{ row.item.name }}</span>
+            <n-icon class="vtree__type" :size="16">
+              <IconFolderOpen v-if="isDir(row.item) && expanded.has(row.item.path)" />
+              <IconFolder v-else-if="isDir(row.item)" />
+              <IconFile v-else />
+            </n-icon>
+            <span class="vtree__name">{{ row.item.name }}</span>
+            <span v-if="row.item.meta" class="vtree__meta">{{ row.item.meta }}</span>
             <n-icon
               v-if="row.item.is_mountpoint"
               class="vtree__mount"
-              :size="12"
+              :size="14"
               :title="t('tree.mountpoint')"
             >
               <IconServer />
             </n-icon>
-            <n-button
-              class="vtree__exclude"
-              :class="{ 'vtree__exclude--active': !!excludedPaths?.has(row.item.path) }"
-              size="tiny"
-              quaternary
-              :aria-label="
-                excludedPaths?.has(row.item.path) ? t('tree.unexclude') : t('tree.exclude')
-              "
-              @click.stop="onToggleExclude(row.item)"
-            >
-              ⊘
-            </n-button>
           </template>
-          <n-button v-else size="tiny" quaternary :loading="row.loadingMore" @click.stop="loadMore(row.dirPath)">
+          <n-button v-else size="small" quaternary :loading="row.loadingMore" @click.stop="loadMore(row.dirPath)">
             {{ t('tree.loadMore') }}
           </n-button>
         </div>
@@ -304,11 +392,17 @@ watch(
 </template>
 
 <style scoped>
+/* 样式纪律（UI全量改造方案 §4.6.4 彻底档 / P5）：颜色/间距/圆角/缓动一律走
+   theme/skin.css 令牌（--rw-*，亮暗双套），本文件零硬编码色值；
+   混色一律 color-mix 派生（比例不是色值）。原手写 rgba(...) 已全量替换——
+   旧值在暗色模式下失效（如高亮 rgba(61,91,217,.16) 在暗底上几乎不可见）。 */
+
 .vtree__viewport {
   position: relative;
   overflow-y: auto;
-  border: 1px solid rgba(128, 128, 128, 0.24);
-  border-radius: 4px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-control);
+  background: var(--rw-surface);
 }
 
 .vtree__row {
@@ -317,89 +411,101 @@ watch(
   right: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--rw-space-1);
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
+  font-size: 13px;
+  transition: background-color 0.15s var(--rw-ease);
+}
+
+.vtree__row:hover {
+  background: var(--rw-surface-hover);
 }
 
 .vtree__row--dir .vtree__name {
   font-weight: 600;
 }
 
+/* 备份源高亮：focus 16% 混 surface（亮/暗各一套，随 .rw-dark 自动切换） */
+.vtree__row--highlight,
+.vtree__row--highlight:hover {
+  background: color-mix(in srgb, var(--rw-focus) 16%, var(--rw-surface));
+}
+
+/* 排除态优先于高亮：border 45% 混 surface 的中性灰底 */
+.vtree__row--excluded,
+.vtree__row--excluded:hover {
+  background: color-mix(in srgb, var(--rw-border) 45%, var(--rw-surface));
+}
+
+.vtree__row--excluded .vtree__name {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.vtree__row--excluded .vtree__type {
+  opacity: 0.45;
+}
+
 .vtree__caret {
-  display: inline-block;
-  width: 14px;
-  color: rgba(128, 128, 128, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: color-mix(in srgb, var(--rw-focus) 35%, var(--rw-border));
   cursor: pointer;
-  pointer-events: none;
 }
 
-/* 只有目录行的三角形可点（全局开启后文件行仍不可点） */
-.vtree__row--dir .vtree__caret {
-  pointer-events: auto;
+.vtree__caret--open {
+  color: var(--rw-focus);
 }
 
-.vtree__caret:hover {
-  color: var(--n-primary-color, rgba(128, 128, 128, 0.9));
+/* 目录图标走 focus 主色（Duplicati 的文件夹即主色），文件图标降一档 */
+.vtree__type {
+  flex: none;
+  color: var(--rw-focus);
 }
 
-.vtree__row--selected {
-  background: rgba(0, 128, 0, 0.12);
+.vtree__row:not(.vtree__row--dir) .vtree__type {
+  color: color-mix(in srgb, var(--rw-focus) 45%, var(--rw-border));
 }
 
-/* 多选态（B1 文件级恢复）：绿勾标记，语义对齐 Duplicati 三态选择器（UI 文档 §2.4/§4.3） */
-.vtree__row--checked {
-  background: rgba(0, 128, 0, 0.12);
-}
-
-.vtree__row--checked .vtree__name::before {
-  content: '✓';
-  margin-right: 6px;
-  color: rgba(0, 128, 0, 0.9);
-  font-weight: 700;
-}
-
+/* 名称区撑满行内剩余宽度：名字文字 + 后面空白同属一个点击热区
+   （行级 click 已覆盖，flex 撑满让 hover/选中视觉连续，对齐 Duplicati 文本行） */
 .vtree__name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 行末元信息（可选）：等宽 + 降一档（opacity 继承行文本色，亮暗自适应，零硬编码色值）。
+   名称区已 flex:1 撑满，故 meta 天然贴行末；窄屏由名称区 ellipsis 让位。 */
+.vtree__meta {
+  flex: none;
+  margin-left: var(--rw-space-2);
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  opacity: 0.65;
 }
 
 /* 挂载点徽章（行末小图标，说明该目录是独立挂载点） */
 .vtree__mount {
   flex: none;
-  margin-left: 6px;
-  color: var(--muted-foreground, #999);
-}
-
-/* 树标记排除（批次③ ⊘）：行末小按钮，激活态 = 已排除 */
-.vtree__exclude {
-  flex: none;
-  margin-left: 4px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--muted-foreground, #999);
-}
-
-.vtree__exclude--active {
-  color: #d03050;
-}
-
-/* 已排除行置灰 + 删除线（一眼看出不在备份范围） */
-.vtree__row--excluded .vtree__name {
-  opacity: 0.5;
-  text-decoration: line-through;
+  margin-left: var(--rw-space-2);
+  color: color-mix(in srgb, var(--rw-focus) 35%, var(--rw-border));
 }
 
 .vtree__loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 120px;
+  height: calc(var(--rw-space-6) * 4);
 }
 
 .vtree__error {
-  padding: 12px;
-  color: rgba(255, 99, 99, 0.9);
+  padding: var(--rw-space-3);
+  color: var(--rw-danger);
 }
 </style>

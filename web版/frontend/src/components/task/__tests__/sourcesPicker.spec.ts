@@ -157,11 +157,12 @@ describe('SourcesPicker 左树右栏与可编辑行', () => {
     w.unmount()
   })
 
-  it('排除卡片渲染批次②编辑器（快捷卡 + 规则列表），加规则走 update:excludes', async () => {
+  it('排除卡片渲染批次②编辑器（三区块：匹配规则/独立开关），加规则走 update:excludes', async () => {
     const w = await mountPicker(['/sources/data'], ['*.tmp'])
     const text = w.element.textContent ?? ''
-    expect(text).toContain('快捷排除')
-    expect(text).toContain('排除规则')
+    // 优先级三区块（A 裁决 owner 2026-10-24 重排后口径）
+    expect(text).toContain('① 匹配规则（按顺序生效）')
+    expect(text).toContain('② 独立开关（任一命中即排除）')
     // 规则输入框：已有 '*.tmp' 一行 + 末尾「添加」行
     const inputs = [
       ...w.element.querySelectorAll('.exclude-editor__rule-input input'),

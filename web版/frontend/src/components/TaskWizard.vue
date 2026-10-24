@@ -708,6 +708,16 @@ const scheduleValue = computed<ScheduleRetentionValue>(() => ({
   keep_tags_text: form.keep_tags_text,
 }))
 
+/** 第⑤步保留摘要（只读）用的「标签 + 值」对，标签走 i18n（汉化，不再硬编码 keep-last）。 */
+const retentionSummaryRows = computed<Array<{ label: string; value: number }>>(() => [
+  { label: t('wizard.keep_last'), value: form.keep_last },
+  { label: t('wizard.keep_hourly'), value: form.keep_hourly },
+  { label: t('wizard.keep_daily'), value: form.keep_daily },
+  { label: t('wizard.keep_weekly'), value: form.keep_weekly },
+  { label: t('wizard.keep_monthly'), value: form.keep_monthly },
+  { label: t('wizard.keep_yearly'), value: form.keep_yearly },
+])
+
 function onScheduleUpdate(value: ScheduleRetentionValue): void {
   form.cron = value.cron
   form.keep_last = value.keep_last
@@ -765,7 +775,13 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </n-space>
       </n-alert>
 
-      <n-space vertical :size="16" class="wizard__body">
+      <!-- 容器必须用普通 flex div，不能用 n-space：n-space 会把每个子节点包进
+           key 写死为 1 的 div（node_modules/naive-ui/.../Space.js），而本容器下挂 5 个
+           互斥的 <template v-if/v-else-if/v-else> 步 + 常驻 footer，步与步的顶层子节点数量不同
+           （第④步=2、第⑤步≈6）。两套「全 key=1」的列表互相 diff 时 Vue 复用错乱，旧步的
+           wrapper 不被卸载 → 来回切步就出现重复「策略」块、甚至第④步的 ScheduleRetentionForm
+           泄漏进第⑤步。改用 flex+gap 等价复刻 n-space 的 16px 间距，彻底避开该陷阱。 -->
+      <div class="wizard__body">
         <!-- ① 基础信息 -->
         <template v-if="step === 1">
           <n-space vertical :size="4">
@@ -909,9 +925,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           <n-space vertical :size="8">
             <n-text strong>{{ t('wizard.retention') }}</n-text>
             <n-text depth="3">
-              keep-last {{ form.keep_last }} · keep-hourly {{ form.keep_hourly }} · keep-daily
-              {{ form.keep_daily }} · keep-weekly {{ form.keep_weekly }} · keep-monthly
-              {{ form.keep_monthly }} · keep-yearly {{ form.keep_yearly }}
+              <template v-for="(row, i) in retentionSummaryRows" :key="row.label"><template v-if="i > 0"> · </template>{{ row.label }} {{ row.value }}</template>
             </n-text>
           </n-space>
 
@@ -1008,7 +1022,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
             </template>
           </n-space>
         </n-space>
-      </n-space>
+      </div>
     </n-card>
   </n-space>
 </template>
@@ -1043,8 +1057,13 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
   margin-top: 8px;
 }
 
+/* 等价于 n-space vertical :size="16"：flex 列 + 16px gap，但不触发 n-space
+   的「每个子节点 key 写死为 1」陷阱（条件步块互相 diff 会泄漏重复 DOM）。 */
 .wizard__body {
   margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .wizard__draft {

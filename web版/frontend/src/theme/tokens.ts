@@ -108,6 +108,16 @@ export const spacing = {
   6: 32,
 } as const
 
+// ─── 源数据目录树视口高度（px） ────────────────────────────────────────────
+
+/** 源树视口 = **内容驱动**（行数 × 行高 36），用本组常量夹住上下限（owner 2026-10-24）。
+ *  取 spacing[6]（32px）的倍数：×11 ≈ 10 行保底（空目录也有树盒）、×24 ≈ 21 行封顶
+ *  （超出内部滚动，树盒永不出现死空白，也不追右栏高度——Duplicati 左树同形态）。
+ *  曾用 CSS height:100% + ResizeObserver  stretch 方案，百分比链在 flex 自动高度
+ *  容器里不可靠（盒子被撑高），已废；高度改由 JS 算好后以内联样式下发。 */
+export const sourceTreeViewMinHeight = spacing[6] * 11 // 352px
+export const sourceTreeViewMaxHeight = spacing[6] * 24 // 768px
+
 /** 亮色主题覆盖：UI全量改造方案 §6（原《UI界面设计方案》） §2.1（AA 对比度实测值）+ §4.6.4 彻底档组件级形态。 */
 export const lightThemeOverrides: GlobalThemeOverrides = {
   common: {

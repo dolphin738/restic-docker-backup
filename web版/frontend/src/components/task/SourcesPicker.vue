@@ -19,11 +19,8 @@ import { useQuery } from '@tanstack/vue-query'
 import {
   NButton,
   NCard,
-  NCollapse,
-  NCollapseItem,
   NIcon,
   NInput,
-  NTag,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -31,11 +28,12 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { browseSources } from '@/api/backupTasks'
 import { getExclusions } from '@/api/exclusions'
-import { IconPlusCircle } from '@/components/icons/icons'
+import { IconCheck, IconEdit, IconPlusCircle, IconTrash, IconX } from '@/components/icons/icons'
 import ExcludeEditor from '@/components/task/ExcludeEditor.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
+import { sourceTreeViewMaxHeight, sourceTreeViewMinHeight } from '@/theme/tokens'
 import {
   anchorPattern,
   flattenExcludes,
@@ -72,8 +70,13 @@ const mountChips = ref<string[]>([])
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   return browseSources(path, cursor).then((page) => {
-    // 非根目录 mounts 为空数组 → 同步清空快跳
-    mountChips.value = page.mounts ?? []
+    // 快跳 chips **只从模式根响应更新**（owner 2026-10-24 bug 修复）：旧实现在每次响应
+    // 都覆盖 mountChips，而非根请求回 mounts=[] → 点击 chip 跳转后导航条瞬间清空，
+    // 视觉上等于「点了没反应」。空展示路径（mount == 源根本身 → to_display 产出 ''）
+    // 也过滤掉——那种 chip 点击是 no-op，本身就是「跳不了」的另一处来源。
+    if (!path || path === '/') {
+      mountChips.value = (page.mounts ?? []).filter((m) => m.trim() && m !== '/')
+    }
     return {
       items: page.items.map((item) => ({
         key: item.display_path,
@@ -87,14 +90,67 @@ function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   })
 }
 
-/** 点目录/文件即加入已选（去重）；展开由行首三角形负责，不与选中冲突。 */
+/** 名称点击 = 统一切换备份成员资格（owner 2026-10-24，Duplicati 无复选框/行末按钮，
+ *  用户裁决「在已选中的目录下点取消 = 加入排除」）：
+ *   ① 显式加入的源          → 再点 = 取消（移出路径卡）
+ *   ② 被源覆盖（自身/祖先）  → 点它 = 排除（加锚定规则 → 排除规则列表 +1，行置灰删除线）；
+ *                              再点 = 恢复包含（移除该规则）
+ *   ③ 未被任何源覆盖         → 点它 = 加入（进路径卡，蓝底高亮，子孙行跟随高亮）
+ *  守卫：祖先已被排除的后代不可再包含（restic gitignore 限制，探针 Q2/Q3）→ no-op，不做假开关。
+ */
 function onTreeSelect(item: TreeItem): void {
-  if (props.sources.includes(item.path)) {
-    message.info(t('wizard.sourceExists', { path: item.path }))
+  const path = item.path
+
+  // ① 显式加入的源 → 取消：同步清掉**该源名下（含自身）的排除规则**——
+  // 否则父源移除后，子目录的排除规则变成孤儿（父都没了，排除毫无意义）。
+  // owner 2026-10-24 实证场景：加入 /home → 排除 /home/init → 取消 /home，排除规则残留。
+  if (props.sources.includes(path)) {
+    const anchored = anchorPattern(path, sourceRoot.value)
+    const kept = spec.value.rules.filter((rule) => {
+      const ruleAnchored = anchorPattern(rule.pattern, sourceRoot.value)
+      return !(ruleAnchored === anchored || ruleAnchored.startsWith(`${anchored}/`))
+    })
+    if (kept.length !== spec.value.rules.length) {
+      onSpecUpdate({ ...spec.value, rules: kept })
+    }
+    emit(
+      'update:sources',
+      props.sources.filter((item) => item !== path),
+    )
     return
   }
-  emit('update:sources', [...props.sources, item.path])
-  message.success(t('wizard.sourcePicked', { path: item.path }))
+
+  const covered = props.sources.some((source) => path === source || path.startsWith(`${source}/`))
+  if (!covered) {
+    // ③ 未覆盖 → 加入为源（无消息打扰：行高亮即反馈）
+    emit('update:sources', [...props.sources, path])
+    return
+  }
+
+  // ② 被覆盖 → 切换排除
+  const anchored = anchorPattern(path, sourceRoot.value)
+  const ownIndex = spec.value.rules.findIndex(
+    (rule) => !rule.negate && anchorPattern(rule.pattern, sourceRoot.value) === anchored,
+  )
+  if (ownIndex >= 0) {
+    // 自身是规则归属者 → 恢复包含
+    onSpecUpdate({ ...spec.value, rules: spec.value.rules.filter((_, i) => i !== ownIndex) })
+    return
+  }
+  // 祖先已被排除 → restic 捞不回，no-op。
+  // 注意：rule.pattern 与 path 同为**展示形态**，直接前缀比对（别再套 anchorPattern——
+  // 那会把规则变成 /sources/... 而与展示路径 /data/sub 永不匹配，本守卫曾因此失效）。
+  const ancestorExcluded = spec.value.rules.some(
+    (rule) => !rule.negate && path.startsWith(`${rule.pattern.trim()}/`),
+  )
+  if (ancestorExcluded) {
+    return
+  }
+  // 未排除 → 加排除规则（精确锚定，无尾随斜杠——绕开 restic -/dir/ 静默失效坑）
+  onSpecUpdate({
+    ...spec.value,
+    rules: [...spec.value.rules, { pattern: path, negate: false, icase: false }],
+  })
 }
 
 // ---------------------------------------------------------------- 右栏①：路径行（铅笔/垃圾桶）
@@ -212,34 +268,22 @@ function onSpecUpdate(next: ExcludeSpec): void {
   emit('update:excludes', flattenExcludes(next, sourceRoot.value).excludes)
 }
 
-/** 已排除的展示路径（来自 spec 的非负向规则）→ 树内置灰 + ⊘ 激活态。 */
+/** 已排除的展示路径（非负向规则的 pattern 本身，与树行 path 同为展示形态）。
+ *  旧实现用 anchorPattern 锚定后（/sources/...）与树行（/data）比对——docker 模式下
+ *  永不相等，⊘ 激活态从未亮过（潜伏 bug，随三态复选框重构一并修复）。 */
 const excludedPaths = computed(() => {
   const out = new Set<string>()
   for (const rule of spec.value.rules) {
     if (rule.negate) {
       continue
     }
-    out.add(anchorPattern(rule.pattern, sourceRoot.value))
+    out.add(rule.pattern)
   }
   return out
 })
 
-/** 树标记排除（批次③ ⊘）：命中即移除对应锚定规则，否则追加一条。
- * 生成的是**精确锚定路径**（无尾随斜杠）——绕开 restic ``-/dir/`` 被忽略的静默失效坑。 */
-function onToggleExclude(item: TreeItem): void {
-  const anchored = anchorPattern(item.path, sourceRoot.value)
-  const index = spec.value.rules.findIndex(
-    (rule) => !rule.negate && anchorPattern(rule.pattern, sourceRoot.value) === anchored,
-  )
-  if (index >= 0) {
-    onSpecUpdate({ ...spec.value, rules: spec.value.rules.filter((_, i) => i !== index) })
-    return
-  }
-  onSpecUpdate({
-    ...spec.value,
-    rules: [...spec.value.rules, { pattern: item.path, negate: false, icase: false }],
-  })
-}
+/** 高亮路径 = 备份源集合（前缀匹配由 VirtualTree 负责：选目录作源 → 整棵子树高亮）。 */
+const highlightPaths = computed(() => new Set(props.sources))
 </script>
 
 <template>
@@ -268,15 +312,19 @@ function onToggleExclude(item: TreeItem): void {
           {{ m }}
         </n-button>
       </div>
-      <VirtualTree
-        :root-path="currentPath"
-        :load-children="treeLoader"
-        :height="320"
-        :excluded-paths="excludedPaths"
-        select-dir
-        @select="onTreeSelect"
-        @toggle-exclude="onToggleExclude"
-      />
+      <!-- 等高填充：左栏 flex 纵向，树 wrapper flex:1 随右栏内容拉伸，树内部滚动 -->
+      <div class="sources-picker__tree-wrap">
+        <VirtualTree
+          :root-path="currentPath"
+          :load-children="treeLoader"
+          :min-height="sourceTreeViewMinHeight"
+          :max-height="sourceTreeViewMaxHeight"
+          :highlight-paths="highlightPaths"
+          :excluded-paths="excludedPaths"
+          select-dir
+          @select="onTreeSelect"
+        />
+      </div>
       <n-text depth="3" class="sources-picker__hint">{{ t('wizard.sourcesHint') }}</n-text>
     </section>
 
@@ -372,20 +420,12 @@ function onToggleExclude(item: TreeItem): void {
         <template #header>{{ t('wizard.excludeCard') }}</template>
         <n-text depth="3" class="sources-picker__desc">{{ t('wizard.excludeDesc') }}</n-text>
 
-        <n-collapse size="small">
-          <n-collapse-item
-            :title="t('wizard.exclusionsBuiltin', { n: builtinRules.length })"
-            name="builtin"
-          >
-            <div class="sources-picker__rules">
-              <n-tag v-for="rule in builtinRules" :key="rule" size="small" round>{{ rule }}</n-tag>
-            </div>
-          </n-collapse-item>
-        </n-collapse>
-
+        <!-- 排除条件三区块（按优先级）：①匹配规则 → ②独立开关 → ③内置集（强制）。
+             内置集由本组件从 E32 取展示形态后传入，只读区在 ExcludeEditor 内统一呈现。 -->
         <ExcludeEditor
           :model-value="spec"
           :source-root="sourceRoot"
+          :builtin-rules="builtinRules"
           @update:model-value="onSpecUpdate"
         />
 
@@ -396,10 +436,11 @@ function onToggleExclude(item: TreeItem): void {
 </template>
 
 <style scoped>
-/* 左树右栏（Duplicati source-data：.left / .right 双列；窄屏回落到单栏） */
+/* 左树右栏（Duplicati source-data：.left / .right 双列；窄屏回落到单栏）。
+   align-items: stretch（默认拉伸改显式声明）→ 左栏高度跟随右栏内容，树在内部滚动。 */
 .sources-picker {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 16px;
 }
 
@@ -408,6 +449,18 @@ function onToggleExclude(item: TreeItem): void {
   flex: 1 1 55%;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+}
+
+/* 树 wrapper：内容驱动（owner 2026-10-24 三次迭代终态）。
+   高度由 VirtualTree 按「行数 × 行高」JS 算好（min/max 见 theme/tokens.ts），
+   这里只做不拉伸、不撑行（flex:none）——树多高=内容多高，零死空白；
+   右栏该多长多长互不绑架（Duplicati 左树同样不追右栏高度）。
+   曾用的 stretch / height:100% 全部废弃：前者盒内死空白，后者百分比链不可靠。 */
+.sources-picker__tree-wrap {
+  flex: none;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 
@@ -458,14 +511,6 @@ function onToggleExclude(item: TreeItem): void {
 .sources-picker__row-input {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.sources-picker__rules {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  max-height: 180px;
-  overflow-y: auto;
 }
 
 @media (max-width: 960px) {

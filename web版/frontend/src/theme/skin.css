@@ -45,6 +45,8 @@
   --rw-surface: #ffffff;
   --rw-surface-hover: #f5f6fa;
   --rw-focus: #3d5bd9;
+  /* 危险文本色（树错误态等）：与 tokens.ts lightThemeOverrides.common.errorColor 同源 */
+  --rw-danger: #b91c1c;
 }
 
 /* 暗色三档阴影：低透明度黑。§4.6.4 要求「亮/暗各一套值」；强度刻意克制，
@@ -60,6 +62,8 @@
   --rw-surface: #1c1f27;
   --rw-surface-hover: #232733;
   --rw-focus: #7c93f5;
+  /* 危险文本色暗色套（tokens.ts darkThemeOverrides.common.errorColor #e06c6c） */
+  --rw-danger: #e06c6c;
 }
 
 /* ─── 间距工具类：六档 × gap / padding / padding-inline / padding-block / margin-top / margin-bottom ───

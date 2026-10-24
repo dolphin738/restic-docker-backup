@@ -219,8 +219,15 @@ describe('P6 表面变量：skin.css 自持 + 与 tokens.ts borderColor 同源�
     expect(SKIN_CSS).toContain('--rw-focus: #7c93f5;')
   })
 
-  it('四枚表面变量各定义两处（:root + .rw-dark，tokens.ts 不重复定义）', () => {
-    for (const name of ['--rw-border', '--rw-surface', '--rw-surface-hover', '--rw-focus']) {
+  it('危险文本色 --rw-danger 亮暗值与 tokens.ts common.errorColor 相等（跨文件同源）', () => {
+    expect(SKIN_CSS).toContain('--rw-danger: #b91c1c;')
+    expect(SKIN_CSS).toContain('--rw-danger: #e06c6c;')
+    expect(lightThemeOverrides.common?.errorColor?.toLowerCase()).toBe('#b91c1c')
+    expect(darkThemeOverrides.common?.errorColor?.toLowerCase()).toBe('#e06c6c')
+  })
+
+  it('五枚表面变量各定义两处（:root + .rw-dark，tokens.ts 不重复定义）', () => {
+    for (const name of ['--rw-border', '--rw-surface', '--rw-surface-hover', '--rw-focus', '--rw-danger']) {
       const matches = SKIN_CSS.match(new RegExp(`${name}:`, 'g')) ?? []
       expect(matches.length, `${name} 应仅在 :root 与 .rw-dark 各定义一次`).toBe(2)
     }
