@@ -434,6 +434,11 @@ function onTypeChange(value: string | null): void {
   repoForm.remote = ''
   repoForm.raw = ''
   rclonePresetKey.value = ''
+  // 选到 local 即备好挂载点快跳（树此刻起点是 /，但编辑态回填后可能不是——统一由
+  // ensureMounts 兜底，函数声明在本函数之后、运行时调用无 TDZ 风险）
+  if (next === 'local') {
+    void ensureMounts()
+  }
 }
 
 /** A8：向服务端要一个候选仓库标识（r<YYMMDD>-xxxxxx）预填；失败不阻断（用户可手填/留空）。 */
@@ -459,6 +464,8 @@ function openCreate(): void {
   browsePath.value = CONTAINER_ROOT
   creatingNew.value = true
   editing.value = true
+  // 挂载点独立取（不能靠树响应顺带，见 ensureMounts 注释）
+  void ensureMounts()
 }
 
 /** 落库一次创建（不含「之后干什么」的决策）：成功返回新仓库 id 并已设为当前仓库；
@@ -749,21 +756,35 @@ const CONTAINER_ROOT = '/'
 const browsePath = ref(CONTAINER_ROOT)
 const mountChips = ref<string[]>([])
 
+/** 挂载点快跳（地址栏根段旁的三角菜单）：**与树位置解耦**，独立取一次容器根。
+ *
+ *  ⚠️ 不能靠树的响应顺带填：后端 E33 只在 `container == "/"` 的请求里回 `mounts`
+ *  （`app/routers/fs.py:91` 实证），而本页树起点是**已填路径的父目录**（很可能不是 `/`），
+ *  于是一次也拿不到 → 三角因 `v-if="mounts.length > 0"` 恒不渲染，用户只能手动点回 `/`
+ *  才出现（2026-10-26 实拍缺陷）。与 `RestoreTargetPicker` 同款写法（S-4：复用既有解）。
+ *  取数失败静默降级——挂载菜单只是快跳便利，不影响选路径。 */
+async function ensureMounts(): Promise<void> {
+  if (mountChips.value.length > 0) {
+    return
+  }
+  try {
+    const page = await browseFs(CONTAINER_ROOT, null, 1)
+    mountChips.value = (page.mounts ?? []).filter((m) => m.trim() && m !== CONTAINER_ROOT)
+  } catch {
+    // 快跳降级：静默
+  }
+}
+
 function fsLoader(path: string, cursor?: string): Promise<TreePage> {
-  return browseFs(path, cursor).then((page) => {
-    if (page.path === CONTAINER_ROOT) {
-      mountChips.value = page.mounts
-    }
-    return {
-      items: page.items.map((item) => ({
-        key: item.path,
-        name: item.name,
-        type: item.type,
-        path: item.path,
-      })),
-      nextCursor: page.next_cursor,
-    }
-  })
+  return browseFs(path, cursor).then((page) => ({
+    items: page.items.map((item) => ({
+      key: item.path,
+      name: item.name,
+      type: item.type,
+      path: item.path,
+    })),
+    nextCursor: page.next_cursor,
+  }))
 }
 
 /** 点目录名 = 选为仓库路径（与向导「点名称即选」同手势）。
@@ -815,6 +836,7 @@ function loadRepoIntoForm(): void {
   // 编辑既有仓库时省去从根逐层展开。browsePath 声明在本函数之前，无 TDZ 风险。
   if (repoForm.type === 'local') {
     browsePath.value = parentOf(repoForm.path)
+    void ensureMounts()
   }
 }
 

@@ -228,6 +228,7 @@ watch(
         :aria-expanded="menuOpen"
         :aria-label="t('pathBar.expandMounts')"
         @click.stop="toggleMenu"
+        @keydown.esc.prevent="menuOpen = false"
       >
         <n-icon :size="14"><IconChevronDown /></n-icon>
       </button>

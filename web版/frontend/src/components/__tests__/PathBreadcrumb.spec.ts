@@ -100,6 +100,17 @@ describe('PathBreadcrumb：面包屑分段与两段热区', () => {
     const w = mountBar()
     expect(w.find('.pcrumb__caret').exists()).toBe(false)
   })
+
+  it('④b 键盘可达：三角聚焦后 Esc 收起菜单（不跳转、不 emit）', async () => {
+    const w = mountBar({ mounts: MOUNTS })
+    await caret(w).click()
+    expect(w.find('.pcrumb__menu').exists()).toBe(true)
+
+    // Esc 落在三角上即收起——否则键盘用户只能靠点外部关闭（2026-10-26 实测缺口）
+    await w.find('.pcrumb__caret').trigger('keydown', { key: 'Escape' })
+    expect(w.find('.pcrumb__menu').exists()).toBe(false)
+    expect(w.findComponent(PathBreadcrumb).emitted('select')).toBeUndefined()
+  })
 })
 
 describe('PathBreadcrumb：地址栏编辑（Enter / Esc / 失焦）', () => {
