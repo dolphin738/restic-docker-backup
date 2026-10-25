@@ -23,6 +23,7 @@ import RestoreProgressRing from '@/components/restore/RestoreProgressRing.vue'
 import RestoreStepper from '@/components/restore/RestoreStepper.vue'
 import WizardPage from '@/pages/restore/flow/index.vue'
 import { i18n } from '@/i18n'
+import { useRuntimeStore } from '@/stores/runtime'
 import { lightThemeOverrides } from '@/theme/tokens'
 
 const mocks = vi.hoisted(() => ({
@@ -139,6 +140,7 @@ const RouterHost = { template: '<router-view />' }
 /** 挂载向导：宿主路由注册三个步骤 name（契约与真实路由表一致）。 */
 async function mountWizard(initialPath: string) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const pinia = createPinia()
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -154,10 +156,10 @@ async function mountWizard(initialPath: string) {
       props: { themeOverrides: lightThemeOverrides },
       slots: { default: () => h(NMessageProvider, null, { default: () => h(RouterHost) }) },
       global: {
-        plugins: [i18n, createPinia(), [VueQueryPlugin, { queryClient }], router],
+        plugins: [i18n, pinia, [VueQueryPlugin, { queryClient }], router],
       },
     })
-    return { wrapper, router }
+    return { wrapper, router, pinia }
   }
 
 describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
@@ -375,6 +377,37 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
       await flushPromises()
 
       expect(vi.mocked(restoreSnapshot).mock.calls[0]?.[1]).toBe('/restore')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('⑪ host 形态：原位目标换算恒等（不再叠 /sources 前缀，Q1=A/Q2 实拍缺陷回归）', async () => {
+    mocks.snapshots = [
+      { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: ['/srv/data'], size: 1024 },
+    ]
+    const { restoreSnapshot } = await import('@/api/restore')
+    vi.mocked(restoreSnapshot).mockClear()
+    vi.stubGlobal('EventSource', FakeEventSource)
+    try {
+      const { wrapper, pinia } = await mountWizard('/restore/snap-1/select-files')
+      // host 形态：runtime 下发 inplace_root=/（展示形态已含主机前缀 → 换算恒等）
+      const runtime = useRuntimeStore(pinia)
+      runtime.deployMode = 'host'
+      runtime.browseRoot = '/'
+      runtime.restoreRoot = '/'
+      runtime.inplaceRoot = '/'
+      await flushPromises()
+
+      await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
+      await flushPromises()
+      await wrapper.findAll('button').find((b) => b.text().includes('提交'))!.trigger('click')
+      await flushPromises()
+      wrapper.findComponent(ConfirmGate).vm.$emit('confirm')
+      await flushPromises()
+
+      // 旧实现会拼出 /sources/srv/data（后端 403）；正确值为展示形态本身
+      expect(vi.mocked(restoreSnapshot).mock.calls[0]?.[1]).toBe('/srv/data')
     } finally {
       vi.unstubAllGlobals()
     }

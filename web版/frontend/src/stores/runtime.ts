@@ -15,8 +15,11 @@ export const useRuntimeStore = defineStore('runtime', () => {
   /** 源树浏览根（唯一取数来源，前端不再写死 /sources）。 */
   const browseRoot = ref('/sources')
   const sourcesRoot = ref('/sources')
+  /** 恢复根（生效值，Q1=A 部署形态派生）：docker=/restore、host=/（选择位置树根）。 */
   const restoreRoot = ref('/restore')
-  /** host 模式下不可选作备份源的前缀（仓库存储位置 / 应用数据 / 伪目录）。 */
+  /** 原位目标换算前缀（生效值）：docker=/sources、host=/（host 下 display 已含前缀 → 恒等）。 */
+  const inplaceRoot = ref('/sources')
+  /** host 模式下不可选作备份源/恢复目标的区域（仓库存储位置 / 应用数据 / 伪目录）。 */
   const denyPrefixes = ref<string[]>([])
   const loaded = ref(false)
 
@@ -29,6 +32,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
       browseRoot.value = runtime.browse_root
       sourcesRoot.value = runtime.sources_root
       restoreRoot.value = runtime.restore_root
+      inplaceRoot.value = runtime.inplace_root
       denyPrefixes.value = runtime.deny_prefixes
       loaded.value = true
     } catch {
@@ -41,6 +45,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     browseRoot,
     sourcesRoot,
     restoreRoot,
+    inplaceRoot,
     denyPrefixes,
     loaded,
     init,

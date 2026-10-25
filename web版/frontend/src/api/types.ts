@@ -817,7 +817,10 @@ export interface SystemRuntimeResponse {
   deploy_mode: 'docker' | 'host'
   browse_root: string
   sources_root: string
+  /** 恢复根（生效值，部署形态派生）：docker=/restore、host=/（「选择位置」树根 + 时间戳子目录落点）。 */
   restore_root: string
+  /** 原位目标换算前缀（生效值）：docker=/sources、host=/（host 下 display 已含前缀，换算恒等）。 */
+  inplace_root: string
   deny_prefixes: string[]
 }
 

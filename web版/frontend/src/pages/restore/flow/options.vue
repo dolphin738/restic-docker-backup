@@ -35,7 +35,7 @@ import RestoreTargetPicker from '@/components/restore/RestoreTargetPicker.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { formatBytesOr } from '@/utils/format'
 
-defineProps<{
+const props = defineProps<{
   /** original = 原位置（A7 默认）/ pickLocation = 选择位置（/restore 子树）。 */
   restoreFrom: 'original' | 'pickLocation'
   isInPlace: boolean
@@ -47,6 +47,8 @@ defineProps<{
   inplaceTargetOptions: Array<{ label: string; value: string }>
   /** 已选恢复目标（容器形态，/restore 子树内；选择位置流提交值）。 */
   customTarget: string
+  /** 恢复根（生效值，部署形态派生：docker=/restore、host=/）——文案与选择器同源。 */
+  restoreRoot: string
   /** A7 覆盖布尔：默认不勾 = never 跳过已存在文件；勾选 = always 覆盖。 */
   overwriteExisting: boolean
   /** 提交中（确认门 loading 同源；页脚提交按钮共用）。 */
@@ -114,7 +116,8 @@ const previewColumns = computed<DataTableColumns<RestorePreviewItem>>(() => [
 ])
 
 /** raised 单选卡两项（Duplicati sh-radio raised primary 同款形态：整行可点 +
- *  选中主色描边 + 单选圆点；键盘可达沿用 repo A4 类型卡 button 范式）。 */
+ *  选中主色描边 + 单选圆点；键盘可达沿用 repo A4 类型卡 button 范式）。
+ *  文案里的恢复根随部署形态（docker /restore、host /），不写死目录名。 */
 const whereOptions = computed(() => [
   {
     value: 'original' as const,
@@ -124,7 +127,7 @@ const whereOptions = computed(() => [
   {
     value: 'pickLocation' as const,
     label: t('restore.options.pickLocation'),
-    note: t('restore.options.pickLocationNote'),
+    note: t('restore.options.pickLocationNote', { root: props.restoreRoot || '/' }),
   },
 ])
 

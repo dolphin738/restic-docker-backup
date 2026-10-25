@@ -1107,9 +1107,9 @@ export default {
       whereTitle: 'Where to restore',
       title: 'Restore options',
       original: 'Original location',
-      originalNote: 'Writes straight back to the directory the snapshot was taken from (original paths under /sources), matching Duplicati original-location restore.',
+      originalNote: 'Writes straight back to the directory the snapshot was taken from (original paths recorded in the snapshot), matching Duplicati original-location restore.',
       pickLocation: 'Pick location',
-      pickLocationNote: 'Choose a folder under the restore directory (/restore). The server creates a timestamped subfolder inside it, so existing files are never overwritten.',
+      pickLocationNote: 'Choose a folder under the restore root ({root}). The server creates a timestamped subfolder inside it, so existing files are never overwritten.',
       existingTitle: 'Existing files',
       timestampNoOverwrite: 'The timestamped subdirectory never overwrites, so there is no overwrite option.',
       back: 'Go back',
@@ -1127,6 +1127,8 @@ export default {
         errAbsolute: 'Must be an absolute path (starting with /).',
         errTraversal: 'Path must not contain .. segments.',
         errOutside: 'Path must be inside the restore directory {root}.',
+        errDenied:
+          'This location is protected (pseudo filesystems / repository storage / application data) and cannot be used as a restore target.',
       },
     },
     search: {

@@ -29,8 +29,14 @@ vi.mock('@/api/fs', () => ({
   browseFs: mocks.browse,
 }))
 
-function mountPicker(modelValue = '/restore') {
+function mountPicker(
+  modelValue = '/restore',
+  setup?: (runtime: ReturnType<typeof useRuntimeStore>) => void,
+) {
   const pinia = createPinia()
+  if (setup) {
+    setup(useRuntimeStore(pinia))
+  }
   const wrapper = mount(NConfigProvider, {
     props: { themeOverrides: lightThemeOverrides },
     slots: {
@@ -127,5 +133,55 @@ describe('RestoreTargetPicker：树双模式 + 越界校验', () => {
     runtime.restoreRoot = '/mnt/restore'
     await flushPromises()
     expect(wrapper.text()).toContain('/mnt/restore')
+  })
+
+  it('⑦ host 形态 deny：受保护区域手输报错，不 emit', async () => {
+    const { wrapper, picker } = mountPicker('/', (runtime) => {
+      runtime.deployMode = 'host'
+      runtime.restoreRoot = '/'
+      runtime.inplaceRoot = '/'
+      runtime.denyPrefixes = ['/repo']
+    })
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('手动输入'))!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('input').setValue('/repo/data')
+    await flushPromises()
+    expect(wrapper.text()).toContain('该位置受保护')
+    expect(picker.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  it('⑧ host 形态 deny：树上点受保护目录不选中、不下钻', async () => {
+    mocks.browse.mockImplementation(async (path: string) => ({
+      path,
+      items:
+        path === '/'
+          ? [
+              { name: 'repo', type: 'dir', path: '/repo', is_mountpoint: false },
+              { name: 'srv', type: 'dir', path: '/srv', is_mountpoint: false },
+            ]
+          : [],
+      mounts: [],
+      next_cursor: null,
+    }))
+    const { wrapper, picker } = mountPicker('/', (runtime) => {
+      runtime.deployMode = 'host'
+      runtime.restoreRoot = '/'
+      runtime.inplaceRoot = '/'
+      runtime.denyPrefixes = ['/repo']
+    })
+    await flushPromises()
+
+    // 第一条 = /repo（受保护）→ 不 emit；第二条 = /srv → 正常选中
+    const rows = wrapper.findAll('.vtree__row')
+    await rows[0].trigger('click')
+    await flushPromises()
+    expect(picker.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.text()).toContain('该位置受保护')
+
+    await rows[1].trigger('click')
+    await flushPromises()
+    expect(picker.emitted('update:modelValue')?.at(-1)).toEqual(['/srv'])
   })
 })

@@ -164,13 +164,26 @@ const inplaceTargetOptions = computed(() =>
   (selectedSnapshot.value?.paths ?? []).map((path) => ({ label: path, value: path })),
 )
 
-/** 提交给后端的容器形态目标：`/sources` + 展示路径（双重锁白名单根，后端再校验一次）。 */
+/** 提交给后端的容器形态目标：换算前缀随部署形态派生（owner 2026-10-25 裁决 Q1=A）。
+ *
+ *  - docker：`/sources` + 展示路径（`/etc/nginx` → `/sources/etc/nginx`）；
+ *  - host：浏览根为 `/`，`to_display` 恒等 → **展示形态已含完整主机路径**，原样返回。
+ *    旧实现无条件叠 `/sources`，在 host 模式拼出 `/sources/sources/...` → E20/E19
+ *    双双 403「原地恢复目标不在该快照的备份路径范围内」（用户实拍缺陷，Q2）。
+ *  语义与后端 `PathMapper.to_snapshot` 对齐（含「已带前缀则原样」的幂等保护）。 */
 const inplaceTargetFull = computed(() => {
   const display = inplaceTarget.value
   if (!display) {
     return null
   }
-  return `${INPLACE_TARGET_ROOT}${display.startsWith('/') ? '' : '/'}${display}`
+  const prefix = runtime.inplaceRoot || INPLACE_TARGET_ROOT
+  if (prefix === '/') {
+    return display
+  }
+  if (display === prefix || display.startsWith(`${prefix}/`)) {
+    return display
+  }
+  return `${prefix}${display.startsWith('/') ? '' : '/'}${display}`
 })
 
 /** 换快照后把原位目标收敛到该快照的 paths 内（跨快照的原目录不一定命中）。 */
@@ -584,6 +597,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           :inplace-target="inplaceTarget"
           :inplace-target-options="inplaceTargetOptions"
           :custom-target="customTarget"
+          :restore-root="runtime.restoreRoot || RESTORE_TARGET_ROOT"
           :overwrite-existing="overwriteExisting"
           :submitting="restoring"
           :can-open-gate="canOpenGate"

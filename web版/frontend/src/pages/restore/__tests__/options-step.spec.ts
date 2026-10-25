@@ -40,6 +40,7 @@ function mountOptions(props: Record<string, unknown> = {}) {
               inplaceTarget: '/data',
               inplaceTargetOptions: [{ label: '/data', value: '/data' }],
               customTarget: '/restore',
+              restoreRoot: '/restore',
               overwriteExisting: false,
               submitting: false,
               canOpenGate: true,

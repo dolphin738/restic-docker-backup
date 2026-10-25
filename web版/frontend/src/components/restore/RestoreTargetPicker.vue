@@ -67,16 +67,27 @@ watch(
 
 /** 运行时根就绪 / 变化时把树层与草稿收敛到根内（V-6：不带着域外值跑）。 */
 watch(root, (next) => {
-  if (picked.value !== next && !picked.value.startsWith(`${next}/`)) {
+  if (picked.value !== next && !isUnderRoot(picked.value)) {
     draft.value = next
     emit('update:modelValue', next)
   }
-  if (currentPath.value !== next && !currentPath.value.startsWith(`${next}/`)) {
+  if (currentPath.value !== next && !isUnderRoot(currentPath.value)) {
     currentPath.value = next
   }
 })
 
-/** 越界校验（前端第一道；后端 RESTORE_ALLOWED_PREFIXES 第二道）。 */
+/** 是否落在树根内。host 模式根为 `/`：**不能**用 `startsWith('//')` 判定（任何正常
+ *  路径都不匹配 `//`）——那是后端 `PathMapper._is_under` 踩过的同一个坑，此处对齐：
+ *  根为 `/` 时「是绝对路径即命中」。 */
+function isUnderRoot(path: string): boolean {
+  const base = root.value.replace(/\/+$/, '')
+  if (!base) {
+    return path.startsWith('/')
+  }
+  return path === base || path.startsWith(`${base}/`)
+}
+
+/** 越界校验（前端第一道；后端 restore_allowed_prefixes 第二道）。 */
 const pathError = computed(() => {
   const value = draft.value.trim()
   if (!value) {
@@ -88,11 +99,29 @@ const pathError = computed(() => {
   if (value.split('/').includes('..')) {
     return t('restore.options.picker.errTraversal')
   }
-  if (value !== root.value && !value.startsWith(`${root.value}/`)) {
+  if (!isUnderRoot(value)) {
     return t('restore.options.picker.errOutside', { root: root.value })
+  }
+  if (isDenied(value)) {
+    return t('restore.options.picker.errDenied')
   }
   return ''
 })
+
+/** host 模式的受保护区域（仓库存储位置 / 应用数据 / 伪文件系统，后端同源下发）。
+ *  docker 模式该集合为空——浏览面已被 /sources 白名单界定，无需额外拦截。 */
+function isDenied(path: string): boolean {
+  return (runtime.denyPrefixes ?? []).some((deny) => {
+    const prefix = deny.replace(/\/+$/, '')
+    if (!prefix) {
+      return false
+    }
+    return path === prefix || path.startsWith(`${prefix}/`)
+  })
+}
+
+/** 树内点选被保护目录时的就地提示（不 emit、不下钻）。 */
+const selectError = ref('')
 
 /** 合法输入实时上送（Duplicati 输入框直绑表单控件的同款语义）。 */
 watch(draft, (value) => {
@@ -108,9 +137,7 @@ watch(draft, (value) => {
 onMounted(async () => {
   try {
     const page = await browseFs('/', null, 1)
-    mountChips.value = page.mounts.filter(
-      (m) => m.trim() && m !== '/' && (m === root.value || m.startsWith(`${root.value}/`)),
-    )
+    mountChips.value = page.mounts.filter((m) => m.trim() && m !== '/' && isUnderRoot(m))
   } catch {
     // 快跳降级：静默（无 chips 不影响选路径）
   }
@@ -129,11 +156,17 @@ function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   }))
 }
 
-/** 点目录名 = 选为目标并下钻（Duplicati FileTree 单击语义；展开由 caret 负责）。 */
+/** 点目录名 = 选为目标并下钻（Duplicati FileTree 单击语义；展开由 caret 负责）。
+ *  host 模式下受保护区域（deny）不可选：就地报错、不 emit、不下钻。 */
 function onTreeSelect(item: TreeItem): void {
   if (item.type !== 'dir') {
     return
   }
+  if (isDenied(item.path)) {
+    selectError.value = t('restore.options.picker.errDenied')
+    return
+  }
+  selectError.value = ''
   currentPath.value = item.path
   emit('update:modelValue', item.path)
 }
@@ -191,6 +224,7 @@ function commitManual(): void {
       <n-text depth="3" class="restore-picker__picked">
         {{ t('restore.options.picker.picked') }}：<span class="restore-picker__path">{{ picked }}</span>
       </n-text>
+      <n-alert v-if="selectError" type="error" :show-icon="false">{{ selectError }}</n-alert>
     </template>
 
     <n-space v-else vertical :size="8">

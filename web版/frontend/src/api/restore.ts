@@ -11,12 +11,13 @@
 import { request } from './http'
 import type { RestorePreviewResponse, RestoreResponse } from './types'
 
-/** P1 target 恒为恢复白名单根 `/restore`；时间戳子目录由服务端计算并随 restore_target 返回，
- * 前端**不要**自己拼时间戳或子目录名。 */
+/** P1 target 恒为恢复白名单根（docker `/restore`；host `/`，Q1=A 派生）；时间戳子目录由服务端
+ *  计算并随 restore_target 返回，前端**不要**自己拼时间戳或子目录名。 */
 export const RESTORE_TARGET_ROOT = '/restore'
 
-/** 原位恢复的目标根（A0 收敛后 = 白名单根 `/sources`）：与 RESTORE_TARGET_ROOT 同为容器形态
- * 白名单根，前端只在其后拼接快照 paths 的展示形态路径（如 /sources + /etc/nginx）。 */
+/** 原位恢复的换算前缀**docker 缺省值**（A0 收敛后 = 白名单根 `/sources`）。运行期一律取
+ *  `runtime.inplaceRoot`（后端按部署形态下发：docker `/sources` / host `/`，host 下换算恒等）——
+ *  本常量只作 store 未就绪时的兜底，勿在组件里直接用它拼路径。 */
 export const INPLACE_TARGET_ROOT = '/sources'
 
 /** E20 覆盖预览的可选分页参数；cursor 为服务端下发的不透明游标（首页 null）。 */
