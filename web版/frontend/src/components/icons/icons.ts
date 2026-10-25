@@ -225,6 +225,13 @@ export const IconArrowLeft: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M7.5 5.5L3.5 10l4 4.5' }),
   ])
 
+/** 下一步：右箭头（P16 恢复向导第二步页脚「提交」，Duplicati Submit 的 arrow-right 镜像）。 */
+export const IconArrowRight: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('path', { d: 'M3.5 10H16.5' }),
+    h('path', { d: 'M12.5 5.5L16.5 10l-4 4.5' }),
+  ])
+
 /** 离开：叉（向导外壳退出 / 对话框关闭；离开确认 R10）。 */
 export const IconX: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [h('path', { d: 'M5.5 5.5l9 9M14.5 5.5l-9 9' })])
