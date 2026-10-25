@@ -44,12 +44,13 @@ DEFAULT_RESTORE_ROOT = "/restore"
 #   派生实现见 :func:`app.services.path_mapper.source_allowed_prefixes`，
 #   运行期一律走它（或 ``settings.browse_root``）；此处刻意**不**保留第二份白名单常量，
 #   否则 UI 可选路径与后端接受写入的路径会再次漂移（S2 argv 白名单的前置条件）。
-# 恢复目标白名单（P1 仅"恢复到时间戳子目录"，目标限定在可写挂载点）
-RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = (DEFAULT_RESTORE_ROOT,)
-# 原位恢复目标白名单（R-015 Q1 裁决，A0 收敛后 = 备份源根 ``/sources``）。
-# 与 RESTORE_ALLOWED_PREFIXES 分离——避免 /restore 的时间戳语义被覆盖语义污染。
-# 注：原位恢复写回的是快照内的**容器绝对路径**，与部署形态无关，故保持固定值。
-INPLACE_RESTORE_ALLOWED_PREFIXES: tuple[str, ...] = (DEFAULT_SOURCES_ROOT,)
+# ⚠️ 恢复目标的两条白名单**不再是常量**（owner 2026-10-25 裁决 Q1=A，同一派生纪律）：
+#    时间戳流  restore_allowed_prefixes(settings)      docker → (restore_root,)=/restore；host → (browse_root,)=/
+#    原位流    inplace_restore_allowed_prefixes(settings) docker → /sources；host → /
+#   派生实现见 :func:`app.services.path_mapper.restore_allowed_prefixes` /
+#   :func:`...inplace_restore_allowed_prefixes`；运行期一律走它们。
+#   历史说明：host 模式快照存的是主机绝对路径（如 /srv/data），固定 /sources 会让合法
+#   原位恢复直接 400；固定 /restore 则让「选择位置」只能在这一棵目录里选。
 # 原位恢复**执行层**的 --target 固定值（S7 v1.3「执行层落点纪律」）：
 # restic 的落点是「--target + 快照内绝对路径」的拼接（非替换），而本项目快照存的是
 # 容器绝对路径（/sources/etc/...），故只有 "/" 才是真原位（写回 /sources/etc/...）；

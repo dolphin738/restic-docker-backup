@@ -28,6 +28,7 @@ from app.schemas.api_schemas import (
     TimeSyncOut,
 )
 from app.services.deploy_mode import host_deny_prefixes
+from app.services.path_mapper import inplace_restore_allowed_prefixes, restore_allowed_prefixes
 from app.services.scheduler import TIMEZONE_KEY
 from app.services.time_sync import (
     NTP_BACKUP_KEY,
@@ -75,6 +76,8 @@ async def get_runtime(
 
     ``browse_root`` 由后端在启动时按部署形态算一次（docker→``/sources``、host→``/``），
     经本端点下发前端——UI 允许选的路径与后端接受写入的路径因此同源（S2 的前置条件）。
+    ``restore_root`` / ``inplace_root`` 同样派生（Q1=A）：docker → ``/restore`` / ``/sources``；
+    host → 均为 ``/``，前端据此决定恢复树根与原位目标换算前缀。
     ``deny_prefixes`` 仅 host 模式非空：docker 的浏览面已被 ``/sources`` 白名单界定，
     无需额外 deny；host 模式则须挡掉仓库存储位置与应用数据目录（防递归备份 / 泄露）。
     """
@@ -85,7 +88,8 @@ async def get_runtime(
         deploy_mode=settings.deploy_mode_effective,
         browse_root=settings.browse_root,
         sources_root=settings.sources_root,
-        restore_root=settings.restore_root,
+        restore_root=restore_allowed_prefixes(settings)[0],
+        inplace_root=inplace_restore_allowed_prefixes(settings)[0],
         deny_prefixes=list(host_deny_prefixes(settings)) if host_mode else [],
     )
 

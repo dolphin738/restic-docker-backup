@@ -989,12 +989,18 @@ class SystemRuntimeOut(_Base):
     （docker→``/sources``，host→``/``），不再自行写死。``deny_prefixes`` 仅在 host 模式非空
     （docker 的浏览面已被 ``/sources`` 白名单界定），供前端在源树中隐藏不可选区域；
     真正的安全拦截在后端 :meth:`app.services.path_mapper.PathMapper.validate`。
+
+    ``restore_root`` / ``inplace_root`` 是**恢复链路**的两个生效根（owner 2026-10-25 裁决
+    Q1=A，同样由部署形态派生）：docker → ``/restore`` 与 ``/sources``；host → 两者均为 ``/``。
+    前者是「选择位置」流的树根与时间戳子目录的落点父目录，后者是原位目标
+    「展示形态 → 容器形态」换算的前缀（host 为 ``/`` 时恒等，不再叠加前缀）。
     """
 
     deploy_mode: str
     browse_root: str
     sources_root: str
     restore_root: str
+    inplace_root: str
     deny_prefixes: list[str]
 
 

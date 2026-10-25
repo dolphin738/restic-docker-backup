@@ -128,8 +128,8 @@ class PathMapper:
             for deny in denies:
                 if self._is_under(normalized, deny):
                     raise PathValidationError(
-                        f"路径 {path!r} 落在禁止备份的区域内（{deny}）："
-                        "仓库存储位置与应用数据目录不可作为备份源",
+                        f"路径 {path!r} 落在受保护区域内（{deny}）："
+                        "仓库存储位置与应用数据目录不可作为备份源或恢复目标",
                         data={"path": path, "denied_prefix": deny},
                     )
         return normalized
@@ -185,6 +185,44 @@ def source_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]
         单元素前缀元组（``("/sources",)`` 或 ``("/",)``）。
     """
     return ((settings or get_settings()).browse_root,)
+
+
+def restore_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]:
+    """恢复目标**生效白名单**（时间戳子目录流，E19/E20 共用；owner 2026-10-25 裁决 Q1=A）。
+
+    与备份源同源的派生纪律（方案 §3.2「UI 可选路径与后端接受写入的路径同源」）：
+
+    - docker：``(settings.restore_root,)``（= ``/restore``，专用可写挂载点）；
+    - host：``(settings.browse_root,)``（= ``/``，真实文件系统）——此时快照里存的就是
+      主机绝对路径，恢复到主机任意可写目录才有意义；安全边界由 deny 前缀承担
+      （``PathMapper.validate`` 对 browse_root 命中时强制检查 ``host_deny_prefixes``）。
+
+    Args:
+        settings: 运行期配置；缺省取进程单例。
+
+    Returns:
+        单元素前缀元组（docker ``("/restore",)`` / host ``("/",)``）。
+    """
+    resolved = settings or get_settings()
+    if resolved.browse_root == "/":
+        return (resolved.browse_root,)
+    return (resolved.restore_root,)
+
+
+def inplace_restore_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]:
+    """原位恢复目标**生效白名单**：写回的是快照内路径 → 与备份源白名单同源。
+
+    docker → ``("/sources",)``；host → ``("/",)``（owner 2026-10-25 裁决 Q1=A）。
+    历史注释「与部署形态无关，故保持固定值」已被取证推翻：host 模式快照存的是主机
+    绝对路径（如 ``/srv/data``），固定 ``/sources`` 会让合法原位恢复直接 400。
+
+    Args:
+        settings: 运行期配置；缺省取进程单例。
+
+    Returns:
+        单元素前缀元组（与 :func:`source_allowed_prefixes` 同值）。
+    """
+    return source_allowed_prefixes(settings)
 
 
 def browse_allowed_prefixes(settings: Settings | None = None) -> tuple[str, ...]:

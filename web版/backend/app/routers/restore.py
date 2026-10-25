@@ -6,11 +6,13 @@
    ``target`` / ``paths``；时间戳子目录由**服务端**计算：``<target>/<源目录名>-<YYYYmmdd-HHMM>``
    （例：``/restore`` + 快照含 ``/etc/nginx`` → ``/restore/etc-20261010-0138``），
    物理上不可能覆盖既有文件（PRD G3 误操作零事故）。``target`` 必须在
-   :data:`RESTORE_ALLOWED_PREFIXES` 白名单内，否则 403 ``RESTORE_FORBIDDEN``；
+   :func:`app.services.path_mapper.restore_allowed_prefixes` 白名单内
+   （docker → ``/restore``；host → ``/``，deny 兜底），否则 403 ``RESTORE_FORBIDDEN``；
    该路径的 ``--overwrite=if-changed`` 由 JobRunner 固定注入、界面无入口——
    请求体出现 ``overwrite_mode`` 即 **422**。
 2. **原位恢复**（R-015，A7 Duplicati 化）：请求体带 ``overwrite_mode``，目标经
-   **双重锁**（``/sources`` 前缀白名单 + 快照 ``paths`` 交集收紧）与**单次确认门**
+   **双重锁**（:func:`...inplace_restore_allowed_prefixes` 前缀白名单——docker ``/sources`` /
+   host ``/``——+ 快照 ``paths`` 交集收紧）与**单次确认门**
    （前端 ConfirmGate 无关键词；A7 前为三重确认门 keyword = 快照短 id，随
    S7 v1.4 修订删除）。``overwrite_mode`` 取值 **``never``/``always``**
    （Duplicati 布尔勾选：默认不勾 = never 跳过已存在文件，勾选 = always 覆盖），
@@ -36,9 +38,7 @@ from app.constants import (
     AUDIT_RESTORE_INPLACE,
     AUDIT_RESTORE_PREVIEW,
     AUDIT_RESTORE_RUN,
-    INPLACE_RESTORE_ALLOWED_PREFIXES,
     INPLACE_RESTORE_TARGET_ROOT,
-    RESTORE_ALLOWED_PREFIXES,
     SNAPSHOT_FILES_MAX_OFFSET,
     SNAPSHOT_LIST_TIMEOUT_SECONDS,
 )
@@ -57,7 +57,12 @@ from app.services.compare import CompareService, OverwriteItem, in_snapshot_path
 from app.services.env_sync import load_credentials
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser, SnapshotRecord
-from app.services.path_mapper import PathMapper, source_allowed_prefixes
+from app.services.path_mapper import (
+    PathMapper,
+    inplace_restore_allowed_prefixes,
+    restore_allowed_prefixes,
+    source_allowed_prefixes,
+)
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.scheduler import TIMEZONE_KEY
 from app.settings import Settings
@@ -114,11 +119,17 @@ async def restore_snapshot(
         return await _restore_inplace(payload, request, repo_id)
 
     try:
-        target_root = mapper.validate(payload.target, allowed_prefixes=RESTORE_ALLOWED_PREFIXES)
+        # 恢复目标白名单由部署形态派生（Q1=A）：docker → /restore；host → /（deny 兜底）
+        allowed = restore_allowed_prefixes(settings)
+        target_root = mapper.validate(payload.target, allowed_prefixes=allowed)
     except PathOutOfPrefixError as exc:
-        allowed = ", ".join(RESTORE_ALLOWED_PREFIXES)
+        if isinstance(exc.data, dict) and "denied_prefix" in exc.data:
+            # host 模式 deny 命中（仓库/数据目录等受保护区域）：原样 400，
+            # 不降级成 403「不在白名单」——否则「/ 明明在白名单里」自相矛盾
+            raise
         raise RestoreForbiddenError(
-            f"恢复目标不在允许的白名单内（{allowed}）", data={"target": payload.target}
+            f"恢复目标不在允许的白名单内（{', '.join(allowed)}）",
+            data={"target": payload.target},
         ) from exc
 
     include = _normalize_include_paths(payload.paths, mapper, settings)
@@ -177,7 +188,8 @@ async def preview_inplace_restore(
 ) -> RestorePreviewResponse:
     """比对快照内容与目标磁盘现状，返回「将被覆盖文件清单」（只读，游标分页）。
 
-    双重目标锁（R-015 Q1 裁决）：① 目标落在 :data:`INPLACE_RESTORE_ALLOWED_PREFIXES`
+    双重目标锁（R-015 Q1 裁决）：① 目标落在
+    :func:`app.services.path_mapper.inplace_restore_allowed_prefixes`
     （A0 收敛后 = ``/sources``）；② 目标必须是该快照 ``paths`` 命中的目录或其子目录；
     完全越界 → 400 ``PATH_OUT_OF_PREFIX``（前端据此置灰「原位置」）。
 
@@ -320,7 +332,8 @@ async def _enforce_inplace_lock(
 ) -> tuple[str, list[str]]:
     """原位恢复的**双重目标锁**（R-015 Q1 裁决）：返回（容器形态目标, 快照备份根）。
 
-    ① 前缀白名单：:data:`INPLACE_RESTORE_ALLOWED_PREFIXES`（A0 收敛后 = ``/sources``）；
+    ① 前缀白名单：:func:`app.services.path_mapper.inplace_restore_allowed_prefixes`
+        （docker = ``/sources``；host = ``/``，deny 兜底）；
     ② 快照 paths 交集收紧：目标须为该快照 ``paths`` 命中的目录或其子目录。
 
     Args:
@@ -332,28 +345,34 @@ async def _enforce_inplace_lock(
         ``(规范化后的容器形态目标, 该快照的备份根清单)``。
 
     Raises:
-        ValidationError: 目标落在时间戳子目录白名单（``/restore``）却带覆盖语义（422）。
-        PathOutOfPrefixError: 目标完全越界（既不在 ``/restore`` 也不在 ``/sources``）
+        ValidationError: 目标落在时间戳子目录白名单却带覆盖语义（422；docker 形态下
+            ``/restore`` 与 ``/sources`` 互斥；host 形态两者同为 ``/``，该分支不可达）。
+        PathOutOfPrefixError: 目标完全越界，或命中 host deny 受保护区域
             ——400 ``PATH_OUT_OF_PREFIX``（PRD US-P2-13 AC2 口径）。
         RestoreForbiddenError: 目标不在该快照的备份路径内（403）。
         ResticFailedError: 快照元数据探测失败（500，原因明示）。
     """
     mapper: PathMapper = request.app.state.path_mapper
     compare: CompareService = request.app.state.compare_service
+    settings = request.app.state.settings
 
     try:
-        container_target = mapper.validate(target, allowed_prefixes=INPLACE_RESTORE_ALLOWED_PREFIXES)
+        inplace_prefixes = inplace_restore_allowed_prefixes(settings)
+        container_target = mapper.validate(target, allowed_prefixes=inplace_prefixes)
     except PathOutOfPrefixError as exc:
-        if _within(mapper, target, RESTORE_ALLOWED_PREFIXES):
+        if isinstance(exc.data, dict) and "denied_prefix" in exc.data:
+            # 同时间戳分支：host deny 命中原样 400（受保护区域不可作恢复目标）
+            raise
+        if _within(mapper, target, restore_allowed_prefixes(settings)):
             raise ValidationError(
                 "时间戳子目录路径不接受 overwrite_mode"
                 "（该路径的 --overwrite=if-changed 由服务端固定注入，界面无入口）",
                 data={"target": target},
             ) from exc
-        # 完全越界（既不在 /restore 也不在 /sources）→ 400（PRD US-P2-13 AC2 口径）
-        allowed = ", ".join(INPLACE_RESTORE_ALLOWED_PREFIXES)
+        # 完全越界（既不属时间戳流白名单也不属原位流白名单）→ 400（PRD US-P2-13 AC2 口径）
         raise PathOutOfPrefixError(
-            f"原位恢复目标不在允许的白名单内（{allowed}）", data={"target": target}
+            f"原位恢复目标不在允许的白名单内（{', '.join(inplace_prefixes)}）",
+            data={"target": target},
         ) from exc
 
     roots = await compare.snapshot_roots(snapshot_id)
