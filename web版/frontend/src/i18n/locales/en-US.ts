@@ -573,6 +573,15 @@ export default {
     exclude: 'Exclude this',
     unexclude: 'Remove exclusion',
   },
+  // Path address bar (D variant: breadcrumb + mount caret menu + inline editing, unified in P19)
+  pathBar: {
+    editHint: 'Click empty area or the last segment to edit the full path',
+    inputAria: 'Path address bar',
+    keysHint: 'Enter to submit · Esc to cancel',
+    expandMounts: 'Expand mount point menu',
+    errAbsolute: 'Must be an absolute path (starting with /).',
+    errTraversal: 'Path must not contain .. segments.',
+  },
   repo: {
     type: 'Repository type',
     typeLocal: 'Local path',
@@ -595,8 +604,6 @@ export default {
     urlBrowseTab: 'Browse path',
     urlManualTab: 'Manually type path',
     useThisDir: 'Use this directory ({path})',
-    mountRoot: 'Container root /',
-    browseHint: 'Expand with the triangle on the left; click a directory name to pick it as the repo URL. Blue tags are container mount points — click to jump',
     hostTag: 'Host tag',
     hostTagPlaceholder: 'Snapshot owner tag; defaults to container hostname',
     dest: {
@@ -1117,15 +1124,7 @@ export default {
       crossOsConfirm:
         'This backup was created on another operating system (paths contain Windows separators). Restoring to the original location may place files in unexpected folders. Continue to the original location without choosing a destination folder?',
       picker: {
-        browse: 'Browse path',
-        manual: 'Type path',
-        modeAria: 'Path selection mode',
         picked: 'Selected target',
-        pathLabel: 'Path',
-        manualHint: 'Enter an absolute path under {root} as the restore target.',
-        errEmpty: 'Path cannot be empty.',
-        errAbsolute: 'Must be an absolute path (starting with /).',
-        errTraversal: 'Path must not contain .. segments.',
         errOutside: 'Path must be inside the restore directory {root}.',
         errDenied:
           'This location is protected (pseudo filesystems / repository storage / application data) and cannot be used as a restore target.',

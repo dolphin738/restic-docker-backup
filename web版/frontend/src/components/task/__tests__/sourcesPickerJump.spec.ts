@@ -1,10 +1,11 @@
 /** 挂载点快跳跳转行为护栏（owner 2026-10-24 报告：点击后无法真正跳转）。
  *
- * 用真实 VirtualTree + 按路径分流的 browseSources mock 复现：
- *   ① 挂载点 chips 应从**模式根**响应填充；
- *   ② 点击 chip → currentPath 变化 → 树应加载该目录的子项（真跳转）；
- *   ③ 非根响应**不得清空** chips（导航条要常驻——旧实现每次响应都覆盖 mountChips，
- *      非根请求回 mounts=[] → chips 瞬间消失，视觉上等于「点了没反应」）。
+ * 用真实 VirtualTree + 按路径分流的 browseSources mock 复现（P19 起挂载点不再平铺成
+ * chips，改收进地址栏根段旁的三角菜单，故断言对象由 chip 换为 `.pcrumb__menu-item`）：
+ *   ① 挂载点应从**模式根**响应填充；
+ *   ② 展开菜单点挂载点 → currentPath 变化 → 树应加载该目录的子项（真跳转）；
+ *   ③ 非根响应**不得清空**挂载点（菜单要常驻——旧实现每次响应都覆盖 mountChips，
+ *      非根请求回 mounts=[] → 导航条瞬间消失，视觉上等于「点了没反应」）。
  */
 
 import { mount } from '@vue/test-utils'
@@ -226,16 +227,27 @@ describe('点名称统一切换备份成员资格（owner 2026-10-24）', () => 
   })
 })
 
-describe('挂载点快跳（左栏目录树）', () => {
-  it('根响应填充 chips；点击 chip → 树真跳转到该目录', async () => {
+describe('挂载点快跳（D 形态地址栏：三角菜单）', () => {
+  /** 挂载点不再平铺成 chip，而是收进地址栏根段旁的三角菜单（P19）。 */
+  async function openMountMenu(w: { element: Element }): Promise<HTMLElement[]> {
+    const caret = w.element.querySelector<HTMLElement>('.pcrumb__caret')
+    expect(caret).toBeTruthy()
+    caret!.click()
+    await nextTick()
+    return [...w.element.querySelectorAll<HTMLElement>('.pcrumb__menu-item')]
+  }
+
+  it('根响应填充挂载点；点三角展开 → 点项 → 树真跳转到该目录', async () => {
     const w = await mountPicker()
 
-    // ① chips 从根响应填充
-    const chip = [...w.element.querySelectorAll('button')].find((b) => b.textContent?.trim() === '/data')
-    expect(chip).toBeDefined()
+    // ① 挂载点从根响应填充，收在三角菜单里（未展开时不可见）
+    expect(w.element.querySelector('.pcrumb__menu')).toBeNull()
+    const items = await openMountMenu(w)
+    const mount = items.find((b) => b.textContent?.trim() === '/data')
+    expect(mount).toBeDefined()
 
-    // ② 点击 chip → VirtualTree rootPath 变为 /data，且树渲染出该目录子项
-    chip!.click()
+    // ② 点击菜单项 → VirtualTree rootPath 变为 /data，且树渲染出该目录子项
+    mount!.click()
     await nextTick()
     for (let i = 0; i < 20; i += 1) {
       await nextTick()
@@ -249,25 +261,24 @@ describe('挂载点快跳（左栏目录树）', () => {
     expect(browseMock).toHaveBeenCalledWith('/data', undefined)
     expect(w.element.textContent ?? '').toContain('sub')
 
-    // ③ chips 常驻：非根响应不得清空导航条
-    const chipAfter = [...w.element.querySelectorAll('button')].find(
-      (b) => b.textContent?.trim() === '/data',
-    )
-    expect(chipAfter).toBeDefined()
+    // ③ 挂载点常驻：非根响应不得清空菜单（再展开一次仍看得到 /data）
+    const itemsAfter = await openMountMenu(w)
+    expect(itemsAfter.some((b) => b.textContent?.trim() === '/data')).toBe(true)
     w.unmount()
   })
 
-  it('点击根 chip「/」回根目录且 chips 恢复', async () => {
+  it('点面包屑根段「/」回根目录（挂载菜单不受影响）', async () => {
     const w = await mountPicker()
-    const dataChip = [...w.element.querySelectorAll('button')].find((b) => b.textContent?.trim() === '/data')
-    dataChip!.click()
+    const mount = (await openMountMenu(w)).find((b) => b.textContent?.trim() === '/data')
+    mount!.click()
     await nextTick()
     await new Promise((resolve) => setTimeout(resolve, 20))
     await nextTick()
 
-    const rootChip = [...w.element.querySelectorAll('button')].find((b) => b.textContent?.trim() === '/')
-    expect(rootChip).toBeDefined()
-    rootChip!.click()
+    // 根段是面包屑第一个 .pcrumb__seg，点它只跳转（两段热区：三角才开菜单）
+    const rootSeg = (w.element as Element).querySelector<HTMLElement>('.pcrumb__seg')
+    expect(rootSeg?.textContent?.trim()).toBe('/')
+    rootSeg!.click()
     for (let i = 0; i < 20; i += 1) {
       await nextTick()
       if (w.findComponent(VirtualTree).props('rootPath') === '/') {

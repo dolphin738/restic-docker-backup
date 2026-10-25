@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.35（2026-10-25 三十五修订：**P17 host 形态恢复白名单派生 + 原位换算修复**——owner 裁决 Q1=A（三条白名单统一按部署形态派生）且 Q2 同批，修掉 host 模式下「原位恢复目标不在该快照的备份路径范围内」实拍缺陷，新增 §4.9.8）。本文件全部历史修订（v1.0–v1.35）合并记载于文末「修订记录」节，版本头不再重复内联。
+> 版本：v1.36（2026-10-26 三十六修订：**P19 快捷路径全项目统一为 D 形态地址栏（§4.9.9）**——owner 裁决「按 D 实施 + 其他有快捷路径的地方都统一成 D」：原地升级既有 `PathBreadcrumb.vue` 为「面包屑分段跳转 + 根段三角挂载菜单 + 整条地址就地编辑」的地址栏（不新增第二个面包屑组件），替换恢复目标 / 备份源 / 仓库浏览弹窗三处各自平铺的挂载点 chips（演示页实测 190px/8 行 → 恒定 25px/1 行）。本文件全部历史修订（v1.0–v1.36）合并记载于文末「修订记录」节，版本头不再重复内联。——owner 裁决 Q1=A（三条白名单统一按部署形态派生）且 Q2 同批，修掉 host 模式下「原位恢复目标不在该快照的备份路径范围内」实拍缺陷，新增 §4.9.8）。本文件全部历史修订（v1.0–v1.35）合并记载于文末「修订记录」节，版本头不再重复内联。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -633,6 +633,37 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 **行为变更（如实记录，需知会）**：① host 模式恢复目标/原位目标白名单均为 `/`（deny 兜底），即**恢复可写主机任意非保护目录**——仍保留「时间戳子目录零覆盖」与「快照 paths 交集收紧」两道约束；② docker 形态行为**零变化**（三条白名单取值与改前逐一相同）；③ host 模式下 `overwrite_mode` 指向非快照路径的响应码由 422 变 **403**（两白名单同为 `/`，422 分支不可达）。
 
+### 4.9.9 P19：快捷路径全项目统一为 D 形态地址栏（2026-10-26 owner 裁决）
+
+> **状态：✅ 已落地（v1.36）**——owner 裁决「按 D 实施，实施时复用项目已有、不重复造轮子，并把项目里其他有快捷路径的地方都统一成 D」。
+
+**取证（为什么必须换掉 chips）**：演示页 `frontend/restore-picker-preview-p18.html` 用真实 WSL 环境 13 个挂载点实测——**A 形态（平铺 chips）快跳区 190px / 占 8 行**，长路径（`/usr/lib/linux-tools/6.18.54.1-microsoft-standard-WSL2`）顶满整行；**D 形态恒定 25px / 1 行**，B 63px、E/G 57px。三处消费方（恢复目标 / 备份源 / 仓库浏览弹窗）此前各写一份 chips，`mountChips` 取数口径也各不相同。
+
+**D 形态定义（本项目的唯一口径，勿各写一份）**：
+
+| # | 语义 | 交互 |
+|---|---|---|
+| ① | 面包屑分段 | 点段名 = 跳到该层（末段除外） |
+| ② | 根段旁的三角 | 展开挂载点菜单（**文字与三角是两段独立热区**：点根段只跳转、点三角只开菜单，与 `VirtualTree` 同款手势纪律） |
+| ③ | 整条地址 = 一个编辑热区 | hover 出**覆盖完整地址范围**的虚线框（用 `outline` 绘制，不占布局、无抖动）；点空白或末段 = 就地变地址栏 |
+| ④ | 地址栏 | Enter 提交 / Esc 取消 / 失焦「合法即提交、非法即取消并上报 invalid」——失焦**不保留编辑态**（焦点劫持会让用户 Tab 不走，属反模式） |
+
+**改动清单（零后端改动、零新增端点）**：
+
+| 层 | 文件 | 变更 |
+|---|---|---|
+| 组件 | `components/PathBreadcrumb.vue` | **原地升级**为 D 形态地址栏（S-4：不新增第二个面包屑组件）。新增可选 props `root`（根段/树根，默认 `/`）/ `mounts`（三角菜单项，空则不渲染三角）/ `validate`（业务校验注入）/ `editable`（false 退化纯面包屑）；新增 emit `invalid`（失焦非法时上报，组件不劫持焦点、不弹消息）；老调用方只给 `path` + `@select` 行为不变 |
+| 恢复 | `components/restore/RestoreTargetPicker.vue` | 移除 `SegmentedTabs`「浏览树 / 手动输入」二分段与 mount chips → 地址栏同时承担手输（**导航即目标**：地址栏提交既跟浏览层也 emit 目标，等价 Duplicati「Manually type path」语义）；越界/deny 改为 `validate` 注入，脏值仍不 emit |
+| 备份源 | `components/task/SourcesPicker.vue` | mount chips → 地址栏；跳转**只改浏览层**（备份源成员资格仍由点目录名切换，语义不变） |
+| 仓库 | `pages/repo/index.vue`（浏览弹窗） | 挂载点 `n-tag` 群 → 地址栏（复用既有 `jumpTo`）；删 `NTag` 死 import、删 `.repo__mounts` 死 CSS |
+| i18n | zh-CN / en-US | 新增 `pathBar.*` 6 键（组件级文案归组件）；清死键 `repo.mountRoot` / `repo.browseHint`（标签群与提示已删，后者本就是死键）与 `picker.{browse,manual,modeAria,pathLabel,manualHint,errEmpty,errAbsolute,errTraversal}`（二分段与手输块已删，基础形态校验改由地址栏 `pathBar.*` 承担） |
+
+**护栏**：新增 `components/__tests__/PathBreadcrumb.spec.ts`（**14 例**：分段文案与跳转 / 两段热区（点根段只跳转、点三角只开菜单）/ 挂载菜单点项跳转并收起 / mounts 空则不渲染三角 / 空白点击进编辑 / Enter 归一化提交 / Enter 非法保留编辑态 / validate 业务口径注入 / Esc 取消 / 失焦合法提交 / 失焦非法上报 invalid 且不劫持焦点 / editable=false 退化 / root 非 `/` 的根段显示 / root 外路径完整可读）。`RestoreTargetPicker.spec.ts` 8 例改为走地址栏（挂载点收在菜单里 + 点末段空白进编辑 + 越界三段不 emit + host deny 两例不变）；`sourcesPickerJump.spec.ts` 断言对象由 chip 换为 `.pcrumb__menu-item`（chips 常驻与真跳转两条语义保留）。
+
+**过程实证（如实记录）**：首跑抓一处 `//mnt` 双斜杠——`root='/'` 时面包屑累加自 `base` 起拼成 `//mnt`，与后端 `PathMapper._is_under`（`//` 前缀判定）是**同款坑**，已在 `crumbs` 里按「根为 `/` 则累加自空串起」修正并写进注释。
+
+**明确不做（防回潮）**：地址栏不做「新建目录」（后端无 mkdir 端点）、不做路径自动补全与历史记录（无数据源，做了即假开关）、不把挂载点菜单改成 teleport 下拉（就地展开即可查可测，且暗色继承不依赖 portal）。
+
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
 | 维度 | 口径 |
@@ -796,6 +827,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 ---
 
 ## 修订记录
+
+- v1.36（2026-10-26 三十六修订）：**P19 快捷路径全项目统一为 D 形态地址栏（§4.9.9）**——owner 裁决「按 D 实施；复用项目已有、不重复造轮子；其他有快捷路径的地方都统一成 D」。**取证**：演示页 `restore-picker-preview-p18.html`（真实 WSL 13 挂载点）实测 A 形态（平铺 chips）快跳区 **190px / 8 行**、长路径顶满行，D 形态**恒定 25px / 1 行**。**改动**：① 原地升级 `components/PathBreadcrumb.vue`（S-4：不新增第二个面包屑组件）——面包屑分段跳转 + 根段旁三角挂载菜单（**两段独立热区**：点根段只跳转 / 点三角只开菜单）+ 整条地址为编辑热区（hover `outline` 虚线框覆盖完整地址、不占布局无抖动；点空白或末段变地址栏；Enter 提交 / Esc 取消 / 失焦合法即提交、非法即取消并 emit `invalid`，**不保留编辑态**＝不劫持焦点），新增可选 props `root`/`mounts`/`validate`/`editable`，老调用方（path + @select）零改动；② 三处消费方统一——`RestoreTargetPicker`（删 `SegmentedTabs` 二分段与 chips，地址栏兼手输且**导航即目标**）、`SourcesPicker`（chips → 地址栏，跳转只改浏览层、成员资格仍由点目录名切换）、`pages/repo/index.vue` 浏览弹窗（`n-tag` 群 → 地址栏，清 `NTag` 死 import 与 `.repo__mounts` 死 CSS）；③ i18n 双语新增 `pathBar.*` 6 键、清死键 `repo.mountRoot`/`repo.browseHint` 与 `picker.{browse,manual,modeAria,pathLabel,manualHint,errEmpty,errAbsolute,errTraversal}`。**护栏**：新增 `PathBreadcrumb.spec.ts` **14 例**（两段热区 / 挂载菜单 / 编辑三键 / 失焦两种分支 / editable 退化 / root 与越界显示），`RestoreTargetPicker.spec.ts` 8 例改走地址栏，`sourcesPickerJump.spec.ts` 断言对象由 chip 换为 `.pcrumb__menu-item`（chips 常驻与真跳转语义保留）。**过程实证**：首跑抓到 `root='/'` 拼出 `//mnt` 双斜杠（与后端 `PathMapper._is_under` 的 `//` 判定同款坑），已按「根为 `/` 则累加自空串起」修正。**明确不做**：地址栏不新建目录（后端无 mkdir）、不做补全/历史（无数据源＝假开关）、菜单不用 teleport 下拉（就地展开可查可测、暗色不依赖 portal）。**验证**：typecheck 干净 + 全量 **42 文件 / 420 passed**（+1 文件 +14 例）+ build ✓；**零后端改动**。
 
 - v1.35（2026-10-25 三十五修订）：**P17 host 形态恢复白名单派生 + 原位换算修复（§4.9.8）**——owner 就两个实拍问题裁决 **Q1=A（恢复白名单也按部署形态派生）+ Q2 同批**。**根因（同一处）**：源数据早按 §3 派生，恢复链路仍是固定常量 → ① host 模式 `to_display` 恒等，前端 `inplaceTargetFull` 无条件叠 `/sources` 产生 `/sources/sources/...` **双前缀**，E20 预览与 E19 提交双双 403「原位恢复目标不在该快照的备份路径范围内」（且 host 模式原位**整体不可用**）；② 「选择位置」树根恒 `/restore`，做不出设计口径的部署双模式（强做即假开关）。**改动**：后端新增 `restore_allowed_prefixes`（docker `/restore` / host `/`）与 `inplace_restore_allowed_prefixes`（与备份源同源）、删两个白名单常量、deny 命中原样 400（不降级 403）、runtime 增 `inplace_root` 且 `restore_root` 改生效值；前端 store 接 `inplaceRoot`、`inplaceTargetFull` 改为形态感知换算（host 恒等 + 幂等保护）、选择器加 **host deny 拦截**（手输内联报错 / 树点不选中不下钻）与 `isUnderRoot()`（修 `root='/'` 时 `'//'` 前缀判定 bug——后端 `_is_under` 同款坑）；红线 S1/S7、AGENTS 红线 1、架构 §6.3、PRD US-P2-13/Q9 同步「三条派生」。**验证**：后端 1064 passed（+8 `test_restore_host_mode.py`，含**双前缀反证 403**）+ ruff 干净；前端 typecheck + 全量 **41 文件 / 406 passed** + build ✓ 1m45s；**真机探针 `.e2e/p17-host-restore.cjs` pass**（host stub：预览 target = `/srv/data` 无双前缀 / 树根 `/` / deny 拦截 / 4 视口零溢出零报错）。另修两处 host 文案失真（`originalNote` 去 `/sources`、`pickLocationNote` 改 `{root}` 插值）。**行为变更**：host 模式恢复可写主机任意非保护目录（仍受时间戳子目录零覆盖 + 快照 paths 交集双约束）；docker 形态取舍与改前逐一相同（零变化）；host 下 `overwrite_mode` 指向非快照路径由 422 变 403（两白名单同为 `/`）。
 

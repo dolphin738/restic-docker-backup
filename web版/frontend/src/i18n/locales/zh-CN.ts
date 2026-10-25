@@ -575,6 +575,15 @@ export default {
     exclude: '排除此项',
     unexclude: '取消排除',
   },
+  // 路径地址栏（D 形态：面包屑 + 挂载点三角菜单 + 就地编辑，P19 全项目统一）
+  pathBar: {
+    editHint: '点击空白处或末段可编辑完整路径',
+    inputAria: '路径地址栏',
+    keysHint: 'Enter 提交 · Esc 取消',
+    expandMounts: '展开挂载点菜单',
+    errAbsolute: '必须是绝对路径（以 / 开头）。',
+    errTraversal: '路径不允许包含 .. 段。',
+  },
   repo: {
     type: '仓库类型',
     typeLocal: '本地路径',
@@ -597,8 +606,6 @@ export default {
     urlBrowseTab: '浏览路径',
     urlManualTab: '手动输入路径',
     useThisDir: '用这个目录（{path}）',
-    mountRoot: '容器根 /',
-    browseHint: '目录展开请点左侧三角形，点目录名即选为仓库地址；蓝色标签为容器挂载点，可直接跳转',
     hostTag: '主机标识（host tag）',
     hostTagPlaceholder: '快照归属标识，缺省用容器主机名',
     dest: {
@@ -1109,15 +1116,7 @@ export default {
       crossOsConfirm:
         '此备份来自其它操作系统（路径含 Windows 分隔符）。恢复到原位置时，文件可能落到出乎意料的位置。确定不指定目标目录、继续恢复到原位置吗？',
       picker: {
-        browse: '浏览路径',
-        manual: '手动输入',
-        modeAria: '路径选择模式',
         picked: '已选目标',
-        pathLabel: '路径',
-        manualHint: '输入 {root} 下的绝对路径作为恢复目标。',
-        errEmpty: '路径不能为空。',
-        errAbsolute: '必须是绝对路径（以 / 开头）。',
-        errTraversal: '路径不允许包含 .. 段。',
         errOutside: '路径须在恢复目录 {root} 内。',
         errDenied: '该位置受保护（伪文件系统 / 仓库存储 / 应用数据），不可作为恢复目标。',
       },

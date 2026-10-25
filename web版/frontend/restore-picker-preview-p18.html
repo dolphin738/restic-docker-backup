@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>恢复目标快跳区方案演示（P18）</title>
+<style>
+  :root {
+    --bg: #fff; --fg: #1f2328; --muted: #6a737d; --border: #e3e6ea;
+    --border-strong: #b9c0c8; --soft: #f4f6f8; --accent: #0969da; --accent-soft: #ddf4ff;
+    --ok: #1a7f37; --warn: #bc4c00; --hover-soft: rgba(0, 0, 0, 0.045);
+  }
+  html[data-theme="dark"] {
+    --bg: #14181f; --fg: #e6e8eb; --muted: #9aa3ad; --border: #2b313a;
+    --border-strong: #55606d; --soft: #1c212a; --accent: #58a6ff; --accent-soft: #16283d;
+    --ok: #3fb950; --warn: #d29922; --hover-soft: rgba(255, 255, 255, 0.07);
+  }
+  body { font: 14px/1.6 system-ui, "Segoe UI", sans-serif; margin: 24px; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; }
+  p.sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+  .grp { display: flex; align-items: center; gap: 6px; }
+  .grp > span.lbl { font-size: 12px; color: var(--muted); }
+  button.seg {
+    font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border);
+    border-radius: 999px; background: transparent; color: var(--fg); cursor: pointer;
+  }
+  button.seg[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; align-items: start; }
+  .panel { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .panel.rec { border: 2px solid var(--accent); }
+  .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .pname { font-size: 14px; font-weight: 600; }
+  .badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; border: 1px solid var(--border); color: var(--muted); }
+  .badge.rec { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .badge.bad { color: var(--warn); border-color: var(--warn); }
+  .pdesc { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+  .stage { background: var(--soft); border-radius: 8px; padding: 12px; }
+  .stage.narrow { max-width: 500px; }
+  .jump { margin-bottom: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-size: 12px; padding: 2px 10px; border: 1px solid var(--border-strong); border-radius: 999px;
+    background: transparent; color: var(--fg); cursor: pointer; font-family: ui-monospace, Consolas, monospace;
+  }
+  .chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .crumbs { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .crumb { border: 1px solid transparent; border-radius: 6px; padding: 2px 7px; cursor: pointer; background: transparent; color: var(--fg); font: inherit; }
+  .crumb:hover { border-color: var(--border-strong); }
+  .crumb.last { font-weight: 600; cursor: text; }
+  /* 整条地址 = 一个热区：hover 时虚线框覆盖全部地址范围（outline 不占布局，无位移） */
+  .addrzone {
+    flex: 1; min-width: 0; border-radius: 6px; cursor: text;
+    outline: 1px dashed transparent; outline-offset: 3px;
+    transition: outline-color .15s ease, background-color .15s ease;
+  }
+  .addrzone:hover { outline-color: var(--border-strong); background: var(--hover-soft); }
+  .addrzone:hover .crumb:hover,
+  .addrzone:hover .caretbtn:hover { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+  .sep { color: var(--muted); }
+  .caretbtn {
+    font: inherit; font-size: 12px; line-height: 1; padding: 4px 6px; border: 1px solid transparent;
+    border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .caretbtn:hover { border-color: var(--border-strong); color: var(--fg); }
+  .caretbtn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  /* 末段右侧的空白占位：只负责撑满剩余宽度并保持 text 光标，hover 提示由 .addrzone 统一给 */
+  .editzone { flex: 1; min-width: 28px; align-self: stretch; background: transparent; cursor: text; }
+  .addrinput {
+    flex: 1; min-width: 0; font: 12px/1.6 ui-monospace, Consolas, monospace; padding: 3px 8px;
+    border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); color: var(--fg); outline: none;
+  }
+  .edithint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .editerr { font-size: 11px; color: var(--warn); margin-top: 4px; }
+  .up { font: inherit; font-size: 12px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 2px 8px; background: transparent; color: var(--fg); cursor: pointer; }
+  .selrow {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px;
+    border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 10px; cursor: pointer; background: transparent; color: var(--fg);
+  }
+  .selrow .val { font-family: ui-monospace, Consolas, monospace; }
+  .menu { margin-top: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 8px; }
+  .menu .mi { display: block; width: 100%; text-align: left; font: 12px/1.9 ui-monospace, Consolas, monospace; border: 0; background: transparent; color: var(--fg); cursor: pointer; padding: 0 4px; }
+  .menu .mi:hover { color: var(--accent); }
+  .tree { border: 1px solid var(--border); border-radius: 6px; background: var(--bg); overflow: hidden; }
+  .row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 8px; font-family: ui-monospace, Consolas, monospace; }
+  .row.sel { background: var(--accent-soft); color: var(--accent); }
+  .caret { color: var(--muted); width: 10px; }
+  .picked { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .picked .path { font-family: ui-monospace, Consolas, monospace; color: var(--fg); }
+  table { border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+  th, td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+  th { background: var(--soft); font-weight: 600; }
+  td.h { font-family: ui-monospace, Consolas, monospace; }
+  tr.rec td { color: var(--accent); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>恢复目标「快跳区」方案演示（UI全量改造方案 P18）</h1>
+<p class="sub">
+  真实数据：WSL 环境 13 个挂载点（含 4 个系统噪声路径）· 向导列宽可切 500px / 自适应 · 面包屑与 chip 均可点击
+</p>
+
+<div class="bar">
+  <div class="grp"><span class="lbl">列宽</span>
+    <button class="seg" data-w="500" aria-pressed="true">500px（向导真实）</button>
+    <button class="seg" data-w="0" aria-pressed="false">自适应</button>
+  </div>
+  <div class="grp"><span class="lbl">主题</span>
+    <button class="seg" data-t="light" aria-pressed="true">亮</button>
+    <button class="seg" data-t="dark" aria-pressed="false">暗</button>
+  </div>
+  <div class="grp"><span class="lbl">当前路径</span>
+    <code id="cur" style="font-size:12px"></code>
+  </div>
+</div>
+
+<div class="grid" id="panels"></div>
+
+<h2>快跳区高度实测（当前列宽下）</h2>
+<table id="heights">
+  <thead><tr><th>方案</th><th>快跳区高度</th><th>占几行</th><th>说明</th></tr></thead>
+  <tbody></tbody>
+</table>
+<p class="note">
+  高度为 JS 实测 <code>offsetHeight</code>，「占几行」按 24px 行高折算。A 的高度随挂载点数量与列宽漂移，B/D/E/F/G 恒定。
+  面包屑整条为「地址热区」：鼠标停在地址任意处（左侧段名或右侧空白）都出现同一个覆盖完整地址的虚线框（用 <code>outline</code> 绘制，不占布局、不引起抖动）；点段名=跳转，点空白或末段=变地址栏。
+</p>
+
+<script>
+const MOUNTS = [
+  '/mnt/c', '/mnt/d', '/mnt/e', '/mnt/f', '/mnt/g', '/mnt/h', '/mnt/wsl',
+  '/mnt/wslg/distro',
+  '/usr/lib/linux-tools/6.18.54.1-microsoft-standard-WSL2',
+  '/usr/lib/wsl/drivers',
+  '/usr/src/linux-headers-6.18.54.1-microsoft-standard-WSL2',
+  '/var/lib/docker',
+]
+const SYSTEMISH = ['/usr/lib', '/usr/src', '/var/lib/docker', '/mnt/wslg']
+const FILTERED = MOUNTS.filter((m) => !SYSTEMISH.some((p) => m === p || m.startsWith(p + '/')))
+const SNAPSHOT_ORIGIN = '/mnt/d/agent'
+const TREE = { '/': ['mnt', 'usr', 'var', 'srv'], '/mnt': ['c', 'd', 'e', 'wsl'], '/mnt/d': ['agent', 'data', 'backup'] }
+
+const state = { path: '/mnt/d/agent', width: 500, theme: 'light', openFor: null, editingFor: null, editError: '' }
+
+function shorten(p) {
+  if (p.length <= 30) return p
+  const seg = p.split('/')
+  return seg[1] + '/…/' + seg[seg.length - 1]
+}
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+function parentOf(p) {
+  const i = p.lastIndexOf('/')
+  return i <= 0 ? '/' : p.slice(0, i)
+}
+
+function isOpen(id) { return state.openFor === id }
+function menuBtn(id) {
+  return 'data-menu="' + (isOpen(id) ? 'close' : 'open') + ':' + id + '" aria-expanded="' + (isOpen(id) ? 'true' : 'false') + '"'
+}
+
+function crumbsHTML(withRootMenu, id) {
+  if (state.editingFor === id) {
+    return '<div class="crumbs">' +
+      '<input class="addrinput" id="addr-' + id + '" value="' + esc(state.path) +
+      '" spellcheck="false" autocomplete="off" aria-label="路径地址栏">' +
+      '<span class="edithint">Enter 提交 · Esc 取消</span></div>' +
+      (state.editError ? '<div class="editerr">' + esc(state.editError) + '</div>' : '')
+  }
+  const segs = state.path.split('/').filter(Boolean)
+  let acc = ''
+  let html = '<div class="crumbs addrzone" data-edit="open:' + id + '" title="点击空白处或末段可编辑完整路径">'
+  if (withRootMenu === 'root') {
+    // 两段热区（VirtualTree 同款手势纪律）：文字 = 跳转，三角 = 展开菜单
+    html += '<button class="crumb" data-jump="/">/</button>'
+    html += '<button class="caretbtn" ' + menuBtn(id) + ' title="展开挂载点" aria-label="展开挂载点">▾</button>'
+  } else if (withRootMenu) {
+    html += '<button class="crumb" ' + menuBtn(id) + '>/ ▾</button>'
+  } else {
+    html += '<button class="crumb" data-jump="/">/</button>'
+  }
+  segs.forEach((s, i) => {
+    acc += '/' + s
+    html += '<span class="sep">›</span>'
+    if (i === segs.length - 1) {
+      html += '<span class="crumb last">' + esc(s) + '</span>'
+    } else {
+      html += '<button class="crumb" data-jump="' + acc + '">' + esc(s) + '</button>'
+    }
+  })
+  html += '<span class="editzone" title="点击输入路径" aria-hidden="true"></span>'
+  html += '</div>'
+  if (withRootMenu && isOpen(id)) {
+    html += '<div class="menu">' + MOUNTS.map((m) => '<button class="mi" data-jump="' + m + '">' + esc(m) + '</button>').join('') + '</div>'
+  }
+  return html
+}
+
+function chipsHTML(list, more, id) {
+  let html = '<div class="chips">'
+  list.forEach((m) => {
+    const on = state.path === m || state.path.startsWith(m + '/') ? ' on' : ''
+    html += '<button class="chip' + on + '" data-jump="' + m + '" title="' + esc(m) + '">' + esc(shorten(m)) + '</button>'
+  })
+  if (more) {
+    html += '<button class="chip" ' + menuBtn(id) + '>更多位置 ▾</button>'
+  }
+  html += '</div>'
+  if (more && isOpen(id)) {
+    html += '<div class="menu">' + more.map((m) => '<button class="mi" data-jump="' + m + '">' + esc(m) + '</button>').join('') + '</div>'
+  }
+  return html
+}
+
+function selectHTML(label, id) {
+  let html = '<button class="selrow" ' + menuBtn(id) + '><span>' + label + '</span><span class="val">' + esc(shorten(state.path)) + ' ▾</span></button>'
+  if (isOpen(id)) {
+    html += '<div class="menu">' + MOUNTS.map((m) => '<button class="mi" data-jump="' + m + '">' + esc(m) + '</button>').join('') + '</div>'
+  }
+  return html
+}
+
+function treeHTML() {
+  const dirs = TREE[state.path] || ['agent', 'data', 'backup']
+  return '<div class="tree">' + dirs.map((d, i) =>
+    '<div class="row' + (i === 0 ? ' sel' : '') + '"><span class="caret">▸</span>' + esc(d) + '</div>'
+  ).join('') + '</div>'
+}
+function pickedHTML() {
+  return '<div class="picked">已选目标：<span class="path">' + esc(state.path) + '</span></div>'
+}
+
+const PLANS = [
+  {
+    id: 'A', name: 'A 现状', badge: '问题态', bad: true,
+    desc: '全部挂载点平铺成胶囊，数量与列宽决定行数',
+    jump: (id) => chipsHTML(['/', ...MOUNTS], null, id),
+  },
+  {
+    id: 'B', name: 'B 面包屑 + 下拉', badge: '2 行', desc: '面包屑承载位置与回退，挂载点收进下拉',
+    jump: (id) => '<div class="jump">' + crumbsHTML(false, id) + '</div><div class="jump">' + selectHTML('快捷位置', id) + '</div>',
+  },
+  {
+    id: 'C', name: 'C 纯下拉', badge: '1 行', desc: '高度最小，但位置可见性归零',
+    jump: (id) => selectHTML('快捷位置', id),
+  },
+  {
+    id: 'D', name: 'D 面包屑 + 三角 + 地址栏', badge: '1 行', desc: '点 / 跳转、点三角展开；hover 整条地址出虚线框，点空白或末段变地址栏',
+    jump: (id) => crumbsHTML('root', id),
+  },
+  {
+    id: 'E', name: 'E 面包屑 + 语义快跳', badge: '推荐', rec: true,
+    desc: '快跳只留树根与快照原备份路径，其余收进「更多」',
+    jump: (id) => '<div class="jump">' + crumbsHTML(false, id) + '</div><div class="jump">' + chipsHTML(['/', SNAPSHOT_ORIGIN], MOUNTS, id) + '</div>',
+  },
+  {
+    id: 'F', name: 'F 仅面包屑', badge: '1 行', desc: '最简：删掉快跳，靠树内导航与 ↑ 回退',
+    jump: (id) => '<div class="jump" style="display:flex;gap:6px;align-items:center"><button class="up" data-jump="' + parentOf(state.path) + '">↑</button>' + crumbsHTML(false, id) + '</div>',
+  },
+  {
+    id: 'G', name: 'G = E + 后端过滤', badge: '治本', desc: 'E 的形态 + fs.py 剔除系统路径（12 → ' + FILTERED.length + '）',
+    jump: (id) => '<div class="jump">' + crumbsHTML(false, id) + '</div><div class="jump">' + chipsHTML(['/', SNAPSHOT_ORIGIN], FILTERED, id) + '</div>',
+  },
+]
+
+function commitEdit(value) {
+  const v = value.trim()
+  if (!v.startsWith('/')) {
+    state.editError = '路径须以 / 开头（绝对路径）'
+    render()
+    return false
+  }
+  if (v.split('/').includes('..')) {
+    state.editError = '路径不允许包含 ..'
+    render()
+    return false
+  }
+  state.path = v.replace(/\/+$/, '') || '/'
+  state.editingFor = null
+  state.editError = ''
+  render()
+  return true
+}
+
+function render() {
+  document.documentElement.setAttribute('data-theme', state.theme)
+  document.getElementById('cur').textContent = state.path
+  document.getElementById('panels').innerHTML = PLANS.map((p) =>
+    '<div class="panel' + (p.rec ? ' rec' : '') + '" data-plan="' + p.id + '">' +
+      '<div class="phead"><span class="pname">' + p.name + '</span>' +
+      '<span class="badge' + (p.rec ? ' rec' : '') + (p.bad ? ' bad' : '') + '">' + p.badge + '</span></div>' +
+      '<p class="pdesc">' + p.desc + '</p>' +
+      '<div class="stage' + (state.width ? ' narrow' : '') + '" style="' + (state.width ? 'max-width:' + state.width + 'px' : '') + '">' +
+        '<div class="jump" data-jumpzone="' + p.id + '">' + p.jump(p.id) + '</div>' +
+        treeHTML() + pickedHTML() +
+      '</div>' +
+    '</div>'
+  ).join('')
+  if (state.editingFor && !state.editError) {
+    const el = document.getElementById('addr-' + state.editingFor)
+    if (el) {
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+    }
+  }
+  measure()
+}
+
+function measure() {
+  const tb = document.querySelector('#heights tbody')
+  tb.innerHTML = PLANS.map((p) => {
+    const el = document.querySelector('[data-jumpzone="' + p.id + '"]')
+    const h = el ? el.offsetHeight : 0
+    return '<tr' + (p.rec ? ' class="rec"' : '') + '><td>' + p.name + '</td><td class="h">' + h + 'px</td><td class="h">' +
+      Math.max(1, Math.round(h / 24)) + ' 行</td><td>' + p.desc + '</td></tr>'
+  }).join('')
+}
+
+document.addEventListener('click', (e) => {
+  const menu = e.target.closest('[data-menu]')
+  if (menu) {
+    const [act, id] = menu.getAttribute('data-menu').split(':')
+    state.openFor = act === 'open' ? id : null
+    state.editingFor = null
+    state.editError = ''
+    render()
+    return
+  }
+  // 跳转优先于「整条地址编辑热区」：点段=跳转，点空白/末段=编辑（热区与 hover 提示范围一致）
+  const jump = e.target.closest('[data-jump]')
+  if (jump) {
+    state.path = jump.getAttribute('data-jump')
+    state.openFor = null
+    render()
+    return
+  }
+  const ed = e.target.closest('[data-edit]')
+  if (ed) {
+    state.editingFor = ed.getAttribute('data-edit').split(':')[1]
+    state.editError = ''
+    state.openFor = null
+    render()
+  }
+})
+document.addEventListener('keydown', (e) => {
+  const el = e.target
+  if (!el.classList || !el.classList.contains('addrinput')) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    commitEdit(el.value)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    state.editingFor = null
+    state.editError = ''
+    render()
+  }
+})
+document.addEventListener('focusout', (e) => {
+  const el = e.target
+  if (el.classList && el.classList.contains('addrinput') && state.editingFor) {
+    commitEdit(el.value)
+  }
+})
+document.querySelectorAll('.seg[data-w]').forEach((b) => b.addEventListener('click', () => {
+  state.width = Number(b.getAttribute('data-w'))
+  document.addEventListener('keydown', (e) => {
+  const el = e.target
+  if (!el.classList || !el.classList.contains('addrinput')) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    commitEdit(el.value)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    state.editingFor = null
+    state.editError = ''
+    render()
+  }
+})
+document.addEventListener('focusout', (e) => {
+  const el = e.target
+  if (el.classList && el.classList.contains('addrinput') && state.editingFor) {
+    commitEdit(el.value)
+  }
+})
+document.querySelectorAll('.seg[data-w]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)))
+  render()
+}))
+document.querySelectorAll('.seg[data-t]').forEach((b) => b.addEventListener('click', () => {
+  state.theme = b.getAttribute('data-t')
+  document.querySelectorAll('.seg[data-t]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)))
+  render()
+}))
+render()
+</script>
+</body>
+</html>

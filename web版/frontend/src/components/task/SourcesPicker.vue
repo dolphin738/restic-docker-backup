@@ -29,6 +29,7 @@ import { useI18n } from 'vue-i18n'
 import { browseSources } from '@/api/backupTasks'
 import { getExclusions } from '@/api/exclusions'
 import { IconCheck, IconEdit, IconPlusCircle, IconTrash, IconX } from '@/components/icons/icons'
+import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import ExcludeEditor from '@/components/task/ExcludeEditor.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -65,7 +66,8 @@ onUnmounted(() => ui.setMessageApi(null))
 
 // ---------------------------------------------------------------- 左栏：目录树（E05）
 const currentPath = ref('/')
-/** 挂载点快跳（展示形态；仅根目录响应带，点击即跳转）。 */
+/** 挂载点快跳（展示形态；仅根目录响应带）→ 收进地址栏（D 形态）的三角菜单，
+ *  不再平铺成 chips（P19：13 个挂载点会顶满 7 行，且长路径换行难看）。 */
 const mountChips = ref<string[]>([])
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
@@ -88,6 +90,12 @@ function treeLoader(path: string, cursor?: string): Promise<TreePage> {
       nextCursor: page.next_cursor,
     }
   })
+}
+
+/** 地址栏跳转（面包屑段 / 挂载点菜单 / 手输路径）：**只改浏览层**——备份源成员资格仍由
+ *  点目录名切换（语义不变，P19 只换快跳形态）。 */
+function onJump(path: string): void {
+  currentPath.value = path
 }
 
 /** 名称点击 = 统一切换备份成员资格（owner 2026-10-24，Duplicati 无复选框/行末按钮，
@@ -291,27 +299,9 @@ const highlightPaths = computed(() => new Set(props.sources))
     <!-- 左栏：源数据（目录树） -->
     <section class="sources-picker__left">
       <n-text strong class="sources-picker__title">{{ t('wizard.sources') }}</n-text>
-      <!-- 挂载点快跳（批次③ §3.4）：根 + 各挂载点，点击即跳转 -->
-      <div class="sources-picker__mounts">
-        <n-button
-          size="tiny"
-          round
-          :type="currentPath === '/' ? 'primary' : 'default'"
-          @click="currentPath = '/'"
-        >
-          /
-        </n-button>
-        <n-button
-          v-for="m in mountChips"
-          :key="m"
-          size="tiny"
-          round
-          :type="currentPath === m ? 'primary' : 'default'"
-          @click="currentPath = m"
-        >
-          {{ m }}
-        </n-button>
-      </div>
+      <!-- 快捷路径统一 D 形态（P19）：面包屑分段跳转 + 挂载点收进三角菜单 + 就地地址栏，
+           恒定 1 行；跳转只改浏览层，备份源仍由点目录名切换（语义不变）。 -->
+      <PathBreadcrumb :path="currentPath" :mounts="mountChips" @select="onJump" />
       <!-- 等高填充：左栏 flex 纵向，树 wrapper flex:1 随右栏内容拉伸，树内部滚动 -->
       <div class="sources-picker__tree-wrap">
         <VirtualTree
@@ -485,14 +475,6 @@ const highlightPaths = computed(() => new Set(props.sources))
   display: block;
   margin-bottom: 8px;
   font-size: 12px;
-}
-
-/* 挂载点快跳 chips（批次③ §3.4：根 + 各挂载点） */
-.sources-picker__mounts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
 }
 
 .sources-picker__rows {

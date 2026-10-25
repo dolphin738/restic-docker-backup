@@ -1,13 +1,14 @@
 /**
- * 恢复目标路径选择器护栏（P16 / owner 裁决 D2 树双模式）。
+ * 恢复目标路径选择器护栏（P16 / owner 裁决 D2 树双模式；P19 快捷路径统一 D 形态）。
  *
- * 存在理由：D2 选择器是第二步「选择位置」流的核心交互，复刻 Duplicati
- * app-file-tree 的「浏览树 / 手动输入」双模 + 越界内联校验。锁死四件事：
- *  ① 二模切换显隐（浏览树 / 手输框）；
- *  ② 手输合法路径实时 emit（父级 customTarget 是唯一提交值）；
- *  ③ 越界路径（根外 / 非绝对 / .. 穿越）内联报错且**不 emit**——与后端
- *     RESTORE_ALLOWED_PREFIXES 同口径的第一道（V-6）；
- *  ④ 浏览树点目录 emit 容器形态路径（树根 = runtime.restoreRoot 单一事实源）。
+ * 存在理由：D2 选择器是第二步「选择位置」流的核心交互。P19 起「浏览树 / 手动输入」
+ * 二分段合流为**地址栏**（点空白或末段就地编辑），锁死五件事：
+ *  ① 地址栏常驻（面包屑根段 = restoreRoot 单一事实源）+ 树渲染，未编辑时无输入框；
+ *  ② 点末段右侧空白 → 就地变地址栏（D 形态热区）；
+ *  ③ 地址栏提交合法路径 → emit（父级 customTarget 是唯一提交值）；
+ *  ④ 越界（根外 / 非绝对 / ..）与受保护区域内联报错且**不 emit**——与后端
+ *     restore_allowed_prefixes 同口径的第一道（V-6）；
+ *  ⑤ 浏览树点目录 emit 容器形态路径，受保护目录不选中不下钻（host deny）。
  */
 
 import { flushPromises, mount } from '@vue/test-utils'
@@ -50,6 +51,25 @@ function mountPicker(
   return { wrapper, picker: wrapper.findComponent(RestoreTargetPicker), pinia }
 }
 
+/** 组件内查询一律走 wrapper.element（VTU 无 attachTo 时挂在脱离文档的 div 上）。 */
+function q(w: { element: Element }, sel: string): HTMLElement | null {
+  return w.element.querySelector<HTMLElement>(sel)
+}
+
+async function openEditor(w: { element: Element }): Promise<void> {
+  q(w, '.pcrumb__tail')!.click()
+  await flushPromises()
+}
+
+async function submit(w: { element: Element }, value: string): Promise<void> {
+  const input = q(w, 'input') as HTMLInputElement
+  input.value = value
+  input.dispatchEvent(new Event('input'))
+  await flushPromises()
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await flushPromises()
+}
+
 beforeEach(() => {
   i18n.global.locale.value = 'zh-CN'
   mocks.browse.mockReset()
@@ -65,33 +85,37 @@ beforeEach(() => {
   }))
 })
 
-describe('RestoreTargetPicker：树双模式 + 越界校验', () => {
-  it('① 默认浏览树模式：挂载 chips + 树渲染，无手输框', async () => {
+describe('RestoreTargetPicker：地址栏（D 形态）+ 越界校验', () => {
+  it('① 默认渲染地址栏 + 树，未编辑时无输入框；挂载点收在三角菜单里', async () => {
     const { wrapper } = mountPicker()
     await flushPromises()
-    expect(wrapper.find('.restore-picker__mounts').exists()).toBe(true)
+    expect(wrapper.find('.pcrumb').exists()).toBe(true)
     expect(wrapper.find('.vtree').exists()).toBe(true)
     expect(wrapper.find('input').exists()).toBe(false)
+
+    // 快跳不再平铺：默认看不到挂载点，点三角才展开
+    expect(wrapper.find('.pcrumb__menu').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('/restore/mydir')
+    q(wrapper, '.pcrumb__caret')!.click()
+    await flushPromises()
+    expect(
+      [...wrapper.element.querySelectorAll('.pcrumb__menu-item')].map((el) => el.textContent?.trim()),
+    ).toEqual(['/restore'])
   })
 
-  it('② 切「手动输入」：显输入框 + 说明', async () => {
+  it('② 点末段右侧空白 → 就地变地址栏（预填当前浏览层）', async () => {
     const { wrapper } = mountPicker()
     await flushPromises()
-    const manualBtn = wrapper.findAll('button').find((b) => b.text().includes('手动输入'))
-    await manualBtn!.trigger('click')
-    await flushPromises()
+    await openEditor(wrapper)
     expect(wrapper.find('input').exists()).toBe(true)
-    expect(wrapper.text()).toContain('输入 /restore 下的绝对路径作为恢复目标。')
+    expect((q(wrapper, 'input') as HTMLInputElement).value).toBe('/restore')
   })
 
-  it('③ 合法路径实时 emit（父级 customTarget 单一来源）', async () => {
+  it('③ 合法路径提交 → emit（父级 customTarget 单一来源）', async () => {
     const { wrapper, picker } = mountPicker()
     await flushPromises()
-    await wrapper.findAll('button').find((b) => b.text().includes('手动输入'))!.trigger('click')
-    await flushPromises()
-
-    await wrapper.get('input').setValue('/restore/backups')
-    await flushPromises()
+    await openEditor(wrapper)
+    await submit(wrapper, '/restore/backups')
     expect(picker.emitted('update:modelValue')?.at(-1)).toEqual(['/restore/backups'])
     expect(wrapper.find('.n-alert').exists()).toBe(false)
   })
@@ -99,20 +123,15 @@ describe('RestoreTargetPicker：树双模式 + 越界校验', () => {
   it('④ 越界路径内联报错且不 emit（根外 / 非绝对 / .. 三段各一例）', async () => {
     const { wrapper, picker } = mountPicker()
     await flushPromises()
-    await wrapper.findAll('button').find((b) => b.text().includes('手动输入'))!.trigger('click')
-    await flushPromises()
-    const input = wrapper.get('input')
+    await openEditor(wrapper)
 
-    await input.setValue('/etc')
-    await flushPromises()
+    await submit(wrapper, '/etc')
     expect(wrapper.text()).toContain('路径须在恢复目录 /restore 内。')
 
-    await input.setValue('restore/x')
-    await flushPromises()
+    await submit(wrapper, 'restore/x')
     expect(wrapper.text()).toContain('必须是绝对路径（以 / 开头）。')
 
-    await input.setValue('/restore/../etc')
-    await flushPromises()
+    await submit(wrapper, '/restore/../etc')
     expect(wrapper.text()).toContain('路径不允许包含 .. 段。')
 
     // 三个非法值都不曾 emit（不把脏值写进父级提交链）
@@ -127,15 +146,15 @@ describe('RestoreTargetPicker：树双模式 + 越界校验', () => {
     expect(picker.emitted('update:modelValue')?.at(-1)).toEqual(['/restore/mydir'])
   })
 
-  it('⑥ 运行时 restoreRoot 是树根单一事实源（store 值即根 chip 文案）', async () => {
+  it('⑥ 运行时 restoreRoot 是树根单一事实源（store 值即地址栏根段文案）', async () => {
     const { wrapper, pinia } = mountPicker()
     const runtime = useRuntimeStore(pinia)
     runtime.restoreRoot = '/mnt/restore'
     await flushPromises()
-    expect(wrapper.text()).toContain('/mnt/restore')
+    expect(wrapper.find('.pcrumb').text()).toContain('/mnt/restore')
   })
 
-  it('⑦ host 形态 deny：受保护区域手输报错，不 emit', async () => {
+  it('⑦ host 形态 deny：受保护区域经地址栏提交报错，不 emit', async () => {
     const { wrapper, picker } = mountPicker('/', (runtime) => {
       runtime.deployMode = 'host'
       runtime.restoreRoot = '/'
@@ -143,11 +162,8 @@ describe('RestoreTargetPicker：树双模式 + 越界校验', () => {
       runtime.denyPrefixes = ['/repo']
     })
     await flushPromises()
-    await wrapper.findAll('button').find((b) => b.text().includes('手动输入'))!.trigger('click')
-    await flushPromises()
-
-    await wrapper.get('input').setValue('/repo/data')
-    await flushPromises()
+    await openEditor(wrapper)
+    await submit(wrapper, '/repo/data')
     expect(wrapper.text()).toContain('该位置受保护')
     expect(picker.emitted('update:modelValue')).toBeUndefined()
   })

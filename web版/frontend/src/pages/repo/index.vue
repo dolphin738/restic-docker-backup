@@ -17,7 +17,6 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
-  NTag,
   NText,
   NTooltip,
   useMessage,
@@ -2123,23 +2122,9 @@ function formatBytes(value: number): string {
       style="width: min(640px, calc(100vw - 32px))"
     >
       <n-space vertical :size="12">
-        <n-space :size="8" class="repo__mounts">
-          <n-tag size="small" round @click="jumpTo(CONTAINER_ROOT)">
-            {{ t('repo.mountRoot') }}
-          </n-tag>
-          <n-tag
-            v-for="mount in mountChips"
-            :key="mount"
-            size="small"
-            round
-            type="info"
-            class="repo__mount"
-            @click="jumpTo(mount)"
-          >
-            {{ mount }}
-          </n-tag>
-        </n-space>
-        <PathBreadcrumb :path="browsePath" @select="browsePath = $event" />
+        <!-- 快捷路径统一 D 形态（P19）：面包屑分段跳转 + 挂载点收进三角菜单 + 就地地址栏，
+             取代原先平铺的挂载点标签（标签多时顶满整行），恒定 1 行。 -->
+        <PathBreadcrumb :path="browsePath" :mounts="mountChips" @select="jumpTo" />
         <VirtualTree
           :root-path="browsePath"
           :load-children="fsLoader"
@@ -2382,15 +2367,6 @@ function formatBytes(value: number): string {
 
 .repo__cred {
   width: 100%;
-}
-
-.repo__mounts {
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.repo__mount {
-  cursor: pointer;
 }
 
 .repo__picked {
