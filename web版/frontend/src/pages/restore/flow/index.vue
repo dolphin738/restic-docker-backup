@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
-import { NAlert, NCard, NSpace, NText, useMessage } from 'naive-ui'
+import { NAlert, NSpace, NText, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -19,6 +19,7 @@ import Progress from '@/pages/restore/flow/progress.vue'
 import SelectFiles from '@/pages/restore/flow/select-files.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { formatBytesOr } from '@/utils/format'
+import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
 
 /** E20 覆盖预览单页条数（游标分页，配合「加载更多」续拉）。 */
@@ -70,10 +71,27 @@ const jobFailed = ref(false)
  *  空集合 = 整快照恢复（E19 缺省行为，回归零影响）。 */
 const selectedFiles = ref<Set<string>>(new Set())
 
-/** 恢复目标模式：inplace = 原位置（A7 起默认，对齐 Duplicati）；
- *  timestamp = 自定义目录（/restore 下时间戳子目录，零覆盖语义，E19 传统流）。 */
-const targetMode = ref<'timestamp' | 'inplace'>('inplace')
-const isInPlace = computed(() => targetMode.value === 'inplace')
+/** 恢复到哪（P16 对齐 Duplicati options 单选语义，替原 targetMode 二态）：
+ *  original = 原位置（A7 起默认，对齐 Duplicati Original location）；
+ *  pickLocation = 选择位置（/restore 子树内任选，服务端仍建时间戳子目录，零覆盖语义不变）。 */
+const restoreFrom = ref<'original' | 'pickLocation'>('original')
+const isInPlace = computed(() => restoreFrom.value === 'original')
+
+/** 选择位置流的目标（容器形态，restoreRoot 子树内）；服务端在其下新建
+ *  `<stem>-<stamp>` 时间戳子目录（E19 零覆盖，PRD G3）。默认取运行时下发的
+ *  restoreRoot（部署形态单一事实源，《源数据过滤与树双模式设计方案》§3.2）。 */
+const runtime = useRuntimeStore()
+const customTarget = ref(RESTORE_TARGET_ROOT)
+// pinia setup store 的属性在 TS 里已解包为 string——watch 源须用 getter 形式
+watch(
+  () => runtime.restoreRoot,
+  (root) => {
+    if (root) {
+      customTarget.value = root
+    }
+  },
+  { immediate: true },
+)
 
 /** A7 覆盖布尔（Duplicati --overwrite）：默认不勾 = never（跳过已存在文件）；
  *  勾选 = always（以快照内容覆盖）。仅原位流有意义。 */
@@ -110,7 +128,7 @@ const selectedSnapshot = computed(() => snapshotItems.value.find((snapshot) => s
 
 const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
 
-/** 入口被置灰时把模式回落到时间戳流：否则用户会停在必然 403 的非法态，
+/** 入口被置灰时把模式回落到选择位置：否则用户会停在必然 403 的非法态，
  *  而提示链路要绕到后端报错才看得到原因（radio 置灰本身不可点）。
  *
  *  监听对象必须是 `selectedSnapshot` 而不是 `inPlaceDisabled`：列表加载前
@@ -120,8 +138,19 @@ const inPlaceDisabled = computed(() => inPlaceBlockReason.value !== '')
  *  用例④ 走完整流程才暴露）。改为 watch 选中快照本身：切到（含默认选中）
  *  无 paths 的快照时才回落；有 paths 时不打扰 A7 的 inplace 默认。 */
 watch(selectedSnapshot, (snapshot) => {
-  if (targetMode.value === 'inplace' && (snapshot?.paths.length ?? 0) === 0) {
-    targetMode.value = 'timestamp'
+  if (restoreFrom.value === 'original' && (snapshot?.paths.length ?? 0) === 0) {
+    restoreFrom.value = 'pickLocation'
+  }
+})
+
+/** 模式切换 effect（P16 复刻 Duplicati `#selectDefaultRestoreModeEffect`）：
+ *  watch `restoreFrom` **数据本身**（同 P11 教训——派生布尔会因真空初态被吞）。
+ *  切到「选择位置」时把 customTarget 复位到 restoreRoot：不带着上一个子目录
+ *  提交（用户上次选了 /restore/a，这次重新进来应回到根，而不是复用一个可能
+ *  已消失的旧子目录）。 */
+watch(restoreFrom, (mode) => {
+  if (mode === 'pickLocation') {
+    customTarget.value = runtime.restoreRoot || RESTORE_TARGET_ROOT
   }
 })
 
@@ -204,8 +233,12 @@ function onSnapshotIdUpdate(value: string | null): void {
   snapshotId.value = value
 }
 
-function onTargetModeUpdate(value: 'timestamp' | 'inplace'): void {
-  targetMode.value = value
+function onRestoreFromUpdate(value: 'original' | 'pickLocation'): void {
+  restoreFrom.value = value
+}
+
+function onCustomTargetUpdate(value: string): void {
+  customTarget.value = value
 }
 
 function onInplaceTargetUpdate(value: string | null): void {
@@ -230,7 +263,7 @@ const previewError = ref('')
 const previewStats = ref<{ overwriteCount: number; totalBytes: number; truncated: boolean } | null>(null)
 
 /** 快照、目标或模式一变，已加载的清单即刻失效（避免拿旧清单去确认覆盖）。 */
-watch([snapshotId, inplaceTarget, targetMode], () => {
+watch([snapshotId, inplaceTarget, restoreFrom], () => {
   previewItems.value = []
   previewCursor.value = null
   previewStats.value = null
@@ -304,6 +337,14 @@ const previewPolicy = computed(() =>
   overwriteExisting.value ? t('restore.preview.policyOverwrite') : t('restore.preview.policySkip'),
 )
 
+/** 快照/已选路径是否含 Windows 分隔符（restic 快照 paths 为绝对路径，
+ *  分隔符即操作系统指纹；本项目运行态恒 Linux '/'）。 */
+function hasForeignSeparator(): boolean {
+  const paths =
+    selectedFileList.value.length > 0 ? selectedFileList.value : (selectedSnapshot.value?.paths ?? [])
+  return paths.some((path) => path.includes('\\'))
+}
+
 function goConfirm(): void {
   if (!snapshotId.value) {
     message.warning(t('restore.needSnapshot'))
@@ -311,6 +352,12 @@ function goConfirm(): void {
   }
   if (isInPlace.value && !inplaceTarget.value) {
     message.warning(t('restore.preview.needTarget'))
+    return
+  }
+  // P16：跨 OS 确认（复刻 Duplicati submit() 前置门）——原位置恢复且快照路径
+  // 含 Windows 分隔符时，先确认再进门（备份来自其它操作系统，原位置落点
+  // 可能出乎意料）。沿用 R10 离开确认的 window.confirm 模式，不新造弹窗。
+  if (isInPlace.value && hasForeignSeparator() && !window.confirm(t('restore.options.crossOsConfirm'))) {
     return
   }
   step.value = 2
@@ -323,14 +370,15 @@ function goConfirm(): void {
 }
 
 /** 确认门通过后提交：paths 为展示形态；空集合 = 整快照；restore_target 由服务端返回。
- *  时间戳流请求体与 P1 逐字一致（无任何覆盖语义字段，零回归）；
- *  原位流带 overwrite_mode（never/always 布尔，A7 起无 keyword）。 */
+ *  原位置流带 overwrite_mode（never/always 布尔，A7 起无 keyword）；
+ *  选择位置流请求体与 P1 逐字一致（target = 自定义 /restore 子目录，服务端建
+ *  时间戳子目录，无任何覆盖语义字段，零回归）。 */
 async function onConfirmed(): Promise<void> {
   const id = snapshotId.value
   if (!id) {
     return
   }
-  const target = isInPlace.value ? inplaceTargetFull.value : RESTORE_TARGET_ROOT
+  const target = isInPlace.value ? inplaceTargetFull.value : customTarget.value
   if (!target) {
     return
   }
@@ -447,6 +495,10 @@ function goEntry(): void {
  *  注：文件树具体高度值（520）已随 select-files 组件内聚，此处只保留布局类名信号。 */
 const isFillHeight = computed(() => step.value === 1)
 
+/** 满宽：步骤 1/3（Duplicati isFullWidthPage：progress/select-files → 列宽 500→1000）；
+ *  步骤 2（options）保持 500px 居中列。 */
+const isWidePage = computed(() => step.value !== 2)
+
 // ---------------------------------------------------------------- P9 离开确认（R10）
 
 /** 脏判定：已选快照/文件但未走完，或作业未到终态（走到终态即放行）。 */
@@ -486,20 +538,27 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
 </script>
 
 <template>
-  <n-space vertical :size="16" class="restore-flow" :class="{ 'restore-flow--fill': isFillHeight }">
-    <n-card :title="t('nav.restore')" size="small">
-      <RestoreStepper
-        :steps="stepItems"
-        :current="step"
-        :enabled="stepEnabled"
-        :aria-label="t('restore.flow.stepsAria')"
-        @select="onStepSelect"
-      />
+  <!-- P16 外壳（D5=A）：去 n-card，改 Duplicati「sh-stepper + 居中列」——
+       options 步骤 500px 居中；select-files/progress 满宽 1000px（模版 isFullWidthPage）；
+       ≤960 断点列内 padding 0 32（模版 -milli 同值，项目断点惯例 §4.3）。 -->
+  <div
+    class="restore-flow"
+    :class="{ 'restore-flow--fill': isFillHeight, 'restore-flow--wide': isWidePage }"
+  >
+    <RestoreStepper
+      class="restore-flow__stepper"
+      :steps="stepItems"
+      :current="step"
+      :enabled="stepEnabled"
+      :aria-label="t('restore.flow.stepsAria')"
+      @select="onStepSelect"
+    />
 
+    <section class="restore-flow__section">
       <n-space vertical :size="14" class="restore__body">
         <!-- 步骤 1：select-files 组件（P10/P11 遗留拆分项，2026-10-23 补做）。
              快照下拉 + B3 搜索 + 文件树多选自成组件；状态（snapshotId/selectedFiles）
-            留父级，确认门预览与提交请求共用。 -->
+             留父级，确认门预览与提交请求共用。 -->
         <SelectFiles
           v-if="step === 1"
           :snapshot-id="snapshotId"
@@ -513,18 +572,20 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           @back="goEntry"
         />
 
-        <!-- 步骤 2：options 组件（P10/P11 遗留拆分项，2026-10-23 补做）。
-             两分区（恢复到哪 / 已存在文件）+ E20 预览区；预览 fetch 状态留父级
-             （确认门预览插槽与 canOpenGate 都要用），组件经 props 读、emit 动作。 -->
+        <!-- 步骤 2：options 组件（P16 按 Duplicati options 重写：三折叠卡 +
+             两端页脚；E20 预览并入「已存在文件」卡 D4=A）。预览 fetch 状态留父级
+             （确认门插槽共用），组件经 props 读、emit 动作。 -->
         <Options
           v-else-if="step === 2"
-          :target-mode="targetMode"
+          :restore-from="restoreFrom"
           :is-in-place="isInPlace"
           :in-place-disabled="inPlaceDisabled"
           :in-place-block-reason="inPlaceBlockReason"
           :inplace-target="inplaceTarget"
           :inplace-target-options="inplaceTargetOptions"
+          :custom-target="customTarget"
           :overwrite-existing="overwriteExisting"
+          :submitting="restoring"
           :can-open-gate="canOpenGate"
           :preview-items="previewItems"
           :preview-stats="previewStats"
@@ -534,8 +595,9 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           :preview-error="previewError"
           :preview-size-text="previewSizeText"
           :preview-policy="previewPolicy"
-          @update:target-mode="onTargetModeUpdate"
+          @update:restore-from="onRestoreFromUpdate"
           @update:inplace-target="onInplaceTargetUpdate"
+          @update:custom-target="onCustomTargetUpdate"
           @update:overwrite-existing="onOverwriteExistingUpdate"
           @reload-preview="loadPreview(true)"
           @load-more-preview="loadPreview(false)"
@@ -557,9 +619,9 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           @go-jobs="goJobs"
         />
       </n-space>
-    </n-card>
+    </section>
 
-    <!-- 确认门：时间戳流 = 预览 → 输入 RESTORE → 红色二次确认；
+    <!-- 确认门：时间戳（选择位置）流 = 预览 → 输入 RESTORE → 红色二次确认；
          原位流（A7）= 预览 → 红色二次确认（无关键词，对齐 Duplicati） -->
     <ConfirmGate
       v-model:show="gateShow"
@@ -575,7 +637,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           <!-- 缺陷 C：确认门快照时间同样收口；无 time 时回落快照 id（保持原兜底语义） -->
           <n-text>{{ t('restore.gateSnapshot') }}：{{ formatDateTimeOr(selectedSnapshot?.time, selectedSnapshot ? DATETIME_FALLBACK : (snapshotId ?? DATETIME_FALLBACK)) }}</n-text>
           <n-text>{{ t('restore.gatePaths') }}：{{ selectedSnapshot?.paths.join(', ') }}</n-text>
-          <n-text>{{ t('restore.gateTarget') }}：{{ isInPlace ? inplaceTargetFull : RESTORE_TARGET_ROOT }}</n-text>
+          <n-text>{{ t('restore.gateTarget') }}：{{ isInPlace ? inplaceTargetFull : customTarget }}</n-text>
           <!-- 原位流：停止服务提示 + 已存在文件汇总 + 策略行 + 清单摘要（完整清单在步骤 2） -->
           <template v-if="isInPlace">
             <n-alert type="error" :show-icon="false">{{ t('restore.stop_services') }}</n-alert>
@@ -618,12 +680,40 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
         </n-space>
       </template>
     </ConfirmGate>
-  </n-space>
+  </div>
 </template>
 
 <style scoped>
+/* P16 外壳（D5=A，Duplicati restore-flow 同款）：stepper 直接落在页面底色上，
+   内容区居中列——options 500px / select-files·progress 1000px 双档。 */
+.restore-flow__stepper {
+  display: block;
+  margin: 24px 0 16px;
+}
+
+.restore-flow__section {
+  /* border-box：断点内的 32px padding 计入 500px 列宽（否则 content-box 下实测
+     564px，比 Duplicati 的 section 宽 64px——P16 真机探针 p16-options-mobile.cjs 抓到） */
+  box-sizing: border-box;
+  max-width: 500px;
+  margin: 0 auto 24px;
+}
+
+.restore-flow--wide .restore-flow__section {
+  max-width: 1000px;
+}
+
+/* 移动端（项目断点惯例 ≤960，§4.3）：列内 padding 0 32（模版 -milli 同值）。
+   ⚠️ 不能对 stepper 容器无条件 overflow-x:auto——滚动容器收住子元素 margin 会
+   致桌面漂移（§4.3 实测教训）；RestoreStepper 列表本身 flex-wrap，窄屏换行即可。 */
+@media (max-width: 960px) {
+  .restore-flow__section {
+    padding: 0 32px;
+  }
+}
+
 .restore__body {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 /* P9 满高：步骤 1 的主体给到更大可用高度（文件树高度同步上探，见 select-files 组件）。
