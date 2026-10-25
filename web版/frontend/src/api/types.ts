@@ -572,7 +572,7 @@ export interface ForgetPreviewResponse {
 
 /** R-016 独立回收预览响应（restic prune --dry-run 只读探测）。 */
 export interface PrunePreviewResponse {
-  /** 本次会删除的 pack 数（>0 即仓库有可回收空间）。 */
+  /** 本次会删除的数据块数（>0 即仓库有可回收空间；restic 0.17+ 输出 blobs，旧版 packs）。 */
   would_remove_packs: number
   /** 预计可释放字节数（restic 输出无法稳定解析时为 null）。 */
   freed_bytes: number | null

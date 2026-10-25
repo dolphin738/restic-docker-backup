@@ -76,13 +76,13 @@ from app.schemas.api_schemas import (
     ForgetPreviewSnapshot,
     KeyRotateResponse,
     ManualCopyRequest,
-    PrunePreviewResponse,
     ManualCopyResponse,
     NotifyConfigPatch,
     NotifyConfigResponse,
     NotifyTestChannel,
     NotifyTestResponse,
     OkResponse,
+    PrunePreviewResponse,
     RepoKeyRotateRequest,
 )
 from app.schemas.enums import AuditResult
@@ -373,16 +373,22 @@ def _human_to_bytes(value: float, unit: str) -> int:
 
 
 def _parse_prune_preview(lines: list[str]) -> dict[str, object]:
-    """解析 ``restic prune --dry-run`` 输出，提取待删 pack 数与可释放字节。
+    """解析 ``restic prune --dry-run`` 输出，提取待删块数与可释放字节。
 
-    restic 0.18 的 dry-run 措辞随版本浮动，这里用多模式正则容错匹配：
-    - 待删 pack：``to delete: N packs`` / ``will delete N packs`` / ``will remove N packs``
-    - 释放量：``total prune: N blobs / X`` / ``this removes N blobs / X`` / ``will free X after this``
-    任一命中即采用；都不命中 → 视为无需回收（clean）。
+    restic 的 dry-run 措辞随版本浮动（真机采集：本仓 0.18.0），单位口径用多模式
+    正则容错匹配：
+    - 待删块数：``to delete: N packs``（0.15-0.16）/ ``to delete: N blobs``
+      （0.17+，本仓口径）/ ``will delete|remove N packs``；
+    - 释放量：``total prune: N blobs / X`` / ``this removes N blobs / X`` /
+      ``will free X after this``，体积单位兼容裸 ``B``（如 ``0 B``）。
+    都不命中 → 视为无需回收（clean）。
     """
     text = "\n".join(lines)
     packs = None
-    for pat in (r"to delete:\s*(\d+)\s*packs", r"will (?:delete|remove)\s*(\d+)\s*packs"):
+    for pat in (
+        r"to delete:\s*(\d+)\s*(?:packs|blobs)",
+        r"will (?:delete|remove)\s*(\d+)\s*(?:packs|blobs)",
+    ):
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             packs = int(m.group(1))
@@ -391,9 +397,9 @@ def _parse_prune_preview(lines: list[str]) -> dict[str, object]:
     freed_bytes: int | None = None
     freed_text: str | None = None
     for pat in (
-        r"total prune:\s*.*?/\s*([\d.]+)\s*([KMGTPE]i?B)",
-        r"this removes\s*\d+\s*blobs\s*/\s*([\d.]+)\s*([KMGTPE]i?B)",
-        r"will free\s*([\d.]+)\s*([KMGTPE]i?B)\s*after this",
+        r"total prune:\s*.*?/\s*([\d.]+)\s*((?:[KMGTPE]i?)?B)",
+        r"this removes\s*\d+\s*blobs\s*/\s*([\d.]+)\s*((?:[KMGTPE]i?)?B)",
+        r"will free\s*([\d.]+)\s*((?:[KMGTPE]i?)?B)\s*after this",
     ):
         m = re.search(pat, text, re.IGNORECASE)
         if m:
@@ -401,7 +407,7 @@ def _parse_prune_preview(lines: list[str]) -> dict[str, object]:
             freed_bytes = _human_to_bytes(float(m.group(1)), m.group(2))
             break
 
-    clean = (packs or 0) == 0 and freed_bytes is None
+    clean = (packs or 0) == 0 and freed_bytes in (None, 0)
     return {
         "would_remove_packs": packs or 0,
         "freed_bytes": freed_bytes,
