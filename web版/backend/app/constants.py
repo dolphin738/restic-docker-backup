@@ -227,6 +227,16 @@ SSE_POLL_INTERVAL_SECONDS = 0.3    # 日志文件追加轮询间隔
 LOG_TAIL_DEFAULT_BYTES = 65536     # E27 默认尾部字节数
 LOG_TAIL_MAX_BYTES = 1048576       # E27 上限 1 MiB
 
+# ---------------------------------------------------------------- 系统设置域（compose → UI 迁移第一批）
+
+# 键名（E07 config 表）：compose 的 LOG_LEVEL / DB_BUSY_TIMEOUT_MS 迁入系统设置，
+# env 仍可覆盖（ENV_KEY_MAP 登记 → source='env' → UI 置灰 + 409 保护）。
+LOG_LEVEL_KEY = "log.level"
+DB_BUSY_TIMEOUT_MS_KEY = "db.busy_timeout_ms"
+LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+DB_BUSY_TIMEOUT_MS_MIN = 100       # 锁等待下限（毫秒）：低于 100ms 基本等于不等锁
+DB_BUSY_TIMEOUT_MS_MAX = 600_000   # 锁等待上限（毫秒）：10 分钟，防配置被写爆后无限等
+
 # ---------------------------------------------------------------- SQLite（架构 §7.7 / D2）
 
 DB_BUSY_TIMEOUT_MS = 5000          # 锁等待超时；默认值，实际值走 settings.db_busy_timeout_ms

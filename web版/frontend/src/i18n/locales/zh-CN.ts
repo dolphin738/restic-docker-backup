@@ -1153,6 +1153,16 @@ export default {
       unsavedHint: '改动需点击保存后生效',
       saved: 'dump 配置已保存',
     },
+    system: {
+      title: '系统',
+      desc: '原 docker-compose.yml 运行参数，已迁入界面：保存后即时生效，无需重建容器。compose 里仍设置同一变量时以 compose 为准（界面锁定）。',
+      logLevel: '日志级别',
+      logLevelHint: 'DEBUG 会逐条记录 restic 输出，仅排障时开启；日常用 INFO。',
+      busyTimeout: 'SQLite 锁等待（毫秒）',
+      busyTimeoutHint: '高并发落库或外部工具长时间读库时若频繁 SQLITE_BUSY 可上调；对新建连接生效。',
+      envLocked: '该值已由 compose 环境变量覆盖，请改 docker-compose.yml。',
+      saved: '系统参数已保存并生效',
+    },
     behavior: {
       title: '行为开关',
       desc: '开关保存后由服务端即时生效（config.update 入审计）；调度器动态重载，无需重启容器。',

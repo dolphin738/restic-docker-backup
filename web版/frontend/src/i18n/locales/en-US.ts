@@ -1161,6 +1161,16 @@ export default {
       unsavedHint: 'Changes apply after you click Save',
       saved: 'Dump configuration saved',
     },
+    system: {
+      title: 'System',
+      desc: 'Runtime parameters formerly in docker-compose.yml, now configurable here: changes apply immediately without rebuilding the container. If the same variable is still set in compose, compose wins (the field is locked).',
+      logLevel: 'Log level',
+      logLevelHint: 'DEBUG logs every restic output line—use only for troubleshooting; INFO for daily use.',
+      busyTimeout: 'SQLite lock wait (ms)',
+      busyTimeoutHint: 'Raise if SQLITE_BUSY occurs frequently under heavy writes or long external reads; applies to new connections.',
+      envLocked: 'Overridden by a compose environment variable—edit docker-compose.yml instead.',
+      saved: 'System settings saved and applied',
+    },
     behavior: {
       title: 'Behavior switches',
       desc: 'Switches take effect immediately after saving (audited as config.update); the scheduler reloads dynamically — no container restart.',

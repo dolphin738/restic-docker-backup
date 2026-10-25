@@ -3,6 +3,8 @@
 两条通道（0003 多仓库后的落点）：
 - **凭据通道**（``sync_env_overrides``）：``AWS_*`` / ``B2_*`` → config 键
   ``cred.default.*``（env 只覆盖 **default** 仓库的凭据；多仓库各自持有）；
+  另含**系统域**（compose → UI 迁移第一批）：``LOG_LEVEL`` / ``DB_BUSY_TIMEOUT_MS``
+  → ``log.level`` / ``db.busy_timeout_ms``（env 设了即锁定 UI，未设则 UI 可配）；
 - **仓库通道**（``sync_env_repo_overrides``）：``RESTIC_REPOSITORY`` /
   ``RESTIC_HOST`` → ``repos.default`` 行的 url/host_tag（``*_source='env'``）。
 
@@ -23,6 +25,8 @@ from pathlib import Path
 
 from app.constants import (
     AUDIT_ENV_SYNC,
+    DB_BUSY_TIMEOUT_MS_KEY,
+    LOG_LEVEL_KEY,
     PASSFILE_STATUS_CONFIGURED,
     PASSFILE_STATUS_MISSING,
 )
@@ -38,7 +42,11 @@ logger = logging.getLogger(__name__)
 # 环境变量名 → config 键（§4.3 键表；R-023 起凭据按仓库命名空间，env 只覆盖 default）。
 # A1：新增 restic 0.19.1 后端的官方 env 名（源码核验：azure/gs/rest 各后端
 # ApplyEnvironment）——与 cred.* → 子进程 env 的还原规则（load_credentials）一一对应。
+# 系统域（compose → UI 迁移第一批）：LOG_LEVEL / DB_BUSY_TIMEOUT_MS 同步登记，
+# env 设了即标 source='env' → E07 界面置灰 + 409 写保护，未设则 UI 可配。
 ENV_KEY_MAP: dict[str, str] = {
+    "LOG_LEVEL": LOG_LEVEL_KEY,
+    "DB_BUSY_TIMEOUT_MS": DB_BUSY_TIMEOUT_MS_KEY,
     "AWS_ACCESS_KEY_ID": "cred.default.aws_access_key_id",
     "AWS_SECRET_ACCESS_KEY": "cred.default.aws_secret_access_key",
     "AWS_DEFAULT_REGION": "cred.default.aws_default_region",

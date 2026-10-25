@@ -29,12 +29,17 @@ from app.constants import (
     CHECK_SUBSET_DENOMINATOR_MAX,
     CHECK_SUBSET_DENOMINATOR_MIN,
     CRED_ENCRYPTION_KEY,
+    DB_BUSY_TIMEOUT_MS_KEY,
+    DB_BUSY_TIMEOUT_MS_MAX,
+    DB_BUSY_TIMEOUT_MS_MIN,
     DUMP_DATABASES_KEY,
     DUMP_ENABLED_KEY,
     DUMP_ENGINES,
     DUMP_PORT_KEY,
     DUMP_RETENTION_DAYS_KEY,
     DUMP_TYPE_KEY,
+    LOG_LEVEL_KEY,
+    LOG_LEVELS,
     METRICS_TOKEN_KEY,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
@@ -50,6 +55,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.crypto import EncryptionState
 from app.services.env_sync import passfile_status
+from app.services.log_control import apply_log_level
 from app.services.metrics import hash_metrics_token
 from app.services.scheduler import TIMEZONE_KEY
 from app.services.time_sync import NTP_BACKUP_KEY, NTP_PRIMARY_KEY, validate_ntp_server
@@ -188,6 +194,24 @@ async def put_config(
         if restic is not None:
             restic.set_timezone(patch.get(TIMEZONE_KEY))
 
+    # 系统域（compose → UI 迁移第一批）：保存即热生效——日志级别切换 root/uvicorn
+    # 三件套；锁等待对当前连接重放 PRAGMA（新连接取同一份值）。失败只记日志：
+    # 配置已落库，下次启动仍按新值生效（与时区刷新同纪律）。
+    if LOG_LEVEL_KEY in patch:
+        try:
+            apply_log_level(patch.get(LOG_LEVEL_KEY))
+        except Exception:  # noqa: BLE001 - 热切换失败不吞掉已成功的配置写入
+            logger.exception("日志级别热切换失败（配置已保存，重启后生效）")
+    if DB_BUSY_TIMEOUT_MS_KEY in patch:
+        raw_busy = (patch.get(DB_BUSY_TIMEOUT_MS_KEY) or "").strip()
+        if raw_busy.isdigit():
+            db = getattr(request.app.state, "db", None)
+            if db is not None:
+                try:
+                    await db.apply_busy_timeout(int(raw_busy))
+                except Exception:  # noqa: BLE001 - 同上
+                    logger.exception("锁等待热切换失败（配置已保存，重启后生效）")
+
     cred_migrated = 0
     if flag_in_patch:
         cred_migrated = await _apply_cred_encryption_flag(repo, encryption, flag_value)
@@ -320,6 +344,22 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
         elif key == TIMEZONE_KEY and not is_valid_timezone(value):
             raise ValidationError(
                 f"{key} 须为合法 IANA 时区名（如 Asia/Shanghai、UTC）",
+                data={"key": key, "value": raw},
+            )
+        # 系统域（compose → UI 迁移第一批）：日志级别白名单 + 锁等待整数区间。
+        # 坏值同样「保存成功但不生效」（apply_log_level 回落 INFO、PRAGMA 拒绝执行），
+        # 故与上述键同一机制位前置 422。
+        elif key == LOG_LEVEL_KEY and value.upper() not in LOG_LEVELS:
+            raise ValidationError(
+                f"{key} 仅支持 " + "/".join(LOG_LEVELS),
+                data={"key": key, "value": raw, "allowed": list(LOG_LEVELS)},
+            )
+        elif key == DB_BUSY_TIMEOUT_MS_KEY and (
+            not value.isdigit()
+            or not (DB_BUSY_TIMEOUT_MS_MIN <= int(value) <= DB_BUSY_TIMEOUT_MS_MAX)
+        ):
+            raise ValidationError(
+                f"{key} 须为 {DB_BUSY_TIMEOUT_MS_MIN}~{DB_BUSY_TIMEOUT_MS_MAX} 的整数（毫秒）",
                 data={"key": key, "value": raw},
             )
         # E39：NTP 主备服务器——坏地址落库只在探测时才炸（「保存成功但同步失败」），

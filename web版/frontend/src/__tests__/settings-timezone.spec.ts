@@ -301,3 +301,66 @@ describe('系统设置页：时区卡片', () => {
     w.unmount()
   })
 })
+
+describe('系统设置页：系统域（log.level / db.busy_timeout_ms）', () => {
+  it('渲染当前日志级别与锁等待默认值', async () => {
+    mocks.configItems = [
+      { key: 'log.level', value: 'INFO', has_value: true, source: 'db' },
+      { key: 'db.busy_timeout_ms', value: '5000', has_value: true, source: 'db' },
+    ]
+    const w = mountPage()
+    await flushPromises()
+    await showSection(w, 'settings.system.title')
+
+    const card = w.find('#sec-system')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('日志级别')
+    expect(card.text()).toContain('INFO')
+    expect(card.text()).toContain('SQLite 锁等待')
+    w.unmount()
+  })
+
+  it('改日志级别并保存，patch 含两个键', async () => {
+    mocks.configItems = [
+      { key: 'log.level', value: 'INFO', has_value: true, source: 'db' },
+      { key: 'db.busy_timeout_ms', value: '5000', has_value: true, source: 'db' },
+    ]
+    const w = mountPage()
+    await flushPromises()
+    await showSection(w, 'settings.system.title')
+    const card = w.find('#sec-system')
+
+    const levelSelect = w
+      .findAllComponents(NSelect)
+      .find((s) => (s.props('options') as Array<{ value: string }>).some((o) => o.value === 'DEBUG'))
+    expect(levelSelect).toBeTruthy()
+    await levelSelect!.vm.$emit('update:value', 'DEBUG')
+    await flushPromises()
+
+    const saveButtons = card.findAll('button').filter((b) => b.text().trim() === '保存')
+    await saveButtons[saveButtons.length - 1]?.trigger('click')
+    await flushPromises()
+
+    expect(mocks.savedPatches).toHaveLength(1)
+    expect(mocks.savedPatches[0]).toEqual({ 'log.level': 'DEBUG', 'db.busy_timeout_ms': '5000' })
+    w.unmount()
+  })
+
+  it('键由 env 覆盖时输入禁用并提示改 compose', async () => {
+    mocks.configItems = [
+      { key: 'log.level', value: 'WARNING', has_value: true, source: 'env' },
+      { key: 'db.busy_timeout_ms', value: '3000', has_value: true, source: 'env' },
+    ]
+    const w = mountPage()
+    await flushPromises()
+    await showSection(w, 'settings.system.title')
+
+    const card = w.find('#sec-system')
+    expect(card.text()).toContain('由 compose 环境变量覆盖')
+    // P15 图标化后按钮 text() 带空白（#icon 插槽的换行节点）→ trim 后再比对
+    const saveButtons = card.findAll('button').filter((b) => b.text().trim() === '保存')
+    expect(saveButtons.length).toBeGreaterThan(0)
+    expect(saveButtons[saveButtons.length - 1]?.attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
+})

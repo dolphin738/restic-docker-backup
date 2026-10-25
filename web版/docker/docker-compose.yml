@@ -32,6 +32,8 @@ services:
       # 日志级别：DEBUG / INFO（默认）/ WARNING / ERROR。
       # 容器日志行首固定带时间戳（取本 TZ，形如 2026-10-12 04:30:27+0800），
       # 访问日志（uvicorn.access）每请求一行，含 30s 一次的健康探测。
+      # 已迁入「系统设置-系统-日志级别」：删除本行即可在界面调（保存即时生效）；
+      # 保留本行 = 以 compose 为准（界面该字段置灰，见 E07 env 覆盖机制）。
       LOG_LEVEL: "INFO"
       # rclone 万能后端（A1）：restic 对 rclone: 仓库按需拉起 rclone 子进程，
       # 该变量经容器环境 → restic → rclone 子进程原样传递，指向下方挂载的 conf。
@@ -40,6 +42,8 @@ services:
       RCLONE_CONFIG: /etc/rclone/rclone.conf
       # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
       # SQLITE_BUSY 可上调；过大则失败延迟变长。
+      # 已迁入「系统设置-系统-SQLite 锁等待」：删除本行即可在界面调
+      # （对新建连接生效）；保留本行 = 以 compose 为准（界面置灰）。
       DB_BUSY_TIMEOUT_MS: "5000"
       # 非 root 档部署时由 entrypoint 用于自动 chown（root 档下默认 0:0，无需设置）
       # PUID: "1000"

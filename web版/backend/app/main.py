@@ -37,9 +37,11 @@ from app.auth.session import SessionService
 from app.constants import (
     CRED_ENCRYPTION_KEY,
     CSRF_ORIGIN,
+    DB_BUSY_TIMEOUT_MS_KEY,
     ERROR_STATUS,
     FORBIDDEN,
     INTERNAL,
+    LOG_LEVEL_KEY,
     NOT_FOUND,
     UNAUTHORIZED,
     VALIDATION_ERROR,
@@ -73,6 +75,7 @@ from app.services.compare import CompareService
 from app.services.crypto import CredentialCrypto, EncryptionState
 from app.services.env_sync import sync_env_overrides, sync_env_repo_overrides
 from app.services.job_runner import JobRunner
+from app.services.log_control import apply_log_level
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
@@ -324,6 +327,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sync_env_overrides(config_repo, settings, audit)
     # R-023：RESTIC_REPOSITORY / RESTIC_HOST → repos.default（env 只覆盖默认仓库）
     await sync_env_repo_overrides(repos_repo)
+    # 系统域（compose → UI 迁移第一批）：import 期日志只能按 env 兜底配置，DB 此时
+    # 才连上——按 config 值校正一次（env 覆盖优先的语义由 config 键本身承载：
+    # env 设了 → sync_env_overrides 已写入且 source='env'，此处读到的就是 env 值）。
+    # 日志行首时间戳刻意不跟随 config.timezone（容器机器时钟，见方案 §4.1 边界）。
+    effective_log_level = apply_log_level(await config_repo.get_value(LOG_LEVEL_KEY))
+    if effective_log_level != _log_level_name().upper():
+        logger.info("日志级别按 config 生效：%s", effective_log_level)
+    raw_busy = (await config_repo.get_value(DB_BUSY_TIMEOUT_MS_KEY) or "").strip()
+    if raw_busy.isdigit():
+        await db.apply_busy_timeout(int(raw_busy))
+        logger.info("SQLite 锁等待按 config 生效：%sms", raw_busy)
     if encryption.enabled:
         migrated = await config_repo.migrate_encryption(encrypt=True)
         if migrated:

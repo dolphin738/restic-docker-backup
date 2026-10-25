@@ -64,6 +64,21 @@ class Database:
             logger.warning("settings.db_busy_timeout_ms 读取失败，回退默认值 %sms", DB_BUSY_TIMEOUT_MS)
             return DB_BUSY_TIMEOUT_MS
 
+    async def apply_busy_timeout(self, value: int) -> None:
+        """运行期刷新锁等待超时（E07 ``db.busy_timeout_ms`` 热生效）。
+
+        PRAGMA busy_timeout 是**连接级**设置，故已连接时对当前连接重放一遍；
+        新连接（重连后）取 property 的同一份值，前后一致。
+
+        Args:
+            value: 锁等待毫秒数（调用方已做值域校验，此处只信 int）。
+        """
+        self._busy_timeout_ms = value
+        if self._conn is not None:
+            # value 为 int，f-string 无注入面；与 connect() 的 PRAGMA 同一写法
+            await self._conn.execute(f"PRAGMA busy_timeout={value}")
+            await self._conn.commit()
+
     # ---------------------------------------------------------------- 生命周期
 
     async def connect(self) -> None:

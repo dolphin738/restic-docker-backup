@@ -395,6 +395,62 @@ async function onSaveTimezone(): Promise<void> {
   }
 }
 
+// ---- 系统域（compose → UI 迁移第一批：log.level / db.busy_timeout_ms）----
+
+const LOG_LEVEL_OPTIONS = [
+  { label: 'DEBUG', value: 'DEBUG' },
+  { label: 'INFO', value: 'INFO' },
+  { label: 'WARNING', value: 'WARNING' },
+  { label: 'ERROR', value: 'ERROR' },
+]
+
+const logLevelItem = computed(() => configItem('log.level'))
+const busyTimeoutItem = computed(() => configItem('db.busy_timeout_ms'))
+/** env 覆盖锁定（任一键被 compose 锁定即整区禁用，避免半锁半可改的困惑）。 */
+const systemEnvLocked = computed(
+  () => logLevelItem.value?.source === 'env' || busyTimeoutItem.value?.source === 'env',
+)
+
+const systemLogLevel = ref('INFO')
+const systemBusyTimeout = ref<number | null>(5000)
+const savingSystem = ref(false)
+
+watch(configQuery.data, (data) => {
+  if (!data) {
+    return
+  }
+  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
+  systemLogLevel.value = (item('log.level')?.value ?? 'INFO').toUpperCase()
+  const rawBusy = item('db.busy_timeout_ms')?.value
+  const parsed = Number(rawBusy)
+  systemBusyTimeout.value = rawBusy && Number.isFinite(parsed) ? parsed : 5000
+})
+
+const systemDirty = computed(
+  () =>
+    systemLogLevel.value !== (logLevelItem.value?.value ?? 'INFO').toUpperCase() ||
+    String(systemBusyTimeout.value ?? '') !== (busyTimeoutItem.value?.value ?? '5000'),
+)
+
+async function onSaveSystem(): Promise<void> {
+  if (savingSystem.value || systemEnvLocked.value) {
+    return
+  }
+  savingSystem.value = true
+  try {
+    await saveDumpBehaviorConfig({
+      'log.level': systemLogLevel.value,
+      'db.busy_timeout_ms': String(systemBusyTimeout.value ?? 5000),
+    })
+    message.success(t('settings.system.saved'))
+    await configQuery.refetch()
+  } catch {
+    // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
+  } finally {
+    savingSystem.value = false
+  }
+}
+
 // ---- NTP 对时服务器（E39：主备两个地址；皆空回落内置默认链，见生效链展示） ----
 
 const ntpPrimaryItem = computed(() => configItem('time_sync.ntp_primary'))
@@ -730,6 +786,7 @@ const SECTIONS = [
   { id: 'credential', title: 'settings.credential.title' },
   { id: 'metrics', title: 'settings.metrics.title' },
   { id: 'timezone', title: 'settings.timezone.title' },
+  { id: 'system', title: 'settings.system.title' },
   { id: 'password', title: 'settings.password.title' },
   { id: 'transfer', title: 'settings.transfer.title' },
 ] as const
@@ -1129,6 +1186,56 @@ function onSectionChange(id: string): void {
     </n-card>
 
     <!-- 管理员改密（E28） -->
+    <!-- 系统域（compose → UI 迁移第一批）：日志级别 + SQLite 锁等待 -->
+    <n-card v-else-if="activeSection === 'system'" id="sec-system" class="settings__panel" :title="t('settings.system.title')" size="small">
+      <n-space vertical :size="12">
+        <n-text depth="3">{{ t('settings.system.desc') }}</n-text>
+        <n-alert v-if="systemEnvLocked" type="warning" :show-icon="false">
+          {{ t('settings.system.envLocked') }}
+        </n-alert>
+        <n-form label-placement="top" class="settings__form">
+          <n-space vertical :size="12">
+            <n-form-item :label="t('settings.system.logLevel')">
+              <n-select
+                v-model:value="systemLogLevel"
+                :options="LOG_LEVEL_OPTIONS"
+                :disabled="systemEnvLocked"
+                size="small"
+                class="settings__select"
+              />
+            </n-form-item>
+            <n-text depth="3" class="settings__hint">{{ t('settings.system.logLevelHint') }}</n-text>
+            <n-form-item :label="t('settings.system.busyTimeout')">
+              <n-input-number
+                v-model:value="systemBusyTimeout"
+                :min="100"
+                :max="600000"
+                :step="1000"
+                :show-button="false"
+                :disabled="systemEnvLocked"
+                size="small"
+                class="settings__number"
+              />
+            </n-form-item>
+            <n-text depth="3" class="settings__hint">{{ t('settings.system.busyTimeoutHint') }}</n-text>
+          </n-space>
+          <n-space justify="end">
+            <n-button
+              type="primary"
+              :loading="savingSystem"
+              :disabled="!systemDirty || systemEnvLocked"
+              @click="onSaveSystem"
+            >
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
+              {{ t('common.save') }}
+            </n-button>
+          </n-space>
+        </n-form>
+      </n-space>
+    </n-card>
+
     <n-card v-else-if="activeSection === 'password'" id="sec-password" class="settings__panel" :title="t('settings.password.title')" size="small">
       <n-form label-placement="top" class="settings__password-form">
         <n-form-item :label="t('settings.password.oldPassword')">
