@@ -8,6 +8,7 @@ import { fetchMe, login } from '@/api/auth'
 import { getHealth } from '@/api/health'
 import { hasCode, isAppError } from '@/api/http'
 import { IconLock } from '@/components/icons/icons'
+import logoSrc from '@/assets/logo.svg'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -89,9 +90,15 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div class="login">
-    <n-card class="login__card" :title="t('login.title')" size="large">
+    <n-card class="login__card" size="large">
+      <template #header>
+        <div class="login__brand">
+          <img class="login__logo" :src="logoSrc" :alt="t('common.appName')" />
+          <span>{{ t('common.appName') }}</span>
+        </div>
+      </template>
       <template #header-extra>
-        <n-text depth="3">{{ t('common.appName') }}</n-text>
+        <n-text depth="3">{{ t('login.title') }}</n-text>
       </template>
 
       <n-space vertical :size="12">
@@ -155,5 +162,17 @@ async function onSubmit(): Promise<void> {
 .login__card {
   width: 100%;
   max-width: 420px;
+}
+
+.login__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.login__logo {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
 }
 </style>

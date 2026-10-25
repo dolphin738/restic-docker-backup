@@ -45,7 +45,7 @@ import {
   IconUser,
 } from '@/components/icons/icons'
 import StatusTag from '@/components/StatusTag.vue'
-import logoSrc from '@/assets/restic-logo.png'
+import logoSrc from '@/assets/logo.svg'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
 
 const { t } = useI18n()

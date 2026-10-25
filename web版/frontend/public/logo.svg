@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img">
+  <title>Restic Web logo</title>
+  <desc>Shield wrapping an incremental backup loop around stacked snapshot layers</desc>
+  <rect x="8" y="8" width="224" height="224" rx="56" fill="#0F1B2D"/>
+  <path d="M120 34 L188 60 V122 C188 166 160 196 120 214 C80 196 52 166 52 122 V60 Z" fill="none" stroke="#22D3EE" stroke-width="11" stroke-linejoin="round"/>
+  <path d="M166.98 133.1 A50 50 0 1 1 137.1 69.02" fill="none" stroke="#22D3EE" stroke-width="11" stroke-linecap="round"/>
+  <path d="M150.3 73.8 L134.9 75.1 L139.3 62.9 Z" fill="#22D3EE"/>
+  <path d="M120 121 L148 134 L120 147 L92 134 Z" fill="#155E75"/>
+  <path d="M92 134 L120 147 L120 153 L92 140 Z" fill="#0C4A5E"/>
+  <path d="M148 134 L120 147 L120 153 L148 140 Z" fill="#083F52"/>
+  <path d="M120 101 L148 114 L120 127 L92 114 Z" fill="#0891B2"/>
+  <path d="M92 114 L120 127 L120 133 L92 120 Z" fill="#0E7490"/>
+  <path d="M148 114 L120 127 L120 133 L148 120 Z" fill="#155E75"/>
+  <path d="M120 81 L148 94 L120 107 L92 94 Z" fill="#22D3EE"/>
+  <path d="M92 94 L120 107 L120 113 L92 100 Z" fill="#0EA5E9"/>
+  <path d="M148 94 L120 107 L120 113 L148 100 Z" fill="#0E7490"/>
+</svg>

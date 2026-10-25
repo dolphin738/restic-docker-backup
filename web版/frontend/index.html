@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- 缺陷 D：显式声明 favicon，避免浏览器对 /favicon.ico 的隐式请求 404 -->
+    <!-- 缺陷 D：显式声明 favicon，避免浏览器对 /favicon.ico 的隐式请求 404。
+         SVG 为首选（新标志，任意尺寸无损），ico 仅作旧浏览器回退。 -->
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="icon" href="/favicon.ico" sizes="64x64" />
     <title>restic 备份控制台</title>
     <style>
