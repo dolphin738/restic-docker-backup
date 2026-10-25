@@ -54,7 +54,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 // G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
 import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
-import { formatDateTime } from '@/utils/datetime'
+import { formatDateTime, setDisplayTimezone } from '@/utils/datetime'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -383,6 +383,9 @@ async function onSaveTimezone(): Promise<void> {
   try {
     await saveDumpBehaviorConfig({ timezone: timezoneValue.value })
     message.success(t('settings.timezone.saved'))
+    // E39 时区统一：保存成功即刷新全站展示时区（jobs/快照/报表等即刻按新时区渲染，
+    // 无需刷新页面）；setDisplayTimezone 自带坏名回落浏览器本地。
+    setDisplayTimezone(timezoneValue.value)
     await configQuery.refetch()
     await timeQuery.refetch()
   } catch {

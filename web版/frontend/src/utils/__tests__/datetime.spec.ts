@@ -6,12 +6,13 @@
  * 3. 空 / 非法的回落路径。
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   DATETIME_FALLBACK,
   formatDateTime,
   formatDateTimeOr,
   parseDateValue,
+  setDisplayTimezone,
 } from '@/utils/datetime'
 
 describe('parseDateValue', () => {
@@ -87,5 +88,66 @@ describe('formatDateTimeOr', () => {
     expect(formatDateTimeOr(null, '无')).toBe('无')
     expect(formatDateTimeOr('', '仅手动')).toBe('仅手动')
     expect(formatDateTimeOr('nope', 'never run')).toBe('never run')
+  })
+})
+
+describe('E39 展示时区（config.timezone 单一事实源）', () => {
+  // 模块级状态会被后续用例继承，故每个用例后复位（afterEach 兜底 + 显式调用双保险）
+  afterEach(() => {
+    setDisplayTimezone(null)
+  })
+
+  it('注入时区后按该 IANA 时区渲染（UTC 串 → +9 的 Seoul 时间）', () => {
+    setDisplayTimezone('Asia/Seoul')
+    // 2026-10-25T07:40:02Z + 9h = 16:40:02（UTC 串不跨日）
+    expect(formatDateTime('2026-10-25T07:40:02Z')).toBe('2026-10-25 16:40:02')
+  })
+
+  it('跨日场景：UTC 23:30 → Seoul 次日 08:30', () => {
+    setDisplayTimezone('Asia/Seoul')
+    expect(formatDateTime('2026-10-25T23:30:00Z')).toBe('2026-10-26 08:30:00')
+  })
+
+  it('带偏移的输入串仍按展示时区换算（+08:00 串 → Seoul）', () => {
+    setDisplayTimezone('Asia/Seoul')
+    // 2026-10-13T23:09:20+08:00 = 15:09:20Z → Seoul 次日 00:09:20
+    expect(formatDateTime('2026-10-13T23:09:20+08:00')).toBe('2026-10-14 00:09:20')
+  })
+
+  it('UTC 时区渲染（+0，回归：不引入偏移）', () => {
+    setDisplayTimezone('UTC')
+    expect(formatDateTime('2026-10-25T07:40:02Z')).toBe('2026-10-25 07:40:02')
+  })
+
+  it('复位为 null 后回落浏览器本地时区（与 new Date 本地 getter 一致）', () => {
+    setDisplayTimezone('Asia/Seoul')
+    setDisplayTimezone(null)
+    const value = '2026-10-25T07:40:02Z'
+    const local = new Date(value)
+    const expected = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')} ${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}:${String(local.getSeconds()).padStart(2, '0')}`
+    expect(formatDateTime(value)).toBe(expected)
+  })
+
+  it('坏时区名静默回落浏览器本地（与后端 resolve_timezone fail-safe 同向）', () => {
+    setDisplayTimezone('Asia/Seoul')
+    setDisplayTimezone('Not/A_Zone')
+    const value = '2026-10-25T07:40:02Z'
+    const local = new Date(value)
+    const expected = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')} ${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}:${String(local.getSeconds()).padStart(2, '0')}`
+    expect(formatDateTime(value)).toBe(expected)
+  })
+
+  it('空串/空白同样复位为浏览器本地', () => {
+    setDisplayTimezone('Asia/Seoul')
+    setDisplayTimezone('   ')
+    const value = '2026-10-25T07:40:02Z'
+    const local = new Date(value)
+    const expected = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')} ${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}:${String(local.getSeconds()).padStart(2, '0')}`
+    expect(formatDateTime(value)).toBe(expected)
+  })
+
+  it('formatDateTimeOr 与 formatDateTime 同步跟随展示时区', () => {
+    setDisplayTimezone('Asia/Seoul')
+    expect(formatDateTimeOr('2026-10-25T07:40:02Z', '无')).toBe('2026-10-25 16:40:02')
   })
 })

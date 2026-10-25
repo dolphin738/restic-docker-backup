@@ -352,3 +352,37 @@ def test_recover_assembled_without_json():
     argv = cmd.build("recover", args=WhitelistArgs(json_output=False))
     assert "--json" not in argv
     assert "recover" in argv
+
+
+# ---------------------------------------------------------------- E39 时区统一（子进程 TZ 收口）
+
+def test_build_env_injects_settings_tz_as_initial():
+    """构造期 TZ 回落链第一跳：restic.tz 初值 = settings.tz（compose 级回退）。"""
+    settings = Settings(data_dir="/tmp/restic-whitelist", tz="Asia/Shanghai")
+    cmd = ResticCmd(settings, PathMapper(settings))
+    env = cmd.build_env(repo_url="/repo")
+    assert env["TZ"] == "Asia/Shanghai"
+
+
+def test_set_timezone_refreshes_subprocess_tz():
+    """UI 改时区（config.timezone）后，restic 子进程 TZ 必须即时切换。
+
+    旧实现直读 settings.tz（compose 级，运行期不可变）→ 用户改「系统设置-时区」
+    对 restic 文本输出（snapshots 表格 / key list 的 created 等）不生效。
+    """
+    settings = Settings(data_dir="/tmp/restic-whitelist", tz="UTC")
+    cmd = ResticCmd(settings, PathMapper(settings))
+    cmd.set_timezone("Asia/Seoul")
+    assert cmd.build_env(repo_url="/repo")["TZ"] == "Asia/Seoul"
+
+
+def test_set_timezone_empty_or_none_falls_back_to_settings():
+    """空值/None = 清除配置回落 settings.tz（与调度/系统时间接口同回退链）。"""
+    settings = Settings(data_dir="/tmp/restic-whitelist", tz="Asia/Shanghai")
+    cmd = ResticCmd(settings, PathMapper(settings))
+    cmd.set_timezone("Asia/Seoul")
+    cmd.set_timezone("")
+    assert cmd.build_env(repo_url="/repo")["TZ"] == "Asia/Shanghai"
+    cmd.set_timezone("Asia/Seoul")
+    cmd.set_timezone(None)
+    assert cmd.build_env(repo_url="/repo")["TZ"] == "Asia/Shanghai"

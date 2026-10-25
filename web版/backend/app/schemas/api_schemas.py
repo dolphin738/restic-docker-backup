@@ -897,8 +897,9 @@ class RepoKeyOut(_Base):
     user: str
     host: str
     created: str
-    # restic 按子进程 TZ 渲染的无时区字符串 → 带上该 TZ 标注（settings.tz，默认 UTC），
-    # 否则用户看到的建库时间会与自己本地时间差出时区偏移且无从判断（不做换算，C8）
+    # restic 按子进程 TZ 渲染的无时区字符串 → 带上该 TZ 标注（restic.tz = config.timezone
+    # → settings.tz 回退，默认 UTC），否则用户看到的建库时间会与自己本地时间差出时区偏移
+    # 且无从判断（不做换算，C8）
     created_tz: str = "UTC"
     current: bool = False
     neutral: bool = False  # user/host 均为中性值（svc-backup@repo）

@@ -64,13 +64,14 @@ def classify_keys(
     避免把不必要的仓库指纹经 API 外泄（见《云端仓库安全基线》§5.3）。
 
     ``created`` 是 restic 按子进程 ``TZ`` 渲染的**无时区字符串**（本项目
-    ``build_env`` 注入 ``settings.tz``，默认 UTC）。原样透出会与用户本地时间差出
+    ``build_env`` 注入 ``restic.tz`` = config.timezone → settings.tz 回退，
+    默认 UTC）。原样透出会与用户本地时间差出
     时区偏移且无从判断，故把该 TZ 一并带上（``created_tz``），由前端原样展示——
     不做时间换算，避免在展示层引入第二套时间语义（红线 C8）。
 
     Args:
         keys: :func:`parse_key_list` 的产物（非法项已被过滤）。
-        created_tz: restic 子进程时区（即 ``settings.tz``）；仅作标注，不参与换算。
+        created_tz: restic 子进程时区（即 ``restic.tz``）；仅作标注，不参与换算。
 
     Returns:
         ``(overall, items)``。``items`` 按输入顺序；缺 ``id`` 的项被丢弃（无法定位也

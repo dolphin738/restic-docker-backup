@@ -997,10 +997,11 @@ async def repo_keys(
             probe_error=failure_reason(probe.exit_code, probe.lines, KEY_OPERATION_TIMEOUT_SECONDS),
         )
 
-    # restic 的 created 是按子进程 TZ 渲染的无时区字符串（build_env 注入 settings.tz），
-    # 原样透出会与用户本地时间差出偏移且无从判断 → 把该 TZ 一并标注（不换算，C8）
+    # restic 的 created 是按子进程 TZ 渲染的无时区字符串（build_env 注入 restic.tz
+    # = config.timezone → settings.tz 回退），原样透出会与用户本地时间差出偏移且
+    # 无从判断 → 把该 TZ 一并标注（不换算，C8）
     overall, items = classify_keys(
-        parse_key_list(probe.lines), created_tz=request.app.state.settings.tz
+        parse_key_list(probe.lines), created_tz=request.app.state.restic.tz
     )
     return RepoKeysOut(
         repo_id=repo_id,

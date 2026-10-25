@@ -181,6 +181,12 @@ async def put_config(
                 await scheduler.reload()
             except Exception:  # noqa: BLE001 - 重载失败不吞掉已成功的配置写入
                 logger.exception("时区变更后调度器重载失败（配置已保存，重启或下次任务写入后生效）")
+        # E39 统一口径：restic 子进程 TZ 同步切到新时区（config.timezone 单一事实源），
+        # 否则 restic 文本输出（snapshots 表格 / key list 的 created 等）仍按旧 TZ 渲染。
+        # 空值 = 清除配置回落 settings.tz（与调度/系统时间接口同回退链）。
+        restic = getattr(request.app.state, "restic", None)
+        if restic is not None:
+            restic.set_timezone(patch.get(TIMEZONE_KEY))
 
     cred_migrated = 0
     if flag_in_patch:

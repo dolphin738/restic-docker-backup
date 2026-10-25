@@ -59,6 +59,7 @@ from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser, SnapshotRecord
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
+from app.services.scheduler import TIMEZONE_KEY
 from app.settings import Settings
 from app.utils.cursor import decode_cursor, encode_cursor
 from app.utils.time import format_local, now_utc
@@ -122,7 +123,11 @@ async def restore_snapshot(
 
     include = _normalize_include_paths(payload.paths, mapper, settings)
 
-    stamp = format_local(now_utc(), settings.tz, "%Y%m%d-%H%M")
+    # E39 统一口径：时间戳目录名按 config.timezone 渲染（单一事实源；缺失回落 settings.tz），
+    # 与 restic 子进程 TZ / 调度 / 系统时间接口同一条回退链。
+    config_repo: ConfigRepo = request.app.state.config_repo
+    tz_name = ((await config_repo.get_value(TIMEZONE_KEY)) or "").strip() or settings.tz
+    stamp = format_local(now_utc(), tz_name, "%Y%m%d-%H%M")
     stem = await _resolve_stem(request, payload.snapshot_id, repo_id)
     restore_target = posixpath.join(target_root.rstrip("/"), f"{stem}-{stamp}")
 

@@ -21,6 +21,7 @@ import { h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SettingsPage from '@/pages/settings/index.vue'
+import { formatDateTime, setDisplayTimezone } from '@/utils/datetime'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
 
@@ -157,6 +158,35 @@ describe('系统设置页：时区卡片', () => {
 
     expect(mocks.savedPatches).toHaveLength(1)
     expect(mocks.savedPatches[0]).toEqual({ timezone: 'Asia/Tokyo' })
+    w.unmount()
+  })
+
+  it('E39 时区统一：保存成功后全站展示时区即时切换（无需刷新页面）', async () => {
+    const w = mountPage()
+    await flushPromises()
+    await showSection(w, 'settings.timezone.title')
+    const card = w.find('#sec-timezone')
+
+    // 前置：Asia/Seoul 注入后 UTC 串渲染为 +9 时间（证明注入生效）
+    setDisplayTimezone('Asia/Seoul')
+    expect(formatDateTime('2026-10-25T07:40:02Z')).toBe('2026-10-25 16:40:02')
+
+    const tzSelect = w
+      .findAllComponents(NSelect)
+      .find((s) => (s.props('options') as Array<{ value: string }>).some((o) => o.value === 'Asia/Tokyo'))
+    await tzSelect!.vm.$emit('update:value', 'Asia/Tokyo')
+    await flushPromises()
+
+    // 卡片内有两个「保存」（NTP 表单在前、时区表单在后）：时区保存取最后一个
+    const saveButtons = card.findAll('button').filter((b) => b.text() === '保存')
+    await saveButtons[saveButtons.length - 1]?.trigger('click')
+    await flushPromises()
+
+    expect(mocks.savedPatches[0]).toEqual({ timezone: 'Asia/Tokyo' })
+    // 保存成功即把展示时区切成 Tokyo（+9）。Tokyo 与 Seoul 同偏移，故用跨日串断言
+    // 偏移量本身：23:30Z → 次日 08:30；若仍是浏览器本地（测试机 +8）则为 07:30。
+    expect(formatDateTime('2026-10-25T23:30:00Z')).toBe('2026-10-26 08:30:00')
+    setDisplayTimezone(null)
     w.unmount()
   })
 

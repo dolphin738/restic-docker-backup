@@ -2,11 +2,13 @@ import { VueQueryPlugin } from '@tanstack/vue-query'
 import { createPinia } from 'pinia'
 import { createApp, watch } from 'vue'
 import App from './App.vue'
+import { getSystemTime } from './api/system'
 import { setAuthHandlers } from './api/http'
 import { i18n } from './i18n'
 import { router } from './router'
 import { useUiStore } from './stores/ui'
 import { fontFamilyMono } from './theme/tokens'
+import { setDisplayTimezone } from './utils/datetime'
 import './theme/skin.css'
 
 // 等宽字体常量（tokens.ts 单一来源）落成 documentElement 级 CSS 变量：
@@ -59,5 +61,12 @@ setAuthHandlers({
     void router.replace({ name: 'bootstrap' })
   },
 })
+
+// E39 时区统一：拉一次生效时区（config.timezone → settings.tz → UTC）注入展示层，
+// 使 jobs/快照/报表等全站时间按「系统设置-时区」渲染，而非跟随浏览器机器时区。
+// 失败（未登录/网络异常）静默回落浏览器本地——时区是展示增强，不阻塞启动。
+void getSystemTime()
+  .then((res) => setDisplayTimezone(res.timezone))
+  .catch(() => undefined)
 
 app.mount('#app')

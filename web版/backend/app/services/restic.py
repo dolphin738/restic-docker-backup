@@ -35,6 +35,7 @@ from app.errors import ResticFailedError, ValidationError
 from app.services.exclude_spec import validate_size
 from app.services.path_mapper import PathMapper, source_allowed_prefixes
 from app.settings import Settings, get_settings
+from app.utils.time import tz_env
 
 # verb 白名单（§7.1 九类 + 批次 3 为 E30 容量探测新增只读 verb ``stats``）
 # B1 自愈新增 ``repair``（restic repair index / repair packs，重建索引/卷一致性）；
@@ -264,6 +265,19 @@ class ResticCmd:
         """
         self._settings = settings or get_settings()
         self._path_mapper = path_mapper or PathMapper(self._settings)
+        # restic 子进程 TZ（E39 统一口径：config.timezone 为单一事实源，
+        # settings.tz 仅作启动回退）——运行期经 set_timezone 刷新，
+        # 否则用户改 UI 时区后子进程仍按旧 TZ 渲染文本输出。
+        self.tz: str = self._settings.tz
+
+    def set_timezone(self, tz_name: str | None) -> None:
+        """刷新子进程 TZ（UI 时区变更即时生效；空值回落 settings.tz）。
+
+        与 scheduler.reload() 同模式：put_config 命中 ``timezone`` 键时调用，
+        失败不吞配置写入（下次重启仍按新时区重建）。
+        """
+        name = (tz_name or "").strip()
+        self.tz = name or self._settings.tz
 
     def build(
         self,
@@ -320,8 +334,9 @@ class ResticCmd:
         # E5 per-repo 布局（唯一实现点 Settings.passfile_path）；RESTIC_PASSWORD_FILE 覆盖优先
         env["RESTIC_PASSWORD_FILE"] = str(self._settings.passfile_path(repo_id))
         env["RESTIC_CACHE_DIR"] = self._settings.cache_dir
-        if self._settings.tz:
-            env["TZ"] = self._settings.tz
+        # E39：TZ 取 self.tz（config.timezone → settings.tz 回退，可运行期刷新），
+        # 不再直读 settings.tz——否则 UI 改时区对 restic 文本输出不生效。
+        env.update(tz_env(self.tz))
         for key, value in (env_extras or {}).items():
             if self._env_allowed(key):
                 env[key] = str(value)
