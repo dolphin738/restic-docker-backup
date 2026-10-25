@@ -271,7 +271,9 @@ async def build_backup_success_report(job_repo: JobRepo, *, days: int, timezone:
         failed = bucket.failed + (1 if status == "failed" else 0)
         buckets[day] = ReportBucket(date=day, total=total, success=success, failed=failed)
 
-    ordered = [buckets[key] for key in sorted(buckets)]
+    # 降序（最新日期在最上）：报表是「最近发生了什么」的视角，用户第一眼看的是今天/昨天；
+    # 升序会把最早一天推到首屏，与「默认看最新」的直觉相反。
+    ordered = [buckets[key] for key in sorted(buckets, reverse=True)]
     total = sum(bucket.total for bucket in ordered)
     success = sum(bucket.success for bucket in ordered)
     failed = sum(bucket.failed for bucket in ordered)

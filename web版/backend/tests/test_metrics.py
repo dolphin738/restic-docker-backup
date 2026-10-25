@@ -255,7 +255,11 @@ async def test_e38_report_session_and_validation(app_client) -> None:
     body = resp.json()
     assert body["days"] == 7 and len(body["buckets"]) == 7
     assert body["total"] == 0 and body["ratio"] is None
-    assert body["buckets"][-1]["date"] == body["to_date"]
+    # 降序（最新日期在最上）：首桶 = to_date（今天），末桶 = from_date
+    assert body["buckets"][0]["date"] == body["to_date"]
+    assert body["buckets"][-1]["date"] == body["from_date"]
+    dates = [b["date"] for b in body["buckets"]]
+    assert dates == sorted(dates, reverse=True)
 
     for bad in (0, 91, -1):
         resp = await client.get(f"/api/reports/backup-success?days={bad}")
@@ -284,5 +288,6 @@ async def test_e38_report_with_data(app_client) -> None:
     body = resp.json()
     assert body["total"] == 2 and body["success"] == 1 and body["failed"] == 1
     assert body["ratio"] == pytest.approx(0.5)
-    today_bucket = body["buckets"][-1]
+    # 降序后「今天」是首桶（最新日期在最上）
+    today_bucket = body["buckets"][0]
     assert today_bucket["total"] == 2
