@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.34（2026-10-25 三十四修订：**第八轮恢复向导第二步按 Duplicati options 复刻（P16）**——owner 五裁决 D1/D3 取消、D2 树双模式、D4=A、D5=A，新增 §4.9）。本文件全部历史修订（v1.0–v1.34）合并记载于文末「修订记录」节，版本头不再重复内联。
+> 版本：v1.35（2026-10-25 三十五修订：**P17 host 形态恢复白名单派生 + 原位换算修复**——owner 裁决 Q1=A（三条白名单统一按部署形态派生）且 Q2 同批，修掉 host 模式下「原位恢复目标不在该快照的备份路径范围内」实拍缺陷，新增 §4.9.8）。本文件全部历史修订（v1.0–v1.35）合并记载于文末「修订记录」节，版本头不再重复内联。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -410,6 +410,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | **P14** | ✅ **已落地**（v1.26）：**全站回归**——零代码改动纯验证批。① **四象限截图**：8 页 × 亮/暗 × 中/英 = 32 组合零 pageerror，**四象限全站零未翻译裸键**（内置扫描器：`段.键` 形态 ≥2 段视为缺键）；② **桌面零漂移**：HEAD 连跑两次 8/8 页**逐像素一致**（bbox=None，截图管线确定性证明）；③ **移动端 4 视口**（1440/960/768/390）× 8 页 = 32 组合**零横向溢出**，390 向导步骤条 `scrollWidth 503 > clientWidth 308`（5 步全可达，与 §4.3 记录同值）；④ **恢复模块响应式**：`/restore` 4 视口 ok + flow select-files 768/390 零溢出零报错；⑤ **E2E 冒烟**：A7 加载态探针 + P13 向导五步/ConfirmGate 三门探针复跑 PASS                                                  | P13         | 全绿；移动端 4 项断言（参照 §4.3 口径）                                                                                                                            | 沿用 §4.3 教训（`overflow-x:auto` 折叠 margin 致桌面 +8px 漂移）——本批以「连跑两次逐像素一致」作零漂移实证；三步门终跑被 owner 取消（P13 已全绿且本批零代码改动，可随时补跑） |
 | **P15** | ✅ **已落地**（v1.27）：**全站图标统一**（owner 2026-10-23 四项裁决：①重绘 ②合并 ③全上 ④留库）——① **三文件合并**：HomeIcons + MenuIcons + BackendIcons → 单一 `components/icons/icons.ts`（57 图标 + `BACKEND_ICONS` 映射 + `backendIcon`，旧三文件删除、9 处消费方 import 改向，`IconPlusCircle` 跨文件重复去重）；② **24 网格重绘为 P4 标准**：原 MenuIcons 16 + BackendIcons 8 按 20×20 / 描边 1.5 重绘（几何 ×5/6 精确变换、arc 标志位保护；旧 24 网格画法淘汰，渲染描边 1.25px→1.5px）；③ **全站图标化**：9 个零图标页面补 35 处标准图标（jobs/snapshots/audit/reports/notifications/settings/taskWizard/login/bootstrap；规则 = small 及以上按钮用 `#icon` 插槽、tiny 紧凑按钮保持纯文字）；④ **留库不删**：全量导出保留（含 IconPlay/IconSearch/IconFilter 等暂无消费方的留库资产），`icons.spec.ts` 登记表 59 项 + 全量 20 网格护栏；⑤ **预览页**：`frontend/icon-preview-p15.html`（57 图标分组 + P15 徽标 + 尺寸档 + 暗底带，可重生成）。验证：三步门分跑（typecheck / **291 passed** / build）+ 像素 diff（全站 0.09–1.1% 且同尺寸——图标化不改变布局高度）+ 探针复跑（A7 / P13 向导与三门）+ 移动端 8 页 × 4 视口零溢出 | P14        | 三步门 + 像素 diff + 探针 + 预览页目视 | 重绘用坐标精确变换（非手绘），arc 标志位单独保护防弧向损坏；多行内联脚本在 Git Bash 有引号/路径坑，一律写 .cjs |
 | **P16** | ✅ **已落地**（v1.34）：**恢复向导第二步「恢复选项」按 Duplicati options 复刻**（§4.9，owner 2026-10-25 五裁决）——① 外壳去 `n-card` 改「stepper + 居中列」（options 500px / select-files·progress 1000px 双档，≤960 断点 padding 0 32，`box-sizing: border-box` 保证断点内列宽仍 500）；② 三卡片：恢复到哪（raised 单选卡：原位置默认 / 选择位置 + 原位目标下拉内嵌）/ 已存在文件（A7 overwrite 布尔 + **E20 预览并入**，D4=A）/ 页脚两端（返回 / 提交 raised primary）；③ `RestoreOptionCard.vue` 折叠卡（复刻 ToggleCard 动画与 aria）+ `RestoreTargetPicker.vue` 路径选择器（**D2 树双模式**：`runtime.restoreRoot` 单一事实源 + VirtualTree + mount chips + 浏览树/手输二模）；④ 模式切换 effect + 跨 OS 确认 + customTarget 越界前端双校验；⑤ icons.ts 增 `IconArrowRight`（登记 60→61）。**D1 Metadata / D3 高级选项取消**（无后端支撑 / 红线 S2，留档 §4.9.6） | P15        | **全绿**：typecheck 干净 / 全量 **41 文件 403 passed**（新增 3 spec 19 例）/ build ✓ 2m08s；真机探针 `.e2e/p16-options-mobile.cjs` **pass**（1440/960/768/390 四视口零横向溢出、零 pageerror；1440 列宽 500px；两张折叠卡 + 两行单选卡 + 双按钮页脚齐备） | 复用 VirtualTree / runtime store / api/fs / icons.ts / ConfirmGate（S-4 禁止重复造轮子）；**零后端改动**（target 白名单已允许 /restore 任意子路径，服务端恒建时间戳子目录守 G3） |
+| **P17** | ✅ **已落地**（v1.35）：**host 形态恢复白名单派生 + 原位换算修复**（§4.9.8，owner 2026-10-25 裁决 **Q1=A + Q2 同批**）——① 后端三条白名单统一派生：新增 `restore_allowed_prefixes`（docker `/restore` / host `/`）与 `inplace_restore_allowed_prefixes`（与备份源同源），**删除** `RESTORE_ALLOWED_PREFIXES`/`INPLACE_RESTORE_ALLOWED_PREFIXES` 常量；② runtime 增 **`inplace_root`**（换算前缀），`restore_root` 改生效值；③ 前端 `inplaceTargetFull` 按 `inplaceRoot` 换算（host 恒等 + 幂等保护）——修掉 host 模式 `/sources/sources/...` **双前缀 403** 实拍缺陷；④ 选择器 host 模式 **deny 拦截** + 树根随 `restoreRoot` 天然双模式；⑤ deny 命中原样 400（不降级 403）；⑥ 红线 S1/S7 与 AGENTS 同步「三条派生」 | P16        | **全绿**：后端 **1064 passed**（+8 host 用例）+ ruff；前端 typecheck + 全量 **41 文件 / 406 passed** + build ✓ 1m45s；`test_restore_host_mode.py` 含**双前缀反证 403** | 行为变更如实记录：host 模式恢复可写主机任意非保护目录（仍受时间戳子目录 + 快照 paths 交集双约束）；docker 形态**零变化** |
 
 **批次关系说明**
 
@@ -597,9 +598,40 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | # | 风险 | 对策 |
 |---|---|---|
 | V-5 | 外壳去 n-card 牵动步骤 1/3 布局（fill-height / 满高依赖卡片容器） | 满高信号保留（步骤 1 `min-height: 60vh`）；像素 diff 核对三步位移 |
-| V-6 | `customTarget` 引入后越界路径要到后端才 403 | 前端双校验（`restoreRoot` 前缀 + 绝对路径 / 无 `..`），与后端 `RESTORE_ALLOWED_PREFIXES` 同口径；提交前拦一道 |
+| V-6 | `customTarget` 引入后越界路径要到后端才 403 | 前端双校验（`restoreRoot` 前缀 + 绝对路径 / 无 `..` + **deny 受保护区域**），与后端 `restore_allowed_prefixes`（派生，见 §4.9.8）同口径；提交前拦一道 |
 | V-7 | 模式切换 effect 重蹈 P11 真空初态（watch 派生布尔被吞） | watch `restoreFrom` 数据本身；spec 走完整切换回路（点 B → 重置 → 点 A → 清空） |
 | V-8 | E33 浏览 `/restore` 在 host 模式下该目录不存在 | `restoreRoot` 由后端运行时下发；不存在时 treeLoader 404 → 内联错误态，手输模式始终可用 |
+
+#### 4.9.8 P17：host 形态恢复白名单派生 + 原位换算修复（2026-10-25 owner Q1=A / Q2 同批）
+
+**取证（两个用户实拍问题的同一根因）**：源数据早已按 §3 做部署形态派生，**恢复链路没做**。
+
+| # | 现象 | 根因链（逐跳可复核） |
+|---|---|---|
+| Q2 | 「已存在文件预览清单」恒报 **原位恢复目标不在该快照的备份路径范围内** | ① 环境判定 host（`browse_root='/'`）→ E17 `paths` 经 `to_display` **恒等**（`path_mapper.py:68-71`），展示形态即容器形态（如 `/sources/123`）；② 前端 `inplaceTargetFull` 无条件叠 `/sources` → **`/sources/sources/123`**；③ 后端第一道 `/sources` 白名单通过（双前缀仍在 `/sources` 下），第二道 `in_snapshot_paths(['/sources/123'], '/sources/sources/123')` 不命中 → 403（`restore.py` `_enforce_inplace_lock`）；④ 提交（E19 原位）走同一把锁 → 同样 403，host 模式原位恢复**完全不可用**；⑤ 测试为何全绿：`backend/tests/conftest.py` 钉死 `DEPLOY_MODE=docker`，host+原位零覆盖 |
+| Q1 | 「选择位置」目录树不是双模式 | 恢复白名单是**固定常量**（`/restore` / `/sources`），与部署形态无关 → 树根恒 `settings.restore_root`，host 想看真实文件系统做不到；强做即假开关（§3.2） |
+
+**裁决（owner 2026-10-25）**：Q1 = **A**（恢复白名单也按部署形态派生，host → `/` + deny 兜底）；Q2 与 Q1 **同批修**（同一处路径派生逻辑）。
+
+**改动清单（零前端猜测前缀、零新增端点）**：
+
+| 层 | 文件 | 变更 |
+|---|---|---|
+| 后端 | `app/services/path_mapper.py` | 新增 `restore_allowed_prefixes`（docker `/restore` / host `/`）与 `inplace_restore_allowed_prefixes`（与备份源同源）；deny 命中文案改为「受保护区域…不可作为备份源或恢复目标」 |
+| 后端 | `app/constants.py` | **删除** `RESTORE_ALLOWED_PREFIXES` / `INPLACE_RESTORE_ALLOWED_PREFIXES` 常量（留派生说明，防复活） |
+| 后端 | `app/routers/restore.py` | 三处校验改走函数；**deny 命中原样 400**（不降级成 403「不在白名单」，否则「`/` 在白名单里」自相矛盾）；docstring 同步 |
+| 后端 | `app/routers/system.py` + `schemas/api_schemas.py` | runtime 下发 `restore_root`（生效值）与**新增 `inplace_root`**（原位换算前缀） |
+| 前端 | `stores/runtime.ts` + `api/types.ts` | `inplaceRoot` 入 store；类型补 `inplace_root` |
+| 前端 | `pages/restore/flow/index.vue` | `inplaceTargetFull` 按 `inplaceRoot` 换算（host 恒等 + 已带前缀幂等保护，对齐 `to_snapshot`） |
+| 前端 | `components/restore/RestoreTargetPicker.vue` | host 模式 **deny 拦截**（手输内联报错、树点被保护目录不选中不下钻）；树根随 `restoreRoot` 天然双模式（host → `/`）；`isUnderRoot()` 修 `root='/'` 时 `'//'` 前缀判定 bug（后端 `_is_under` 同款坑——不修则 host 下所有路径被判「根外」） |
+| 前端 | `i18n` 双语 | **文案去目录名硬编码**：`originalNote` 去掉「`/sources` 下」、`pickLocationNote` 改 `{root}` 插值（options 收 `restoreRoot` prop）——否则 host 模式提示与事实不符（实拍截图发现） |
+| 文档 | `代码审查规范 §3.1 S1/S7`、`AGENTS.md 红线 1`、`架构设计文档 §6.3`、`PRD US-P2-13/Q9` | 白名单表述统一为「三条派生」 |
+
+**护栏**：`backend/tests/test_api/test_restore_host_mode.py` 8 例（runtime 双形态根 / E20 恒等 display / E19 原位接受主机路径 / **双前缀反证 403** / 非同快照 403 / 时间戳流主机目标 202 / deny 400 / docker 根不变）；前端 +`RestoreTargetPicker` deny 2 例（手输 / 树点）+ `flow-shell` ⑪（host 换算恒等，反证旧实现 `/sources/srv/data`）。
+
+**验证**：后端 **1064 passed**（+8）+ ruff 干净；前端 typecheck 干净 + 全量 **41 文件 / 406 passed** + build ✓ 1m45s；**真机探针 `.e2e/p17-host-restore.cjs` pass**——走真实旅程 select-files→下一步→options（host stub）：预览请求 target 为 `/srv/data`（**无双前缀**，Q2 反证成立）、选择位置树根 chip `/`（Q1 双模式生效）、点 `/repo` 被 deny 拦截且已选仍为 `/`、1440/390 零横向溢出零 pageerror（截图 `.e2e/p17-host/`）。
+
+**行为变更（如实记录，需知会）**：① host 模式恢复目标/原位目标白名单均为 `/`（deny 兜底），即**恢复可写主机任意非保护目录**——仍保留「时间戳子目录零覆盖」与「快照 paths 交集收紧」两道约束；② docker 形态行为**零变化**（三条白名单取值与改前逐一相同）；③ host 模式下 `overwrite_mode` 指向非快照路径的响应码由 422 变 **403**（两白名单同为 `/`，422 分支不可达）。
 
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
@@ -764,6 +796,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 ---
 
 ## 修订记录
+
+- v1.35（2026-10-25 三十五修订）：**P17 host 形态恢复白名单派生 + 原位换算修复（§4.9.8）**——owner 就两个实拍问题裁决 **Q1=A（恢复白名单也按部署形态派生）+ Q2 同批**。**根因（同一处）**：源数据早按 §3 派生，恢复链路仍是固定常量 → ① host 模式 `to_display` 恒等，前端 `inplaceTargetFull` 无条件叠 `/sources` 产生 `/sources/sources/...` **双前缀**，E20 预览与 E19 提交双双 403「原位恢复目标不在该快照的备份路径范围内」（且 host 模式原位**整体不可用**）；② 「选择位置」树根恒 `/restore`，做不出设计口径的部署双模式（强做即假开关）。**改动**：后端新增 `restore_allowed_prefixes`（docker `/restore` / host `/`）与 `inplace_restore_allowed_prefixes`（与备份源同源）、删两个白名单常量、deny 命中原样 400（不降级 403）、runtime 增 `inplace_root` 且 `restore_root` 改生效值；前端 store 接 `inplaceRoot`、`inplaceTargetFull` 改为形态感知换算（host 恒等 + 幂等保护）、选择器加 **host deny 拦截**（手输内联报错 / 树点不选中不下钻）与 `isUnderRoot()`（修 `root='/'` 时 `'//'` 前缀判定 bug——后端 `_is_under` 同款坑）；红线 S1/S7、AGENTS 红线 1、架构 §6.3、PRD US-P2-13/Q9 同步「三条派生」。**验证**：后端 1064 passed（+8 `test_restore_host_mode.py`，含**双前缀反证 403**）+ ruff 干净；前端 typecheck + 全量 **41 文件 / 406 passed** + build ✓ 1m45s；**真机探针 `.e2e/p17-host-restore.cjs` pass**（host stub：预览 target = `/srv/data` 无双前缀 / 树根 `/` / deny 拦截 / 4 视口零溢出零报错）。另修两处 host 文案失真（`originalNote` 去 `/sources`、`pickLocationNote` 改 `{root}` 插值）。**行为变更**：host 模式恢复可写主机任意非保护目录（仍受时间戳子目录零覆盖 + 快照 paths 交集双约束）；docker 形态取舍与改前逐一相同（零变化）；host 下 `overwrite_mode` 指向非快照路径由 422 变 403（两白名单同为 `/`）。
 
 - v1.34（2026-10-25 三十四修订）：**P16 恢复向导第二步按 Duplicati options 复刻落地（§4.9 第八轮）**——owner 五裁决：**D1 Metadata 分区取消**（restic restore 无 `--skip-metadata`/`--restore-permissions`，占位死控件违背诚实原则）、**D2 走《源数据过滤与树双模式设计方案》§3 树双模式**（`runtime.restoreRoot` 单一事实源 + VirtualTree + mount chips + 浏览树/手输二模）、**D3 高级选项取消**（红线 S2）、**D4=A E20 预览并入「已存在文件」卡**、**D5=A 全向导去 `n-card`**。① **外壳**：Duplicati「stepper + 居中列」——options 500px / select-files·progress 1000px 双档（`isWidePage`），≤960 断点 padding 0 32 + `border-box`（探针抓到 content-box 下 564px 偏差，已修）；② **三卡片**：`RestoreOptionCard.vue`（复刻 ToggleCard：header 折叠、caret 200ms 旋转、max-height 0↔1000px/250ms、`disableToggle` 退化非按钮的纯标题行、aria-expanded）+ raised 单选卡（`button[role=radio]`，repo A4 类型卡范式：整行可点 + 主色描边 + 单选圆点 + 键盘 Enter/Space）+ 页脚两端（返回 `IconArrowLeft` / 提交 `IconArrowRight` raised primary + loading）；③ **`RestoreTargetPicker.vue`**：「浏览路径 / 手动输入」二模（复用 `SegmentedTabs`）+ mount chips（E33 仅根请求回 mounts → 一次性取 `/` 过滤 restoreRoot 子树）+ 越界三段内联校验（根外/非绝对/`..`，与后端 `RESTORE_ALLOWED_PREFIXES` 同口径，脏值不 emit）；④ **状态重构**：`targetMode('timestamp'|'inplace')` → `restoreFrom('original'|'pickLocation') + customTarget`（容器形态，默认 runtime.restoreRoot；服务端仍在所选目录下建 `<stem>-<stamp>` 时间戳子目录，守 PRD G3 零覆盖）+ 模式切换 effect（watch `restoreFrom` 数据本身，避 P11 真空初态坑；切 pickLocation 复位 customTarget）+ 跨 OS 确认（原位置流 + 快照 paths 含 `\` → `window.confirm`，沿用 R10 模式）；⑤ i18n 双语新增 `restore.options.{title,original,originalNote,pickLocation,pickLocationNote,back,submit,crossOsConfirm}` + `picker.*` 9 键，清 6 个死键（`stepConfirm`/`targetTitle`/`targetTimestamp(Note)`/`targetInPlace(Note)`）；⑥ 图标库 `IconArrowRight` 登记 60→61。**验证**：typecheck 干净 + 全量 **41 文件 / 403 passed**（新增 `RestoreOptionCard` 6 例、`RestoreTargetPicker` 6 例、`options-step` 7 例、`flow-shell` ⑨⑩ 2 例）+ build ✓ 2m08s + 真机探针 `.e2e/p16-options-mobile.cjs` **pass**（1440/960/768/390 零横向溢出零 pageerror、1440 列宽 500、双按钮页脚；截图 `.e2e/p16-options/`）。**过程实证三缺陷**（如实记录）：漏 import `NCard`/`NInput` 致组件按原生元素渲染、named 槽与输入框整片丢失（vue-tsc 查不出；`naive-imports` 全量跑本可拦，本次只跑定向 spec 未覆盖——已记教训）、`content-box` 断点列宽偏差（564→500）、探针 `**/api/**` 通配误伤 Vite 模块。**零后端改动**。
 

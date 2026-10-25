@@ -42,7 +42,7 @@ pwsh dev-scripts/dev.ps1            # 菜单式；restart backend 已内置 --lo
 
 > 括号内为规范 §3.1 的条目编号，**编号即锚点**；`自查：` 行可直接粘贴到终端执行。
 
-1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；**备份源白名单由 `browse_root` 单一派生**（`path_mapper.source_allowed_prefixes`：docker→`/sources`、host→`/`；`settings.browse_root` 由 `DEPLOY_MODE`/自动检测决定，**不再保留第二份白名单常量**），恢复目标恒 `/restore`、原位恢复恒 `/sources`；**host 模式**（浏览根 `/`）安全边界由 **deny 前缀**承担——`validate` 对源根命中时强制拒绝 `deploy_mode.host_deny_prefixes`（`/proc` `/sys` `/dev` `/run` + `repo_root` + `data_dir` + `passfile_root`，防递归备份/泄露应用数据）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
+1. **[S1/A2] 路径只经 `PathMapper`**（`app/services/path_mapper.py`）——用户输入路径必须过 `validate()`（规范化 + 前缀校验）；**三条白名单统一由部署形态派生**（owner 2026-10-25 裁决 Q1=A，`path_mapper` 单一实现点，**不再保留第二份白名单常量**）：① 备份源 `source_allowed_prefixes`（docker→`/sources`、host→`/`）；② 恢复目标（时间戳流）`restore_allowed_prefixes`（docker→`/restore`、host→`/`）；③ 原位恢复目标 `inplace_restore_allowed_prefixes`（与备份源同源：docker→`/sources`、host→`/`）。`settings.browse_root` 由 `DEPLOY_MODE`/自动检测决定；**host 模式**（浏览根 `/`）安全边界由 **deny 前缀**承担——`validate` 对源根命中时强制拒绝 `deploy_mode.host_deny_prefixes`（`/proc` `/sys` `/dev` `/run` + `repo_root` + `data_dir` + `passfile_root`，防递归备份/泄露应用数据；deny 命中 400，不得降级 403）；容器形态路径不出 API（一律 `display_*` / `display_path` 派生字段）。
 
    *豁免：文件系统前缀字面量只允许出现在 `settings.py`（根路径默认值 + 部署形态）、`constants.py`（默认根 + 部署形态常量）、`exclusions.py`（排除集派生前缀）、`path_mapper.py`（白名单派生 + 校验实现）；路由声明里的 `"/restore"`、`"/sources"` 是 **API 路径**，与此无关。任何位置再出现 `"/host"` 前缀字面量即视为 `/host` 挂载前缀复活 = Blocker（**host 作为部署形态**合法，`/host` **挂载前缀**不复活）。*
 
