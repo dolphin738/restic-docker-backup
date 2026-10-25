@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.33（2026-10-25 三十三修订：**forget 卡片预览按钮下移到独立行，与 prune 卡片同构**）。本文件全部历史修订（v1.0–v1.33）合并记载于文末「修订记录」节，版本头不再重复内联。
+> 版本：v1.34（2026-10-25 三十四修订：**第八轮恢复向导第二步按 Duplicati options 复刻（P16）**——owner 五裁决 D1/D3 取消、D2 树双模式、D4=A、D5=A，新增 §4.9）。本文件全部历史修订（v1.0–v1.34）合并记载于文末「修订记录」节，版本头不再重复内联。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -409,6 +409,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | **P13** | ✅ **已落地**（v1.25）：**逐页重排第二批（高风险）**——① repo（自定义 CSS 230 行）：模板 7 处 + CSS 11 处节奏对齐（vertical 10→12 / 横隙 6,10→8 / 紧凑对 2→4；`.repo__req` 2px 星标微调为字形级例外保留）；② settings（128 行 CSS）：卡片级 10→12 ×3、开关行→提示对 2→4 ×4（对齐全站 4px 惯例）、横隙与时区子块 6/10→8、sticky 页脚 padding 12px 0 4px；③ TaskWizard + 步骤组件：wizard__body 14→16、字段对 2→4 ×11、行距 6/10→8 ×9；④ bootstrap 20→24；login 零改动（本就在节奏内）                                                                                                                             | P12         | 三步门分跑 + 逐页像素 diff + **向导 5 步与 ConfirmGate 真机断言**（`.e2e/p13-wizard-probe.cjs`：五步全流程 + 删除三门全流程，零 pageerror）                                           | 自定义 CSS 最厚的两页逐块校准完成；门禁未因重排失效（探针实证）                                                                               |
 | **P14** | ✅ **已落地**（v1.26）：**全站回归**——零代码改动纯验证批。① **四象限截图**：8 页 × 亮/暗 × 中/英 = 32 组合零 pageerror，**四象限全站零未翻译裸键**（内置扫描器：`段.键` 形态 ≥2 段视为缺键）；② **桌面零漂移**：HEAD 连跑两次 8/8 页**逐像素一致**（bbox=None，截图管线确定性证明）；③ **移动端 4 视口**（1440/960/768/390）× 8 页 = 32 组合**零横向溢出**，390 向导步骤条 `scrollWidth 503 > clientWidth 308`（5 步全可达，与 §4.3 记录同值）；④ **恢复模块响应式**：`/restore` 4 视口 ok + flow select-files 768/390 零溢出零报错；⑤ **E2E 冒烟**：A7 加载态探针 + P13 向导五步/ConfirmGate 三门探针复跑 PASS                                                  | P13         | 全绿；移动端 4 项断言（参照 §4.3 口径）                                                                                                                            | 沿用 §4.3 教训（`overflow-x:auto` 折叠 margin 致桌面 +8px 漂移）——本批以「连跑两次逐像素一致」作零漂移实证；三步门终跑被 owner 取消（P13 已全绿且本批零代码改动，可随时补跑） |
 | **P15** | ✅ **已落地**（v1.27）：**全站图标统一**（owner 2026-10-23 四项裁决：①重绘 ②合并 ③全上 ④留库）——① **三文件合并**：HomeIcons + MenuIcons + BackendIcons → 单一 `components/icons/icons.ts`（57 图标 + `BACKEND_ICONS` 映射 + `backendIcon`，旧三文件删除、9 处消费方 import 改向，`IconPlusCircle` 跨文件重复去重）；② **24 网格重绘为 P4 标准**：原 MenuIcons 16 + BackendIcons 8 按 20×20 / 描边 1.5 重绘（几何 ×5/6 精确变换、arc 标志位保护；旧 24 网格画法淘汰，渲染描边 1.25px→1.5px）；③ **全站图标化**：9 个零图标页面补 35 处标准图标（jobs/snapshots/audit/reports/notifications/settings/taskWizard/login/bootstrap；规则 = small 及以上按钮用 `#icon` 插槽、tiny 紧凑按钮保持纯文字）；④ **留库不删**：全量导出保留（含 IconPlay/IconSearch/IconFilter 等暂无消费方的留库资产），`icons.spec.ts` 登记表 59 项 + 全量 20 网格护栏；⑤ **预览页**：`frontend/icon-preview-p15.html`（57 图标分组 + P15 徽标 + 尺寸档 + 暗底带，可重生成）。验证：三步门分跑（typecheck / **291 passed** / build）+ 像素 diff（全站 0.09–1.1% 且同尺寸——图标化不改变布局高度）+ 探针复跑（A7 / P13 向导与三门）+ 移动端 8 页 × 4 视口零溢出 | P14        | 三步门 + 像素 diff + 探针 + 预览页目视 | 重绘用坐标精确变换（非手绘），arc 标志位单独保护防弧向损坏；多行内联脚本在 Git Bash 有引号/路径坑，一律写 .cjs |
+| **P16** | ✅ **已落地**（v1.34）：**恢复向导第二步「恢复选项」按 Duplicati options 复刻**（§4.9，owner 2026-10-25 五裁决）——① 外壳去 `n-card` 改「stepper + 居中列」（options 500px / select-files·progress 1000px 双档，≤960 断点 padding 0 32，`box-sizing: border-box` 保证断点内列宽仍 500）；② 三卡片：恢复到哪（raised 单选卡：原位置默认 / 选择位置 + 原位目标下拉内嵌）/ 已存在文件（A7 overwrite 布尔 + **E20 预览并入**，D4=A）/ 页脚两端（返回 / 提交 raised primary）；③ `RestoreOptionCard.vue` 折叠卡（复刻 ToggleCard 动画与 aria）+ `RestoreTargetPicker.vue` 路径选择器（**D2 树双模式**：`runtime.restoreRoot` 单一事实源 + VirtualTree + mount chips + 浏览树/手输二模）；④ 模式切换 effect + 跨 OS 确认 + customTarget 越界前端双校验；⑤ icons.ts 增 `IconArrowRight`（登记 60→61）。**D1 Metadata / D3 高级选项取消**（无后端支撑 / 红线 S2，留档 §4.9.6） | P15        | **全绿**：typecheck 干净 / 全量 **41 文件 403 passed**（新增 3 spec 19 例）/ build ✓ 2m08s；真机探针 `.e2e/p16-options-mobile.cjs` **pass**（1440/960/768/390 四视口零横向溢出、零 pageerror；1440 列宽 500px；两张折叠卡 + 两行单选卡 + 双按钮页脚齐备） | 复用 VirtualTree / runtime store / api/fs / icons.ts / ConfirmGate（S-4 禁止重复造轮子）；**零后端改动**（target 白名单已允许 /restore 任意子路径，服务端恒建时间戳子目录守 G3） |
 
 **批次关系说明**
 
@@ -478,7 +479,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | `pages/restore/index.vue` | ✅ **已改造为入口页**（P8，R1）：标题「从哪里恢复？」+ 当前激活仓库**快照**行动卡 + 分隔线「或者不使用本地配置」+ 两张备选卡（从配置恢复 → 深链 `/settings#sec-transfer`；从其他仓库恢复 → `/repo`）。**偏离原计划**：原「备份/仓库列表」改为「快照列表」——后端不支持按仓库过滤，见下行 `:id` 裁决 |
 | `pages/restore/flow/index.vue`（新） | ✅ **P8 迁入 + P9 改造完成**：P8 `git mv` 零逻辑改动迁入；P9 改造为**向导外壳**——可跳步步骤条（`RestoreStepper`，inactive 双向不可达）+ 步骤↔路由同步 + 满高 + 离开确认（R4/R10）。**全宽未落地**：内容区本就无 `max-width`，无切换对象（待 P14） |
 | `pages/restore/flow/select-files.vue`（新） | ✅ **已拆出**（v1.23）：快照下拉（P10 补 size，R5）+ **搜索框**（R6，B3 契约与 debounce 定时器随组件内聚）+ 文件树多选；快照查询/默认选中/勾选集合留父级（确认门与提交共用），组件经 props 读、emit 回写 |
-| `pages/restore/flow/options.vue`（新） | ✅ **已拆出**（v1.23）：「恢复到哪」「已存在文件」两分区 + E20 预览区 + 页脚两端对齐；预览 fetch 状态留父级（确认门插槽共用），列定义随组件内聚。**Metadata / 高级两分区仍未落地**——后端 `RestoreRequest` 仅 4 字段、`restic.py` 无 metadata 参数，无后端支撑（不做占位死控件，待后端加契约） |
+| `pages/restore/flow/options.vue`（新） | ✅ **已拆出**（v1.23）→ ✅ **P16 已按 Duplicati options 重写**（v1.34，§4.9）：三折叠卡（恢复到哪 / 已存在文件 + E20 预览并入）+ 页脚两端；**Metadata / 高级两分区 owner 2026-10-25 裁决取消**（D1 无 restic 参数支撑、D3 触红线 S2，留档 §4.9.6）；预览 fetch 状态留父级（确认门插槽共用），列定义随组件内聚 |
 | `pages/restore/flow/progress.vue`（新） | ✅ **已拆出**（v1.23）：三卡（进度 / 结果摘要 / 日志）+ 完成态圆环（`RestoreProgressRing` 共用组件）；日志拉取与 summary 计数解析随组件内聚，SSE 终态事件上抛父级落 result |
 | `router/index.ts:77-80` | ✅ **已重排**（P8）：`/restore` → 入口页；`/restore/:id/{select-files,options,progress}` → 向导（`flow/index.vue`，三子路由暂同指向，P9 起按路由分步）。**`:id` 语义裁决 = 快照 id（非仓库 id）**：E17 `listSnapshots` 走 `current_repo_id` **激活仓库模型、不支持按仓库过滤**，仓库 id 无法用于过滤快照 |
 
@@ -506,6 +507,99 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 | V-2 | 步骤条可跳步会跳过必填（如未选快照） | 跳步前校验，未过步骤 `inactive`（沿用模版 `.inactive` 语义） |
 | V-3 | 搜索端点若全量扫快照会很慢 | 游标分页 + `SNAPSHOT_FILES_MAX_LIMIT` 上限；后端过滤下推，禁止前端全量拉取再过滤 |
 | V-4 | 三卡里的通知/日志若新造拉取逻辑会重复 | 复用既有 notifications 与 job 日志 API，不新增数据源 |
+
+### 4.9 第八轮：恢复向导第二步「恢复选项」按 Duplicati options 复刻（2026-10-25 方案定稿 + 当日落地，owner 五项裁决）
+
+> **状态：✅ 已落地（v1.34）**——P16 五子批全部完成，三步门 + 真机探针全绿（详见 §4.9.5 与 §4.7 P16 行）。
+
+> 对标 ngclient `app/restore-flow/options/`（`options.component.ts/html/scss` + `restore-option-defaults.ts`）与 `core/components/toggle-card/`、`core/components/file-tree/`。MCP 图谱索引 `D-agent-duplicati-ngclient-src`（2026-10-25 新建：2670 节点 / 8842 边；restore-flow 作用域 100 节点 / 216 边，热点 `OptionsComponent.submit` / `RestoreFlowState.#submitRestore` / `#selectDefaultRestoreModeEffect`）。视觉沿用 §4.6.4 全站 A+ 彻底档；复用纪律遵循 S-4 与 v1.31 FilterBar 收敛教训——**能复用必复用，禁止重复造轮子**。
+
+#### 4.9.1 owner 五项裁决（2026-10-25）
+
+| # | 裁决 |
+|---|---|
+| D1 | Metadata 分区（Restore file metadata / Restore read/write permissions 两 toggle）**不做**——restic restore 无 `--skip-metadata` / `--restore-permissions` 参数，渲染即占位死控件（v1.21 同结论，P7 D8 同类教训） |
+| D2 | Pick location 路径选择器**走《源数据过滤与树双模式设计方案》§3 树双模式逻辑**——部署形态自动检测决定浏览根（单一事实源 `runtime.restoreRoot`，后端运行时下发），复用 `VirtualTree` + 挂载点快跳 chips；交互为 Duplicati FileTree 的「浏览树 / 手动输入」双模式 |
+| D3 | Advanced options（自由 restic 参数列表）**不做**——红线 S2「restic 参数只在 `ResticCmd.build` 白名单拼装」，自由透传即 Blocker；将来若要开放只能走白名单增量（另立需求） |
+| D4 | E20 覆盖预览区**并入「已存在文件」卡片**（A）——预览本就是「已存在文件」的论据，不删不搬家 |
+| D5 | 向导外壳**全向导去 `n-card`**，改 Duplicati「stepper + 居中列」：options 列宽 **500px** 居中；select-files / progress 满宽 **1000px**（对齐模版 `isFullWidthPage` 双档） |
+
+#### 4.9.2 对标基线（Duplicati options 实测解剖）
+
+- **结构**：`form` → `h3.title-30` 标题 → 5 张 `app-toggle-card`（卡片间距 24px；header padding 16；内容折叠 `max-height` 0↔1000px、250ms linear；caret 旋转 180°、200ms）→ 页脚两端对齐（左 Go back / 右 Submit raised primary + loading）。
+- **卡片①「Where do you want to restore files to?」**（禁折叠）：`sh-radio raised primary` 单选卡 Original location（默认）/ Pick location；`app-file-tree` 始终渲染、非 Pick location 时 `disabled`；「Browse path / Manually type path」二分段 + 目录树（层缩进 0.25rem）+ Path 输入 + 错误 `sh-alert`。
+- **卡片②「How do you want to handle existing files?」**（禁折叠）：单选 Overwrite / Save different versions with timestamp in file name（默认 saveTimestamp）。
+- **卡片③「Metadata settings」**（可折叠、默认收起）→ **D1 取消**；**卡片④ Hyper-V（条件）/ 卡片⑤ Advanced options（条件，隐藏 8 个内置项）**→ **D3 取消 + §4.8.7 已排除**。
+- **提交前门**：跨 OS 原位置恢复 ConfirmDialog（所选文件分隔符与系统 `DirectorySeparator` 不符时）；自定义远端路径为空时阻塞对话框（o365/gsuite 分支，不纳入）。
+- **状态流**：`optionsForm`（5 字段信号）→ `toSignal(valueChanges)` → computed 派生 UI 显隐 → effect 模式纠正（`#selectDefaultRestoreModeEffect`：数据类型变化即切模式并重置 handleExisting）→ `submit()` 前置门 → `RestoreFlowState.submit`（POST restore）→ navigate progress；默认值经 backup/server settings 解析（restore-permissions / skip-metadata，每 backupId 一次）。
+
+#### 4.9.3 本项目落地形态与复用面（不重复造轮子）
+
+| 需件 | 复用 / 新建 | 说明 |
+|---|---|---|
+| 折叠卡容器 | **新建** `components/restore/RestoreOptionCard.vue` | 复刻 ToggleCard：v-model 展开态 + `disableToggle` 强制展开 + caret 旋转 + max-height 过渡 + `aria-expanded`；图标取 icons.ts 现有 `IconChevronDown`（旋转 180°，零新增图标） |
+| raised 单选卡 | `options.vue` scoped `.restore__opt-card` | 单页消费，**不升共用组件**（S-4 判据：非多页复用的形态不进 `components/`）；整行可点 + 选中主色描边/浅底 + 键盘可达 |
+| 路径选择器（树 + 手输双模式） | **新建** `components/restore/RestoreTargetPicker.vue` | 复用：`VirtualTree.vue`（`select-dir` + highlight）、`stores/runtime.ts`（`restoreRoot` / `denyPrefixes` / `deployMode` 单一事实源）、`api/fs.ts` `browseFs`（E33；`/restore` 不在 `_MOUNT_PREFIX_DENY`）、mount chips 范式（`SourcesPicker.vue:294-314`）、icons.ts 图标 |
+| 500px 居中列 + 满宽切换 | `flow/index.vue` 外壳改造 | 去 `n-card`；`.restore-flow__section` 双档 `max-width`（500/1000），≤960 断点 `padding: 0 32`（对齐 §4.3 移动端惯例，不自定 -milli 档） |
+| 页脚两端 | `flow/options.vue` | 复用 TaskWizard `wizard__footer` 范式（`n-space justify="space-between"`）；返回用 `IconArrowLeft`，提交用**新增** `IconArrowRight`（20×20 / 描边 1.5，IconArrowLeft 镜像；icons.spec 登记 60→61） |
+| 确认门 | `ConfirmGate`（既有） | 接口不变；D4 预览并入卡片②后，门内预览插槽保持既有口径 |
+| 跨 OS 确认 | `window.confirm` 轻量确认 | 复刻 Duplicati ConfirmDialog 文案结构；**不进** ConfirmGate（无关键词语义，避免与恢复确认门混淆）；沿用 R10 离开确认的 `window.confirm` 模式（不新造弹窗组件，vi.stubGlobal 可测） |
+
+#### 4.9.4 第二步结构定稿（三卡片 + 页脚）
+
+**卡片①「恢复到哪」**（禁折叠）：
+
+- 单选卡 A「原位置」（默认；`inPlaceDisabled` 时置灰 + 原因 alert，既有 A7 语义）→ 选中时内嵌原位目标下拉（既有，限该快照 paths，后端双重锁兜底）；
+- 单选卡 B「选择位置」→ 选中时展开 `RestoreTargetPicker`：浏览树 / 手动输入二模，树根 = `runtime.restoreRoot`（容器形态）；目标为 `/restore` 子树内路径，**服务端仍建 `<stem>-<stamp>` 时间戳子目录**（守 PRD G3），UI 明示该语义；
+- **模式切换 effect**（watch `restoreFrom` 数据本身，避 P11 真空初态坑）：切 B → `customTarget` 重置为 `restoreRoot` 且预览失效；切 A → 清空 `customTarget`。
+
+**卡片②「已存在文件」**（禁折叠）：
+
+- 原位置：A7 overwrite 布尔勾选（默认不勾 = never）+ **E20 预览表并入**（统计行 / 策略行 / 截断提示 / 虚拟滚动表 / 加载更多，既有口径整体搬迁）；
+- 选择位置：零覆盖说明文案（服务端时间戳子目录，不涉及覆盖选项）。
+
+**卡片③ Metadata / 高级**：D1/D3 取消，不渲染（留档防回潮，见 §4.9.6）。
+
+**页脚**：左「返回」/ 右「提交」（raised primary + loading → 开 ConfirmGate；原位流需先有预览结果才可开，既有 `canOpenGate` 不变）。
+
+#### 4.9.5 实施批次（P16 五子批，每批独立可提交可回滚）
+
+| 子批 | 内容 | 依赖 | 验收门 |
+|---|---|---|---|
+| P16-0 | icons.ts 增 `IconArrowRight` + 登记表 60→61；新建 `RestoreOptionCard.vue`（含 spec：折叠 / 强制展开 / aria-expanded） | — | typecheck + 新 spec |
+| P16-1 | `flow/index.vue` 外壳去 n-card + 500/1000 双档列宽 + ≤960 断点；`options.vue` 三卡片布局重写 + 页脚两端 | P16-0 | typecheck + 既有 spec 回归 |
+| P16-2 | `RestoreTargetPicker.vue`（双模式 + 越界校验 + mount chips）+ `restoreFrom` / `customTarget` 状态重构（替 `targetMode` 的 timestamp 分支）+ 模式切换 effect + 跨 OS 确认 | P16-1 | 新 spec（双模式切换 / 越界 / 禁用态 / effect 重置回路） |
+| P16-3 | i18n zh-CN / en-US 同步新增（i18n-parity 护栏）；更新 `flow-shell.spec.ts` ④ 按钮文本断言与 `restore-fallback.spec.ts` ①② 文本断言 | P16-2 | i18n-parity + 全量 |
+| P16-4 | 三步门分跑（typecheck / vitest 全量 / build）+ 真机走查（390 视口 options 页零溢出）+ 像素 diff（外壳去卡片位移核对） | P16-3 | **✅ 全绿**：typecheck 干净；全量 **41 文件 / 403 passed**；build ✓ 2m08s（2888 modules）；探针 `.e2e/p16-options-mobile.cjs` pass（4 视口零溢出 + 零 pageerror + 1440 列宽 500px + 双按钮页脚；390 截图存档 `.e2e/p16-options/`） |
+
+**落地取证（2026-10-25）**：
+
+| 证据 | 结论 |
+|---|---|
+| `RestoreOptionCard` / `RestoreTargetPicker` / `options-step` 三个新 spec（19 例） | 折叠动画与 aria、二模切换、越界三段（根外/非绝对/`..`）不 emit、模式↔控件挂钩、页脚 loading/禁用、卡片标题齐备全过 |
+| `flow-shell.spec.ts` ⑨⑩（新增 2 例，该文件 17 例） | 跨 OS 确认（`\` 分隔符 + 原位置）confirm 取消留步 1、确认放行进 2；选择位置 effect 复位 customTarget → 提交链 target = `/restore` |
+| `restore-fallback.spec.ts` ①② | path-less 回落「选择位置」、有 paths 保持原位置的 A7 语义零回退（文本断言原样命中） |
+| 探针首轮三处真缺陷 | ① `RestoreOptionCard` 漏 import `NCard`、`RestoreTargetPicker` 漏 import `NInput` → 未解析组件按原生元素渲染、header 槽与输入框整片丢失（Vue warn 抓到，`naive-imports` 只查模板不查真实解析，属护栏外缺口）；② ≤960 断点 `content-box` 下 section 实测 564px（比 Duplicati 宽 64px）→ 补 `box-sizing: border-box` 后 500px 恒定；③ 探针自身 `**/api/**` 通配误伤 Vite `/src/api/*.ts` 模块（MIME 严格校验白屏）→ 改 `/api/` 前缀谓词 |
+
+#### 4.9.6 排除项（含本轮取消留档，防回潮）
+
+| 项 | 理由 |
+|---|---|
+| Metadata 两 toggle（D1） | restic restore 无对应参数；占位死控件违反诚实原则（v1.21 同结论） |
+| Advanced options 自由参数（D3） | 红线 S2；若要开放只能走 `ResticCmd` 白名单增量（另立需求） |
+| Hyper-V 卡 / o365 / gsuite / diskimage / Check permissions | §4.8.7 已排除 |
+| Create folder 弹窗（Duplicati `enableCreateFolder`） | 后端无 mkdir 端点；不造假入口 |
+| 直接落所选目录（无时间戳子目录） | 违反 PRD G3 误操作零事故；服务端恒建时间戳子目录 |
+| 自定义 `-milli` 断点 | 项目移动端断点统一 960（§4.3 惯例） |
+
+#### 4.9.7 风险
+
+| # | 风险 | 对策 |
+|---|---|---|
+| V-5 | 外壳去 n-card 牵动步骤 1/3 布局（fill-height / 满高依赖卡片容器） | 满高信号保留（步骤 1 `min-height: 60vh`）；像素 diff 核对三步位移 |
+| V-6 | `customTarget` 引入后越界路径要到后端才 403 | 前端双校验（`restoreRoot` 前缀 + 绝对路径 / 无 `..`），与后端 `RESTORE_ALLOWED_PREFIXES` 同口径；提交前拦一道 |
+| V-7 | 模式切换 effect 重蹈 P11 真空初态（watch 派生布尔被吞） | watch `restoreFrom` 数据本身；spec 走完整切换回路（点 B → 重置 → 点 A → 清空） |
+| V-8 | E33 浏览 `/restore` 在 host 模式下该目录不存在 | `restoreRoot` 由后端运行时下发；不存在时 treeLoader 404 → 内联错误态，手输模式始终可用 |
 
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
@@ -670,6 +764,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 ---
 
 ## 修订记录
+
+- v1.34（2026-10-25 三十四修订）：**P16 恢复向导第二步按 Duplicati options 复刻落地（§4.9 第八轮）**——owner 五裁决：**D1 Metadata 分区取消**（restic restore 无 `--skip-metadata`/`--restore-permissions`，占位死控件违背诚实原则）、**D2 走《源数据过滤与树双模式设计方案》§3 树双模式**（`runtime.restoreRoot` 单一事实源 + VirtualTree + mount chips + 浏览树/手输二模）、**D3 高级选项取消**（红线 S2）、**D4=A E20 预览并入「已存在文件」卡**、**D5=A 全向导去 `n-card`**。① **外壳**：Duplicati「stepper + 居中列」——options 500px / select-files·progress 1000px 双档（`isWidePage`），≤960 断点 padding 0 32 + `border-box`（探针抓到 content-box 下 564px 偏差，已修）；② **三卡片**：`RestoreOptionCard.vue`（复刻 ToggleCard：header 折叠、caret 200ms 旋转、max-height 0↔1000px/250ms、`disableToggle` 退化非按钮的纯标题行、aria-expanded）+ raised 单选卡（`button[role=radio]`，repo A4 类型卡范式：整行可点 + 主色描边 + 单选圆点 + 键盘 Enter/Space）+ 页脚两端（返回 `IconArrowLeft` / 提交 `IconArrowRight` raised primary + loading）；③ **`RestoreTargetPicker.vue`**：「浏览路径 / 手动输入」二模（复用 `SegmentedTabs`）+ mount chips（E33 仅根请求回 mounts → 一次性取 `/` 过滤 restoreRoot 子树）+ 越界三段内联校验（根外/非绝对/`..`，与后端 `RESTORE_ALLOWED_PREFIXES` 同口径，脏值不 emit）；④ **状态重构**：`targetMode('timestamp'|'inplace')` → `restoreFrom('original'|'pickLocation') + customTarget`（容器形态，默认 runtime.restoreRoot；服务端仍在所选目录下建 `<stem>-<stamp>` 时间戳子目录，守 PRD G3 零覆盖）+ 模式切换 effect（watch `restoreFrom` 数据本身，避 P11 真空初态坑；切 pickLocation 复位 customTarget）+ 跨 OS 确认（原位置流 + 快照 paths 含 `\` → `window.confirm`，沿用 R10 模式）；⑤ i18n 双语新增 `restore.options.{title,original,originalNote,pickLocation,pickLocationNote,back,submit,crossOsConfirm}` + `picker.*` 9 键，清 6 个死键（`stepConfirm`/`targetTitle`/`targetTimestamp(Note)`/`targetInPlace(Note)`）；⑥ 图标库 `IconArrowRight` 登记 60→61。**验证**：typecheck 干净 + 全量 **41 文件 / 403 passed**（新增 `RestoreOptionCard` 6 例、`RestoreTargetPicker` 6 例、`options-step` 7 例、`flow-shell` ⑨⑩ 2 例）+ build ✓ 2m08s + 真机探针 `.e2e/p16-options-mobile.cjs` **pass**（1440/960/768/390 零横向溢出零 pageerror、1440 列宽 500、双按钮页脚；截图 `.e2e/p16-options/`）。**过程实证三缺陷**（如实记录）：漏 import `NCard`/`NInput` 致组件按原生元素渲染（`naive-imports` 静态扫描查不出真实解析失败，Vue warn 才现形）、`content-box` 断点列宽偏差、探针 `**/api/**` 通配误伤 Vite 模块。**零后端改动**。
 
 - v1.30（2026-10-25 三十次修订）：**快照浏览页收尾 + 护栏盲区修复**（owner「按顺序修」指令，UI 设计一律以本文档为准）。① **五处功能缺陷修复**（`pages/snapshots/index.vue`，此前零前端 spec）：切筛选**回到第 1 页**（深页切筛选沿用旧 offset → 空列表误导）；历史 tag 改**累积归并**（原从已筛选结果归并 → 选中某 tag 后其它历史 tag 从下拉消失，切不回去）；A3 打/去标签**回显新旧 id 映射**（PRD US-E2 AC5，改标签生成新快照对象，旧 id 立即失效）；E18 `truncated` **明示提示**（大目录截断不再静默）；`size` 列改走 `utils/format`（`formatBytesOr`，与恢复向导版本下拉同口径，不裸显字节数）+ 错误态取 `AppError.message`（去掉 `Error: ` 前缀）。② **E18 已返回的 size/mtime 不再丢弃**：`VirtualTree` 增可选 `meta` 字段（行末等宽小字、opacity 降档、亮暗自适应），仅快照页传入，E05/E33 两处消费方零影响。③ **真实生产缺陷（本轮最重）**：快照页 **`NInput` 从未导入** → 5 个输入框（forget 时长档/标签档 + 打标签三组）在浏览器里 unresolved 整片不渲染；`vue-tsc` 与 `build` 都不检查未注册组件名，P14 四象限走查也未捕获（unresolved 只是 Vue warn，非 pageerror）。④ **护栏盲区修复**：`naive-imports.spec.ts` 原按非贪婪 `<template…</template>` 取块，遇到嵌套 `<template #header-extra>` / `#icon` / `#preview` 的页面在**第一个** `</template>` 处截断，其后 `n-*` 全部逃脱检查（这正是 ③ 能潜伏至今的原因）；改为**全文扫描 `<n-*`** 且只扫 `.vue`（`.ts`/spec 里的 `<n-xxx>` 全是字符串字面量或注释，实测 4 处假阳性）。复扫全仓 `.vue` **零漏导入**。⑤ **护栏补齐**：新增 `pages/snapshots/__tests__/snapshots-page.spec.ts`（6 例，覆盖上述五项 + 文件树 meta）。⑥ **明确不做（如实记录）**：快照抽屉**不加搜索框**——P3 端点虽已就绪，但 `VirtualTree` 无「定位到路径」能力，命中项点击无落点即死键（V-4 / D8 同类教训）；需先给 VirtualTree 加 `expandTo(path)` 能力再做。⑦ **两项裁决：一项落地、一项撤回（如实记录）**：① **US-026-08 默认分组视图「先落地、后整体删除」**——落地口径为「未筛选时按任务渲染分组卡（`n-grid` + 复用 P6 形态层 `ActionCard`，数据取 `TaskCard.snapshot_count` 的 per-tag 计数，零后端改动；历史遗留 tag 落「未归类」组且计数显示「未知」不造假 0；点组 = 设 `tagFilter`）」；真机走查 owner 反馈排版不佳 → **按指令整体删除**（分组带 / `ActionCard` 与 `IconSnapshots` 引用 / 双语 `snapshot.groups.*` / 相关 6 例 spec 一并清除）。删除同时消掉一处口径隐患（取证）：分组计数是「该 tag 在**当前仓库**的全部快照」（`_snapshot_counts_by_tag(request, repo_id)`，`backup_tasks.py:610-634`），而表格在其上还叠加 `hostFilter` → 先按主机筛选再点分组会给出「卡上 4 个、表里 3 条」的落差；保留就必须在卡上标注口径，删掉更干净。**PRD §4 需求池 US-026-08「✅ 已交付」需回落为「未交付」**（文档侧同步待办）。② **forget `group_by` 不给可编辑入口**（保留）——`restic.py:521-522` 只过 `_assert_safe_value`（防注入）**不校验维度合法性**，非法值会迟到 500；且任务表单无该控件（`ScheduleRetentionForm.vue:12` 仅注释列为「高级字段」）、恒默认 `host,paths,tags` 自洽 → 改为**只读公示**「分组维度：host, paths, tags（restic 默认，不可编辑）」。③ **forget 提交后跳任务页 `?job=<id>`**（复用 A6 既有模式，`jobs/index.vue:333-349` 按 query 自动开日志抽屉）——forget 是**异步作业**，留在快照页列表不会自己变，用户据此判定「清理没生效」；跳转后成功/失败原因立刻可见。④ **A3 打/去标签加前端前置拦截**：ID 与 tag/host 筛选都空时**不发请求**，直接给出「会作用于仓库内全部快照，已阻止」——与后端 422 同口径，但前端先说人话（原行为是发请求后被拒，用户只看到一条错误）。新增双语 `snapshot.forget.groupBy` / `snapshot.tag.needTarget`；护栏改为覆盖 ③④（快照页 spec 共 8 例）。验证：typecheck + 前端全量 + build 全绿。
 - v1.31（2026-10-25 三十一次修订）：**筛选组件收敛为共用 FilterBar（纠正 S-4 重复造轮子）**。快照浏览页筛选区此前**重写了一份任务历史页的筛选条**（draft 模式 + 应用/重置 + IconFilter），违反本文档 S-4「必须共用组件、禁止页内各写一份」。收敛动作：① 抽出共用 `components/FilterBar.vue`——筛选卡外壳 + 控件默认插槽 + 应用/重置按钮（loading 透传、IconFilter、`common.applyFilters`/`common.reset` 双语键），只 emit 不查询；② **两处接入**——任务历史「全部历史」与快照浏览页均替换原手写版；③ **清理死代码**——jobs 页 `IconFilter`/`IconX` 死 import、`jobs.apply`/`jobs.reset` 死键、快照页 `snapshot.apply`/`snapshot.reset` 死键（统一走 `common`）；④ **纪律固化进组件注释**：flex 容器里筛选控件必须用**固定 width**（jobs 历来如此；快照页曾因 `max-width` 被按钮挤成 0 宽，两个页面各踩一次）；⑤ 护栏 `components/__tests__/FilterBar.spec.ts`（4 例：插槽渲染 / 改下拉只 emit 不查询 / loading 透传 / 图标与文案）。验证：typecheck + 前端全量（39 文件）+ build 全绿。
