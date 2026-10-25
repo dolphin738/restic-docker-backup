@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.36（2026-10-26 三十六修订：**P19 快捷路径全项目统一为 D 形态地址栏（§4.9.9）**——owner 裁决「按 D 实施 + 其他有快捷路径的地方都统一成 D」：原地升级既有 `PathBreadcrumb.vue` 为「面包屑分段跳转 + 根段三角挂载菜单 + 整条地址就地编辑」的地址栏（不新增第二个面包屑组件），替换恢复目标 / 备份源 / 仓库浏览弹窗三处各自平铺的挂载点 chips（演示页实测 190px/8 行 → 恒定 25px/1 行）。本文件全部历史修订（v1.0–v1.36）合并记载于文末「修订记录」节，版本头不再重复内联。——owner 裁决 Q1=A（三条白名单统一按部署形态派生）且 Q2 同批，修掉 host 模式下「原位恢复目标不在该快照的备份路径范围内」实拍缺陷，新增 §4.9.8）。本文件全部历史修订（v1.0–v1.35）合并记载于文末「修订记录」节，版本头不再重复内联。
+> 版本：v1.37（2026-10-26 三十七修订：**P20 步骤条暗色对比度修复 + 全站向导步骤条统一（§4.9.10）**——实测取证暗色下步骤文案对比度仅 **1.09–1.16**（裸 `<button>` 的 UA 默认 `buttontext` 恒黑），升为共用 `WizardStepper.vue` 并新增自持 `--rw-text-*` / `--rw-on-accent` 令牌后达 **6.33–15.99**；同时「仓库新建」文件路径改为内联「目录树选择 + 路径展示」（对齐仪表盘编辑任务第②步）。本文件全部历史修订（v1.0–v1.37）合并记载于文末「修订记录」节，版本头不再重复内联。——owner 裁决「按 D 实施 + 其他有快捷路径的地方都统一成 D」：原地升级既有 `PathBreadcrumb.vue` 为「面包屑分段跳转 + 根段三角挂载菜单 + 整条地址就地编辑」的地址栏（不新增第二个面包屑组件），替换恢复目标 / 备份源 / 仓库浏览弹窗三处各自平铺的挂载点 chips（演示页实测 190px/8 行 → 恒定 25px/1 行）。本文件全部历史修订（v1.0–v1.36）合并记载于文末「修订记录」节，版本头不再重复内联。——owner 裁决 Q1=A（三条白名单统一按部署形态派生）且 Q2 同批，修掉 host 模式下「原位恢复目标不在该快照的备份路径范围内」实拍缺陷，新增 §4.9.8）。本文件全部历史修订（v1.0–v1.35）合并记载于文末「修订记录」节，版本头不再重复内联。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -664,6 +664,35 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 
 **明确不做（防回潮）**：地址栏不做「新建目录」（后端无 mkdir 端点）、不做路径自动补全与历史记录（无数据源，做了即假开关）、不把挂载点菜单改成 teleport 下拉（就地展开即可查可测，且暗色继承不依赖 portal）。
 
+### 4.9.10 P20：步骤条暗色对比度修复 + 全站向导步骤条统一（2026-10-26）
+
+**触发**：owner 实拍「暗黑主题下恢复向导文案看不清」+ 要求把全站向导的步骤序号数字与文案统一为恢复向导样式并抽成可复用件；同期「仓库配置 → 新建仓库」的文件路径按仪表盘「编辑任务」第②步改造。
+
+**根因（实测取证，非推断）**：新建探针 `.e2e/p20-stepper-contrast.cjs` 直接量 `getComputedStyle` + 按 WCAG 2.1 算对比度（文字 alpha 合成到最近不透明祖先，元素 opacity 一并计入），暗色下：
+
+| 位置 | 修复前 | 修复后 |
+|---|---|---|
+| 步骤标题（选择文件 / 恢复选项 / 执行与结果） | **1.09 – 1.16** | **10.92 – 15.99** |
+| 步骤序号徽标 | **1.32 – 1.41** | **6.33 – 13.18** |
+| 亮色主题（对照组） | 3.33 – 21（inactive 步 3.33/3.98 不达标） | 5.68 – 17.85 |
+
+真因是**裸 `<button>` 的 UA 默认 `color: buttontext` 恒为黑**——暗色主题不改 UA 默认值，黑字压 #14161C 只剩 1.16:1。组件只写了 `font: inherit`（**不含 color**），且不能靠 `color: inherit` 兜底：`index.html` 为防首屏白闪把 `#app` 文本色钉成浅色，亮色主题下会反噬（浅字压白底）。另：`--n-action-color` 只在 naive 组件根上存在，普通 div 取不到（P6 既有结论），徽标底色实际落在灰色半透明兜底上。
+
+**改动**：
+
+1. **令牌层**（`theme/skin.css`）新增自持变量，亮/暗各一套：`--rw-text-1/2/3`（与 `tokens.ts` common.textColor1/2/3 同源）、`--rw-primary` / `--rw-success` / `--rw-on-accent`。**`--rw-on-accent` 亮暗相反**（亮 `#ffffff` / 暗 `#14161C`）——暗色主色 #7C93F5、成功色 #81C601 都是高亮色，压白字只有 2.86:1 / 2.08:1，必须压深色。
+2. **组件层**：`restore/RestoreStepper.vue` **提升为全站共用 `components/WizardStepper.vue`**（S-4：不复制第二份），旧文件删除。四处向导统一消费——恢复向导 / 任务向导（5 步，`n-steps` → 本组件）/ 首启引导（3 步，description 由新字段承载）/ 三步确认门（无关键词时 2 步，序号按数组连续重排）。**弱化不可跳步的手段由 `opacity:.5` 改为降级文本色 `--rw-text-2`**（opacity 在暗色下同样掉出 AA，且对比度不可控）。
+3. **仓库新建的文件路径**（`pages/repo/index.vue`）：原「输入框 + 浏览…弹窗」改为**内联**「目录树选择 + 路径展示」——左栏地址栏（`PathBreadcrumb`）+ 目录树（`VirtualTree`）+ 提示，右栏「已选路径」输入框 + 说明，比例 55/45 与 ≤960 回落单栏均照抄 `SourcesPicker`；**弹窗与 `浏览…` 按钮退役**（S-4：同一能力不留两份实现）。手输保留：新仓库目录往往**尚不存在**，纯树选无法表达「我要建在 /srv/repo-new」。点目录名 = 选为目标且**不改浏览层**（导航只在地址栏/三角）。
+
+**过程实证（两处，均属「不跑真机测不出来」）**：
+
+- **片段根吃掉事件透传**：模板里 `<nav>` 之前写了行 HTML 注释 → 模板变片段根，Vue 对片段根**既不透传事件监听**也把 `$el` 退化成占位节点。后果是任务向导的 `@keydown`（←/→ 与数字键 1–5 跳步）**静默失效**；VTU 里征兆是 `w.element.tagName` 由 `NAV` 变 `DIV`。已把注释移到 `<template>` 之外并在文件头写死禁令。
+- **naive `.n-form-item-blank` 是 `display:flex; flex-direction:row`**（实测）：两个裸子节点被平分成左右各 50%，曾把目录树挤成半宽。已显式包一层 `.repo__path-row` 声明比例与窄屏回落。
+
+**护栏**：新增 `components/__tests__/WizardStepper.spec.ts` **8 例**（序号按数组连续编号 / description 有则渲染 / 根元素是 `nav` 且 `aria-label`·`tabindex` 透传 / `@keydown` 透传 / 三态 / inactive 双向不可达 / emit 原 key / enabled 缺省全可跳）；`theme/__tests__/tokens.spec.ts` 新增 **P20 令牌节 4 例**（文本三档与 primary/success 跨文件同源、`--rw-on-accent` 亮暗相反、步骤条禁裸 `--n-*` 且**禁 opacity 弱化**——只扫 `<style>` 块，脚本区注释里的字样会误命中）。真机探针 `.e2e/p20-stepper-contrast.cjs`（四处向导 × 亮暗，AA 4.5 判定）与 `.e2e/p20-repo-path-picker.cjs`（1440/390）全绿。
+
+**验证**：typecheck 干净 + 全量 **43 文件 / 432 passed** + build ✓ + 真机双探针 pass、零 pageerror 零横向溢出。**零后端改动**。
+
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 
 | 维度 | 口径 |
@@ -827,6 +856,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 ---
 
 ## 修订记录
+
+- v1.37（2026-10-26 三十七修订）：**P20 步骤条暗色对比度修复 + 全站向导步骤条统一（§4.9.10）**——owner 实拍「暗色主题下恢复向导文案看不清」并指令「全站向导步骤序号与文案统一为恢复向导样式、抽成可复用件」。**取证**：新建 `.e2e/p20-stepper-contrast.cjs` 实量 WCAG 对比度，暗色标题 **1.09–1.16**、徽标 **1.32–1.41**（AA 需 ≥4.5）；根因是裸 `<button>` 的 UA 默认 `color: buttontext` **恒黑**，而组件只写了 `font: inherit`（不含 color），且不能靠 `color: inherit` 兜底（index.html 为防白闪把 `#app` 文本色钉成浅色，亮色会反噬）。**改动**：① skin.css 新增自持 `--rw-text-1/2/3`（与 tokens.ts textColor1/2/3 同源）、`--rw-primary`/`--rw-success`/`--rw-on-accent`（**亮暗相反**：暗色主色/成功色是高亮色，压白字仅 2.86/2.08）；② `restore/RestoreStepper.vue` 提升为共用 `components/WizardStepper.vue`，恢复向导 / 任务向导（5 步，弃 `n-steps`）/ 首启引导（3 步 + description）/ 三步确认门（无关键词 2 步，序号按数组连续）四处统一，不可跳步由 `opacity:.5` 改为降级文本色；③ 仓库新建文件路径改内联「目录树选择 + 路径展示」（左 55% 地址栏+树+提示 / 右 45% 已选路径输入框，≤960 回落到单栏，照抄 `SourcesPicker`），**弹窗与「浏览…」按钮退役**，手输保留（新目录可能尚不存在）。**过程实证**：模板里 `<nav>` 前的 HTML 注释导致**片段根**、吃掉 `@keydown` 透传（任务向导数字键跳步静默失效，VTU 征兆 `NAV`→`DIV`）；naive `.n-form-item-blank` 是 row-flex，裸子节点被平分成左右各 50%（树曾挤成半宽）。**护栏**：`WizardStepper.spec.ts` 8 例 + `tokens.spec.ts` P20 节 4 例（禁裸 `--n-*` 且禁 opacity，只扫 `<style>` 块）。**验证**：typecheck 干净 + 全量 **43 文件 / 432 passed** + build ✓ + 真机探针 `p20-stepper-contrast`（四处向导 × 亮暗全部 ≥5.68）与 `p20-repo-path-picker`（1440/390）pass。**零后端改动**。
 
 - v1.36（2026-10-26 三十六修订）：**P19 快捷路径全项目统一为 D 形态地址栏（§4.9.9）**——owner 裁决「按 D 实施；复用项目已有、不重复造轮子；其他有快捷路径的地方都统一成 D」。**取证**：演示页 `restore-picker-preview-p18.html`（真实 WSL 13 挂载点）实测 A 形态（平铺 chips）快跳区 **190px / 8 行**、长路径顶满行，D 形态**恒定 25px / 1 行**。**改动**：① 原地升级 `components/PathBreadcrumb.vue`（S-4：不新增第二个面包屑组件）——面包屑分段跳转 + 根段旁三角挂载菜单（**两段独立热区**：点根段只跳转 / 点三角只开菜单）+ 整条地址为编辑热区（hover `outline` 虚线框覆盖完整地址、不占布局无抖动；点空白或末段变地址栏；Enter 提交 / Esc 取消 / 失焦合法即提交、非法即取消并 emit `invalid`，**不保留编辑态**＝不劫持焦点），新增可选 props `root`/`mounts`/`validate`/`editable`，老调用方（path + @select）零改动；② 三处消费方统一——`RestoreTargetPicker`（删 `SegmentedTabs` 二分段与 chips，地址栏兼手输且**导航即目标**）、`SourcesPicker`（chips → 地址栏，跳转只改浏览层、成员资格仍由点目录名切换）、`pages/repo/index.vue` 浏览弹窗（`n-tag` 群 → 地址栏，清 `NTag` 死 import 与 `.repo__mounts` 死 CSS）；③ i18n 双语新增 `pathBar.*` 6 键、清死键 `repo.mountRoot`/`repo.browseHint` 与 `picker.{browse,manual,modeAria,pathLabel,manualHint,errEmpty,errAbsolute,errTraversal}`。**护栏**：新增 `PathBreadcrumb.spec.ts` **14 例**（两段热区 / 挂载菜单 / 编辑三键 / 失焦两种分支 / editable 退化 / root 与越界显示），`RestoreTargetPicker.spec.ts` 8 例改走地址栏，`sourcesPickerJump.spec.ts` 断言对象由 chip 换为 `.pcrumb__menu-item`（chips 常驻与真跳转语义保留）。**过程实证**：首跑抓到 `root='/'` 拼出 `//mnt` 双斜杠（与后端 `PathMapper._is_under` 的 `//` 判定同款坑），已按「根为 `/` 则累加自空串起」修正。**明确不做**：地址栏不新建目录（后端无 mkdir）、不做补全/历史（无数据源＝假开关）、菜单不用 teleport 下拉（就地展开可查可测、暗色不依赖 portal）。**验证**：typecheck 干净 + 全量 **42 文件 / 420 passed**（+1 文件 +14 例）+ build ✓；**零后端改动**。
 
