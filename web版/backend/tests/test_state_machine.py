@@ -290,6 +290,27 @@ async def test_manual_conflict_also_triggers_on_pending(tmp_path):
     await db.close()
 
 
+async def test_conflict_answered_without_waiting_for_repo_lock(tmp_path):
+    """仓库锁被运行中任务持有时，提交必须**立刻** 409，而不是阻塞到任务结束。
+
+    真机取证 2026-10-25：``_run`` 按 E1 整段持有仓库锁，旧 ``submit`` 直接
+    ``async with lock`` → 任务运行期间点「开始」会静默挂住，直到任务结束才突然
+    开始备份（既没有 409，也没有任何提示）。修复：提交前先无锁查活跃任务，命中
+    即走冲突快路径（锁内仍复核一次，判定权威性不变）。
+    """
+    db, runner, repo = await make_runner(tmp_path, lines=BACKUP_LINES)
+    await insert_job(repo, "long-running", "running")
+
+    repo_url = await runner._repo_url("default")  # noqa: SLF001 - 测试取证内部状态
+    async with runner._repo_lock(repo_url):  # noqa: SLF001 - 模拟运行中任务占锁
+        # 2s 超时：旧实现阻塞到锁释放（抛出 TimeoutError，用例失败）
+        with pytest.raises(JobConflictError):
+            await asyncio.wait_for(
+                runner.submit("backup", params={"sources": ["/sources/etc"]}), timeout=2
+            )
+    await db.close()
+
+
 async def test_scheduled_conflict_records_cancelled_job_and_audit(tmp_path):
     """scheduled 冲突不 409：落一条 cancelled 任务 + 审计后跳过（§5.1 E12 注）。"""
     db, runner, repo = await make_runner(tmp_path)

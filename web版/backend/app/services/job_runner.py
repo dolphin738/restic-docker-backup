@@ -288,40 +288,29 @@ class JobRunner:
             raise ValidationError(f"不支持的任务类型：{job_type}", data={"allowed": list(JOB_TYPES)})
         repo_url = await self._repo_url(repo_id)
         lock = self._repo_lock(repo_url)
+        # 冲突处置口径（两处调用点共用，语义必须一致）：manual → 409；scheduled → 落 cancelled 跳过
+        on_conflict = {
+            "job_type": job_type,
+            "trigger": trigger,
+            "repo_id": repo_id,
+            "policy_id": policy_id,
+            "task_id": task_id,
+            "snapshot_id": snapshot_id,
+        }
+
+        # 无锁快路径（真机取证 2026-10-25）：仓库锁被**运行中的任务**整段持有，直接
+        # ``async with`` 会把提交阻塞到任务结束（UI 表现：点了没反应，运行完才突然
+        # 开始备份）。先无锁查一次活跃任务，命中即按冲突语义立刻作答（409 / 跳过）。
+        fast_active = await self._jobs.list_active(repo_id)
+        if fast_active:
+            return await self._skip_or_conflict(fast_active[0], **on_conflict)
 
         async with lock:
-            # E1 仓库维度互斥：只查**同仓库**的活跃任务——多仓库互不阻塞
+            # E1 仓库维度互斥：只查**同仓库**的活跃任务——多仓库互不阻塞。
+            # 锁内复核：快路径与此刻之间可能有他人抢跑（本检查是权威判定）。
             active = await self._jobs.list_active(repo_id)
             if active:
-                conflict = active[0]
-                if trigger == "manual":
-                    raise JobConflictError(
-                        data={
-                            "running_job_id": conflict.id,
-                            # US-026-04 AC2：UI 提示「已有任务进行中：<任务名>」；
-                            # 运行中 job 无任务关联（legacy 策略 job）时为 None。
-                            "running_task_name": await self._task_name(conflict.task_id),
-                        }
-                    )
-                # scheduled 冲突：不返回 409，落一条 cancelled + 审计后跳过（§5.1 E12 注）
-                skipped = await self._jobs.create(
-                    job_id=new_job_id(),
-                    job_type=job_type,
-                    trigger=trigger,
-                    log_path=str(self._settings.jobs_dir / f"{job_type}-skipped.log"),
-                    repo_id=repo_id,
-                    policy_id=policy_id,
-                    task_id=task_id,
-                    snapshot_id=snapshot_id,
-                    status="cancelled",
-                )
-                await self._audit.record(
-                    AUDIT_JOB_SKIPPED_CONFLICT,
-                    target=skipped.id,
-                    detail={"job_type": job_type, "conflict_job_id": conflict.id, "task_id": task_id},
-                    result="denied",
-                )
-                return skipped
+                return await self._skip_or_conflict(active[0], **on_conflict)
 
             job_id = new_job_id()
             log_path = str(self._settings.jobs_dir / f"{job_id}.log")
@@ -370,6 +359,53 @@ class JobRunner:
         )
         self._tasks[job_id] = asyncio.create_task(self._run(job), name=f"job-{job_id}")
         return job
+
+    async def _skip_or_conflict(
+        self,
+        conflict: Job,
+        *,
+        job_type: str,
+        trigger: str,
+        repo_id: str,
+        policy_id: int | None,
+        task_id: int | None,
+        snapshot_id: str | None,
+    ) -> Job:
+        """活跃任务命中时的冲突处置（``submit`` 的两处判定点共用，语义必须一致）。
+
+        - ``manual``：抛 :class:`JobConflictError`（409，拒绝不排队）；
+        - ``scheduled``：不返回 409，落一条 cancelled + 审计后跳过（§5.1 E12 注）。
+
+        Returns:
+            scheduled 冲突时返回那条 cancelled 任务；manual 冲突时抛错不返回。
+        """
+        if trigger == "manual":
+            raise JobConflictError(
+                data={
+                    "running_job_id": conflict.id,
+                    # US-026-04 AC2：UI 提示「已有任务进行中：<任务名>」；
+                    # 运行中 job 无任务关联（legacy 策略 job）时为 None。
+                    "running_task_name": await self._task_name(conflict.task_id),
+                }
+            )
+        skipped = await self._jobs.create(
+            job_id=new_job_id(),
+            job_type=job_type,
+            trigger=trigger,
+            log_path=str(self._settings.jobs_dir / f"{job_type}-skipped.log"),
+            repo_id=repo_id,
+            policy_id=policy_id,
+            task_id=task_id,
+            snapshot_id=snapshot_id,
+            status="cancelled",
+        )
+        await self._audit.record(
+            AUDIT_JOB_SKIPPED_CONFLICT,
+            target=skipped.id,
+            detail={"job_type": job_type, "conflict_job_id": conflict.id, "task_id": task_id},
+            result="denied",
+        )
+        return skipped
 
     async def cancel(self, job_id: str, *, force: bool = False) -> Job:
         """取消任务：SIGTERM → 宽限 grace_seconds → SIGKILL，终态 cancelled。
