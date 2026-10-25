@@ -277,8 +277,8 @@ export default {
   tier: {
     title: '运行模式',
     user: {
-      root: 'root',
-      nonRoot: '非 root',
+      root: '管理员身份',
+      nonRoot: '普通用户身份',
     },
     // A0 模式收敛后只按「运行用户」分档：备份源根恒为 /sources，
     // 远端目录（NFS/SMB/S3/B2 等）经宿主机挂载或 rclone mount 映射进来

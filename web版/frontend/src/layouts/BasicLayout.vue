@@ -195,7 +195,16 @@ const repoStatusTooltip = computed<string>(() => {
 const runningJobsCount = computed(() => activeJobsQuery.data.value?.total ?? 0)
 
 const activeKey = computed(() => String(route.name ?? ''))
-const currentUser = computed(() => ui.me?.user ?? '-')
+// 右上角用户菜单标签：root 运行用户不原样展示（容器运行身份属部署事实，
+// 界面只给中性身份词；与 TierCard 的 tier.user.* 同口径）。非 root 用户名
+// 由部署者自定（如 svc-backup 本就是中性值），原样保留。
+const currentUser = computed(() => {
+  const user = ui.me?.user
+  if (!user) {
+    return '-'
+  }
+  return user === 'root' ? t('tier.user.root') : user
+})
 
 function onMenuSelect(key: string | number): void {
   void router.push({ name: String(key) })

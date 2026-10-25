@@ -275,8 +275,8 @@ export default {
   tier: {
     title: 'Runtime mode',
     user: {
-      root: 'root',
-      nonRoot: 'non-root',
+      root: 'Administrator',
+      nonRoot: 'Standard user',
     },
     // A0 convergence: tiers now keyed only by run-as user; backup source root is always /sources,
     // with remote directories (NFS/SMB/S3/B2...) mapped in via host mounts or rclone mount.
