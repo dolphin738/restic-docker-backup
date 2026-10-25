@@ -13,7 +13,7 @@ import {
 } from '@/api/restore'
 import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
-import RestoreStepper from '@/components/restore/RestoreStepper.vue'
+import WizardStepper from '@/components/WizardStepper.vue'
 import Options from '@/pages/restore/flow/options.vue'
 import Progress from '@/pages/restore/flow/progress.vue'
 import SelectFiles from '@/pages/restore/flow/select-files.vue'
@@ -558,7 +558,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
     class="restore-flow"
     :class="{ 'restore-flow--fill': isFillHeight, 'restore-flow--wide': isWidePage }"
   >
-    <RestoreStepper
+    <WizardStepper
       class="restore-flow__stepper"
       :steps="stepItems"
       :current="step"

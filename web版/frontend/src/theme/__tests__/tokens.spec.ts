@@ -255,3 +255,64 @@ describe('P6 表面变量：skin.css 自持 + 与 tokens.ts borderColor 同源�
     }
   })
 })
+
+describe('P20 步骤条对比度令牌（暗色文案可读性）', () => {
+  const STEPPER_CSS = readFileSync(join(process.cwd(), 'src/components/WizardStepper.vue'), 'utf8')
+    .replace(/\r\n/g, '\n')
+
+  /** 取 skin.css 中某变量在 :root 与 .rw-dark 两处的值（小写）。
+   *  ⚠️ 定位必须用 `.rw-dark {` 带花括号——文件头注释里也出现了 `.rw-dark` 字样，
+   *  裸 indexOf 会把 :root 块从注释处斩断（实测：取到空串）。 */
+  function skinVar(name: string): { light: string; dark: string } {
+    const darkAt = SKIN_CSS.indexOf('.rw-dark {')
+    const root = SKIN_CSS.slice(0, darkAt)
+    const dark = SKIN_CSS.slice(darkAt)
+    const pick = (scope: string): string => {
+      const m = scope.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))
+      expect(m, `skin.css 未定义 ${name}`).toBeTruthy()
+      return m![1].trim().toLowerCase()
+    }
+    return { light: pick(root), dark: pick(dark) }
+  }
+
+  const hex = (value: string): string => (value.startsWith('#') ? value : `#${value}`)
+
+  it('文本三档与 tokens.ts common.textColor1/2/3 跨文件同源（亮暗各一套）', () => {
+    for (const [name, key] of [
+      ['--rw-text-1', 'textColor1'],
+      ['--rw-text-2', 'textColor2'],
+      ['--rw-text-3', 'textColor3'],
+    ] as const) {
+      const v = skinVar(name)
+      expect(hex(v.light)).toBe((lightThemeOverrides.common as Record<string, string>)[key].toLowerCase())
+      expect(hex(v.dark)).toBe((darkThemeOverrides.common as Record<string, string>)[key].toLowerCase())
+    }
+  })
+
+  it('强调面主色/成功色与 tokens.ts primaryColor / successColor 同源', () => {
+    const primary = skinVar('--rw-primary')
+    const success = skinVar('--rw-success')
+    expect(hex(primary.light)).toBe(lightThemeOverrides.common?.primaryColor?.toLowerCase())
+    expect(hex(primary.dark)).toBe(darkThemeOverrides.common?.primaryColor?.toLowerCase())
+    expect(hex(success.light)).toBe(lightThemeOverrides.common?.successColor?.toLowerCase())
+    expect(hex(success.dark)).toBe(darkThemeOverrides.common?.successColor?.toLowerCase())
+  })
+
+  it('强调面上的文本色亮暗相反（暗色主色/成功色是高亮色，压白字不过 AA）', () => {
+    const onAccent = skinVar('--rw-on-accent')
+    expect(hex(onAccent.light)).toBe('#ffffff')
+    // 暗色强调面压深色文本（= dark bodyColor）：#7C93F5 压 #14161C = 6.46，压白字仅 2.86
+    expect(hex(onAccent.dark)).toBe(darkThemeOverrides.common?.bodyColor?.toLowerCase())
+  })
+
+  it('步骤条显式取 --rw-*，禁裸 --n-* 与 font:inherit 了事（buttontext 恒黑）', () => {
+    // 真因（2026-10-26 实测 .e2e/p20-stepper-contrast.cjs）：裸 <button> 的 UA 默认
+    // color:buttontext 恒为黑，暗色主题下标题对比度仅 1.16:1。故必须显式声明文本色。
+    // 只扫 <style> 块——脚本区注释里会提到旧实现的弱化手法，会误命中。
+    const style = STEPPER_CSS.slice(STEPPER_CSS.indexOf('<style'))
+    expect(style, '未显式声明文本色（会退回 buttontext 黑字）').toMatch(/color:\s*var\(--rw-text-/)
+    expect(style, '引用了不存在的 naive 变量').not.toMatch(/var\(--n-/)
+    // 不可跳步用降级文本色表达，不用透明度（透明度在暗色下同样掉出 AA，且对比度不可控）
+    expect(style.match(/opacity\s*:/g) ?? [], '步骤条禁止用透明度弱化').toHaveLength(0)
+  })
+})

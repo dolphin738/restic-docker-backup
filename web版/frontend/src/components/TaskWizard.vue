@@ -19,8 +19,6 @@ import {
   NInputNumber,
   NSelect,
   NSpace,
-  NStep,
-  NSteps,
   NSwitch,
   NTag,
   NText,
@@ -58,6 +56,7 @@ import SourcesPicker from '@/components/task/SourcesPicker.vue'
 import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
 import StatusTag from '@/components/StatusTag.vue'
 import TierCard from '@/components/TierCard.vue'
+import WizardStepper from '@/components/WizardStepper.vue'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'
 
@@ -375,6 +374,15 @@ function goPrev(): void {
 }
 
 // ---------------------------------------------------------------- E3/G7 步骤条跳步
+/** 步骤定义（P20：WizardStepper 统一消费；key 与 step 变量、数字键 1–5 三处对齐）。 */
+const stepItems = computed(() => [
+  { key: 1, title: t('wizard.step1') },
+  { key: 2, title: t('wizard.step2') },
+  { key: 3, title: t('wizard.step3') },
+  { key: 4, title: t('wizard.step4') },
+  { key: 5, title: t('wizard.step5') },
+])
+
 /** 跳步规则：向后随意（不丢数据）；向前须逐级通过校验（含第③步连接测试门禁），
  *  首个不通过的步即为落点——与「提交时回流首个未过步骤」同一套判定，避免两处口径漂移。 */
 function onStepJump(target: number): void {
@@ -739,22 +747,19 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 <template>
   <n-space vertical :size="16">
     <n-card :title="isEdit ? t('task.edit') : t('wizard.submitCreate')" size="small">
-      <!-- E3：步骤条可点击跳步（naive 在提供 @update:current 时自动加 --clickable 态）+ 键盘可达
-           （←/→ 翻步、数字键 1–5 直达）。nav 承载键盘焦点与 aria 语义。 -->
-      <nav
+      <!-- E3：步骤条可点击跳步 + 键盘可达（←/→ 翻步、数字键 1–5 直达）。
+           P20：n-steps 换成全站共用 WizardStepper（步骤序号徽标 + 文案与恢复向导同款）；
+           组件根元素即 <nav>，tabindex / aria-label / @keydown 经 attribute 透传落到它身上，
+           故不再另行包一层 nav（nav 套 nav 属无效嵌套）。 -->
+      <WizardStepper
         class="wizard__steps-nav"
+        :steps="stepItems"
+        :current="step"
         :aria-label="t('wizard.stepsNavLabel')"
         tabindex="0"
         @keydown="onStepsKeydown"
-      >
-        <n-steps :current="step" size="small" class="wizard__steps" @update:current="onStepJump">
-          <n-step :title="t('wizard.step1')" />
-          <n-step :title="t('wizard.step2')" />
-          <n-step :title="t('wizard.step3')" />
-          <n-step :title="t('wizard.step4')" />
-          <n-step :title="t('wizard.step5')" />
-        </n-steps>
-      </nav>
+        @select="onStepJump"
+      />
 
       <n-alert v-if="isEdit && taskLoadFailed" type="error" :show-icon="false">
         {{ t('dashboard.loadFailed', { message: taskLoadFailed }) }}
@@ -1028,9 +1033,11 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 </template>
 
 <style scoped>
-/* E3：步骤条容器承载键盘焦点——焦点环只在此容器上出现，避免与按钮焦点态混淆 */
+/* E3：步骤条容器承载键盘焦点——焦点环只在此容器上出现，避免与按钮焦点态混淆。
+   P20：容器即 WizardStepper 的根 <nav>（不再另包一层），下边距原由 .wizard__steps 提供。 */
 .wizard__steps-nav {
   border-radius: 6px;
+  margin-bottom: 8px;
 }
 
 /* 移动端走查：5 步在 390px 放不下，横向滚动优于裁切。
@@ -1046,10 +1053,6 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 .wizard__steps-nav:focus-visible {
   outline: 2px solid var(--n-color-target, #2080f0);
   outline-offset: 2px;
-}
-
-.wizard__steps {
-  margin-bottom: 8px;
 }
 
 /* G7：页脚与表单主体分开一行，返回/继续分列两端 */

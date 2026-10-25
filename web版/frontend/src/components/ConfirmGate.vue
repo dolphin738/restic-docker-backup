@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NInput, NModal, NStep, NSteps, NSpace, NText } from 'naive-ui'
+import { NAlert, NButton, NCard, NInput, NModal, NSpace, NText } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import WizardStepper from '@/components/WizardStepper.vue'
 
 /** 危险操作确认门（§5 贯穿性安全交互规范）：预览 →（可选）输入确认文本 → 二次确认。
  * 预览区是可插拔插槽（#preview），无预览数据也能工作（只显示 description）。
@@ -37,6 +38,17 @@ const typed = ref('')
 const hasKeyword = computed(() => typeof props.keyword === 'string' && props.keyword.length > 0)
 const keywordOk = computed(() => typed.value.trim() === props.keyword)
 
+/** 步骤定义（P20：WizardStepper 消费）。key 保持 1/2/3 与 step 变量对齐——
+ *  无关键词时第 2 步缺位，序号仍按实际步序连续重排（数组决定序号，不做跳号）。 */
+const stepItems = computed(() => {
+  const items: Array<{ key: number; title: string }> = [{ key: 1, title: t('confirm.stepPreview') }]
+  if (hasKeyword.value) {
+    items.push({ key: 2, title: t('confirm.stepKeyword') })
+  }
+  items.push({ key: 3, title: t('confirm.stepFinal') })
+  return items
+})
+
 watch(
   () => props.show,
   (visible) => {
@@ -60,11 +72,9 @@ function onConfirm(): void {
 <template>
   <n-modal :show="show" @update:show="close">
     <n-card style="width: 560px" :title="title" closable @close="close">
-      <n-steps :current="step" size="small">
-        <n-step :title="t('confirm.stepPreview')" />
-        <n-step v-if="hasKeyword" :title="t('confirm.stepKeyword')" />
-        <n-step :title="t('confirm.stepFinal')" />
-      </n-steps>
+      <!-- P20：统一走 WizardStepper（与恢复向导同款序号徽标 + 文案）。
+           条件步（有关键词才有第 2 步）由 steps 数组本身表达，序号随数组连续重排。 -->
+      <WizardStepper :steps="stepItems" :current="step" :aria-label="title" />
 
       <div class="confirm__body">
         <!-- 第 1 步：预览（可插拔） -->

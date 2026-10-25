@@ -8,8 +8,6 @@ import {
   NIcon,
   NInput,
   NSpace,
-  NStep,
-  NSteps,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -19,6 +17,7 @@ import { useRouter } from 'vue-router'
 import { changePassword, fetchBootstrapPassword, fetchMe, login } from '@/api/auth'
 import { hasCode, isAppError } from '@/api/http'
 import { IconChevronRight, IconCopy, IconLock, IconUser } from '@/components/icons/icons'
+import WizardStepper from '@/components/WizardStepper.vue'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -39,7 +38,12 @@ const autoLoginFailed = ref(false)
 
 const form = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 
-const stepStatus = computed(() => (step.value >= 3 ? 'finish' : 'process'))
+/** 步骤定义（P20：WizardStepper 消费；description 承载原 n-step 的说明文案）。 */
+const stepItems = computed(() => [
+  { key: 1, title: t('bootstrap.step1Title'), description: t('bootstrap.step1Desc') },
+  { key: 2, title: t('bootstrap.step2Title'), description: t('bootstrap.step2Desc') },
+  { key: 3, title: t('bootstrap.step3Title'), description: t('bootstrap.step3Desc') },
+])
 
 function strengthOk(value: string): boolean {
   if (value.length < 10) {
@@ -127,11 +131,9 @@ async function autoLogin(newPassword: string): Promise<void> {
 <template>
   <div class="bootstrap">
     <n-card class="bootstrap__card" :title="t('bootstrap.title')" size="large">
-      <n-steps :current="step" :status="stepStatus" size="small">
-        <n-step :title="t('bootstrap.step1Title')" :description="t('bootstrap.step1Desc')" />
-        <n-step :title="t('bootstrap.step2Title')" :description="t('bootstrap.step2Desc')" />
-        <n-step :title="t('bootstrap.step3Title')" :description="t('bootstrap.step3Desc')" />
-      </n-steps>
+      <!-- P20：统一走 WizardStepper（与恢复向导同款序号徽标 + 文案）；
+           原 n-steps 的 description 由组件的 description 字段承载，信息不丢。 -->
+      <WizardStepper :steps="stepItems" :current="step" :aria-label="t('bootstrap.title')" />
 
       <n-space vertical :size="12" class="bootstrap__body">
         <!-- 步骤 1：一次性随机密码 -->

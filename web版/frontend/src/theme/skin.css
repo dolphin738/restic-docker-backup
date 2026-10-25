@@ -47,6 +47,20 @@
   --rw-focus: #3d5bd9;
   /* 危险文本色（树错误态等）：与 tokens.ts lightThemeOverrides.common.errorColor 同源 */
   --rw-danger: #b91c1c;
+
+  /* 文本三档（与 tokens.ts common.textColor1/2/3 同源）——P20 步骤条对比度修复的落点：
+     裸 <button> 的 UA 默认色是 buttontext（**恒黑**，不随暗色主题变化），靠 `color: inherit`
+     也不可靠（index.html 为防首屏白闪把 #app 文本色钉成浅色，亮色主题下反而失效）。
+     故形态层一律显式取本组变量，禁止裸 --n-* 与 font:inherit 了事。 */
+  --rw-text-1: #0f172a;
+  --rw-text-2: #475569;
+  --rw-text-3: #64748b;
+
+  /* 强调面（徽标底）与强调面上的文本色：后者**亮暗不同**——暗色主色 #7C93F5 / 成功色
+     #81C601 都是高亮色，压白字只有 2.86:1 / 2.08:1（远低于 AA 4.5），必须压深色。 */
+  --rw-primary: #3d5bd9;
+  --rw-success: #15803d;
+  --rw-on-accent: #ffffff;
 }
 
 /* 暗色三档阴影：低透明度黑。§4.6.4 要求「亮/暗各一套值」；强度刻意克制，
@@ -64,6 +78,17 @@
   --rw-focus: #7c93f5;
   /* 危险文本色暗色套（tokens.ts darkThemeOverrides.common.errorColor #e06c6c） */
   --rw-danger: #e06c6c;
+
+  /* 文本三档暗色套（darkThemeOverrides.common.textColor1/2/3）。
+     实测对比度（底 #14161C）：text-1 11.1 / text-2 11.1 / text-3 4.99 —— 全体过 AA。 */
+  --rw-text-1: #eef1f8;
+  --rw-text-2: #c3c9d9;
+  --rw-text-3: #7d8598;
+
+  /* 暗色强调面 + 深色文本（见 :root 同组注释）：#7C93F5 压 #14161C = 6.46，#81C601 压同色 = 10.1 */
+  --rw-primary: #7c93f5;
+  --rw-success: #81c601;
+  --rw-on-accent: #14161c;
 }
 
 /* ─── 间距工具类：六档 × gap / padding / padding-inline / padding-block / margin-top / margin-bottom ───

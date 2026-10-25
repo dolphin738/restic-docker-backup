@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import RestoreProgressRing from '@/components/restore/RestoreProgressRing.vue'
-import RestoreStepper from '@/components/restore/RestoreStepper.vue'
+import WizardStepper from '@/components/WizardStepper.vue'
 import WizardPage from '@/pages/restore/flow/index.vue'
 import { i18n } from '@/i18n'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -100,16 +100,16 @@ class FakeEventSource {
   }
 }
 
-describe('RestoreStepper（P9 可跳步步骤条）', () => {
+describe('WizardStepper（P9 可跳步步骤条 / P20 全站统一步骤条）', () => {
   function mountStepper(current: number, enabled?: Record<number, boolean>) {
-    return mount(RestoreStepper, {
+    return mount(WizardStepper, {
       props: { steps: STEPS, current, enabled, ariaLabel: '恢复向导步骤' },
     })
   }
 
   it('① 当前步标 aria-current，已过步标 is-done', () => {
     const w = mountStepper(2)
-    const btns = w.findAll('.restore-stepper__btn')
+    const btns = w.findAll('.wizard-stepper__btn')
     expect(btns[1].attributes('aria-current')).toBe('step')
     expect(btns[0].classes()).toContain('is-done')
     expect(btns[2].classes()).not.toContain('is-done')
@@ -117,7 +117,7 @@ describe('RestoreStepper（P9 可跳步步骤条）', () => {
 
   it('② V-2：未过步骤 inactive —— 鼠标不可点且键盘不可达', async () => {
     const w = mountStepper(1, { 1: true, 2: false, 3: false })
-    const btns = w.findAll('.restore-stepper__btn')
+    const btns = w.findAll('.wizard-stepper__btn')
     expect(btns[1].classes()).toContain('is-inactive')
     expect(btns[1].attributes('tabindex')).toBe('-1')
     expect(btns[1].attributes('aria-disabled')).toBe('true')
@@ -127,7 +127,7 @@ describe('RestoreStepper（P9 可跳步步骤条）', () => {
 
   it('③ 可跳步骤点击即 emit select', async () => {
     const w = mountStepper(1, { 1: true, 2: true, 3: false })
-    await w.findAll('.restore-stepper__btn')[1].trigger('click')
+    await w.findAll('.wizard-stepper__btn')[1].trigger('click')
     expect(w.emitted('select')?.[0]).toEqual([2])
   })
 })
@@ -166,13 +166,13 @@ describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
   it('④ 进入 options 路由 → 步骤条当前步为第 2 步', async () => {
     const { wrapper } = await mountWizard('/restore/snap-1/options')
     await flushPromises()
-    expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).toContain('is-current')
+    expect(wrapper.findAll('.wizard-stepper__btn')[1].classes()).toContain('is-current')
   })
 
   it('⑤ 点第 1 步跳回 → URL 同步到 select-files', async () => {
     const { wrapper, router } = await mountWizard('/restore/snap-1/options')
     await flushPromises()
-    await wrapper.findAll('.restore-stepper__btn')[0].trigger('click')
+    await wrapper.findAll('.wizard-stepper__btn')[0].trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.name).toBe('restore-select-files')
     expect(router.currentRoute.value.params.id).toBe('snap-1')
@@ -181,7 +181,7 @@ describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
   it('⑥ 未提交作业时第 3 步 inactive（不能跳到进度页）', async () => {
     const { wrapper } = await mountWizard('/restore/snap-1/select-files')
     await flushPromises()
-    expect(wrapper.findAll('.restore-stepper__btn')[2].classes()).toContain('is-inactive')
+    expect(wrapper.findAll('.wizard-stepper__btn')[2].classes()).toContain('is-inactive')
   })
 
   it('⑦ 跳步不弹离开确认（内部步骤切换不算离开，防误报回归）', async () => {
@@ -190,7 +190,7 @@ describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
     try {
       const { wrapper, router } = await mountWizard('/restore/snap-1/options')
       await flushPromises()
-      await wrapper.findAll('.restore-stepper__btn')[0].trigger('click')
+      await wrapper.findAll('.wizard-stepper__btn')[0].trigger('click')
       await flushPromises()
       expect(router.currentRoute.value.name).toBe('restore-select-files')
       expect(confirmSpy).not.toHaveBeenCalled()
@@ -338,12 +338,12 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
       await flushPromises()
       // 取消 → 不进门，仍停在步骤 1
       expect(confirmSpy).toHaveBeenCalled()
-      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).not.toContain('is-current')
+      expect(wrapper.findAll('.wizard-stepper__btn')[1].classes()).not.toContain('is-current')
 
       confirmSpy.mockReturnValue(true)
       await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
       await flushPromises()
-      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).toContain('is-current')
+      expect(wrapper.findAll('.wizard-stepper__btn')[1].classes()).toContain('is-current')
     } finally {
       vi.unstubAllGlobals()
     }
@@ -364,7 +364,7 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
       await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
       await flushPromises()
       // 进入步骤 2（原位置默认）
-      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).toContain('is-current')
+      expect(wrapper.findAll('.wizard-stepper__btn')[1].classes()).toContain('is-current')
 
       // 点「选择位置」单选卡 → 父级 restoreFrom 切换 → effect 把 customTarget 复位到 restoreRoot
       const radios = wrapper.findAll('[role="radio"]')
