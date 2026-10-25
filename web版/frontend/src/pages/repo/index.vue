@@ -456,6 +456,7 @@ const generatingId = ref(false)
 /** 进入新建态（对齐 Duplicati selectDestination('new')）：编辑态 + 空表单，类型未选前只出类型下拉。 */
 function openCreate(): void {
   clearRepoForm()
+  browsePath.value = CONTAINER_ROOT
   creatingNew.value = true
   editing.value = true
 }
@@ -739,6 +740,58 @@ const rcloneRemotesQuery = useQuery({
 const rcloneRemotes = computed<RcloneRemotesOut | null>(() => rcloneRemotesQuery.data.value ?? null)
 
 /** 已存仓库 → 表单（对齐 Duplicati mapper.from 的装载路径：URL 解析回字段）。 */
+// ---------------------------------------------------------------- 本地路径：目录树选择 + 路径展示（P20）
+/** 形态与仪表盘「编辑任务」第②步（SourcesPicker 左栏）一致：地址栏（D 形态面包屑）
+ *  + 目录树 + 提示，点目录名即选为仓库路径；手输保留在下方输入框（新仓库目录可能尚不存在，
+ *  纯树选无法表达「尚未创建的目录」，故不做成树的唯一入口）。
+ *  S-4：复用 PathBreadcrumb / VirtualTree / browseFs(E33)，不另写一份选择器。 */
+const CONTAINER_ROOT = '/'
+const browsePath = ref(CONTAINER_ROOT)
+const mountChips = ref<string[]>([])
+
+function fsLoader(path: string, cursor?: string): Promise<TreePage> {
+  return browseFs(path, cursor).then((page) => {
+    if (page.path === CONTAINER_ROOT) {
+      mountChips.value = page.mounts
+    }
+    return {
+      items: page.items.map((item) => ({
+        key: item.path,
+        name: item.name,
+        type: item.type,
+        path: item.path,
+      })),
+      nextCursor: page.next_cursor,
+    }
+  })
+}
+
+/** 点目录名 = 选为仓库路径（与向导「点名称即选」同手势）。
+ *  只写 repoForm.path，**不改 browsePath**——导航交给地址栏/三角形，避免「浏览一下就把
+ *  已填路径冲掉」（VirtualTree 的 selectDir 会自行展开该目录，视觉上仍有下钻反馈）。 */
+function onTreeSelect(item: TreeItem): void {
+  if (item.type === 'dir') {
+    repoForm.path = item.path
+  }
+}
+
+function jumpTo(path: string): void {
+  browsePath.value = path
+}
+
+/** 父目录（用于把树定位到已填路径的**上一层**：直接停在仓库目录里会摊开 restic 内部结构）。 */
+function parentOf(path: string): string {
+  const trimmed = (path || '').replace(/\/+$/, '')
+  if (!trimmed) {
+    return CONTAINER_ROOT
+  }
+  const idx = trimmed.lastIndexOf('/')
+  return idx <= 0 ? CONTAINER_ROOT : trimmed.slice(0, idx) || CONTAINER_ROOT
+}
+
+// 树起点由 loadRepoIntoForm / openCreate 播种（见各自注释）——此处不用 watch(repoForm.type)：
+// 类型切换会先清空 path，watch 拿到的恒是空串，播种不出「定位到已填路径父目录」的效果。
+
 function loadRepoIntoForm(): void {
   const r = repo.value
   if (!r) {
@@ -758,6 +811,11 @@ function loadRepoIntoForm(): void {
     }
   }
   savedUrl.value = url
+  // 本地仓库：把目录树定位到已填路径的**父目录**（停在仓库目录里会摊开 restic 内部结构），
+  // 编辑既有仓库时省去从根逐层展开。browsePath 声明在本函数之前，无 TDZ 风险。
+  if (repoForm.type === 'local') {
+    browsePath.value = parentOf(repoForm.path)
+  }
 }
 
 watch(
@@ -975,55 +1033,6 @@ function openCopy(): void {
   copyTarget.value = null
   copyResult.value = null
   copyShow.value = true
-}
-
-// ---------------------------------------------------------------- 本地路径目录选择弹窗（E33；对齐 Duplicati FolderTree + Browse...）
-const CONTAINER_ROOT = '/'
-const browsePath = ref(CONTAINER_ROOT)
-const mountChips = ref<string[]>([])
-const browseShow = ref(false)
-const browsePicked = ref('')
-
-function fsLoader(path: string, cursor?: string): Promise<TreePage> {
-  return browseFs(path, cursor).then((page) => {
-    if (page.path === CONTAINER_ROOT) {
-      mountChips.value = page.mounts
-    }
-    return {
-      items: page.items.map((item) => ({
-        key: item.path,
-        name: item.name,
-        type: item.type,
-        path: item.path,
-      })),
-      nextCursor: page.next_cursor,
-    }
-  })
-}
-
-function onTreeSelect(item: TreeItem): void {
-  browsePicked.value = item.path
-  if (item.type === 'dir') {
-    browsePath.value = item.path
-  }
-}
-
-/** 打开目录选择弹窗：从当前已选路径（或容器根）起浏览。 */
-function openBrowse(): void {
-  browsePath.value = repoForm.path || CONTAINER_ROOT
-  browsePicked.value = repoForm.path
-  browseShow.value = true
-}
-
-function confirmBrowse(): void {
-  if (browsePicked.value) {
-    repoForm.path = browsePicked.value
-  }
-  browseShow.value = false
-}
-
-function jumpTo(path: string): void {
-  browsePath.value = path
 }
 
 // ---------------------------------------------------------------- 保存 / 测试 / 解锁 / 初始化
@@ -1697,19 +1706,40 @@ function formatBytes(value: number): string {
               <!-- env 覆盖：地址整段只读（对齐 Duplicati readOnlyTest） -->
               <n-alert v-if="envLocked" type="warning" :show-icon="false">{{ t('repo.urlFromEnv') }}</n-alert>
 
-              <!-- local：文件路径 + 浏览…（FolderTree 弹窗，对齐 Duplicati Browse... 交互） -->
+              <!-- local：目录树选择 + 路径展示（P20；形态与仪表盘「编辑任务」第②步一致：
+                   地址栏 → 目录树 → 提示，点目录名即选为仓库路径）。
+                   手输一并保留在树下方：新仓库目录往往**尚不存在**，纯树选无法表达
+                   「我要建在 /srv/repo-new」，故树不是唯一入口（与向导「直接添加路径」同理由）。
+                   env 覆盖时整段只读，树隐去（地址不可改，给了就是假开关）。 -->
               <n-form-item v-if="repoForm.type === 'local'">
                 <template #label><ReqLabel :label="t('repo.fieldPath')" /></template>
-                <n-space :size="8" align="center" class="repo__cred">
-                  <n-input
-                    v-model:value="repoForm.path"
-                    :placeholder="t('repo.dest.localPlaceholder')"
-                    :disabled="envLocked"
-                  />
-                  <n-button size="small" secondary :disabled="envLocked" @click="openBrowse">
-                    {{ t('repo.browseBtn') }}
-                  </n-button>
-                </n-space>
+                <!-- ⚠️ 必须自己包一层布局容器：naive 的 .n-form-item-blank 是
+                     `display:flex; flex-direction:row`（实证），两个裸子节点会被平分成
+                     左右各 50%（曾因此把树挤成半宽）。此处显式声明左右比例与窄屏回落。 -->
+                <div class="repo__path-row">
+                  <div v-if="!envLocked" class="repo__path-tree">
+                    <PathBreadcrumb :path="browsePath" :mounts="mountChips" @select="jumpTo" />
+                    <VirtualTree
+                      :root-path="browsePath"
+                      :load-children="fsLoader"
+                      :height="260"
+                      select-dir
+                      :selected-path="repoForm.path"
+                      @select="onTreeSelect"
+                    />
+                    <n-text depth="3" class="repo__path-hint">{{ t('repo.pickPathHint') }}</n-text>
+                  </div>
+                  <div class="repo__path-value">
+                    <n-text strong class="repo__path-label">{{ t('repo.pickedPath') }}</n-text>
+                    <n-input
+                      v-model:value="repoForm.path"
+                      :placeholder="t('repo.dest.localPlaceholder')"
+                      :disabled="envLocked"
+                      class="repo__path-input"
+                    />
+                    <n-text depth="3" class="repo__path-hint">{{ t('repo.pickPathValueHint') }}</n-text>
+                  </div>
+                </div>
               </n-form-item>
 
               <!-- s3：服务器地址（Endpoint）+ Bucket + 文件夹路径。
@@ -2113,34 +2143,6 @@ function formatBytes(value: number): string {
         </div>
       </n-card>
     </template>
-
-    <!-- 本地路径目录选择（E33；对齐 Duplicati FolderTree + Browse... 弹窗交互） -->
-    <n-modal
-      v-model:show="browseShow"
-      preset="card"
-      :title="t('repo.browseTitle')"
-      style="width: min(640px, calc(100vw - 32px))"
-    >
-      <n-space vertical :size="12">
-        <!-- 快捷路径统一 D 形态（P19）：面包屑分段跳转 + 挂载点收进三角菜单 + 就地地址栏，
-             取代原先平铺的挂载点标签（标签多时顶满整行），恒定 1 行。 -->
-        <PathBreadcrumb :path="browsePath" :mounts="mountChips" @select="jumpTo" />
-        <VirtualTree
-          :root-path="browsePath"
-          :load-children="fsLoader"
-          :height="360"
-          select-dir
-          :selected-path="browsePicked"
-          @select="onTreeSelect"
-        />
-        <n-space justify="end">
-          <n-button quaternary @click="browseShow = false">{{ t('common.cancel') }}</n-button>
-          <n-button type="primary" :disabled="!browsePicked" @click="confirmBrowse">
-            {{ t('repo.browseConfirm') }}
-          </n-button>
-        </n-space>
-      </n-space>
-    </n-modal>
 
     <!-- 手动解锁：三步确认门 -->
     <ConfirmGate
@@ -2600,6 +2602,59 @@ function formatBytes(value: number): string {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 本地路径：目录树选择 + 路径展示（P20；比例与断点照抄 SourcesPicker 左树右栏，
+   保证与仪表盘「编辑任务」第②步同视觉语言）。
+   align-items: flex-start —— 右栏不该被左栏的树高拉伸；min-width:0 防窄屏横向溢出。 */
+.repo__path-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+}
+
+.repo__path-tree {
+  display: flex;
+  flex: 1 1 55%;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.repo__path-value {
+  display: flex;
+  flex: 1 1 45%;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.repo__path-label {
+  font-size: 14px;
+}
+
+.repo__path-hint {
+  display: block;
+  font-size: 12px;
+}
+
+.repo__path-input {
+  width: 100%;
+}
+
+/* 窄屏回落单栏（项目断点惯例 ≤960，§4.3） */
+@media (max-width: 960px) {
+  .repo__path-row {
+    flex-direction: column;
+  }
+
+  .repo__path-tree,
+  .repo__path-value {
+    flex: 1 1 auto;
+    width: 100%;
+  }
 }
 
 /* 编辑态（对齐 Duplicati destinations 编辑态）：顶部返回行 + 底部动作栏 */
