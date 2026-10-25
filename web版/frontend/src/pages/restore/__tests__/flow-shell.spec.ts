@@ -80,6 +80,25 @@ beforeEach(() => {
   mocks.searchTotal = 0
 })
 
+/** 假 EventSource：`useJobStream` 会 `new EventSource(...)` 建 SSE，测试环境不联网，
+ *  用哑实现替掉（不产生真实连接，也不影响 JobProgress 挂载）。 */
+class FakeEventSource {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
+  readyState = 0
+  onmessage: unknown = null
+  onerror: unknown = null
+  constructor(url: string) {
+    void url
+  }
+  addEventListener(): void {}
+  removeEventListener(): void {}
+  close(): void {
+    this.readyState = 2
+  }
+}
+
 describe('RestoreStepper（P9 可跳步步骤条）', () => {
   function mountStepper(current: number, enabled?: Record<number, boolean>) {
     return mount(RestoreStepper, {
@@ -260,25 +279,6 @@ describe('P11 完成态圆环（R9）', () => {
 })
 
 describe('P11 进度页三卡（R8 / SSE 终态）', () => {
-  /** 假 EventSource：`useJobStream` 会 `new EventSource(...)` 建 SSE，测试环境不联网，
-   *  用哑实现替掉（不产生真实连接，也不影响 JobProgress 挂载）。 */
-  class FakeEventSource {
-    static CONNECTING = 0
-    static OPEN = 1
-    static CLOSED = 2
-    readyState = 0
-    onmessage: unknown = null
-    onerror: unknown = null
-    constructor(url: string) {
-      void url
-    }
-    addEventListener(): void {}
-    removeEventListener(): void {}
-    close(): void {
-      this.readyState = 2
-    }
-  }
-
   it('④ 走到步骤 3 并触发 done → 三卡齐备 + 圆环出现 + 日志卡走既有 getJobLog', async () => {
     mocks.logContent = 'restoring /data ...\ndone'
     // 快照 paths 为空 → 原位不可用 → 自动回落时间戳流 → 步骤 2 的门无关键词阻塞
@@ -293,16 +293,16 @@ describe('P11 进度页三卡（R8 / SSE 终态）', () => {
       const { wrapper } = await mountWizard('/restore/snap-1/select-files')
       await flushPromises()
 
-      const clickNext = async (): Promise<void> => {
-        const btn = wrapper.findAll('button').find((b) => b.text().includes('下一步'))
-        expect(btn).toBeTruthy()
+      // 步骤 1 → 步骤 2（select-files 页脚「下一步」）
+      // 步骤 2 → 开门（P16：页脚改 Duplicati 式两端对齐，右按钮文案「提交」）
+      const clickByText = async (text: string): Promise<void> => {
+        const btn = wrapper.findAll('button').find((b) => b.text().includes(text))
+        expect(btn, `未找到按钮：${text}`).toBeTruthy()
         await btn!.trigger('click')
         await flushPromises()
       }
-      // 步骤 1 → 步骤 2
-      await clickNext()
-      // 步骤 2 → 开门
-      await clickNext()
+      await clickByText('下一步')
+      await clickByText('提交')
       wrapper.findComponent(ConfirmGate).vm.$emit('confirm')
       await flushPromises()
 
@@ -316,6 +316,65 @@ describe('P11 进度页三卡（R8 / SSE 终态）', () => {
       expect(wrapper.find('.ring').exists()).toBe(true)
       // V-4：日志复用既有 getJobLog，未新造数据源
       expect(getJobLog).toHaveBeenCalledWith('job-1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
+  it('⑨ 跨 OS 确认：快照 paths 含 Windows 分隔符 + 原位置流 → confirm 拦截，取消留步 1', async () => {
+    mocks.snapshots = [
+      { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: ['/data', 'D:\\backup'], size: 1024 },
+    ]
+    const confirmSpy = vi.fn(() => false)
+    vi.stubGlobal('confirm', confirmSpy)
+    try {
+      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      await flushPromises()
+      await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
+      await flushPromises()
+      // 取消 → 不进门，仍停在步骤 1
+      expect(confirmSpy).toHaveBeenCalled()
+      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).not.toContain('is-current')
+
+      confirmSpy.mockReturnValue(true)
+      await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).toContain('is-current')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('⑩ 模式切换 effect：选择位置 → customTarget 复位 restoreRoot，提交链落到 /restore', async () => {
+    mocks.snapshots = [
+      { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: ['/data'], size: 1024 },
+    ]
+    const { restoreSnapshot } = await import('@/api/restore')
+    vi.mocked(restoreSnapshot).mockClear()
+    // 确认门通过后进步骤 3，Progress 挂载会建 SSE——stub 掉（与 ④ 同口径）
+    vi.stubGlobal('EventSource', FakeEventSource)
+    try {
+      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      await flushPromises()
+
+      await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
+      await flushPromises()
+      // 进入步骤 2（原位置默认）
+      expect(wrapper.findAll('.restore-stepper__btn')[1].classes()).toContain('is-current')
+
+      // 点「选择位置」单选卡 → 父级 restoreFrom 切换 → effect 把 customTarget 复位到 restoreRoot
+      const radios = wrapper.findAll('[role="radio"]')
+      await radios[1].trigger('click')
+      await flushPromises()
+
+      await wrapper.findAll('button').find((b) => b.text().includes('提交'))!.trigger('click')
+      await flushPromises()
+      wrapper.findComponent(ConfirmGate).vm.$emit('confirm')
+      await flushPromises()
+
+      expect(vi.mocked(restoreSnapshot).mock.calls[0]?.[1]).toBe('/restore')
     } finally {
       vi.unstubAllGlobals()
     }
