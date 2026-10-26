@@ -67,13 +67,20 @@ services:
       # 注意：restic 跑在容器内，只认容器路径——UI 里填宿主机真实路径会报"仓库不存在或未初始化"
       # - /mnt/backup/restic-repo:/repo
 
-      # rclone 万能后端配置（A1）：宿主机 `rclone config` 生成后挂入（UI 只读探测
-      # remote 清单，不生成、不编辑、不展示 conf 内凭据——OAuth token 永不进 API）。
-      # **必须 :rw**：网盘 OAuth token 过期时 rclone 回写 conf，只读挂载 = 授权静默失效
-      # （R-022 登记的运维约束，A1 升级为硬约束）。sftp/azure/gcs/rest 等原生后端无需此行。
-      # **宿主机文件须先存在**：Docker 对不存在的 bind 源会建目录顶替，rclone 将读不到
-      # conf（状态卡显示"未检测到配置文件"）。首次部署：touch ./rclone/rclone.conf。
-      - ./rclone/rclone.conf:/etc/rclone/rclone.conf:rw
+      # rclone 万能后端配置（A1）：挂载 conf **所在目录**（不是单文件！）。
+      #
+      # **为什么必须是目录挂载**：rclone 保存 conf 走「临时文件 + 两次 rename 原子替换」，
+      # 而 rename 作用于**单文件 bind mount 的挂载点**上不生效——WSL 真机 A/B 实测
+      # （2026-10-26，rclone v1.60.1）：单文件挂载下 `rclone config create` 退出码为 0
+      # 却**没有任何落盘**（挂载点与宿主机源文件都没变），且写操作会**挂住不返回**；
+      # 目录挂载下 create/update/delete 全链路真实生效。因此目录挂载是**硬要求**，
+      # 否则 UI 的 rclone 配置管理会静默失效（见 docs/rclone配置生成工具设计方案.md §12）。
+      # 顺带：OAuth token 回写同一路径，目录挂载下才真正可用（原「必须 :rw」的前提）。
+      #
+      # **迁移**：老部署把 ./rclone/rclone.conf **移进 ./rclone/ 目录**即可（容器路径与
+      # RCLONE_CONFIG 都不变）。目录不存在时 Docker 会建空目录，rclone 首次写入会自建 conf。
+      # sftp/azure/gcs/rest 等原生后端无需此行。
+      - ./rclone:/etc/rclone:rw
 
       # sftp 后端（A1）：restic 经系统 ssh 子进程免密登录——挂载私钥与 known_hosts。
       # root 档（上方 user: "0:0"）挂 /root/.ssh；nonRoot 档（1000:1000）改挂
