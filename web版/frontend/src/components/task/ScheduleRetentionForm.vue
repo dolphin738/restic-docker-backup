@@ -23,8 +23,6 @@ import {
   NInputNumber,
   NSelect,
   NSpace,
-  NTabPane,
-  NTabs,
   NText,
 } from 'naive-ui'
 import { computed, reactive, ref, watch } from 'vue'
@@ -77,6 +75,14 @@ type CronMode = 'none' | 'simple' | 'advanced'
 const cronMode = ref<CronMode>('simple')
 const simple = reactive<SimpleSchedule>(defaultSimpleSchedule())
 const advCron = ref('')
+
+/** 调度方式下拉选项（owner 2026-10-26：三段 card tab 改下拉菜单——步骤 4 内容本就长，
+ *  tab 条把「保留策略」推得更低；下拉只占一行，且模式数恒为 3 时无需平铺暴露）。 */
+const cronModeOptions = computed(() => [
+  { label: t('wizard.scheduleMode.none'), value: 'none' as CronMode },
+  { label: t('wizard.scheduleMode.simple'), value: 'simple' as CronMode },
+  { label: t('wizard.scheduleMode.advanced'), value: 'advanced' as CronMode },
+])
 
 /** 当前内部态对应的 cron（用于判等，打破「emit → 父回填 → watch 重同步」回环）。 */
 function representedCron(): string {
@@ -259,11 +265,14 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
     <n-space vertical :size="8">
       <n-text strong>{{ t('wizard.schedule') }}</n-text>
 
-      <n-tabs v-model:value="cronMode" type="card" @update:value="onModeChange">
-        <n-tab-pane name="none" :tab="t('wizard.scheduleMode.none')" />
-        <n-tab-pane name="simple" :tab="t('wizard.scheduleMode.simple')" />
-        <n-tab-pane name="advanced" :tab="t('wizard.scheduleMode.advanced')" />
-      </n-tabs>
+      <!-- 调度方式：下拉菜单（原三段 card tab，owner 2026-10-26 改版） -->
+      <n-select
+        :value="cronMode"
+        :options="cronModeOptions"
+        size="small"
+        class="schedule-form__mode"
+        @update:value="onModeChange"
+      />
 
       <!-- 简单模式 -->
       <template v-if="cronMode === 'simple'">
@@ -469,6 +478,12 @@ const withinFields = computed<Array<{ key: keyof ScheduleRetentionValue; label: 
 
 .schedule-form__field {
   margin-bottom: 4px;
+}
+
+/* 调度方式下拉：与其它单控件字段同宽档（限制在左半区，不铺满整行） */
+.schedule-form__mode {
+  width: 220px;
+  max-width: 100%;
 }
 
 .schedule-form__cron {

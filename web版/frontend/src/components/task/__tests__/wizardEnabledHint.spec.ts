@@ -227,12 +227,13 @@ describe('TaskWizard 步骤切换渲染护栏', () => {
 })
 
 /**
- * 第④步：保留档位汉化 + 调度 tab 醒目（2026-10-24 owner 诉求）。
+ * 第④步：保留档位汉化 + 调度方式选择器（2026-10-24 owner 诉求；2026-10-26 改版）。
  *  - 保留档位标签不得再显示 keep-last / keep-hourly 等英文 flag 名；
- *  - 调度模式选择器由 segment 小药丸改为 line 下划线 tab（更醒目）且带名字。
+ *  - 调度模式选择器演进史：segment 小药丸 → card tab（2026-10-24）→ **下拉菜单**
+ *    （2026-10-26 owner：步骤 4 内容本就长，tab 条把保留策略推得更低）。
  * 断言走 DOM 文案（zh-CN）+ 结构类，不依赖组件内部变量名。
  */
-describe('TaskWizard 第④步保留档位汉化 + 调度 tab 醒目', () => {
+describe('TaskWizard 第④步保留档位汉化 + 调度方式下拉', () => {
   beforeEach(() => {
     localStorage.clear()
     i18n.global.locale.value = 'zh-CN'
@@ -266,15 +267,21 @@ describe('TaskWizard 第④步保留档位汉化 + 调度 tab 醒目', () => {
     w.unmount()
   })
 
-  it('调度模式以醒目的 card tab 呈现且带名字', async () => {
+  it('调度方式以下拉菜单呈现（不再有 tab 条）且模式名已汉化', async () => {
     const w = await mountWizard()
     await gotoStep(w, '4')
-    const tabs = w.element.querySelector('.n-tabs')
-    expect(tabs).not.toBeNull()
-    // 由 segment 小药丸改为 card 带边框的 tab 页，更醒目、且规避 line 下划线在空面板时不可见的坑
-    expect(tabs!.className).toContain('n-tabs--card-type')
-    // 三个模式 tab 均存在（结构护栏：模式数恒为 3）
-    expect(w.element.querySelectorAll('.n-tabs-tab__label').length).toBe(3)
+    // 改版护栏：原三段 card tab 必须消失（防止回退）
+    expect(w.element.querySelector('.n-tabs')).toBeNull()
+    // 下拉选择器在位于调度分区内，且当前值落在三种模式文案之一
+    const select = w.element.querySelector('.schedule-form__mode') as HTMLElement | null
+    expect(select).not.toBeNull()
+    const selected = (select!.textContent ?? '').trim()
+    const modeLabels = [
+      i18n.global.t('wizard.scheduleMode.none'),
+      i18n.global.t('wizard.scheduleMode.simple'),
+      i18n.global.t('wizard.scheduleMode.advanced'),
+    ]
+    expect(modeLabels.some((label) => selected.includes(label))).toBe(true)
     // 三个模式名均为中文（事件级护栏，避开 jsdom 下 naive 标签文本不落 DOM 的坑）
     expect(i18n.global.t('wizard.scheduleMode.none')).toContain('不调度')
     expect(i18n.global.t('wizard.scheduleMode.simple')).toContain('简单模式')
