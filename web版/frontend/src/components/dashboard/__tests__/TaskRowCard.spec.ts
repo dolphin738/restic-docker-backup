@@ -25,6 +25,18 @@ import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
 import { i18n } from '@/i18n'
 import type { TaskCard as TaskCardModel } from '@/api/types'
 
+/** 时间基准：**相对现在**，禁止硬编码绝对日期。
+ *
+ * 组件 `stale` 用 `Date.now() - last_run_at > 7 天` 判「7 天未跑」提示——fixture 写死
+ * `2026-10-19` 时，真实日历越过 2026-10-26T03:00Z 后该提示会突然出现，把「名称行无徽章」
+ * 断言打红（2026-10-26 实证的时间炸弹，与功能无关）。 */
+function agoIso(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString()
+}
+function aheadIso(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString()
+}
+
 /** 基准任务：启用中、上次成功、有耗时与快照数。 */
 function makeTask(overrides: Partial<TaskCardModel> = {}): TaskCardModel {
   return {
@@ -34,13 +46,13 @@ function makeTask(overrides: Partial<TaskCardModel> = {}): TaskCardModel {
     tag: 'task-7',
     cron: '0 3 * * *',
     status: 'success',
-    last_run_at: '2026-10-19T03:00:00Z',
+    last_run_at: agoIso(120), // 2 小时前：恒不触发「7 天未跑」
     last_result: 'success',
     last_duration_ms: 93_000,
     snapshot_count: 12,
     limit_up: 0,
     limit_down: 0,
-    next_run_at: '2026-10-20T03:00:00Z',
+    next_run_at: aheadIso(360),
     running_job_id: null,
     dry_run_pending: false,
     prune_due: false,
