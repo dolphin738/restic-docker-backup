@@ -25,6 +25,7 @@ from app.dependencies import current_repo_id
 from app.errors import NotFoundError, ValidationError
 from app.exclusions import normalize_user_excludes
 from app.schemas.api_schemas import (
+    JobCleanupResponse,
     JobCreateRequest,
     JobCreateResponse,
     JobLogResponse,
@@ -224,6 +225,35 @@ async def cancel_job(
     runner = request.app.state.job_runner
     await runner.cancel(job_id, force=force)
     return OkResponse()
+
+
+@router.post(
+    "/jobs/cleanup",
+    status_code=200,
+    response_model=JobCleanupResponse,
+    summary="任务历史立即清理（裁决5：仅清 jobs 行与任务日志）",
+    dependencies=_PROTECTED,
+)
+async def cleanup_jobs_history(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> JobCleanupResponse:
+    """任务历史页「立即清理」：**仅**清理 jobs 终态行与孤儿/过期任务日志。
+
+    不触碰审计日志（审计的归档/清理只由每日维护 ``cleanup_once`` 负责，避免用户在
+    任务历史页误触发审计删除，裁决5）。``retention.jobs_days<=0`` 时返回零值报告
+    （不删任何数据、fail-safe）。清理动作记 ``retention.cleanup`` 审计（S6）。
+    """
+    del session
+    retention = request.app.state.retention
+    report = await retention.cleanup_jobs_only()
+    return JobCleanupResponse(
+        jobs_deleted=report.jobs_deleted,
+        log_files_deleted=report.log_files_deleted,
+        log_bytes_freed=report.log_bytes_freed,
+        jobs_days=report.jobs_days,
+        logs_days=report.logs_days,
+    )
 
 
 @router.get("/jobs/{job_id}/log", response_model=JobLogResponse, summary="E27 任务日志尾部", dependencies=_PROTECTED)

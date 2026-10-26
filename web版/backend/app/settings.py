@@ -105,6 +105,12 @@ class Settings(BaseSettings):
         return Path(self.data_dir) / "dump"
 
     @property
+    def audit_archive_dir(self) -> Path:
+        """审计归档目录（/data/audit/archive，R-020 裁决3：压缩归档落盘处；
+        S1：路径字面量唯一出处）。DB 配置键 ``retention.audit_archive_dir`` 可覆盖。"""
+        return Path(self.data_dir) / "audit" / "archive"
+
+    @property
     def browse_root(self) -> str:
         """备份源树的浏览根（设计方案 §3.2 的**单一事实源**）。
 

@@ -192,6 +192,10 @@ AUDIT_COPY_RUN = "copy.run"  # C4 多目的地：restic copy 到镜像仓（跨�
 AUDIT_KEY_ROTATE = "key.rotate"  # C4 多目的地：restic key 轮换仓库密码（改密码，危险操作留痕）
 # E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
 AUDIT_TIME_SYNC = "time.sync"
+# R-020 裁决3：审计归档（压缩落盘，append-only 的「整段滚动导出」落地）
+AUDIT_ARCHIVE = "audit.archive"
+# R-020 裁决3：审计按保留期滚动清理（唯一受控 DELETE 路径，经 AuditRepo 单一出口；S6 例外）
+AUDIT_CLEANUP = "audit.cleanup"
 
 # ---------------------------------------------------------------- E39 时间同步（NTP 对时 + 系统时钟校准）
 
@@ -349,8 +353,25 @@ SNAPSHOT_FILES_MAX_OFFSET = 1_000_000
 # 任务历史/审计查询分页上限（Q13 基线：E13 对齐 E26 的既有上限，避免两套口径）
 HISTORY_QUERY_MAX_LIMIT = 500
 
-# retention（R-020）：jobs 行与任务日志的保留天数缺省（retention.jobs_days 可经 E07 调整）
+# retention（R-020）：jobs 行与任务日志的保留天数（retention.jobs_days 可经 E07 调整）
+RETENTION_JOBS_DAYS_KEY = "retention.jobs_days"
 RETENTION_JOBS_DAYS_DEFAULT = 90
+# retention.logs_days：任务日志文件保留天数；键缺省时回退 retention.jobs_days（实现 fallback，无新列）
+RETENTION_LOGS_DAYS_KEY = "retention.logs_days"
+
+# retention（R-020 裁决1/裁决3）：审计日志保留与归档
+# - retention.audit_days：审计行保留天数（缺省 365）；<=0 = 不启用自动清理（永不删）
+# - retention.audit_archive_days：压缩归档文件（.jsonl.gz）自身保留天数（缺省 365）；<=0 = 不清理
+# - retention.audit_archive_dir：归档目录（DB 配置键，留空回落 settings.audit_archive_dir）
+# - retention.audit_archive_cold_target：冷存目标占位（仅提示，应用不自动同步；部署文档指路外送）
+RETENTION_AUDIT_DAYS_KEY = "retention.audit_days"
+RETENTION_AUDIT_DAYS_DEFAULT = 365
+RETENTION_AUDIT_ARCHIVE_DAYS_KEY = "retention.audit_archive_days"
+RETENTION_AUDIT_ARCHIVE_DAYS_DEFAULT = 365
+RETENTION_AUDIT_ARCHIVE_DIR_KEY = "retention.audit_archive_dir"
+RETENTION_AUDIT_ARCHIVE_COLD_TARGET_KEY = "retention.audit_archive_cold_target"
+# 归档单文件（按年切分、追加不覆盖）：audit-<YYYY>.jsonl.gz（同一年的每日维护都追加进同一文件）
+AUDIT_ARCHIVE_FILE_GLOB = "audit-*.jsonl.gz"
 
 # 缓存占用统计（E25，Q14 基线）：du 超时 + 30s 进程内结果缓存（援 E30 REPO_STATUS_CACHE_SECONDS 先例）
 CACHE_USAGE_TIMEOUT_SECONDS = 30.0

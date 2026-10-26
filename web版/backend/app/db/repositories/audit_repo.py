@@ -1,11 +1,14 @@
 """audit_logs 表仓储（§4.6）：append-only，代码面只提供 INSERT 与 SELECT。
 
-归档方式见方案 §6.1：整段滚动导出后截断新文件，不覆盖已写入内容，故不存在 UPDATE/DELETE 路径。
+归档/清理方式见方案 §6.1 与任务历史与审计日志保留策略方案：
+- 正常写读：仅 INSERT / SELECT；
+- 唯一例外（S6 受控 DELETE）：按保留期滚动清理经本仓储的 :meth:`purge_older_than`
+  单一出口（全表只此一处 DELETE），且归档成功后才调用，归档失败即跳过删除（fail-safe）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,6 +132,88 @@ class AuditRepo:
         """返回审计日志中出现过的全部动作名（字典序去重，E26 筛选下拉数据源）。"""
         rows = await self._db.fetch_all("SELECT DISTINCT action FROM audit_logs ORDER BY action ASC")
         return [str(row["action"]) for row in rows]
+
+    async def iter_rows(
+        self,
+        *,
+        action_prefix: str | None = None,
+        result: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        batch: int = 1000,
+    ) -> AsyncIterator[AuditRow]:
+        """按 ts 窗口 + 动作前缀/结果游标遍历全表（供归档/导出 NDJSON）。
+
+        以 ``id`` 为主游标分批取（不依赖 OFFSET，避免深翻页退化）；``ts`` 比较沿用
+        ``query`` 同口径（服务端入参已是归一 UTC 文本）。调用方负责把行序列化落盘/外发。
+
+        Args:
+            action_prefix: 动作名前缀（与 :meth:`query` 同转义逻辑）。
+            result: 结果白名单（ok/denied/failed）。
+            since/until: ``ts`` 上下界（UTC ISO 文本）。
+            batch: 每批行数。
+        """
+        clauses: list[str] = []
+        params: list[str] = []
+        if action_prefix:
+            clauses.append("action LIKE ? ESCAPE '\\'")
+            params.append(f"{_escape_like(action_prefix)}%")
+        if result:
+            clauses.append("result = ?")
+            params.append(result)
+        if since:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until:
+            clauses.append("ts <= ?")
+            params.append(until)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        last_id = 0
+        while True:
+            rows = await self._db.fetch_all(
+                f"SELECT id, ts, action, target, detail, result, created_at FROM audit_logs "
+                f"{where} AND id > ? ORDER BY id ASC LIMIT ?",
+                tuple(params) + (last_id, batch),
+            )
+            if not rows:
+                break
+            for row in rows:
+                yield _to_row(row)
+            last_id = rows[-1]["id"]
+
+    async def purge_older_than(self, cutoff_iso: str, *, batch: int = 5000) -> int:
+        """受控删除 ``ts < cutoff_iso`` 的行（R-020 裁决3：唯一受控 DELETE 出口）。
+
+        分批经 :meth:`Database.write` 串行（A5）；每批先取 id 再按主键 IN 删除——比
+        ``DELETE ... LIMIT`` 更稳（SQLite 的 LIMIT 删除跨驱动表现不一）。归档失败路径
+        不得调用本方法（fail-safe 由 :class:`RetentionService` 保证）。
+
+        Args:
+            cutoff_iso: UTC ISO 文本上界；早于它的行被删除。
+            batch: 每批删除行数。
+
+        Returns:
+            实际删除行数（幂等：重跑零删除）。
+        """
+        total = 0
+        last_id = 0
+        while True:
+            ids = await self._db.fetch_all(
+                "SELECT id FROM audit_logs WHERE ts < ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (cutoff_iso, last_id, batch),
+            )
+            if not ids:
+                break
+            id_list = [int(row["id"]) for row in ids]
+            last_id = id_list[-1]
+            placeholders = ",".join("?" * len(id_list))
+            await self._db.write(
+                f"DELETE FROM audit_logs WHERE id IN ({placeholders})",
+                id_list,
+            )
+            total += len(id_list)
+        return total
 
 
 def _escape_like(value: str) -> str:

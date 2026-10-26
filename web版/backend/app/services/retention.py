@@ -9,20 +9,47 @@
 - 删除动作记审计 ``retention.cleanup``（detail 含行数/文件数/字节数，S6 只增不改）；
 - 幂等：清理是按阈值的绝对判定，重跑零删除（验收要点）。
 
+审计日志保留（R-020 裁决1 / 裁决3，方案 §6.1）：
+- ``retention.audit_days``（缺省 365）之前的审计行先**压缩归档**为
+  ``<audit_archive_dir>/audit-<YYYY>.jsonl.gz``（追加不覆盖），**归档成功后才按
+  受控 DELETE 出口 purge 对应行**（fail-safe：归档失败即跳过删除，宁可多留也不丢）；
+- 归档文件自身按 ``retention.audit_archive_days``（缺省 365）清理（``<=0`` 不清理）；
+- 归档目录默认 ``settings.audit_archive_dir``（``/data/audit/archive``），可由
+  ``retention.audit_archive_dir`` DB 键覆盖；
+- ``retention.audit_archive_cold_target``（冷存目标）**仅占位/提示**，应用不自动同步
+  （裁决3 选 B：外送交给既有 restic 备份 / rclone / 挂卷，部署文档指路）；
+- 归档/清理分别记 ``audit.archive`` / ``audit.cleanup``（S6）。
+
 红线落点：A1（SQL 只在 repo）、A5（写走 Database.write 串行）、C8（时间只走
-utils/time）、S1（文件只触碰 ``settings.jobs_dir`` 白名单内的 ``*.log``，不递归子目录）。
+utils/time）、S1（文件只触碰 ``settings.jobs_dir`` 与 ``audit_archive_dir`` 白名单，
+不递归子目录）、S6（审计只增不改，DELETE 唯一出口在 AuditRepo）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.constants import AUDIT_RETENTION_CLEANUP, RETENTION_JOBS_DAYS_DEFAULT
-from app.db.repositories.audit_repo import AuditRepo
+from app.constants import (
+    AUDIT_ARCHIVE,
+    AUDIT_ARCHIVE_FILE_GLOB,
+    AUDIT_CLEANUP,
+    AUDIT_RETENTION_CLEANUP,
+    RETENTION_AUDIT_ARCHIVE_DAYS_DEFAULT,
+    RETENTION_AUDIT_ARCHIVE_DAYS_KEY,
+    RETENTION_AUDIT_ARCHIVE_DIR_KEY,
+    RETENTION_AUDIT_DAYS_DEFAULT,
+    RETENTION_AUDIT_DAYS_KEY,
+    RETENTION_JOBS_DAYS_DEFAULT,
+    RETENTION_JOBS_DAYS_KEY,
+    RETENTION_LOGS_DAYS_KEY,
+)
+from app.db.repositories.audit_repo import AuditRepo, AuditRow
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.settings import Settings, get_settings
@@ -30,20 +57,35 @@ from app.utils.time import now_utc, utc_iso
 
 logger = logging.getLogger(__name__)
 
-# config 键（单一真源；E07 读写与运行期读取共用）
-RETENTION_JOBS_DAYS_KEY = "retention.jobs_days"
-RETENTION_LOGS_DAYS_KEY = "retention.logs_days"
+# 单次流式归档时，攒够多少行再落盘一次（控制内存，避免超期行一次性进内存）
+ARCHIVE_BUFFER_ROWS = 2000
 
 
 @dataclass(frozen=True)
 class RetentionReport:
-    """一次清理的结果（审计 detail 与调度日志共用）。"""
+    """一次清理的结果（审计 detail 与调度日志共用）。
+
+    注意：本报告只描述 **jobs 行 + 任务日志** 的清理（任务历史页「立即清理」与每日
+    维护共用的口径）；审计归档/清理走独立的 ``audit.archive`` / ``audit.cleanup``
+    审计条目，不混入本报告。
+    """
 
     jobs_deleted: int
     log_files_deleted: int
     log_bytes_freed: int
     jobs_days: int
     logs_days: int
+
+
+@dataclass(frozen=True)
+class AuditArchiveReport:
+    """一次审计归档/清理的结果（供测试与调度日志断言）。"""
+
+    archived_rows: int
+    archived_bytes: int
+    purged_rows: int
+    audit_days: int
+    archive_file: str | None
 
 
 class RetentionService:
@@ -60,9 +102,9 @@ class RetentionService:
 
         Args:
             jobs: jobs 表仓储（行清理经 :meth:`JobRepo.purge_older_than`）。
-            config: 配置仓储（``retention.jobs_days`` / ``retention.logs_days``）。
-            audit: 审计仓储（``retention.cleanup`` 埋点，S6）。
-            settings: 运行期配置（jobs_dir 白名单来源）；缺省取进程单例。
+            config: 配置仓储（``retention.*`` 键族）。
+            audit: 审计仓储（``retention.cleanup`` / ``audit.archive`` / ``audit.cleanup`` 埋点，S6）。
+            settings: 运行期配置（jobs_dir / audit_archive_dir 白名单来源）；缺省取进程单例。
         """
         self._jobs = jobs
         self._config = config
@@ -70,16 +112,39 @@ class RetentionService:
         self._settings = settings or get_settings()
 
     async def cleanup_once(self, *, now: datetime | None = None) -> RetentionReport:
-        """执行一次清理并记审计；可注入 ``now`` 供测试确定化（C8 时间语义）。
+        """执行一次**完整**每日维护：jobs 清理 + 审计归档/清理 + 旧归档清理。
+
+        自动清理（调度器触发）；审计部分 fail-safe（归档失败不 purge）。
 
         Returns:
-            :class:`RetentionReport`；``retention.jobs_days`` 非法/<=0 时返回零值报告
-            （不删任何数据、不记审计——fail-safe：坏配置宁可不清理也不误删）。
+            jobs 清理的 :class:`RetentionReport`（审计统计见各自审计条目）。
         """
         moment = now or now_utc()
+        report = await self._cleanup_jobs(moment)
+        await self._archive_and_purge_audit(moment)
+        await self._cleanup_old_archives(moment)
+        return report
+
+    async def cleanup_jobs_only(self, *, now: datetime | None = None) -> RetentionReport:
+        """任务历史页「立即清理」（裁决5）：**仅**清理 jobs 行与孤儿任务日志。
+
+        不触碰审计日志（审计的清理/归档只由每日维护 ``cleanup_once`` 负责，避免用户在
+        任务历史页误触发审计删除）。``retention.jobs_days <= 0`` 时返回零值报告
+        （fail-safe：坏配置宁可不清理也不误删）。
+
+        Returns:
+            :class:`RetentionReport`。
+        """
+        moment = now or now_utc()
+        return await self._cleanup_jobs(moment)
+
+    # ------------------------------------------------------------------ jobs 清理
+
+    async def _cleanup_jobs(self, moment: datetime) -> RetentionReport:
+        """清理 jobs 行 + 孤儿/过期任务日志，并记 ``retention.cleanup`` 审计。"""
         jobs_days = await self._resolve_days(RETENTION_JOBS_DAYS_KEY, RETENTION_JOBS_DAYS_DEFAULT)
         if jobs_days <= 0:
-            logger.info("retention.jobs_days=%s（不启用），跳过每日清理", jobs_days)
+            logger.info("retention.jobs_days=%s（不启用），跳过 jobs 清理", jobs_days)
             return RetentionReport(0, 0, 0, jobs_days, 0)
         logs_days = await self._resolve_days(
             RETENTION_LOGS_DAYS_KEY, jobs_days, fallback_key=RETENTION_JOBS_DAYS_KEY
@@ -121,12 +186,124 @@ class RetentionService:
             result="ok",
         )
         logger.info(
-            "每日 retention 清理完成：jobs=%s log_files=%s freed_bytes=%s",
+            "每日 retention jobs 清理完成：jobs=%s log_files=%s freed_bytes=%s",
             report.jobs_deleted,
             report.log_files_deleted,
             report.log_bytes_freed,
         )
         return report
+
+    # ------------------------------------------------------------------ 审计归档/清理
+
+    async def _resolve_archive_dir(self) -> Path:
+        """解析归档目录：DB 键 ``retention.audit_archive_dir`` 优先，缺省回落 settings。"""
+        raw = await self._config.get_value(RETENTION_AUDIT_ARCHIVE_DIR_KEY)
+        if raw and str(raw).strip():
+            return Path(str(raw).strip())
+        return self._settings.audit_archive_dir
+
+    async def _archive_and_purge_audit(self, moment: datetime) -> AuditArchiveReport:
+        """归档超期审计行并清理（fail-safe：归档失败跳过 purge）。
+
+        1. 计算 ``audit_days`` 阈值；``<=0`` 不启用（永不删审计）；
+        2. 把 ``ts < cutoff`` 的行流式追加写入 ``audit-<YYYY>.jsonl.gz``（压缩）；
+        3. 归档**成功**后才经 :meth:`AuditRepo.purge_older_than` 删除对应行；
+        4. 归档/清理分别记 ``audit.archive`` / ``audit.cleanup``。
+
+        Returns:
+            :class:`AuditArchiveReport`（含归档行数/字节、删除行数、文件名）。
+        """
+        audit_days = await self._resolve_days(RETENTION_AUDIT_DAYS_KEY, RETENTION_AUDIT_DAYS_DEFAULT)
+        if audit_days <= 0:
+            logger.info("retention.audit_days=%s（不启用），跳过审计归档/清理", audit_days)
+            return AuditArchiveReport(0, 0, 0, audit_days, None)
+
+        cutoff = utc_iso(moment - timedelta(days=audit_days))
+        archive_dir = await self._resolve_archive_dir()
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"audit-{moment.strftime('%Y')}.jsonl.gz"
+
+        # 流式归档：攒够 ARCHIVE_BUFFER_ROWS 行落盘一次，避免一次性进内存
+        buffer: list[AuditRow] = []
+        archived_rows = 0
+        try:
+            async for row in self._audit.iter_rows(until=cutoff, batch=ARCHIVE_BUFFER_ROWS):
+                buffer.append(row)
+                if len(buffer) >= ARCHIVE_BUFFER_ROWS:
+                    archived_rows += await asyncio.to_thread(_append_jsonl_gz, archive_path, buffer)
+                    buffer.clear()
+            if buffer:
+                archived_rows += await asyncio.to_thread(_append_jsonl_gz, archive_path, buffer)
+                buffer.clear()
+        except Exception as exc:  # noqa: BLE001 — 归档任何异常都 fail-safe：不 purge
+            logger.exception("审计归档失败（%s），跳过 purge 以防数据丢失", archive_path)
+            await self._audit.record(
+                AUDIT_ARCHIVE,
+                target=str(archive_path),
+                detail={"error": str(exc), "archived_rows_before_failure": archived_rows},
+                result="failed",
+            )
+            return AuditArchiveReport(0, 0, 0, audit_days, None)
+
+        archived_bytes = await asyncio.to_thread(lambda p: p.stat().st_size if p.exists() else 0, archive_path)
+
+        # 归档成功才 purge（唯一受控 DELETE 出口）
+        purged_rows = await self._audit.purge_older_than(cutoff)
+
+        await self._audit.record(
+            AUDIT_ARCHIVE,
+            target=str(archive_path),
+            detail={
+                "file": archive_path.name,
+                "rows": archived_rows,
+                "bytes": archived_bytes,
+                "year": moment.strftime("%Y"),
+            },
+            result="ok",
+        )
+        if purged_rows:
+            await self._audit.record(
+                AUDIT_CLEANUP,
+                target="audit_logs",
+                detail={"rows_deleted": purged_rows, "cutoff": cutoff},
+                result="ok",
+            )
+        logger.info(
+            "审计归档/清理完成：归档=%s 行（%s 字节，文件 %s）清理=%s 行",
+            archived_rows,
+            archived_bytes,
+            archive_path.name,
+            purged_rows,
+        )
+        return AuditArchiveReport(archived_rows, archived_bytes, purged_rows, audit_days, archive_path.name)
+
+    async def _cleanup_old_archives(self, moment: datetime) -> None:
+        """清理过期的压缩归档文件（按 ``retention.audit_archive_days``，缺省 365）。"""
+        archive_days = await self._resolve_days(
+            RETENTION_AUDIT_ARCHIVE_DAYS_KEY, RETENTION_AUDIT_ARCHIVE_DAYS_DEFAULT
+        )
+        if archive_days <= 0:
+            return
+        cutoff_epoch = (moment - timedelta(days=archive_days)).timestamp()
+        archive_dir = await self._resolve_archive_dir()
+        if not archive_dir.is_dir():
+            return
+        deleted, freed = await asyncio.to_thread(
+            _purge_old_archives_sync, archive_dir, cutoff_epoch
+        )
+        if deleted:
+            logger.info("过期审计归档清理：%s 文件，释放 %s 字节", deleted, freed)
+
+    async def list_archives(self) -> list[dict]:
+        """只读列出归档目录下的 ``.jsonl.gz`` 文件（供前端展示）。
+
+        Returns:
+            按文件名升序的列表，每项为 ``{"name", "size_bytes", "mtime_iso"}``。
+        """
+        archive_dir = await self._resolve_archive_dir()
+        return await asyncio.to_thread(_list_archives_sync, archive_dir)
+
+    # ------------------------------------------------------------------ 配置读取
 
     async def _resolve_days(self, key: str, default: int, *, fallback_key: str | None = None) -> int:
         """读取保留天数配置：非法值 WARNING 回退（缺省或 fallback 键），``<=0`` 原样返回（=不启用）。"""
@@ -141,6 +318,31 @@ class RetentionService:
             logger.warning("%s 配置非法：%r，回退缺省 %s 天", key, raw, default)
             return default
         return value
+
+
+# ----------------------------------------------------------------------- 同步文件辅助（在线程内执行）
+
+def _append_jsonl_gz(path: Path, rows: list[AuditRow]) -> int:
+    """把审计行追加写入 gzip JSONL 文件；返回写入行数。
+
+    以追加模式打开（同一 ``audit-<YYYY>.jsonl.gz`` 跨日维护多次 append，兼容 gzip
+    多 member 顺序读取）；字段顺序固定便于后续解析。
+    """
+    written = 0
+    with gzip.open(path, "ab") as fh:
+        for row in rows:
+            obj = {
+                "id": row.id,
+                "ts": row.ts,
+                "action": row.action,
+                "target": row.target,
+                "detail": row.detail,
+                "result": row.result,
+                "created_at": row.created_at,
+            }
+            fh.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
+            written += 1
+    return written
 
 
 def _purge_old_logs_sync(jobs_dir: Path, cutoff_epoch: float, protected: frozenset[str]) -> tuple[int, int]:
@@ -177,6 +379,55 @@ def _purge_old_logs_sync(jobs_dir: Path, cutoff_epoch: float, protected: frozens
         deleted += 1
         freed += stat.st_size
     return deleted, freed
+
+
+def _purge_old_archives_sync(archive_dir: Path, cutoff_epoch: float) -> tuple[int, int]:
+    """同步删除归档目录下 mtime 早于 cutoff 的 ``.jsonl.gz`` 文件（只删 glob 命中项，不递归）。
+
+    Args:
+        archive_dir: 归档目录（S1：路径字面量唯一出处 settings.audit_archive_dir / DB 键）。
+        cutoff_epoch: mtime 早于此 epoch 秒的归档文件删除。
+
+    Returns:
+        ``(deleted_count, freed_bytes)``。
+    """
+    deleted = 0
+    freed = 0
+    if not archive_dir.is_dir():
+        return deleted, freed
+    for entry in archive_dir.glob(AUDIT_ARCHIVE_FILE_GLOB):
+        try:
+            stat = entry.stat()
+            if not entry.is_file() or stat.st_mtime >= cutoff_epoch:
+                continue
+            entry.unlink()
+        except OSError:
+            continue  # 单文件失败不中断（逐项隔离）
+        deleted += 1
+        freed += stat.st_size
+    return deleted, freed
+
+
+def _list_archives_sync(archive_dir: Path) -> list[dict]:
+    """同步列出归档目录下的 ``.jsonl.gz`` 文件（按文件名升序）。"""
+    items: list[dict] = []
+    if not archive_dir.is_dir():
+        return items
+    for entry in sorted(archive_dir.glob(AUDIT_ARCHIVE_FILE_GLOB), key=lambda p: p.name):
+        try:
+            stat = entry.stat()
+            if not entry.is_file():
+                continue
+            items.append(
+                {
+                    "name": entry.name,
+                    "size_bytes": stat.st_size,
+                    "mtime_iso": utc_iso(datetime.fromtimestamp(stat.st_mtime)),
+                }
+            )
+        except OSError:
+            continue
+    return items
 
 
 def _unlink_paths_sync(paths: list[str]) -> int:

@@ -254,6 +254,24 @@ class AuditPageResponse(Page[AuditOut]):
     actions: list[str] = Field(default_factory=list)
 
 
+class AuditArchiveItem(_Base):
+    """R-020 裁决3：审计压缩归档文件（``/data/audit/archive`` 下的 ``*.jsonl.gz``）。"""
+
+    name: str = Field(description="归档文件名（如 audit-2026.jsonl.gz）")
+    size_bytes: int = Field(description="文件大小（字节）")
+    mtime_iso: str = Field(description="最后修改时间（UTC ISO）")
+
+
+class JobCleanupResponse(_Base):
+    """任务历史「立即清理」响应（裁决5：仅清 jobs 行与任务日志，不触碰审计日志）。"""
+
+    jobs_deleted: int = Field(description="删除的 jobs 终态行数")
+    log_files_deleted: int = Field(description="删除的任务日志文件数（孤儿 + 过期）")
+    log_bytes_freed: int = Field(description="释放的日志字节数")
+    jobs_days: int = Field(description="生效的 retention.jobs_days（<=0 表示未启用）")
+    logs_days: int = Field(description="生效的 retention.logs_days（<=0 表示日志保留关闭）")
+
+
 class CacheUsageResponse(_Base):
     """E25 缓存占用响应（Q14 基线：du 超时回部分值 + truncated，不 5xx）。"""
 

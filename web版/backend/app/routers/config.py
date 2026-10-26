@@ -43,6 +43,10 @@ from app.constants import (
     METRICS_TOKEN_KEY,
     MONTHLY_FULL_DAY_MAX,
     MONTHLY_FULL_DAY_MIN,
+    RETENTION_AUDIT_ARCHIVE_DAYS_KEY,
+    RETENTION_AUDIT_ARCHIVE_DIR_KEY,
+    RETENTION_AUDIT_DAYS_KEY,
+    RETENTION_JOBS_DAYS_KEY,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import CredentialKeyUnavailableError, ValidationError
@@ -279,6 +283,18 @@ def _parse_databases_for_validation(raw: str) -> list[str] | None:
     return data
 
 
+def _is_safe_path(value: str) -> bool:
+    """目录路径 plausibility 检查：长度合理、不含空字节与控制字符（防畸形/注入）。
+
+    仅做轻量形态校验——归档目录由 :class:`RetentionService` 经 :class:`Path` 解析后
+    只用于写归档文件（落在 ``data_dir`` 派生或 DB 键指定的目录），不做严格绝对路径
+    限定（host 形态下用户路径本就多样）；真正的写入安全由路径字面量唯一出处纪律保证。
+    """
+    if not value or len(value) > 4096:
+        return False
+    return "\x00" not in value and "\n" not in value and "\r" not in value
+
+
 def _validate_patch_values(patch: dict[str, str | None]) -> None:
     """E07 键级校验钩子（批次 B）：behavior.* / dump.* 的值域前置校验。
 
@@ -369,4 +385,18 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
                 f"{key} 须为 NTP 服务器地址（主机名或主机名:端口，如 ntp.example.com / ntp.example.com:123）",
                 data={"key": key, "value": raw},
             )
+        # R-020 裁决1/裁决3：保留期相关键——坏值落库会让每日维护静默不清理或误清理，
+        # 故写入侧前置 422（与 DUMP_RETENTION_DAYS_KEY 同机制位）。
+        elif key in (RETENTION_JOBS_DAYS_KEY, RETENTION_AUDIT_DAYS_KEY, RETENTION_AUDIT_ARCHIVE_DAYS_KEY):
+            if not value.isdigit():
+                raise ValidationError(
+                    f"{key} 须为非负整数（0=不启用清理）", data={"key": key, "value": raw}
+                )
+        elif key == RETENTION_AUDIT_ARCHIVE_DIR_KEY and value and not _is_safe_path(value):
+            # 归档目录：非空须为合法目录路径（空 = 回落 settings.audit_archive_dir）
+            raise ValidationError(
+                f"{key} 须为目录路径（不含空字节/换行等控制字符，长度 <= 4096）",
+                data={"key": key, "value": raw[:200]},
+            )
+        # RETENTION_AUDIT_ARCHIVE_COLD_TARGET_KEY：冷存目标纯占位/提示，应用不消费，放行
 

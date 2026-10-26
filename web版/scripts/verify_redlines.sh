@@ -135,12 +135,17 @@ fi
 section 'S6 审计只增不改'
 
 # audit_logs 是 append-only，出现 UPDATE/DELETE 即破坏不变量。
-out=$(grep -rIniE 'UPDATE[[:space:]]+audit_logs|DELETE[[:space:]]+FROM[[:space:]]+audit' backend/app 2>/dev/null)
+# 唯一受控例外（规范 §3.1 S6 v1.11，R-020 审计保留策略落地）：
+#   AuditRepo.purge_older_than —— 按保留期分批删除，仅由每日维护在归档成功后调用。
+# 排除该单文件后仍要求其余代码面零 UPDATE/DELETE；audit_repo.py 内新增第二条
+# 删除路径由代码审查（§4.6）人工拦截。
+out=$(grep -rIniE 'UPDATE[[:space:]]+audit_logs|DELETE[[:space:]]+FROM[[:space:]]+audit' backend/app 2>/dev/null \
+      | grep -v 'repositories/audit_repo.py')
 if [ -n "$out" ]; then
-  violation 'S6 audit_logs 出现 UPDATE/DELETE（append-only 被破坏）'
+  violation 'S6 audit_logs 出现 UPDATE/DELETE（append-only 被破坏；唯一受控出口仅限 repositories/audit_repo.py）'
   detail "$out"
 else
-  ok 'S6 audit_logs 保持 INSERT/SELECT'
+  ok 'S6 audit_logs 保持 INSERT/SELECT（受控出口 audit_repo.purge_older_than 除外）'
 fi
 
 # 危险操作必须埋点：动作名一律取 constants 的 AUDIT_* 常量，
@@ -220,10 +225,12 @@ section 'A3 内置排除集单一来源'
 #     与排除集是两个不同用途的清单（命中只出黄色警告、不拦截），不属复制；
 #   docstring / 注释行 —— 解释性文字（如 sources.py 描述该告警逻辑），
 #     grep 无法区分文档与代码，用 -v 滤掉以行首引号或文档注释开头的命中。
+#   __tests__/ 测试夹具 —— excludeEditor.spec.ts 以 '**/lost+found' 作为**样例输入**
+#     驱动编辑器 UI 测试（断言渲染回显），不是排除集定义的复制（真源 exclusions.py）。
 # PSEUDO_FS_NAMES 与 exclusions.CORE 有 4 项字面重复（proc/sys/dev/run/lost+found），
 # 这是设计上的有意重叠（都源自方案 §3.2），但**若 exclusions.CORE 变更需同步复核**。
 out=$(grep -rIn 'lost+found' frontend/src backend/app 2>/dev/null \
-      | grep -v exclusions.py | grep -v constants.py \
+      | grep -v exclusions.py | grep -v constants.py | grep -v '__tests__/' \
       | grep -vE ':[[:space:]]*(#|"""|[^\x27"]*$)' | grep -vE '命中|置黄色|告警')
 if [ -n "$out" ]; then
   violation 'A3 内置排除集疑似被复制到别处'

@@ -27,10 +27,12 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
@@ -65,6 +67,7 @@ from app.errors import (
     ValidationError,
 )
 from app.schemas.api_schemas import (
+    AuditArchiveItem,
     AuditOut,
     AuditPageResponse,
     CacheUsageResponse,
@@ -1111,6 +1114,96 @@ async def query_audit(
         offset=offset,
         actions=await repo.distinct_actions(),
     )
+
+
+def _resolve_audit_result(result: str | None) -> str | None:
+    """把查询参数 ``result`` 归一为 AuditResult 白名单值；非法值 422。"""
+    if not result:
+        return None
+    try:
+        return AuditResult(result).value
+    except ValueError as exc:
+        allowed = [item.value for item in AuditResult]
+        raise ValidationError(
+            "result 仅支持 " + "/".join(allowed),
+            data={"result": result, "allowed": allowed},
+        ) from exc
+
+
+@router.get(
+    "/audit/export",
+    summary="E26 审计日志导出（流式 NDJSON，复用当前筛选；S6 只读、不留痕）",
+    dependencies=_PROTECTED,
+)
+async def export_audit(
+    request: Request,
+    action: str | None = Query(default=None, description="动作名前缀匹配（如 restore.；通配符自动转义）"),
+    result: str | None = Query(default=None, description="结果过滤：ok/denied/failed"),
+    since: str | None = Query(default=None, description="ts 下界（ISO 8601，含时区归一 UTC）"),
+    until: str | None = Query(default=None, description="ts 上界（ISO 8601，含时区归一 UTC）"),
+    session: SessionContext = Depends(require_session),
+) -> StreamingResponse:
+    """流式导出审计日志为 NDJSON（每行一条 JSON，UTF-8，不转义非 ASCII）。
+
+    复用 :meth:`query_audit` 同口径筛选（action 前缀 / result 白名单 / since·until 归一）；
+    供前端「导出当前筛选」下载。导出是只读动作，不留审计痕（与查询同口径 S6）。
+    """
+    del session
+    resolved_result = _resolve_audit_result(result)
+    since_bound = parse_utc_bound(since)
+    if since and since_bound is None:
+        raise ValidationError("since 须为 ISO 8601 时间", data={"field": "since", "value": since})
+    until_bound = parse_utc_bound(until)
+    if until and until_bound is None:
+        raise ValidationError("until 须为 ISO 8601 时间", data={"field": "until", "value": until})
+
+    repo: AuditRepo = request.app.state.audit
+
+    async def _stream() -> AsyncIterator[bytes]:
+        async for row in repo.iter_rows(
+            action_prefix=action.strip() if action else None,
+            result=resolved_result,
+            since=since_bound,
+            until=until_bound,
+            batch=2000,
+        ):
+            obj = {
+                "id": row.id,
+                "ts": row.ts,
+                "action": row.action,
+                "target": row.target,
+                "detail": row.detail,
+                "result": row.result,
+                "created_at": row.created_at,
+            }
+            yield (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+
+    return StreamingResponse(
+        _stream(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="audit-export.ndjson"'},
+    )
+
+
+@router.get(
+    "/audit/archive",
+    response_model=list[AuditArchiveItem],
+    summary="R-020 审计归档列表（只读，裁决3）",
+    dependencies=_PROTECTED,
+)
+async def list_audit_archives(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> list[AuditArchiveItem]:
+    """列出 ``audit_archive_dir`` 下的压缩归档文件（``*.jsonl.gz``），供前端只读展示。
+
+    归档文件由每日维护（``retention.cleanup`` 串联的 ``audit.archive``）生成；本端点
+    不消费 ``retention.audit_archive_cold_target``（外送冷存由部署侧既有 restic/rclone 完成）。
+    """
+    del session
+    retention = request.app.state.retention
+    items = await retention.list_archives()
+    return [AuditArchiveItem(**item) for item in items]
 
 
 # ---------------------------------------------------------------- E25 缓存维护（R-021，批次 A）
