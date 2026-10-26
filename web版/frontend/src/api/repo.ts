@@ -12,6 +12,9 @@ import type {
   OkResponse,
   RepoCreateRequest,
   RepoIdSuggestion,
+  RcloneConfigsOut,
+  RcloneConfigWriteOut,
+  RcloneConfigWriteRequest,
   RcloneRemotesOut,
   RepoKeyRotateRequest,
   RepoKeysOut,
@@ -92,6 +95,57 @@ export function getRepoKeys(id: string): Promise<RepoKeysOut> {
  */
 export function listRcloneRemotes(): Promise<RcloneRemotesOut> {
   return request<RcloneRemotesOut>('/api/rclone/remotes')
+}
+
+/**
+ * rclone conf 段清单（GET /api/rclone/configs）。
+ *
+ * **凭据零回显**：只回非凭据参数 + `has_*` 布尔；非注册表类型（OAuth 网盘等）
+ * 只露名字与 type（`managed: false`），参数恒空。
+ */
+export function listRcloneConfigs(): Promise<RcloneConfigsOut> {
+  return request<RcloneConfigsOut>('/api/rclone/configs')
+}
+
+/**
+ * 新增 rclone conf 段（POST /api/rclone/config/{remote}；审计 `rclone.config_append`）。
+ *
+ * 仅 crypt / webdav 可生成（OAuth 网盘需浏览器授权流，不在注册表内）；重名 409。
+ */
+export function createRcloneConfig(
+  remote: string,
+  payload: RcloneConfigWriteRequest,
+): Promise<RcloneConfigWriteOut> {
+  return request<RcloneConfigWriteOut>(`/api/rclone/config/${encodeURIComponent(remote)}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+/**
+ * 编辑 rclone conf 段（PUT；审计 `rclone.config_edit`）。
+ *
+ * **全量更新**语义：凭据字段留空 = 保持 conf 既有值不变；非注册表类型 422。
+ */
+export function updateRcloneConfig(
+  remote: string,
+  payload: RcloneConfigWriteRequest,
+): Promise<RcloneConfigWriteOut> {
+  return request<RcloneConfigWriteOut>(`/api/rclone/config/${encodeURIComponent(remote)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+/**
+ * 删除 rclone conf 段（DELETE；审计 `rclone.config_delete`）。
+ *
+ * **全段可删**——含 OAuth 网盘段（删后需在宿主机重新授权），故调用方须二次确认。
+ */
+export function deleteRcloneConfig(remote: string): Promise<RcloneConfigWriteOut> {
+  return request<RcloneConfigWriteOut>(`/api/rclone/config/${encodeURIComponent(remote)}`, {
+    method: 'DELETE',
+  })
 }
 
 /**

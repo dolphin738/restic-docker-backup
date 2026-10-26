@@ -250,6 +250,50 @@ export interface RcloneRemotesOut {
   reason: string | null
 }
 
+// ---------------------------------------------------------------- rclone 配置管理
+
+/** rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + has_* 布尔）。 */
+export interface RcloneConfigItem {
+  /** 段名（远端名）。 */
+  remote: string
+  /** conf 段 type（未注册类型也展示，前端灰显不可编辑）。 */
+  type: string
+  /** type 在注册表内 → 可字段级编辑（一期 crypt / webdav）。 */
+  managed: boolean
+  /** 非凭据参数（managed 段才有；非 managed 段恒空）。 */
+  params: Record<string, string>
+  /** 凭据键 → 是否已配置（不含值）。 */
+  has_credentials: Record<string, boolean>
+}
+
+/** rclone conf 全段查询快照。 */
+export interface RcloneConfigsOut {
+  conf_path: string
+  conf_present: boolean
+  configs: RcloneConfigItem[]
+  /** rclone 可用（不可用时 reason 带可操作原因，列表为空）。 */
+  available: boolean
+  reason: string | null
+}
+
+/** 新增/编辑 rclone conf 段请求（params 只接受注册表内已知键）。 */
+export interface RcloneConfigWriteRequest {
+  type: string
+  params: Record<string, string>
+  /** 提交的凭据已是混淆值 → 服务端命令不加 --obscure。 */
+  already_obscured?: boolean
+}
+
+/** 写操作结果（凭据零回显）。 */
+export interface RcloneConfigWriteOut {
+  remote: string
+  type: string
+  conf_path: string
+  /** create | update | delete */
+  action: string
+  remotes_after: string[]
+}
+
 /** E06 配置项：敏感项只回 has_value + source，不回明文。 */
 export interface ConfigItem {
   key: string
