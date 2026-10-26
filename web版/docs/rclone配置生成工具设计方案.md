@@ -1,0 +1,370 @@
+# rclone 配置生成工具设计方案
+
+> 版本：v1.11（2026-10-27）
+> 层级：方案层——rclone 远端配置管理（查询/生成/编辑/删除，Crypt / WebDAV）的唯一方案源
+> 关联：`app/services/rclone.py`（只读探测，Q17 档位）、架构设计文档 R-022（rclone 生命周期）、代码审查规范 §3.1（S6 危险操作清单）、部署指南（rclone.conf 挂载形态变更）
+
+> **修订记录**：
+> - v1.11（2026-10-27）：**B4 文档同步完成 + B5 验证收口**——架构设计文档升 **v1.10**（新增 E48–E51 四个端点条目 + E45 Q17 放宽注 + §3 目录树 `rclone.py`/`rclone_config.py` + §11 追溯矩阵 R-022 行）、部署指南 2026-10-27 校准（§1 仓库类型更正 + §4.2 目录挂载迁移指引与「界面配置管理」能力矩阵）、PRD 升 **v1.14**（需求池 R-022 行）。验证：前端 typecheck 0 错、vitest **458 passed / 47 文件**、build exit 0；后端 pytest 全量与红线待 B5 收口记录。
+>   顺带修正：`RcloneConfigPanel.spec.ts` 的快照夹具缺显式类型标注（两段形状不同 → TS 推断出带 `key?: undefined` 的联合类型，与 `RcloneConfigItem[]` 不兼容，typecheck 报 TS2345）——加 `: RcloneConfigsOut` 标注。
+> - v1.10（2026-10-27）：**owner 指令：Crypt `filename_encoding` 默认值 base32 → `base64`**（文件名更短、适配大小写敏感远端；base32/base32768 仍在白名单可选）。改动落点：后端 `CryptGenerator.defaults`、前端表单默认与编辑态回落、相关单测与本文 §1.1 裁决 4 / §3.1 字段表 / 示例。
+> - v1.9（2026-10-27）：**B3 完成**——①compose 改**目录挂载** `./rclone:/etc/rclone:rw`（注释写入 A/B 实证与迁移指引）；②前端 `utils/password.ts`（Web Crypto 拒绝采样，32 位）+ 6 例单测；③api 层 4 方法 + 4 个类型 + i18n 双 locale 同步键；④`components/settings/RcloneConfigPanel.vue`（列表 + 表单 + 编辑态 + 删除确认门 + 生成密码 + 部署形态提示）与设置页新分区 `rclone`（插在 credential 之后）+ 6 例组件测。
+> - v1.8（2026-10-26）：**B2 完成**——四端点落地（`GET /api/rclone/configs`、`POST|PUT|DELETE /api/rclone/config/{remote_name}`，`_PROTECTED` 鉴权 + Origin 校验 + 审计 ×3 + 状态码映射 422/404/409/503）；配套新增错误码 `RCLONE_UNAVAILABLE`（503）与 `errors.RcloneUnavailableError`、四个请求/响应模型、`main.py` 装配 `app.state.rclone_config_service`。端点测试 `tests/test_api/test_rclone_config_api.py` **11 例全过**（401/403/查询零凭据/审计 ×3/409/404/422/503/OAuth 段可删不可编辑）。
+> - v1.7（2026-10-26）：**B1 真机 spike 完成（WSL 真机 rclone v1.60.1）**，据实测修正三处实现缺陷并固化结论，见新增 **§13 真机 spike 实证记录**（A/B 挂载形态对照、七道护栏语义、两处实现缺陷：`--config` 缺失 / 超时复用探测值）。
+> - v1.6（2026-10-26）：**B1 服务层完成**——`app/services/rclone_config.py` 落地（`ConfigGenerator` 注册表 ×2 = crypt/webdav + CLI 编排 create/update/delete/dump + managed 过滤 + 实例级写锁 + 凭据脱敏 + 503/422/409/404 语义）；`app/services/rclone.py` 抽出 `exec_rclone`（stdin=DEVNULL 防交互挂起）与 `resolve_conf_path` 供探测层与配置层共用（避免第二份子进程/路径实现）。单测 `tests/test_rclone_config.py` **46 例全过**；ruff 全绿、`verify_redlines.sh` 19 项全绿、后端全量 **1113 passed**。
+> - v1.5（2026-10-26）：新增 **§9.1 部署形态适配（docker / host）**——明确「**一套逻辑 + 三处形态感知**」：写入路径统一走 rclone CLI（主机档天然无 rename/EBUSY 约束，容器档靠目录挂载），差异只落在①conf 路径派生（`settings.rclone_config` 或 HOME 默认，复用探测层逻辑）②权限类错误文案③rclone 二进制可用性降级；形态判断**不参与写入分支**。compose 目录挂载变更仅影响容器档，主机档零部署动作。
+> - v1.4（2026-10-26）：**B0 已完成**——规范 v1.14 落地，S6 危险操作清单按实际动作名**重计为 20 项**（17 既有枚举 + 本批 3 项）；连带修正历史计数漂移（原「16 项」与枚举不符——`config.export`/`config.import`、`copy.run`/`key.rotate` 曾并组计数，此后以枚举为准）。同批落地：`constants.py` 三个 `AUDIT_RCLONE_CONFIG_*` 常量、AGENTS.md S6 索引同步、`verify_redlines.sh` 新增两条机器断言（常量反向锚点 + rclone conf 写入 CLI 唯一实现点收敛于 `services/rclone_config.py`）。校验结果：`verify_redlines.sh` **19 项全通过**。
+> - v1.3（2026-10-26）：**owner 裁决 8/9：能力边界放宽**——①删除放宽到**全部段**（CLI 路径本就全段一致；OAuth 段删除加重提示「删后需重新授权」，确认门 + 审计留痕控风险，风险模型从「不可触碰」变「知情确认」）；②编辑**随注册表扩展**（一期仅 crypt/webdav；二期 s3/b2/sftp 进 GENERATORS 即自然获得字段级编辑表单，不做自由改键口；OAuth 类型永不进注册表——无授权流支撑，编辑无意义）。managed 语义收窄为「可编辑」；查询展示所有段。
+> - v1.2（2026-10-26）：**owner 裁决 7：写入路径选方案 A——rclone CLI + compose 目录挂载**。查证依据：官方文档明确 rclone 保存 conf =「临时文件 + 双 rename 原子替换」，在单文件 bind mount 上 rename 报 EBUSY——CLI 改 conf 与 OAuth token 回写在现形态下都撞墙。落地：compose 改挂 `./rclone:/etc/rclone:rw`（目录），conf 增删改全走官方 `rclone config create/update/delete --obscure`，查询走 `rclone config dump`（JSON）；自研 INI 手术器、`rclone obscure` 子进程、`.bak` 兜底全部取消，服务层瘦身为「CLI 编排 + managed 过滤 + 审计」；连带修复单文件挂载下 OAuth 回写隐患（B4 部署指南登记迁移指引）。
+> - v1.1（2026-10-26）：按 owner 追加需求修订——①Crypt 新增 `filename_encoding` 参数（base32/base64/base32768 白名单）；②前端 32 位随机密码自动生成（Web Crypto 客户端生成）；③能力升级为 CRUD：查询/编辑/删除；S6 审计动作扩为 3 个（16→18）；编辑/删除仅限本工具管理的类型（Q17 边界保护）。
+> - v1.0（2026-10-26）：立项。owner 三项裁决随文记录（见 §1.1）；第一阶段 Crypt + WebDAV，后端 + 设置页前端一次做完。
+
+---
+
+## 1. 立项背景与 owner 裁决
+
+### 1.1 裁决记录（2026-10-26）
+
+| # | 议题 | 裁决 |
+|---|---|---|
+| 1 | 前端入口范围 | **一次做完**（后端 API + 设置页前端同批交付），入口放**设置页** |
+| 2 | 审计清单扩容（S6 危险操作清单） | **先按规范修订**：先改《代码审查规范》§3.1，再同步 AGENTS.md 编号索引，最后实现（**B0 已落地，规范 v1.14**；按实际动作名重计为共 **20 项**——原「16 项」系并组计数漂移，本次一并修正） |
+| 3 | conf 文件不存在时的行为 | **直接创建新文件**（`rclone config create` 对不存在的 conf 自动落盘创建，语义自然满足） |
+| 4 | Crypt 参数扩展 | 纳入 `filename_encoding`（`base32`/`base64`/`base32768` 白名单，默认 ~~`base32`~~ → **`base64`**（owner 2026-10-27 改默认：文件名更短、适配大小写敏感远端） |
+| 5 | 密码输入辅助 | 密码字段旁提供 **32 位随机密码自动生成**按钮（前端 Web Crypto 实现） |
+| 6 | 管理能力 | 增加**查询已有配置、编辑、删除**功能（仅限本工具管理的 Crypt/WebDAV 段，见 §5.1） |
+| 7 | conf 写入路径（v1.2） | **方案 A：rclone CLI + compose 目录挂载**。conf 增删改全走官方 `rclone config` 命令；compose 由单文件挂载改为**目录挂载** `./rclone:/etc/rclone:rw`（查证：rclone 保存 = 临时文件 + 双 rename，单文件挂载上 rename 报 EBUSY，目录挂载则正常） |
+| 8 | 删除能力范围（v1.3） | **放宽到全部段**：CLI 路径对全段一致，清理废弃远端（含 OAuth 网盘）是真实需求；OAuth 段删除时加重提示（删后需重新授权），确认门 + 审计留痕控风险 |
+| 9 | 编辑能力范围（v1.3） | **随注册表扩展**：一期仅 crypt/webdav；二期 s3/b2/sftp 进 GENERATORS 即自然获得字段级编辑表单（不做自由改键口）；OAuth 类型**永不进注册表**（无授权流支撑，编辑无意义） |
+
+### 1.2 背景：对 Q17 档位的主动放宽
+
+现状（`app/services/rclone.py` 模块 docstring，Q17 档位）：conf 由宿主机 `rclone config` 生成后挂载进容器，UI **不生成、不编辑、不展示凭据**——理由是网盘 OAuth token 属敏感回写面。
+
+本工具对 Q17 档位做**有边界的放宽**：
+
+- **放宽的部分**：对 Crypt / WebDAV 这类**凭据由用户自填、无 OAuth 流**的类型，允许在 UI 生成配置段并增删改 conf；
+- **不变的部分**：OAuth 网盘类型（drive / onedrive 等）**不进**本工具——其配置段对编辑/删除 API **不可见**（§5.1 边界）；conf 凭据值**永不回显**（API 响应与日志零凭据，S3 口径不变）。
+
+此放宽须在《架构设计文档》R-022 段与部署指南 compose 注释处同步登记（实施批次 B4）。
+
+### 1.3 关键工程事实（现状核实 + v1.2 查证）
+
+| # | 事实 | 对设计的影响 |
+|---|---|---|
+| 1 | **rclone 保存 conf = 临时文件 + 双 rename 原子替换**（官方文档：先写临时文件 → 旧文件 rename 为备份 → 新文件 rename 到正式名 → 删备份） | 单文件 bind mount 上 rename 报 EBUSY → **CLI 改 conf 与 OAuth token 回写在单文件挂载下都不可行** → compose 必须改目录挂载（裁决 7） |
+| 2 | conf 路径来源 | `settings.rclone_config`（`RCLONE_CONFIG` env）；目录挂载后路径不变（`/etc/rclone/rclone.conf`），`RCLONE_CONFIG` 无需改动 |
+| 3 | 应用是 asyncio 单进程 | 模块级 `asyncio.Lock` 串行化全部写操作（增/改/删共用一把锁，防与 OAuth 回写/宿主机编辑交叠） |
+| 4 | rclone 二进制容器内必有 | `docker/Dockerfile:50` apk 安装；CLI 编排可依赖；不可用时明确报错（503） |
+| 5 | 现有探测能力 | `RcloneProbe.listremotes()` + `GET /api/rclone/remotes` 复用做写后验证 |
+| 6 | `rclone config create/update` 支持 `key=value` 参数形式 + `--obscure` 标志（v1.56+，2021-10 起；Alpine stable rclone 远新于该版本） | 密码混淆内置，**无需自调 `rclone obscure`**；参数直接传值 |
+| 7 | `rclone config dump` 输出全量 conf 的 JSON（键值保持混淆形态） | 查询走 JSON 解析（比自研正则解析稳） |
+
+---
+
+## 2. 整体结构
+
+```
+backend/app/
+├─ services/rclone_config.py       # 新增：CLI 编排（create/update/delete/dump）+ managed 过滤 + 审计细节
+├─ routers/repos.py                # 追加 4 个端点（rclone 相关端点保持同处，已有 /rclone/remotes）
+├─ constants.py                    # 新增 AUDIT_RCLONE_CONFIG_APPEND / _EDIT / _DELETE 常量
+└─ schemas/api_schemas.py          # 新增请求/响应模型
+
+frontend/src/
+├─ pages/settings/index.vue        # SECTIONS 新增 'rclone' 分区（单面板 v-if）
+├─ components/settings/RcloneConfigPanel.vue  # 新增分区面板组件（列表 + 表单）
+├─ utils/password.ts               # 32 位随机密码生成（Web Crypto）
+└─ locales/*.ts                    # 中英双 locale 同步键（i18n-parity 护栏）
+```
+
+**核心设计：注册表模式 + CLI 编排（可扩展性的关键）**
+
+```python
+# 每个类型 = 一个生成器（字段 schema + 校验），新增类型只注册、不改编排层
+GENERATORS: dict[str, ConfigGenerator] = {
+    "crypt": CryptGenerator(),
+    "webdav": WebDAVGenerator(),
+}
+# ConfigGenerator 统一接口：
+#   name: str                              # 类型标识（= 请求体 type）
+#   build_args(params, obscure: bool) -> list[str]
+#       # 校验 + 规范化，产出 rclone config create/update 的 key=value 参数序列
+#       # obscure=False 表示用户提交的已是混淆值（命令整体不加 --obscure）
+#   credential_keys: frozenset[str]        # 凭据键（查询时以 has_value 替代，S3）
+#   display_keys: tuple[str, ...]          # 非凭据键（查询回显顺序）
+
+# 写入统一走 CLI（锁内）：
+#   新增：rclone config create <name> <type> key=value... [--obscure]
+#   编辑：rclone config update <name> key=value... [--obscure]
+#   删除：rclone config delete <name>
+# 查询统一走：rclone config dump（JSON）→ managed 过滤 → 凭据替换 has_*
+```
+
+## 3. 各类型配置的生成逻辑
+
+### 3.1 Crypt（rclone crypt 后端，加密叠加层）
+
+| 字段 | 必填 | 校验/处理 |
+|---|---|---|
+| `remote_name` | ✅ | 生成的配置段名（remote 名），限 `[A-Za-z0-9_-]+`；新增时与既有段重名 → 409（dump 预检 + rclone 自身也报错） |
+| `remote` | ✅ | 底层远端路径 `远端名:桶内路径`；格式校验 + 「远端名」须在现有 remotes 清单中（复用 `RcloneProbe`） |
+| `password` | ✅ | 默认明文提交，`--obscure` 由 rclone 混淆；`already_obscured: true` 时提交混淆值且命令不加 `--obscure` |
+| `password2` | 可选 | 文件名加密 salt，规则同上 |
+| `filename_encryption` | 默认 `standard` | 白名单 `standard / obfuscate / off` |
+| `directory_name_encryption` | 默认 `true` | 布尔 |
+| `filename_encoding`（v1.1；默认 v1.10 改 `base64`） | 默认 **`base64`** | 白名单 `base32 / base64 / base32768`：base64（默认）文件名更短、适合大小写敏感远端；base32 通用性最好；base32768 适合按 UTF-16/码点计长的远端（OneDrive/Dropbox） |
+
+### 3.2 WebDAV
+
+| 字段 | 必填 | 校验/处理 |
+|---|---|---|
+| `remote_name` | ✅ | 同上 |
+| `url` | ✅ | http(s) 格式校验 |
+| `vendor` | 默认 `other` | 白名单 `other / owncloud / nextcloud / sharepoint` |
+| `user` | ✅ | 原文写入 |
+| `pass` | ✅ | 混淆规则同 Crypt `password` |
+| `bearer_token` | 可选 | 混淆规则同上 |
+
+### 3.3 通用防护
+
+- **参数注入防护**：所有 `key=value` 值拒绝 `\r`、`\n` 与控制字符；`remote_name` 正则白名单（同段名规则）；
+- **凭据零回显**（S3）：请求中的明文只经内存流转进入 argv，响应、日志、审计 detail、异常消息一律不含；rclone 的 stderr 可能回显参数时须截断过滤；
+- **CLI 失败即拒绝**：rclone 二进制缺失/超时/非零退出 → 可操作 reason 报错（503/422），绝不静默。
+
+生成效果示例（Crypt，含 `filename_encoding`；实际落盘由 rclone 写入，形态一致）：
+
+```ini
+[mycrypt]
+type = crypt
+remote = gdrive:backup/restic
+password = XXXX-obscured-XXXX
+password2 = YYYY-obscured-YYYY
+filename_encryption = standard
+directory_name_encryption = true
+filename_encoding = base64
+```
+
+## 4. 32 位随机密码生成（裁决 5，前端实现）
+
+- **生成位置：客户端**（`frontend/src/utils/password.ts`，Web Crypto `crypto.getRandomValues`）——密码不额外经服务端流转（提交路径与手填一致，不多暴露面），零后端改动；
+- **规格**：长度 **32**，字符集 `A-Za-z0-9` + 安全符号（排除引号/反斜杠/空白/INI 敏感字符）；每字符取 6 bit 熵（掩码采样避免 modulo 偏置）；
+- **交互**：`password` / `password2` / `pass` 输入框旁「骰子」按钮，点击生成并填充；编辑模式下同样可用；
+- 附「显示明文」切换（n-input type=password 切换），生成后默认明文展示一次方便抄录。
+
+## 5. conf 管理能力（裁决 6）：查询 / 编辑 / 删除
+
+### 5.1 能力边界（v1.3：裁决 8/9）
+
+- **managed 判定**：段的 `type` ∈ 当前注册表（一期 `{crypt, webdav}`，二期扩 s3/b2/sftp）→ **可编辑**（字段级表单）；`managed` 语义仅限编辑；
+- **删除 = 全部段可删**（裁决 8）：OAuth 网盘、宿主机手工配置的 s3/sftp 等均可删；确认门按段类型分级（OAuth 段加重提示「删除后需在宿主机重新授权才能再用」）；
+- **编辑 = 仅 managed**：非注册类型（含 OAuth、未注册的 s3/sftp）编辑 → 422；OAuth 类型永不进注册表（§8）；
+- **查询 = 全部段**：所有段展示名字与 type；仅 managed 段回显非凭据参数（凭据以 `has_*` 布尔替代）；
+- 凭据值**任何操作下都永不回显**（S3 口径不变）。
+
+### 5.2 查询：`GET /api/rclone/configs`
+
+实现：`rclone config dump`（JSON，全量含混淆值）→ 遍历 remotes → 取 `type` → managed 段解析 `display_keys` 非凭据参数 + 凭据键以 `has_<key>` 布尔回显；非 managed 段只留 `{remote, type, managed: false}`。
+
+**响应**（零凭据）：
+
+```jsonc
+{
+  "conf_path": "/etc/rclone/rclone.conf",
+  "conf_present": true,
+  "configs": [
+    { "remote": "mycrypt", "type": "crypt", "managed": true,
+      "params": { "remote": "gdrive:backup/restic",
+                  "filename_encryption": "standard",
+                  "directory_name_encryption": "true",
+                  "filename_encoding": "base64" },
+      "has_password": true, "has_password2": false },
+    { "remote": "gdrive", "type": "drive", "managed": false, "params": {} }
+  ]
+}
+```
+
+### 5.3 编辑：`PUT /api/rclone/config/{remote_name}`
+
+- 请求体与创建相同；**type 必须与现有段一致**（dump 预检，不一致 → 422）；**语义为全量更新**；
+- **密码留空 = 保持不变**（该键不出现在 `rclone config update` 参数中，conf 既有值不动）；
+- 实现：Lock 内 dump 预检（在册 + managed + type 一致）→ `rclone config update <name> key=value... [--obscure]` → `listremotes` 验证；
+- 审计：`rclone.config_edit`（detail：remote 名、type、是否改了凭据布尔，不含值）。
+
+### 5.4 删除：`DELETE /api/rclone/config/{remote_name}`
+
+- **全部段可删**（裁决 8）；不在册 → 404；
+- 实现：Lock 内 dump 预检（确认段存在，取其 type 供审计与提示分级）→ `rclone config delete <name>` → `listremotes` 验证（rclone 自带备份+原子替换，无需自研兜底）；
+- 审计：`rclone.config_delete`（detail：remote 名、type——type 供审计追溯被删段性质）；
+- 前端确认门：n-popconfirm 二次确认（段名出现在确认文案中）；**OAuth 段加重提示**（段名 + 「该网盘配置删除后需在宿主机重新授权才能再用」）。
+
+### 5.5 写路径的并发与一致性（v1.2：全交官方实现）
+
+- 全部写操作在 `asyncio.Lock` 内「dump 预检 → CLI 写 → listremotes 验证」，缩小与宿主机编辑/OAuth 回写的交叠窗口；
+- rclone 自身的保存机制（临时文件 + 双 rename + 权限镜像 + 备份清理）由目录挂载形态保证可用（§1.3-1）；
+- 真机验证项（B1 spike）：容器内 `rclone config create → update → delete` 全链路 round-trip，确认目录挂载下 rename 正常、`--obscure`/`key=value` 语法在 Alpine rclone 版本上可用。
+
+## 6. API 契约汇总
+
+| 方法/路径 | 用途 | 审计动作 |
+|---|---|---|
+| `GET /api/rclone/configs` | 查询 conf 段清单（含非凭据参数） | 只读，不埋点 |
+| `POST /api/rclone/config` | 新增配置段 | `rclone.config_append` |
+| `PUT /api/rclone/config/{remote_name}` | 编辑配置段 | `rclone.config_edit` |
+| `DELETE /api/rclone/config/{remote_name}` | 删除配置段 | `rclone.config_delete` |
+
+**创建请求体**（PUT 同形，密码可留空）：
+
+```jsonc
+{
+  "type": "crypt",            // "crypt" | "webdav"（白名单，未注册类型 422）
+  "params": {
+    "remote": "gdrive:backup/restic",
+    "password": "…",
+    "already_obscured": false
+  }
+}
+```
+
+**创建响应**（零凭据）：
+
+```jsonc
+{
+  "remote": "mycrypt",
+  "conf_path": "/etc/rclone/rclone.conf",
+  "remotes_after": ["gdrive", "mycrypt"]
+}
+```
+
+**错误语义**：
+
+| 状态码 | 场景 |
+|---|---|
+| 422 | 字段缺失/白名单外/注入字符/remote 格式非法/底层 remote 不在册/type 不一致/目标非 managed/rclone 校验拒绝 |
+| 404 | 删除/编辑目标段不在 conf 中 |
+| 409 | 新增时 `remote_name` 与既有段重名 |
+| 503 | rclone 二进制不可用（CLI 执行失败），带可操作 reason |
+
+**鉴权与红线**：全部挂 `require_session` + Origin 同源校验（S4，含 DELETE/PUT）；conf 路径取自 settings 而非用户输入，不涉 PathMapper（S1 不适用）。
+
+## 7. 设置页前端方案（裁决 1：一次做完）
+
+- **入口**：设置页新增分区 `rclone`（标题「rclone 远端配置」），插入 `SECTIONS` 的 `credential` 之后；沿用「顶部分段 Tab + 单面板 v-if + `#sec-rclone` 深链」既有形态；
+- **面板结构**（`RcloneConfigPanel.vue`），上下两区：
+  1. **已有配置列表**：`GET /api/rclone/configs` 渲染（managed 段展示非凭据参数 + `has_*` 徽标；非 managed 段灰显参数区，只露名字与 type）；每行操作：**编辑**（仅 managed 段显示）/ **删除**（全部段显示，n-popconfirm 确认；OAuth 段文案加重「删除后需重新授权」）；
+  2. **生成/编辑表单**：类型 Select（Crypt/WebDAV）→ 按 v-if 切换字段组（与后端 §3 一致）；密码输入框旁「生成」按钮（§4）+ 明文切换；编辑模式复用同一表单（进入编辑 = 预填非凭据字段、密码框空 + placeholder「留空保持不变」、`remote_name` 只读）；`already_obscured` 复选框（勾选后密码框语义变为「已混淆值」，提交命令整体不加 `--obscure`）；提交后刷新列表并 `message.success`；409/422/503 错误 reason 直出；
+  3. 底部说明：OAuth 网盘类型不在本工具范围（宿主机生成），指向部署指南；
+- **i18n**：`settings.rclone.*` 键中英双 locale 同步（i18n-parity.spec.ts 护栏）；
+- **测试**：面板组件测（列表渲染/类型切换字段组/编辑预填/密码留空语义/提交调用/错误展示/删除确认门）+ 设置页分区切换含 `rclone` + 随机密码生成器单测（长度/字符集/熵采样无偏）。
+
+## 8. 可扩展类型路线（注册表即插即用；编辑能力随注册表扩展，裁决 9）
+
+| 阶段 | 类型 | 说明 |
+|---|---|---|
+| 二期 | `s3` / `b2` | access_key/secret_key 混淆写入，字段多但同模式；**进注册表后即获得字段级编辑表单** |
+| 二期 | `sftp` | host/user/key_file（key 走挂载路径引用而非内联）；同上 |
+| 三期 | `alias` / `local` | 无凭据类型，最简单 |
+| **永不** | `drive` / `onedrive` 等网盘 | 需 OAuth 浏览器授权流，UI 无法替代授权（编辑无意义）；**永不进注册表**（编辑口不开）；删除仍可用（裁决 8，全段可删） |
+
+> 设计纪律：编辑只走「注册表字段级表单」，**不开自由改键口**——自由编辑 = 绕过校验 + 注入面扩大，明确拒绝。
+
+## 9. 部署形态变更（裁决 7 连带）
+
+```yaml
+# compose（变更前 → 变更后）
+- ./rclone/rclone.conf:/etc/rclone/rclone.conf:rw   # 单文件挂载（旧）
++ ./rclone:/etc/rclone:rw                           # 目录挂载（新）
+```
+
+- conf 文件放宿主机 `./rclone/` 目录内（首次部署：`mkdir -p ./rclone && touch ./rclone/rclone.conf`，或直接留空由 `rclone config create` 落盘创建——满足裁决 3）；
+- `RCLONE_CONFIG=/etc/rclone/rclone.conf` **不变**；老用户迁移 = 把现有 `rclone.conf` 移入 `./rclone/` 目录（部署指南 B4 登记迁移指引）；
+- **连带收益**：修复单文件挂载下 OAuth token 回写 EBUSY 的潜在既有问题（R-022「必须 ：rw」的前提在目录挂载下才真正成立）；
+- 部署指南补充：容器内 UI 写 conf 与宿主机 `rclone config` 修改同一文件，双端都写后建议刷新 remote 清单核对。
+
+### 9.1 部署形态适配：docker 档 vs host 档（v1.5）
+
+**结论：不加第二套实现，统一「一套写入逻辑 + 三处形态感知」。** 形态判断（`settings.deploy_mode_effective`，`docker|host`）**只用于文案与降级，绝不参与写入分支**。
+
+| 关注点 | 容器档（docker） | 主机档（host） | 处理 |
+|---|---|---|---|
+| conf 路径 | `/etc/rclone/rclone.conf`（`RCLONE_CONFIG` + 目录挂载） | 宿主机真实路径（未设 `RCLONE_CONFIG` → `$HOME/.config/rclone/rclone.conf`） | **同一解析函数**：`settings.rclone_config or HOME 默认`（复用 `RcloneProbe._conf_present` 现有逻辑，抽公共 helper 供查询/写入共用） |
+| rename 原子替换 | 依赖**目录挂载**（裁决 7 动因：单文件挂载 EBUSY） | 天然可用（无 bind mount 层） | 无分支，统一走 rclone CLI |
+| 权限 | nonRoot 档（1000:1000）需宿主目录 uid 匹配，EACCES 常见 | 按运行用户，偶需调文件属主 | **仅错误文案分支**：容器 →「检查 compose 目录挂载 `:rw` 与目录属主」；主机 →「检查 conf 文件属主/权限」 |
+| rclone 二进制 | 镜像内置（`docker/Dockerfile:50`） | **需宿主机自装**（本机未装 = `available=False` 属预期） | 复用 `RcloneProbe.available` 语义：不可用 → **503 + 可操作 reason**，前端禁用写入按钮（不裸 500） |
+| 并发一致性 | 经挂载层（宿主 `rclone config` 与容器内 UI 写同一 inode） | 直接同一文件 | 同一 `asyncio.Lock` + 同一 CLI，无差别 |
+| 前端提示 | 面板底部：容器档提示「conf 由 compose 目录挂载提供，宿主机亦可编辑」 | 面板底部：主机档提示「直接读写宿主机 conf，注意文件权限」 | 文案取自 `GET /api/system/runtime` 的 `deploy_mode` |
+
+部署影响：**compose 目录挂载变更仅影响容器档**；主机档零部署动作（部署指南迁移指引须写明）。B1 spike 在容器档执行；主机档以「`rclone` 缺失降级 + 路径回落 HOME 默认」两条用例覆盖（单测即可，无需真机）。
+
+## 10. 实施批次
+
+| 批次 | 内容 | 前置 |
+|---|---|---|
+| B0 ✅ | **规范修订（已完成 2026-10-26）**：《代码审查规范》v1.14 —— S6 按实际动作名重计 **20 项**（`rclone.config_append` / `rclone.config_edit` / `rclone.config_delete` 入库 + 修正历史并组计数漂移）+ AGENTS.md 编号索引同步 + `constants.py` 三个 `AUDIT_RCLONE_CONFIG_*` 常量 + `verify_redlines.sh` 两条新断言（常量反向锚点、写入 CLI 唯一实现点）；`verify_redlines.sh` 19 项全绿 | 裁决 2 |
+| B1 ✅ | **服务层 + 真机 spike 完成（2026-10-26）**：`rclone_config.py`（CLI 编排 + GENERATORS ×2 + managed 过滤 + conf 路径统一解析 helper + 实例写锁 + 写后 dump 复核）；真机 spike（WSL rclone v1.60.1）确认 `--obscure`/`key=value`/`filename_encoding` 语法与 A/B 挂载形态差异（见 §12），并修出 `--config` 缺失与超时过短两处缺陷；单测 46 例、全量 1117 passed | B0 |
+| B2 ✅ | 端点 ×4 + 审计 ×3 + schemas ×4 + `main.py` 装配 + 端点测 11 例（鉴权 401 / Origin 403 / 查询零凭据 / 审计 ×3 / 409 重名 / 404 不在册 / 422 未注册类型·OAuth 段编辑 / 503 不可用） | B1 |
+| B3 ✅ | **已完成 2026-10-27**：compose 目录挂载（含注释重写）+ 设置页 `rclone` 分区 + `RcloneConfigPanel.vue`（列表 + 表单 + 编辑态 + 删除确认门 + 生成密码）+ `utils/password.ts`（32 位 Web Crypto）+ i18n 双 locale；组件测 6 例 + 密码工具测 6 例；typecheck / build 通过 | B1 |
+| B4 ✅ | **已完成 2026-10-27**：架构设计文档 **v1.10**（E48–E51 四端点条目 + E45 Q17 放宽注 + 写后复核护栏 + §3 目录树 + §11 R-022 行）、部署指南（2026-10-27 校准：§1 仓库类型更正、§4.2 目录挂载迁移指引 + 界面配置管理能力矩阵）、PRD **v1.14**（需求池 R-022 行） | 全部 |
+| B5 ✅ | **已完成 2026-10-27**：后端 pytest 全量 **1128 passed** · ruff 全绿 · `verify_redlines.sh` **19 项全绿**；前端 typecheck **0 错误** · vitest **458 passed / 47 文件** · build **exit 0** | 全部 |
+
+## 11. 测试与护栏清单
+
+- 生成器单测：两类型 `build_args` 渲染（含 `filename_encoding`）、白名单校验、缺字段 422、`already_obscured` 分支（不加 `--obscure`）；
+- 编排层单测：dump JSON 解析与 managed 过滤、凭据键替换 `has_*`、非 managed 段零参数回显、CLI 非零退出/超时/缺二进制降级（**含 host 档「未装 rclone」路径**）、Lock 串行断言；
+- 端点测试：鉴权 + Origin + 审计埋点 ×3 断言 + 能力边界双向断言（OAuth 段编辑 422 / 删除可用且审计含 type）+ 响应/异常/日志零凭据泄漏；
+- 前端：面板组件测 + 随机密码生成器单测 + i18n parity；
+- 红线：`bash scripts/verify_redlines.sh` 全绿（含 S6 新增断言）；
+- 真机验收（B1 spike + B5）：容器内 create→update→delete round-trip + 设置页全旅程。
+
+## 12. 真机 spike 实证记录（2026-10-26，WSL 真机 rclone v1.60.1）
+
+> 环境：WSL2（Debian 13，root），`apt install rclone` = v1.60.1；无 docker，故容器档
+> 以 **bind mount 模拟**单文件/目录两种挂载形态做 A/B 对照。
+
+### 12.1 A/B 挂载形态对照（**裁决 7 的实证依据**）
+
+| 形态 | create 退出码 | 落盘结果 | 结论 |
+|---|---|---|---|
+| **单文件** bind mount（`mount --bind src.conf dst.conf`） | **0**（无报错） | 挂载点与宿主机源文件**均未被修改**；且写操作会**挂住不返回**（实测 8s 未结束） | **不可用**：静默失败 + 卡死，UI 若只看退出码会误报成功 |
+| **目录** bind mount（`mount --bind ./rclone /etc/rclone`） | 0 | 宿主机侧文件真实更新；create crypt → update → delete 全链路生效，dump JSON 正确，权限沿用原文件（644） | **可用**（裁决 7 正确） |
+
+### 12.2 CLI 语义实测（决定「哪些校验必须在编排层」）
+
+| 场景 | rclone 真实行为 | 本工具对策（已实现） |
+|---|---|---|
+| 重名 create | **exit 0，静默覆盖同名段** | 409 只能靠 dump 预检（编排层已实现） |
+| delete 不存在的段 | **exit 0，静默成功** | 404 只能靠 dump 预检（已实现） |
+| 未知选项键（如 `url2`） | **exit 0，静默落盘** | 注册表白名单是唯一防线（已实现，422） |
+| 缺参数 create | exit 0，写入残缺段（**不交互追问**） | 生成器必填校验（已实现，422）；仍传 `stdin=DEVNULL` 防挂起 |
+| 未知 backend 类型 | exit 1（couldn't find backend） | 注册表前置拦截（422） |
+| `--obscure` + `key=value` | 支持；`filename_encoding` 的 base32/base64/base32768 均被接受 | 与实现一致 |
+| conf 不存在时 dump | stdout `{}` + **stderr NOTICE**，exit 0 | `_parse_dump` 截取首尾花括号后解析（**缺陷修复**） |
+
+### 12.3 spike 抓到的两处实现缺陷（已修）
+
+1. **未向 rclone 传 `--config`**：编排层解析了 conf 路径却不传参 → rclone 走 `$HOME`
+   默认 conf，出现「读写的 conf ≠ UI 展示的路径」（主机档与容器档 HOME 不同，容器还分
+   root/nonRoot 档）。修复：所有命令统一带 `rclone --config <conf_path>`。
+2. **写操作复用探测的 5s 超时**：实测 rclone **单次启动即 ~2.3s**（简单 dump 也要
+   2.3–2.6s），5s 在慢环境会误判超时。修复：新增
+   `constants.RCLONE_CONFIG_TIMEOUT_SECONDS = 15.0`（与仓库探测同档），超时文案同时
+   指向单文件挂载这一常见诱因。
+
+### 12.4 单文件挂载的兜底行为（最终形态）
+
+单文件挂载下写 conf 会**挂住**，最终由超时兜底成 **503 + 可操作文案**（「若 conf 位于
+单文件 bind mount，rclone 保存会卡住：请将 compose 改为目录挂载 …」）；另加**写后 dump
+复核**（段缺失 / 落值不符 → 503），双保险确保「退出码 0 却没写进去」不会误报成功。
+
+## 13. 已登记风险与取舍
+
+| 风险/取舍 | 说明 | 处置 |
+|---|---|---|
+| `key=value` 参数经 argv 传递，进程列表理论可见明文 | 容器单用户运行、存活毫秒级（与原 `rclone obscure` 同级风险） | 登记为已接受风险；支持 `already_obscured` 旁路 |
+| rclone CLI 版本语法差异 | `key=value` 与 `--obscure` 需 rclone ≥1.56；Alpine stable rclone 远新 | **B1 spike 待真机确认**（本机无 docker/rclone）；登记依赖升级指南核查点 |
+| rclone 校验可能拒绝合法键 | create/update 对未知选项键报错（如旧版无 `filename_encoding`） | 同上，待真机确认 Alpine 版本含该键；报错 reason 直出可诊断 |
+| 真机已验证但版本/形态有限 | spike 在 WSL rclone **v1.60.1**、目录 bind mount 下全绿；容器（Alpine 版 rclone）未跑 | B2 后建议在真容器内复跑一次 §12 的 A/B 与 round-trip；Alpine rclone 版本差异登记入依赖升级指南 |
+| 单文件挂载下写 conf 会挂住 | 实测 8s+ 不返回，最终靠 15s 超时兜底 | 已实现 503 + 挂载形态文案；**部署侧必须改目录挂载**（§9），否则功能不可用而非报错 |
+| 与宿主机编辑/OAuth 回写的并发窗口 | 双端都可能写 conf | Lock 内「dump 预检 → CLI 写 → 验证」缩小窗口；目录挂载下 rclone 原子替换 + 权限镜像兜底 |
+| 管理能力边界（v1.3） | 编辑随注册表扩展（一期 crypt/webdav）、删除全段放开 | 编辑口只走字段级表单；删除确认门分级 + 审计留痕；测试覆盖「OAuth 段编辑 422 / 删除可用」双向断言 |
+| Q17 档位放宽的文档一致性 | 三处文档（架构/部署指南/PRD）需同批登记 | B4 批次强制收口 |
