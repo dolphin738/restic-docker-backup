@@ -5,6 +5,7 @@
 import { request } from './http'
 import type {
   CheckDetailResponse,
+  JobCleanupResponse,
   JobCreateResponse,
   JobLogResponse,
   JobOut,
@@ -104,4 +105,10 @@ export function getJobLog(jobId: string, tailBytes?: number): Promise<JobLogResp
   return request<JobLogResponse>(`/api/jobs/${encodeURIComponent(jobId)}/log`, {
     query: { tail_bytes: tailBytes },
   })
+}
+
+/** 任务历史立即清理（裁决5：仅清 jobs 终态行与任务日志，不触碰审计日志）。
+ * silent：错误（如 jobs_days<=0 由后端拒绝/零删除）由页面层内联展示，避免双重提示。 */
+export function cleanupJobs(): Promise<JobCleanupResponse> {
+  return request<JobCleanupResponse>('/api/jobs/cleanup', { method: 'POST', silent: true })
 }

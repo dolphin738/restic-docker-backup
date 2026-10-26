@@ -9,7 +9,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query'
-import { NConfigProvider, NDataTable, NSelect } from 'naive-ui'
+import { NConfigProvider, NDataTable, NMessageProvider, NSelect } from 'naive-ui'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { h, type Component } from 'vue'
@@ -30,6 +30,9 @@ vi.mock('@/api/audit', () => ({
     total: mocks.items.length,
     actions: mocks.actions,
   })),
+  // 导出（R-020）：页面 setup 会 import，仅点击时调用，桩为 no-op 即可
+  exportAuditNdjson: vi.fn(async () => ''),
+  listAuditArchives: vi.fn(async () => []),
 }))
 
 function mountPage(component: Component) {
@@ -40,7 +43,8 @@ function mountPage(component: Component) {
   })
   return mount(NConfigProvider, {
     props: { themeOverrides: lightThemeOverrides },
-    slots: { default: () => h(component) },
+    // 审计页导出按钮的完成提示走 useMessage（R-020 裁决落地），须有 provider 包裹
+    slots: { default: () => h(NMessageProvider, null, { default: () => h(component) }) },
     global: {
       plugins: [i18n, createPinia(), [VueQueryPlugin, { queryClient }], router],
     },

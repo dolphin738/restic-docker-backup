@@ -1,8 +1,12 @@
 <script setup lang="ts">
 /** 审计日志页（页面 12，R-020，P2 批次 A）。
  *
- * E26 只读查询：筛选（动作前缀下拉/手输 + result 三值 + 时间范围）+ 分页表格（50/页，
- * 服务端上限 500）。S6：append-only——页面无任何编辑/删除入口，仅查询（查询本身不留痕）。
+ * 两个分区（2026-10-26 迁移：保留策略从设置页并入本页）：
+ *  ① 审计日志——E26 只读查询：筛选（动作前缀下拉/手输 + result 三值 + 时间范围）
+ *    + 分页表格（50/页，服务端上限 500）。S6：append-only——无任何编辑/删除入口；
+ *  ② 保留策略——R-020 裁决1/3：审计保留期 / 归档保留期 / 归档目录 / 冷存占位
+ *    + 归档文件只读列表。**不放审计「立即清理」按钮**（裁决4：避免误触发审计删除；
+ *    任务历史的「立即清理」在任务历史页，仅清 jobs，见 裁决5）。
  * detail 为 JSON 文本原文，行展开展示格式化结果；时间统一走 utils/datetime 本地化。
  */
 
@@ -13,23 +17,51 @@ import {
   NCard,
   NDataTable,
   NDatePicker,
+  NDivider,
+  NEmpty,
+  NForm,
+  NFormItem,
   NIcon,
+  NInput,
+  NInputNumber,
   NSelect,
   NSpace,
+  NTable,
   NText,
+  useMessage,
   type DataTableColumns,
 } from 'naive-ui'
 import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { queryAudit } from '@/api/audit'
+import { exportAuditNdjson, listAuditArchives, queryAudit } from '@/api/audit'
+import { getConfig } from '@/api/config'
+import { saveDumpBehaviorConfig } from '@/api/settings'
 import type { AuditOut, AuditResult } from '@/api/types'
-import { IconFilter, IconX } from '@/components/icons/icons'
+import { IconCheckCircle, IconDownload, IconFilter, IconX } from '@/components/icons/icons'
+import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const PAGE_SIZE = 50
 
 const { t, te } = useI18n()
+const message = useMessage()
+
+// ---------------------------------------------------------------- 分区（2026-10-26：保留策略从设置页并入）
+
+type AuditTabId = 'log' | 'retention'
+
+const activeTab = ref<AuditTabId>('log')
+
+/** 分段条项：文案经 computed 派生，切语言即时刷新；深链 #audit-tab-<id> 内置于组件。 */
+const tabLinks = computed(() => [
+  { id: 'log', label: t('audit.tabs.log') },
+  { id: 'retention', label: t('audit.tabs.retention') },
+])
+
+function onTabChange(id: string): void {
+  activeTab.value = id as AuditTabId
+}
 
 // ---------------------------------------------------------------- 筛选（草稿态 + 应用态分离，点「查询」生效）
 
@@ -57,6 +89,34 @@ function resetFilters(): void {
   draftResult.value = null
   draftRange.value = null
   applyFilters()
+}
+
+// ---------------------------------------------------------------- 导出当前筛选（E26：NDJSON 下载，S6 只读不留痕）
+
+const exporting = ref(false)
+
+async function onExport(): Promise<void> {
+  exporting.value = true
+  try {
+    const text = await exportAuditNdjson({
+      action: appliedAction.value ?? undefined,
+      result: appliedResult.value ?? undefined,
+      since: appliedSince.value,
+      until: appliedUntil.value,
+    })
+    const blob = new Blob([text], { type: 'application/x-ndjson' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `audit-export-${new Date().toISOString().slice(0, 10)}.ndjson`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    message.success(t('audit.export.done'))
+  } catch {
+    // 错误（AppError）由 http 层全局提示
+  } finally {
+    exporting.value = false
+  }
 }
 
 const resultOptions = computed(() => [
@@ -236,14 +296,110 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
     render: (row) => row.target ?? '—',
   },
 ])
+
+// ---------------------------------------------------------------- 保留策略（R-020 裁决1/裁决3：审计保留期 + 归档 + 冷存占位）
+
+const auditDays = ref<number | null>(365)
+const archiveDays = ref<number | null>(365)
+const archiveDir = ref('')
+const coldTarget = ref('')
+const savingRetention = ref(false)
+
+/** 仅在「保留策略」分区激活时拉配置/归档列表（默认停在日志分区 = 零额外请求）。 */
+const retentionActive = computed(() => activeTab.value === 'retention')
+
+const configQuery = useQuery({
+  queryKey: ['config', 'audit-retention'],
+  queryFn: getConfig,
+  enabled: retentionActive,
+})
+
+watch(
+  configQuery.data,
+  (data) => {
+    if (!data) {
+      return
+    }
+    const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
+    const ad = Number(item('retention.audit_days')?.value)
+    auditDays.value = Number.isInteger(ad) && ad >= 0 ? ad : 365
+    const ard = Number(item('retention.audit_archive_days')?.value)
+    archiveDays.value = Number.isInteger(ard) && ard >= 0 ? ard : 365
+    archiveDir.value = item('retention.audit_archive_dir')?.value ?? ''
+    coldTarget.value = item('retention.audit_archive_cold_target')?.value ?? ''
+  },
+  { immediate: true },
+)
+
+const retentionDirty = computed(() => {
+  const item = (key: string) =>
+    configQuery.data.value?.items.find((entry) => entry.key === key) ?? null
+  return (
+    String(auditDays.value ?? '') !== (item('retention.audit_days')?.value ?? '365') ||
+    String(archiveDays.value ?? '') !== (item('retention.audit_archive_days')?.value ?? '365') ||
+    archiveDir.value.trim() !== (item('retention.audit_archive_dir')?.value ?? '') ||
+    coldTarget.value.trim() !== (item('retention.audit_archive_cold_target')?.value ?? '')
+  )
+})
+
+const archiveQuery = useQuery({
+  queryKey: ['audit', 'archives'],
+  queryFn: listAuditArchives,
+  enabled: retentionActive,
+})
+
+async function onSaveRetention(): Promise<void> {
+  if (savingRetention.value || !retentionDirty.value) {
+    return
+  }
+  savingRetention.value = true
+  try {
+    await saveDumpBehaviorConfig({
+      'retention.audit_days': auditDays.value !== null ? String(auditDays.value) : null,
+      'retention.audit_archive_days': archiveDays.value !== null ? String(archiveDays.value) : null,
+      'retention.audit_archive_dir': archiveDir.value.trim() || null,
+      'retention.audit_archive_cold_target': coldTarget.value.trim() || null,
+    })
+    message.success(t('audit.retention.saved'))
+    await configQuery.refetch()
+  } catch {
+    // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
+  } finally {
+    savingRetention.value = false
+  }
+}
+
+/** 归档文件大小 human-readable（B / KiB / MiB）。 */
+function formatArchiveBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`
+  }
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
+}
 </script>
 
 <template>
   <n-space vertical :size="16">
     <n-card :title="t('nav.audit')" size="small">
-      <n-space vertical :size="12">
-        <!-- S6 UI 面：append-only 声明，无编辑/删除入口 -->
-        <n-text depth="3">{{ t('audit.readonlyNote') }}</n-text>
+      <!-- 分区：① 审计日志 ② 保留策略（2026-10-26 从设置页并入；裁决4：页内无审计「立即清理」按钮） -->
+      <div class="audit__segments">
+        <SegmentedTabs
+          :items="tabLinks"
+          :model-value="activeTab"
+          hash-prefix="audit-tab"
+          :aria-label="t('audit.tabsAria')"
+          @update:model-value="onTabChange"
+        />
+      </div>
+
+      <!-- ① 审计日志 -->
+      <div v-if="activeTab === 'log'" class="audit__panel">
+        <n-space vertical :size="12">
+          <!-- S6 UI 面：append-only 声明，无编辑/删除入口 -->
+          <n-text depth="3">{{ t('audit.readonlyNote') }}</n-text>
 
         <!-- 筛选区 -->
         <n-space align="center" :size="8" class="audit__filters">
@@ -284,6 +440,12 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
             </template>
             {{ t('audit.reset') }}
           </n-button>
+          <n-button size="small" secondary :loading="exporting" @click="onExport">
+            <template #icon>
+              <n-icon :size="16"><IconDownload /></n-icon>
+            </template>
+            {{ t('audit.export.btn') }}
+          </n-button>
         </n-space>
 
         <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
@@ -298,15 +460,139 @@ const columns = computed<DataTableColumns<AuditOut>>(() => [
           :pagination="pagination"
           :row-key="(row: AuditOut) => row.id"
         />
-        <n-text v-if="!auditQuery.isFetching.value && rows.length === 0 && !errorText" depth="3">
-          {{ t('audit.empty') }}
-        </n-text>
-      </n-space>
+          <n-text v-if="!auditQuery.isFetching.value && rows.length === 0 && !errorText" depth="3">
+            {{ t('audit.empty') }}
+          </n-text>
+        </n-space>
+      </div>
+
+      <!-- ② 保留策略（R-020 裁决1/裁决3：审计保留期 + 归档压缩 + 冷存占位；只读归档列表） -->
+      <div v-else class="audit__panel">
+        <n-space vertical :size="12">
+          <n-text depth="3">{{ t('audit.retention.desc') }}</n-text>
+          <n-form label-placement="top" class="audit__form">
+            <n-form-item :label="t('audit.retention.auditDays')">
+              <n-space vertical :size="4">
+                <n-input-number
+                  v-model:value="auditDays"
+                  :min="0"
+                  :show-button="false"
+                  class="audit__number"
+                />
+                <n-text depth="3" class="audit__hint">{{ t('audit.retention.auditDaysHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item :label="t('audit.retention.archiveDays')">
+              <n-space vertical :size="4">
+                <n-input-number
+                  v-model:value="archiveDays"
+                  :min="0"
+                  :show-button="false"
+                  class="audit__number"
+                />
+                <n-text depth="3" class="audit__hint">{{ t('audit.retention.archiveDaysHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item :label="t('audit.retention.archiveDir')">
+              <n-space vertical :size="4">
+                <n-input
+                  v-model:value="archiveDir"
+                  :placeholder="t('audit.retention.archiveDirPlaceholder')"
+                />
+                <n-text depth="3" class="audit__hint">{{ t('audit.retention.archiveDirHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item :label="t('audit.retention.coldTarget')">
+              <n-space vertical :size="4">
+                <n-input
+                  v-model:value="coldTarget"
+                  :placeholder="t('audit.retention.coldTargetPlaceholder')"
+                />
+                <n-text depth="3" class="audit__hint">{{ t('audit.retention.coldTargetHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+          </n-form>
+          <n-space justify="end">
+            <n-button
+              type="primary"
+              :loading="savingRetention"
+              :disabled="!retentionDirty"
+              @click="onSaveRetention"
+            >
+              <template #icon>
+                <n-icon :size="16"><IconCheckCircle /></n-icon>
+              </template>
+              {{ t('common.save') }}
+            </n-button>
+          </n-space>
+
+          <!-- 归档文件只读列表（外送冷存由部署侧既有 restic/rclone/挂卷完成，见部署指南 §7.0） -->
+          <n-divider />
+          <n-space align="center" :size="8" wrap>
+            <n-text depth="2">{{ t('audit.retention.archivesTitle') }}</n-text>
+            <n-button
+              size="tiny"
+              quaternary
+              :loading="archiveQuery.isFetching.value"
+              @click="archiveQuery.refetch()"
+            >
+              {{ t('audit.retention.archivesRefresh') }}
+            </n-button>
+          </n-space>
+          <n-empty v-if="archiveQuery.isLoading.value" :description="t('common.loading')" size="small" />
+          <n-table
+            v-else-if="archiveQuery.data.value && archiveQuery.data.value.length > 0"
+            :single-line="false"
+            size="small"
+            class="audit__archive-table"
+          >
+            <thead>
+              <tr>
+                <th>{{ t('audit.retention.archiveName') }}</th>
+                <th>{{ t('audit.retention.archiveSize') }}</th>
+                <th>{{ t('audit.retention.archiveMtime') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="file in archiveQuery.data.value" :key="file.name">
+                <td>{{ file.name }}</td>
+                <td>{{ formatArchiveBytes(file.size_bytes) }}</td>
+                <td>{{ formatDateTime(file.mtime_iso) }}</td>
+              </tr>
+            </tbody>
+          </n-table>
+          <n-empty v-else :description="t('audit.retention.archivesEmpty')" size="small" />
+        </n-space>
+      </div>
     </n-card>
   </n-space>
 </template>
 
 <style scoped>
+/* 分区切换（复用全站 SegmentedTabs 形态层，勿逐页另写一套） */
+.audit__segments {
+  margin-bottom: 16px;
+}
+
+/* 保留策略面板：表单按内容宽度收窄，长提示不铺满整屏 */
+.audit__form {
+  max-width: 640px;
+}
+
+.audit__number {
+  width: 200px;
+}
+
+.audit__hint {
+  font-size: 12px;
+}
+
+/* 归档文件表：窄屏可横向滚动，不撑破卡片 */
+.audit__archive-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .audit__filters {
   flex-wrap: wrap;
 }

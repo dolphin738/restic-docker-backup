@@ -33,8 +33,8 @@ import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { listBackupTasks } from '@/api/backupTasks'
-import { cancelJob, createJob, getCheckDetail, getJob, listActiveJobs, listJobsHistory } from '@/api/jobs'
-import type { CheckDetailResponse, JobOut, JobStatus, JobType } from '@/api/types'
+import { cancelJob, cleanupJobs, createJob, getCheckDetail, getJob, listActiveJobs, listJobsHistory } from '@/api/jobs'
+import type { CheckDetailResponse, JobCleanupResponse, JobOut, JobStatus, JobType } from '@/api/types'
 import { IconFile, IconShieldCheck } from '@/components/icons/icons'
 import FilterBar from '@/components/FilterBar.vue'
 import JobLogDrawer from '@/components/JobLogDrawer.vue'
@@ -255,6 +255,32 @@ const historyColumns = computed<DataTableColumns<JobOut>>(() => [
   },
 ])
 
+// ---------------------------------------------------------------- 任务历史立即清理（裁决5：仅清 jobs 行与任务日志）
+
+const cleanupShow = ref(false)
+const cleanupLoading = ref(false)
+const cleanupReport = ref<JobCleanupResponse | null>(null)
+
+async function onCleanup(): Promise<void> {
+  cleanupLoading.value = true
+  try {
+    const report = await cleanupJobs()
+    cleanupReport.value = report
+    if (report.jobs_deleted > 0 || report.log_files_deleted > 0) {
+      message.success(t('jobs.cleanup.success'))
+    } else {
+      message.info(t('jobs.cleanup.zeroDeleted'))
+    }
+    await historyQuery.refetch()
+  } catch (error) {
+    if (!isAppError(error)) {
+      throw error
+    }
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
 // ================================================================ check 校验结果视图（E22，批次 B）
 
 const checkShow = ref(false)
@@ -402,7 +428,17 @@ onMounted(() => {
       <!-- ================= 全量历史（E13 完整版：缺省不过滤，条件显式传入） ================= -->
       <n-tab-pane name="history" :tab="t('jobs.tabHistory')">
         <n-space vertical :size="12">
-          <n-text depth="3">{{ t('jobs.historyLimitNote', { n: HISTORY_PAGE_SIZE }) }}</n-text>
+          <n-space align="center" justify="space-between" :size="8" wrap>
+            <n-text depth="3">{{ t('jobs.historyLimitNote', { n: HISTORY_PAGE_SIZE }) }}</n-text>
+            <n-button size="small" secondary type="warning" :loading="cleanupLoading" @click="cleanupShow = true">
+              {{ t('jobs.cleanup.now') }}
+            </n-button>
+          </n-space>
+
+          <!-- 清理报告（裁决5：仅清 jobs 行与过期任务日志；不影响进行中任务，不删审计） -->
+          <n-alert v-if="cleanupReport" type="success" :show-icon="false">
+            {{ t('jobs.cleanup.report', { jobs: cleanupReport.jobs_deleted, logs: cleanupReport.log_files_deleted, bytes: cleanupReport.log_bytes_freed }) }}
+          </n-alert>
 
           <!-- 筛选区：type / status（含终态）/ task_id / 开始时间范围（共用形态层 FilterBar） -->
           <FilterBar :loading="historyQuery.isFetching.value" @apply="applyHistoryFilters" @reset="resetHistoryFilters">
@@ -563,6 +599,16 @@ onMounted(() => {
         </n-space>
       </n-drawer-content>
     </n-drawer>
+
+    <!-- 任务历史立即清理确认门（裁决5：仅清 jobs 行与过期任务日志；不可恢复） -->
+    <ConfirmGate
+      v-model:show="cleanupShow"
+      :title="t('jobs.cleanup.confirmTitle')"
+      :description="t('jobs.cleanup.confirmDesc')"
+      :loading="cleanupLoading"
+      :confirm-label="t('jobs.cleanup.now')"
+      @confirm="onCleanup"
+    />
 
     <!-- 日志抽屉（两视图共用，实现见 components/JobLogDrawer.vue）：默认 64 KiB，按需放大到 1 MiB -->
     <JobLogDrawer v-model:show="logShow" :job-id="logJobId" :skipped-count="logSkipped" />

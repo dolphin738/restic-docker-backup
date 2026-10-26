@@ -4,8 +4,24 @@
  * `action` 为动作名前缀（如 `restore.`），通配符由服务端转义（防 LIKE 注入越权）。
  */
 
+import { getActivePinia } from 'pinia'
 import { request } from './http'
+import { useUiStore } from '@/stores/ui'
 import type { AuditPageResponse, AuditResult } from './types'
+
+/** 审计压缩归档文件（R-020 裁决3）：``/api/audit/archive`` 响应项。 */
+export interface AuditArchiveItem {
+  name: string
+  size_bytes: number
+  mtime_iso: string
+}
+
+function currentRepoId(): string {
+  if (getActivePinia()) {
+    return useUiStore().currentRepoId || 'default'
+  }
+  return 'default'
+}
 
 /** E26 查询参数；时间边界为 ISO 8601（服务端归一 UTC 后比较，C8）。 */
 export interface AuditQuery {
@@ -34,4 +50,35 @@ export function queryAudit(params: AuditQuery = {}): Promise<AuditPageResponse> 
       offset: params.offset ?? 0,
     },
   })
+}
+
+/** R-020 裁决3：列出审计压缩归档文件（只读）。 */
+export function listAuditArchives(): Promise<AuditArchiveItem[]> {
+  return request<AuditArchiveItem[]>('/api/audit/archive')
+}
+
+/** E26 导出当前筛选为 NDJSON（流式响应，媒体类型 ``application/x-ndjson``）。
+ * 返回原始文本（每行一条 JSON），由页面层转 Blob 触发下载（S6 只读、不留痕）。 */
+export async function exportAuditNdjson(params: AuditQuery = {}): Promise<string> {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries({
+    action: params.action,
+    result: params.result,
+    since: params.since,
+    until: params.until,
+  })) {
+    if (value !== undefined && value !== '') {
+      search.set(key, String(value))
+    }
+  }
+  const qs = search.toString()
+  const url = qs ? `/api/audit/export?${qs}` : '/api/audit/export'
+  const response = await fetch(url, {
+    credentials: 'include',
+    headers: { 'X-Repo-Id': currentRepoId() },
+  })
+  if (!response.ok) {
+    throw new Error(`audit export failed: ${response.status}`)
+  }
+  return response.text()
 }

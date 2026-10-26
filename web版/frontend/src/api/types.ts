@@ -209,6 +209,15 @@ export interface JobCreateResponse {
   type: JobType
 }
 
+/** 任务历史「立即清理」响应（裁决5：仅清 jobs 终态行与任务日志，不触碰审计日志）。 */
+export interface JobCleanupResponse {
+  jobs_deleted: number
+  log_files_deleted: number
+  log_bytes_freed: number
+  jobs_days: number
+  logs_days: number
+}
+
 /** E27 任务日志尾部。 */
 export interface JobLogResponse {
   id: string
