@@ -1050,6 +1050,48 @@ class RcloneRemotesOut(_Base):
     reason: str | None
 
 
+class RcloneConfigItemOut(_Base):
+    """rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + ``has_*`` 布尔）。"""
+
+    remote: str
+    type: str
+    managed: bool  # type 在注册表内 → 可字段级编辑
+    params: dict[str, str]  # 非凭据参数（非 managed 段恒空）
+    has_credentials: dict[str, bool]  # 凭据键 → 是否已配置
+
+
+class RcloneConfigsOut(_Base):
+    """rclone conf 全段查询快照。"""
+
+    conf_path: str
+    conf_present: bool
+    configs: list[RcloneConfigItemOut]
+    available: bool
+    reason: str | None
+
+
+class RcloneConfigWriteRequest(_Base):
+    """新增/编辑 rclone conf 段（字段随 ``type`` 变化，由生成器校验）。
+
+    ``params`` 只接受注册表内已知键（未知键 422，不开自由改键口）；
+    ``already_obscured=True`` 表示提交的凭据已是混淆值（命令不加 ``--obscure``）。
+    """
+
+    type: str
+    params: dict[str, str]
+    already_obscured: bool = False
+
+
+class RcloneConfigWriteOut(_Base):
+    """写操作结果（**凭据零回显**）。"""
+
+    remote: str
+    type: str
+    conf_path: str
+    action: str  # create | update | delete
+    remotes_after: list[str]
+
+
 class RepoCreateRequest(_Base):
     """R-023 新建仓库请求（url/host_tag 可空，日后再补）。
 

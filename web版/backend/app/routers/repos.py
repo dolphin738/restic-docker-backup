@@ -22,7 +22,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request
@@ -30,6 +30,9 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_RCLONE_CONFIG_APPEND,
+    AUDIT_RCLONE_CONFIG_DELETE,
+    AUDIT_RCLONE_CONFIG_EDIT,
     AUDIT_REPO_DELETE,
     AUDIT_REPO_PASSWORD_SET,
     AUDIT_REPO_REBUILD,
@@ -45,9 +48,20 @@ from app.constants import (
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
-from app.errors import JobConflictError, RepoNotFoundError, ResticFailedError, ValidationError
+from app.errors import (
+    JobConflictError,
+    NotFoundError,
+    RcloneUnavailableError,
+    RepoNotFoundError,
+    ResticFailedError,
+    ValidationError,
+)
 from app.schemas.api_schemas import (
     OkResponse,
+    RcloneConfigItemOut,
+    RcloneConfigsOut,
+    RcloneConfigWriteOut,
+    RcloneConfigWriteRequest,
     RcloneRemotesOut,
     RepoCapacity,
     RepoCreateRequest,
@@ -63,6 +77,13 @@ from app.schemas.api_schemas import (
 )
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
+from app.services.rclone_config import (
+    RcloneConfigConflict,
+    RcloneConfigError,
+    RcloneConfigNotFound,
+    RcloneConfigService,
+    RcloneConfigUnavailable,
+)
 from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
@@ -665,6 +686,178 @@ async def rclone_remotes(
         conf_path=result.conf_path,
         remotes=list(result.remotes),
         reason=result.reason,
+    )
+
+
+# ---------------------------------------------------------------- rclone 配置管理
+
+
+def _rclone_config_service(request: Request) -> RcloneConfigService:
+    """取配置管理服务（应用级单例，装配于 lifespan）。"""
+    service: RcloneConfigService = request.app.state.rclone_config_service
+    return service
+
+
+def _raise_rclone_error(exc: RcloneConfigError) -> NoReturn:
+    """服务层异常 → 统一错误响应（422 / 404 / 409 / 503，凭据已脱敏）。"""
+    if isinstance(exc, RcloneConfigNotFound):
+        raise NotFoundError(str(exc)) from exc
+    if isinstance(exc, RcloneConfigConflict):
+        raise JobConflictError(str(exc)) from exc
+    if isinstance(exc, RcloneConfigUnavailable):
+        raise RcloneUnavailableError(str(exc)) from exc
+    raise ValidationError(str(exc)) from exc
+
+
+@router.get(
+    "/rclone/configs",
+    response_model=RcloneConfigsOut,
+    summary="rclone conf 段清单（凭据零回显；managed 段回显非凭据参数）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def rclone_configs(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneConfigsOut:
+    """查询 rclone conf 全段（``rclone config dump`` → JSON → managed 过滤）。
+
+    凭据（password/password2/pass/bearer_token）**永不回显**，只给 ``has_*`` 布尔；
+    非注册表类型（OAuth 网盘等）只露名字与 type，参数恒空（S3）。
+    """
+    del session
+    listing = await _rclone_config_service(request).list_configs()
+    return RcloneConfigsOut(
+        conf_path=listing.conf_path,
+        conf_present=listing.conf_present,
+        configs=[
+            RcloneConfigItemOut(
+                remote=item.remote,
+                type=item.type,
+                managed=item.managed,
+                params=dict(item.params),
+                has_credentials=dict(item.has_credentials),
+            )
+            for item in listing.configs
+        ],
+        available=listing.available,
+        reason=listing.reason,
+    )
+
+
+@router.post(
+    "/rclone/config/{remote_name}",
+    response_model=RcloneConfigWriteOut,
+    summary="新增 rclone conf 段（crypt / webdav；重名 409）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def create_rclone_config(
+    remote_name: str,
+    payload: RcloneConfigWriteRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneConfigWriteOut:
+    """新增配置段（写 rclone ``config`` 的 create 子命令；审计 ``rclone.config_append``）。
+
+    与 Q17「UI 不生成」的边界：仅 crypt/webdav 这类**凭据由用户自填**的类型可生成，
+    OAuth 网盘类型（需浏览器授权流）不在注册表内 → 422。
+    """
+    del session
+    service = _rclone_config_service(request)
+    probe: RcloneProbe = request.app.state.rclone_probe
+    remotes = await probe.list_remotes()
+    try:
+        result = await service.create(
+            remote_name,
+            payload.type,
+            payload.params,
+            already_obscured=payload.already_obscured,
+            available_remotes=remotes.remotes if remotes.available else None,
+        )
+    except RcloneConfigError as exc:
+        _raise_rclone_error(exc)
+    await request.app.state.audit.record(
+        AUDIT_RCLONE_CONFIG_APPEND,
+        target=remote_name,
+        detail={"type": result.type},  # 只记名字与类型，不含凭据（S3）
+    )
+    return RcloneConfigWriteOut(
+        remote=result.remote,
+        type=result.type,
+        conf_path=result.conf_path,
+        action=result.action,
+        remotes_after=list(result.remotes_after),
+    )
+
+
+@router.put(
+    "/rclone/config/{remote_name}",
+    response_model=RcloneConfigWriteOut,
+    summary="编辑 rclone conf 段（全量更新；凭据留空 = 保持不变；非注册表类型 422）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def update_rclone_config(
+    remote_name: str,
+    payload: RcloneConfigWriteRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneConfigWriteOut:
+    """编辑配置段（写 rclone ``config`` 的 update 子命令；审计 ``rclone.config_edit``）。"""
+    del session
+    service = _rclone_config_service(request)
+    try:
+        result = await service.update(
+            remote_name, payload.type, payload.params, already_obscured=payload.already_obscured
+        )
+    except RcloneConfigError as exc:
+        _raise_rclone_error(exc)
+    await request.app.state.audit.record(
+        AUDIT_RCLONE_CONFIG_EDIT,
+        target=remote_name,
+        # credentials_changed 只记布尔，不记值（S3）
+        detail={"type": result.type, "credentials_changed": bool(payload.params)},
+    )
+    return RcloneConfigWriteOut(
+        remote=result.remote,
+        type=result.type,
+        conf_path=result.conf_path,
+        action=result.action,
+        remotes_after=list(result.remotes_after),
+    )
+
+
+@router.delete(
+    "/rclone/config/{remote_name}",
+    response_model=RcloneConfigWriteOut,
+    summary="删除 rclone conf 段（**全段可删**，含 OAuth 网盘段——删后需宿主机重新授权）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def delete_rclone_config(
+    remote_name: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneConfigWriteOut:
+    """删除配置段（写 rclone ``config`` 的 delete 子命令；审计 ``rclone.config_delete``）。"""
+    del session
+    service = _rclone_config_service(request)
+    try:
+        result = await service.delete(remote_name)
+    except RcloneConfigError as exc:
+        _raise_rclone_error(exc)
+    await request.app.state.audit.record(
+        AUDIT_RCLONE_CONFIG_DELETE,
+        target=remote_name,
+        detail={"type": result.type},
+    )
+    return RcloneConfigWriteOut(
+        remote=result.remote,
+        type=result.type,
+        conf_path=result.conf_path,
+        action=result.action,
+        remotes_after=list(result.remotes_after),
     )
 
 

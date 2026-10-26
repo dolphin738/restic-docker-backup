@@ -80,6 +80,7 @@ from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.rclone import RcloneProbe
+from app.services.rclone_config import RcloneConfigService
 from app.services.repo_migration import migrate_legacy_repo_config
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
@@ -261,6 +262,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     compare_service = CompareService(restic_cmd, parser, config_repo, repos_repo=repos_repo)
     # A1 rclone 只读探测器（Q17：listremotes 探测；无状态，URL 校验与端点共用）
     rclone_probe = RcloneProbe(settings)
+    # rclone conf 管理服务（配置生成工具：增删改查全走官方 CLI；写操作自带 Lock）
+    rclone_config_service = RcloneConfigService(settings)
     # P1：快照目录（一次快照列表 → 按 tag 分组计数；任务卡片 snapshot_count 数据源）
     snapshot_catalog = SnapshotCatalog()
 
@@ -302,6 +305,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.compare_service = compare_service
     app.state.notifier = notifier
     app.state.rclone_probe = rclone_probe
+    app.state.rclone_config_service = rclone_config_service
     app.state.snapshot_catalog = snapshot_catalog
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）

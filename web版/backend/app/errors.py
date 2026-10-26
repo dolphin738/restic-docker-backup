@@ -27,6 +27,7 @@ from app.constants import (
     PASSWORD_WRONG,
     PATH_OUT_OF_PREFIX,
     RATE_LIMITED,
+    RCLONE_UNAVAILABLE,
     READONLY_KEY,
     REPO_NOT_EMPTY,
     REPO_NOT_FOUND,
@@ -313,6 +314,14 @@ class RepoNotFoundError(AppError):
             repo_id: 请求的 repo 作用域 id（回显供前端排障）。
         """
         super().__init__(f"仓库 {repo_id!r} 不存在", data={"repo_id": repo_id})
+
+
+class RcloneUnavailableError(AppError):
+    """503 rclone 不可用 / conf 不可写（二进制缺失、超时、事件循环不支持、挂载形态问题）。"""
+
+    code = RCLONE_UNAVAILABLE
+    status = ERROR_STATUS[RCLONE_UNAVAILABLE]
+    message = "rclone 配置操作不可用"
 
 
 class RepoNotEmptyError(AppError):
