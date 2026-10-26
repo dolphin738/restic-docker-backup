@@ -32,7 +32,15 @@ pwsh dev-scripts/dev.ps1            # 菜单式；restart backend 已内置 --lo
 # 裸命令等价写法（缺 --loop none 即踩坑）：
 #   uvicorn app.main:app --reload --loop none --port 8000
 #   cd frontend && pnpm dev          # :5173
+
+# 真机验收探针（需 dev server 已起；不是 CI 门禁，见 e2e/README.md）
+node e2e/p13-wizard-probe.cjs       # 退出码 0 = PASS；产物落 web版/.e2e/<name>/
 ```
+
+> **验收入库口径**：`web版/e2e/` 的探针（源码 + `harness.cjs` + README）**进版本库**；
+> 截图/JSON/log 产物与一次性归因脚本留在 `web版/.e2e/`（`.gitignore:104` 忽略），
+> **永不入库**。探针统一经 `harness.cjs` 启动——**禁止**再写死本机 playwright 绝对路径
+> 或 `channel: 'msedge'`（换机器必挂；`p13` 曾因此失效一个多月无人发现）。
 
 > ⚠️ **Windows 后端启动必须带 `--loop none`**：`uvicorn --reload` 在 Windows 会强制 `SelectorEventLoop`，其 `create_subprocess_exec` 抛 `NotImplementedError`，导致 **restic / rclone 全部子进程操作 500**（表现为「rclone 探测失败：服务器内部错误」）。首选 `dev-scripts/dev.ps1 restart backend`。Linux 与容器内无此问题。
 
