@@ -44,8 +44,8 @@ import {
   IconSun,
   IconUser,
 } from '@/components/icons/icons'
+import { LogoMark } from '@/components/logo'
 import StatusTag from '@/components/StatusTag.vue'
-import logoSrc from '@/assets/logo.svg'
 import { useUiStore, type ThemePreference } from '@/stores/ui'
 
 const { t } = useI18n()
@@ -294,7 +294,7 @@ async function onLogout(): Promise<void> {
       v-model:collapsed="collapsed"
     >
       <div class="brand" :class="{ 'brand--collapsed': collapsed }">
-        <img class="brand__logo" :src="logoSrc" :alt="t('common.appName')" />
+        <LogoMark class="brand__logo" :alt="t('common.appName')" />
         <n-text v-show="!collapsed" strong>{{ t('common.appName') }}</n-text>
       </div>
       <n-menu
@@ -387,7 +387,7 @@ async function onLogout(): Promise<void> {
     <n-drawer v-model:show="drawerShow" placement="left" :width="240">
       <template #header>
         <div class="drawer-brand">
-          <img class="brand__logo" :src="logoSrc" :alt="t('common.appName')" />
+          <LogoMark class="brand__logo" :alt="t('common.appName')" />
           <n-text strong>{{ t('common.appName') }}</n-text>
         </div>
       </template>
