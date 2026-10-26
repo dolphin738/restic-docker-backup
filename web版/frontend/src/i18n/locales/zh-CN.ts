@@ -161,7 +161,7 @@ export default {
     passwordPlaceholder: '请输入管理员密码',
     submit: '登录',
     submitting: '登录中…',
-    backendOffline: '后端服务未就绪：/api/health 不可达，请确认服务已启动。',
+    backendOffline: '后端服务未就绪，请确认服务已启动或稍后重试。',
     backendDegraded: '后端数据库异常，部分功能可能不可用。',
     bootstrapLink: '首次启动？查看一次性随机密码',
     lockedTitle: '账号已被临时锁定',

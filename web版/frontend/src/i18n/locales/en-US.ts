@@ -160,7 +160,7 @@ export default {
     passwordPlaceholder: 'Enter admin password',
     submit: 'Sign in',
     submitting: 'Signing in…',
-    backendOffline: 'Backend is not ready: /api/health unreachable, please start the service.',
+    backendOffline: 'Backend is not ready, please start the service or try again later.',
     backendDegraded: 'Backend database is unhealthy, some features may be unavailable.',
     bootstrapLink: 'First boot? Reveal the one-time password',
     lockedTitle: 'Account temporarily locked',
