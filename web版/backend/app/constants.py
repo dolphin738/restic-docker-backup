@@ -111,6 +111,8 @@ TASK_RUNNING = "TASK_RUNNING"                      # 409 E35''：运行中/等�
 REPO_NOT_FOUND = "REPO_NOT_FOUND"                  # 404 E34–E36：repo 作用域 id 不存在（P2 仅 default）
 REPO_NOT_EMPTY = "REPO_NOT_EMPTY"                  # 409 E41：仓库下仍有任务/历史任务，拒绝删除（R-023）
 CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密文无法解密（密码文件被换/数据损坏）
+# 503 rclone 配置管理：二进制缺失 / 超时 / 事件循环不支持 / conf 不可写（含单文件挂载）
+RCLONE_UNAVAILABLE = "RCLONE_UNAVAILABLE"
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
 ERROR_STATUS: dict[str, int] = {
@@ -137,6 +139,7 @@ ERROR_STATUS: dict[str, int] = {
     REPO_NOT_FOUND: 404,
     REPO_NOT_EMPTY: 409,
     CREDENTIAL_DECRYPT_FAILED: 500,
+    RCLONE_UNAVAILABLE: 503,
 }
 
 # ---------------------------------------------------------------- 审计动作（§4.6 / §7.6）
@@ -190,6 +193,11 @@ AUDIT_REPAIR_RUN = "repair.run"  # B1 自愈：仓库索引/卷修复（restic r
 AUDIT_RECOVER_RUN = "recover.run"  # B3 自愈：找回未快照数据（restic recover，危险操作留痕）
 AUDIT_COPY_RUN = "copy.run"  # C4 多目的地：restic copy 到镜像仓（跨仓库复制，危险操作留痕）
 AUDIT_KEY_ROTATE = "key.rotate"  # C4 多目的地：restic key 轮换仓库密码（改密码，危险操作留痕）
+# rclone 配置管理（B0 规范 v1.14 扩项）：conf 增删改直接决定仓库后端可达性；
+# detail 一律只含 remote 名与 type（编辑加「是否改凭据」布尔），不含任何凭据值（S3）。
+AUDIT_RCLONE_CONFIG_APPEND = "rclone.config_append"
+AUDIT_RCLONE_CONFIG_EDIT = "rclone.config_edit"
+AUDIT_RCLONE_CONFIG_DELETE = "rclone.config_delete"  # 含 OAuth 网盘段：删后需在宿主机重新授权
 # E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
 AUDIT_TIME_SYNC = "time.sync"
 # R-020 裁决3：审计归档（压缩落盘，append-only 的「整段滚动导出」落地）
@@ -323,6 +331,11 @@ REPO_STATS_TIMEOUT_SECONDS = 30         # stats --mode raw-data 容量探测
 REPO_INIT_TIMEOUT_SECONDS = 120         # restic init（重建仓库）超时
 # rclone listremotes 只读探测（A1）：纯本地操作（读 conf），5s 足够；超时即视为不可用
 RCLONE_PROBE_TIMEOUT_SECONDS = 5.0
+# rclone conf 写操作（config create/update/delete）与 dump 查询的超时。
+# **实测依据**：rclone 单次启动即 ~2.3s（WSL 真机 2026-10-26），容器冷启动更慢，
+# 故不能复用探测的 5s（会误判超时）；15s 与仓库探测同档。另注：conf 位于**单文件**
+# bind mount 时写操作会**挂住不返回**（实测 8s 未结束），只能靠本超时兜底成 503。
+RCLONE_CONFIG_TIMEOUT_SECONDS = 15.0
 # Windows 子进程可用性提示（2026-10-19 实证）：uvicorn 的 --reload / --workers>1 会经
 # use_subprocess 分支把 Windows 事件循环强制选成 SelectorEventLoop——它不支持
 # create_subprocess_exec（NotImplementedError，asyncio/base_events.py:539），restic/

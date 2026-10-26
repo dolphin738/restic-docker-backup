@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,62 @@ class RcloneRemotes:
     conf_path: str | None
     remotes: tuple[str, ...]
     reason: str | None
+
+
+def resolve_conf_path(settings: Settings) -> str:
+    """生效的 conf 路径（探测与配置管理**共用**这一处，避免第二份路径逻辑）。
+
+    Args:
+        settings: 运行期配置（``rclone_config`` 即 ``RCLONE_CONFIG``）。
+
+    Returns:
+        ``settings.rclone_config``；未设置时回落 rclone 自身默认位置
+        ``$HOME/.config/rclone/rclone.conf``（主机档即宿主机真实路径，容器档
+        由 compose 挂载目录提供——两种形态共用同一解析，无形态分支）。
+    """
+    if settings.rclone_config:
+        return settings.rclone_config
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return str(Path(home) / ".config" / "rclone" / "rclone.conf")
+
+
+async def exec_rclone(
+    argv: Sequence[str], timeout: float = RCLONE_PROBE_TIMEOUT_SECONDS
+) -> tuple[int, str]:
+    """执行 rclone 命令（不经 shell、stdin 置 DEVNULL、超时 kill）。
+
+    探测（``listremotes``）与配置管理（``config`` 的 create / update / delete /
+    dump 子命令）共用同一执行器，避免第二份子进程实现（§3.1 v1.13 重复实现条款）。
+
+    Args:
+        argv: 命令与参数（**不经 shell**，故无 shell 注入面）。
+        timeout: 超时秒数，超时 kill 并抛 ``TimeoutError``。
+        stdin 置 ``DEVNULL``：任何交互式提示（缺参数时 rclone 会追问）立即取其
+        EOF 而报错退出，**不会挂住子进程**。
+
+    Returns:
+        ``(exit_code, 合并输出)``。
+
+    Raises:
+        FileNotFoundError: 未找到 rclone 二进制。
+        TimeoutError: 超时。
+        NotImplementedError: 事件循环不支持子进程（Windows + SelectorEventLoop）。
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        stdin=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except TimeoutError:
+        proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+        raise
+    text = (out or b"").decode("utf-8", errors="replace")
+    return proc.returncode if proc.returncode is not None else -1, text
 
 
 class RcloneProbe:
@@ -130,17 +187,4 @@ class RcloneProbe:
 
     async def _exec(self, argv: list[str]) -> tuple[int, str]:
         """执行外部命令（不经 shell），超时 kill；返回 ``(exit_code, 合并输出)``。"""
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), RCLONE_PROBE_TIMEOUT_SECONDS)
-        except TimeoutError:
-            proc.kill()
-            with suppress(Exception):
-                await proc.wait()
-            raise
-        text = (out or b"").decode("utf-8", errors="replace")
-        return proc.returncode if proc.returncode is not None else -1, text
+        return await exec_rclone(argv)
