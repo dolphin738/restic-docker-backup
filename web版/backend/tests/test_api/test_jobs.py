@@ -270,7 +270,7 @@ async def test_e16_abort_force_skips_grace_and_audits_job_abort(app_client):
     断言三点（缺一即回归）：
     1. 进程侧只调 kill、**不调 terminate**（不浪费 30s 宽限）；
     2. 终态仍是 cancelled（Abort 不新增状态，保持状态机契约）；
-    3. 审计动作为 job.abort 且 detail 带 force=true / grace_seconds=0（S6 16 项清单）。
+    3. 审计动作为 job.abort 且 detail 带 force=true / grace_seconds=0（S6 危险操作清单，v1.14 重计 20 项）。
     """
     ns = app_client
     await finish_bootstrap(ns)

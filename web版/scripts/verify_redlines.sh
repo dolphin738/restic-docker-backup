@@ -150,10 +150,30 @@ fi
 
 # 危险操作必须埋点：动作名一律取 constants 的 AUDIT_* 常量，
 # 直接写裸字符串说明绕过了常量单一真源。
-out=$(grep -rIn '"login.failed"\|"cache.clear"\|"config.update"' backend/app --include=*.py 2>/dev/null \
+out=$(grep -rIn '"login.failed"\|"cache.clear"\|"config.update"\|"rclone.config_append"\|"rclone.config_edit"\|"rclone.config_delete"' backend/app --include=*.py 2>/dev/null \
       | grep -v constants.py | grep -v migrations/)
 if [ -n "$out" ]; then
   detail "S6 审计动作名出现裸字符串（应引用 constants.AUDIT_*）：$out"
+fi
+
+# 反向锚点（v1.14，rclone 配置管理 B0）：三个 rclone conf 写入动作的常量必须真实存在，
+# 防「规范登记了埋点、代码里常量悬空」——与 C8 resolve_timezone 反向锚点同手法。
+for action in AUDIT_RCLONE_CONFIG_APPEND AUDIT_RCLONE_CONFIG_EDIT AUDIT_RCLONE_CONFIG_DELETE; do
+  if ! grep -q "^$action = " backend/app/constants.py 2>/dev/null; then
+    violation "S6 缺少审计动作常量 $action（rclone conf 写入埋点悬空）"
+  fi
+done
+
+# 唯一实现点锚点（v1.14）：rclone conf 的写入 CLI（create/update/delete）只允许出现在
+# services/rclone_config.py——散落在路由/其他服务 = 绕过 Lock 与审计的第二条写路径（S6+A5 同源风险）。
+# 说明：只扫 .py 且排除 constants.py；docstring 若复述命令写法请改写措辞（不改断言）。
+out=$(grep -rIn 'config[[:space:]]\+\(create\|update\|delete\)' backend/app --include=*.py 2>/dev/null \
+      | grep -v 'services/rclone_config.py' | grep -v 'constants.py' | grep -v 'tests/')
+if [ -n "$out" ]; then
+  violation 'S6 rclone conf 写入 CLI 出现在 services/rclone_config.py 之外（第二写路径）'
+  detail "$out"
+else
+  ok 'S6 rclone conf 写入 CLI 收敛于 services/rclone_config.py'
 fi
 
 # ---------------------------------------------------------------- 覆盖语义
