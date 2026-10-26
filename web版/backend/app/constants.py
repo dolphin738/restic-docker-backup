@@ -356,8 +356,9 @@ FAILURE_KIND_CREDENTIALS = "credentials"
 FAILURE_KIND_NETWORK = "network"
 FAILURE_KIND_TIMEOUT = "timeout"
 FAILURE_KIND_UNKNOWN = "unknown"
-# 仓库密码生成长度（后端 secrets 生成与前端「生成强随机密码」同口径，避免两处位数不一致）
-REPO_PASSWORD_LENGTH = 24
+# 仓库密码生成长度（后端 secrets 生成与前端 utils/password.ts 的 PASSWORD_LENGTH 同值，
+# 全站「生成密码」统一 32 位——owner 2026-10-27 指令；两处常量必须同步修改）
+REPO_PASSWORD_LENGTH = 32
 # 快照文件树分页游标上限（防止游标被篡改为超大值导致空转读取）
 SNAPSHOT_FILES_MAX_OFFSET = 1_000_000
 

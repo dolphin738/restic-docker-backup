@@ -1,10 +1,8 @@
 /** G4 口令强度估算的护栏用例（纯函数，无 DOM 依赖）。 */
 import { describe, expect, it } from 'vitest'
-import {
-  estimatePasswordStrength,
-  generateStrongPassword,
-  REPO_PASSWORD_LENGTH,
-} from '@/utils/passwordStrength'
+// 生成器已收口到 utils/password.ts（2026-10-27 全站统一 32 位），
+// 本文件只剩强度估算；生成相关的用例见 utils/__tests__/password.spec.ts。
+import { estimatePasswordStrength } from '@/utils/passwordStrength'
 
 describe('estimatePasswordStrength', () => {
   it('空口令计 0', () => {
@@ -41,23 +39,5 @@ describe('estimatePasswordStrength', () => {
 
   it('classes 统计四类字符', () => {
     expect(estimatePasswordStrength('aA1!').classes).toBe(4)
-  })
-})
-
-describe('generateStrongPassword', () => {
-  it('默认长度 = REPO_PASSWORD_LENGTH（与后端生成同口径）且落在「强」档（score = 4）', () => {
-    const pw = generateStrongPassword()
-    expect(pw).toHaveLength(REPO_PASSWORD_LENGTH)
-    expect(estimatePasswordStrength(pw).score).toBe(4)
-  })
-
-  it('两次生成不相同（走 crypto 随机源）', () => {
-    expect(generateStrongPassword()).not.toBe(generateStrongPassword())
-  })
-
-  it('不含易混淆字符（0/O/1/l/I）', () => {
-    for (let i = 0; i < 20; i += 1) {
-      expect(generateStrongPassword()).not.toMatch(/[0O1lI]/)
-    }
   })
 })

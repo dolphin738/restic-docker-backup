@@ -45,56 +45,9 @@ export function estimatePasswordStrength(password: string): PasswordStrength {
   }
   return { score: Math.min(4, score) as StrengthScore, classes, length }
 }
-
-/** 字符集（剔除易混淆字符 0/O、1/l/I）：小写 / 大写 / 数字 / 符号四类。 */
-const CHAR_CLASSES = [
-  'abcdefghjkmnpqrstuvwxyz',
-  'ABCDEFGHJKMNPQRSTUVWXYZ',
-  '23456789',
-  '!@#$%^&*-_=+',
-]
-const ALL_CHARS = CHAR_CLASSES.join('')
-
-/** 无偏随机下标（rejection sampling，审查💭③）：`getRandomValues % bound` 在 2^32 不整除
- *  bound 时头部若干下标多一次命中（约 1e-8 相对偏差）——对本用途可忽略，但拒绝采样代价
- *  几乎为零（期望重试 <1 次），直接做对。 */
-function randomIndex(bound: number): number {
-  const limit = Math.floor(0x100000000 / bound) * bound
-  const buffer = new Uint32Array(1)
-  do {
-    crypto.getRandomValues(buffer)
-  } while (buffer[0] >= limit)
-  return buffer[0] % bound
-}
-
-function randomChar(alphabet: string): string {
-  return alphabet[randomIndex(alphabet.length)]
-}
-
-/** 仓库密码生成长度：**后端生成与前端生成同口径的唯一出处**（两处曾不一致——
- *  后端 token_urlsafe(32)≈43 位 vs 前端 20 位，用户在界面上看到两个位数）。
- *  后端常量同名 REPO_PASSWORD_LENGTH，改一处必须两边同步。 */
-export const REPO_PASSWORD_LENGTH = 24
-
-/** 生成强随机口令（G4：与强度条配套的「生成」按钮）。
- *
- * 两条硬要求决定了实现方式：
- * - 随机源必须是 `crypto.getRandomValues`（Math.random 不可用于凭据）；
- * - **每类字符至少取一个再整体洗牌**——纯随机取 20 位有约百分之几的概率漏掉某一类
- *   （符号类字符占比小），会让「生成即强档」变成偶发不达标（测试也会 flaky）。
- *   洗牌用 Fisher-Yates（不是 `sort(() => Math.random() - 0.5)`，后者分布不均匀）。
+/*
+ * 生成器已收口（2026-10-27）：`generateStrongPassword` / `REPO_PASSWORD_LENGTH` /
+ * 私有字符集全部删除——全站生成密码统一走 `utils/password.ts` 的
+ * `generatePassword()`（32 位、四类字符剔除易混、每类至少一个 + Fisher-Yates）。
+ * 本文件只保留「强度估算」这一件事（纯函数，供导出口令强度条使用）。
  */
-export function generateStrongPassword(length = REPO_PASSWORD_LENGTH): string {
-  const size = Math.max(length, CHAR_CLASSES.length)
-  const chars: string[] = CHAR_CLASSES.map((cls) => randomChar(cls))
-  while (chars.length < size) {
-    chars.push(randomChar(ALL_CHARS))
-  }
-  for (let i = chars.length - 1; i > 0; i -= 1) {
-    const j = randomIndex(i + 1)
-    const tmp = chars[i]
-    chars[i] = chars[j]
-    chars[j] = tmp
-  }
-  return chars.join('')
-}

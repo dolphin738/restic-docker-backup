@@ -1093,8 +1093,9 @@ _PASSWORD_CLASSES: tuple[str, ...] = (
 def _generate_repo_password(length: int = REPO_PASSWORD_LENGTH) -> str:
     """生成定长强随机仓库密码（每类字符至少一个，再整体洗牌）。
 
-    长度取 ``REPO_PASSWORD_LENGTH``，与前端「生成强随机密码」同一口径——两处位数
-    曾不一致（后端 token_urlsafe(32)≈43 位 vs 前端 20 位），用户可见。
+    长度取 ``REPO_PASSWORD_LENGTH``（32），与前端 ``utils/password.ts`` 的
+    ``generatePassword()`` 同一口径。历史上前后端位数曾不一致（后端
+    ``token_urlsafe(32)``≈43 位 vs 前端 20 位），2026-10-27 起全站统一 32 位。
     """
     rng = secrets.SystemRandom()
     chars = [rng.choice(cls) for cls in _PASSWORD_CLASSES]

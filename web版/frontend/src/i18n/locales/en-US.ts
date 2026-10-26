@@ -8,7 +8,10 @@ export default {
     retry: 'Retry',
     close: 'Close',
     copy: 'Copy',
-    copied: 'Copied',
+    copied: 'Copied to clipboard',
+    copyFailed: 'Copy failed — please select and copy manually',
+    // Single source for every "generate password" button (2026-10-27: no digit count in copy; always 32 chars)
+    generatePassword: 'Generate password',
     save: 'Save',
     cancel: 'Cancel',
     confirm: 'Confirm',
@@ -726,15 +729,11 @@ export default {
     passwordResetTitle: 'Reset repository password',
     passwordIntro:
       'This repository has no password file yet (restic cannot read the repository password, so every operation fails). The password is both the repository key and the credential-encryption key source — back it up right after generating.',
-    passwordGenerate: 'Generate strong password',
     passwordCustomLabel: 'Or type your own password',
     passwordCustomPlaceholder: 'Leave empty and use the button above to generate',
     passwordUseCustom: 'Use this password',
     passwordGeneratedHint:
       'Generated and written. It is shown only once and cannot be viewed again after closing — save it to a password manager now.',
-    passwordCopy: 'Copy',
-    passwordCopied: 'Copied to clipboard',
-    passwordCopyFailed: 'Copy failed — please select and copy manually',
     passwordSavedClose: 'Saved, close',
     // 重设密码（force 覆盖）：仅在仓库打不开（密码错误）时由后端接受
     passwordResetIntro:
@@ -1331,9 +1330,21 @@ export default {
       remoteName: 'Remote name',
       remoteNamePlaceholder: 'letters, digits, underscore, hyphen — 1 to 64 chars',
       // Crypt fields
-      cryptRemote: 'Underlying remote path',
-      cryptRemotePlaceholder: 'remote:bucket/path, e.g. mywebdav:backup/restic',
-      cryptRemoteHint: 'The underlying remote must already exist in the config, otherwise it will be unusable.',
+      cryptRemote: 'Underlying remote',
+      cryptRemoteMode: 'Underlying target',
+      cryptRemoteModeRemote: 'Remote (wrap an existing remote)',
+      cryptRemoteModeLocal: 'Local directory (local-only encryption)',
+      cryptRemoteNamePlaceholder: 'Pick an existing remote',
+      cryptRemotePathPlaceholder: 'Path inside the remote, e.g. backup/restic (blank = root)',
+      cryptRemoteRequired: 'Pick the underlying remote first',
+      cryptRemoteHint: 'Encrypted data goes to "<selected remote>:<this path>". Candidates come from the current config (including cloud drives).',
+      cryptLocalPath: 'Local directory',
+      cryptLocalPlaceholder: '/repo/encrypted',
+      cryptLocalHint:
+        'Path is **container-side**: mount the host directory into the container first. A host path will not error, but data lands in the container layer and is lost on rebuild.',
+      cryptLocalValueLabel: 'Selected directory',
+      cryptLocalValueHint: 'You may type a not-yet-existing directory (rclone creates it).',
+      cryptLocalRequired: 'Enter an absolute local path (starting with /, or a drive path like C:/)',
       password: 'Password',
       password2: 'Filename encryption salt (optional)',
       filenameEncryption: 'Filename encryption',
@@ -1347,7 +1358,10 @@ export default {
       user: 'User',
       pass: 'Password',
       // Password helpers
-      generatePassword: 'Generate 32-char password',
+      passwordGeneratedTitle: 'crypt password generated',
+      passwordGeneratedHint:
+        'This password is shown only once — copy and store it now. If a crypt password is lost, the encrypted data can no longer be decrypted. Confirming fills it into the password field.',
+      passwordSavedClose: 'Saved — fill it in',
       passwordKeepHint: 'leave blank to keep unchanged',
       alreadyObscured: 'The value I entered is already obscured (rclone obscure output)',
       submitNew: 'Create section',
@@ -1363,7 +1377,10 @@ export default {
       desc: 'Pack repository list, tasks, notification config and credentials into one file (credentials are encrypted with the export password; a leaked file contains no plaintext). Backup data itself is not included. On import, repositories with the same id / tasks with the same repo+name are skipped by default with a full report; enable overwrite to replace them (irreversible).',
       exportPassword: 'Export password (at least 10 characters)',
       // G4 password strength bar (estimated locally from length and character classes; no dictionary, nothing uploaded)
-      generatePassword: 'Generate strong password',
+      passwordGeneratedTitle: 'Export password generated',
+      passwordGeneratedHint:
+        'This password is shown only once — copy and store it now: the same password is required on import, otherwise the exported file cannot be restored.',
+      passwordSavedClose: 'Saved — use this password',
       strengthEmpty: 'No password entered',
       strengthTooShort: 'Too short: at least 10 characters (length is decisive)',
       strength1: 'Weak: add length and mix in uppercase, digits or symbols',

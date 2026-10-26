@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 MIN_PASSWORD_LENGTH: Final[int] = 10
 REQUIRED_CHAR_CLASSES: Final[int] = 2
 
-RANDOM_PASSWORD_LENGTH: Final[int] = 24
+# 首启随机管理密码长度：全站「自动生成密码」统一 32 位（owner 2026-10-27 指令）。
+# 与仓库密码（constants.REPO_PASSWORD_LENGTH）同长度；字符集刻意保持「字母 + 数字」
+# 不含符号——该密码要打印到启动日志 / 首启页由人抄录，符号易被 shell 与输入法吞掉。
+RANDOM_PASSWORD_LENGTH: Final[int] = 32
 _RANDOM_ALPHABET: Final[str] = string.ascii_letters + string.digits
 
 _LOWER = re.compile(r"[a-z]")
@@ -109,10 +112,10 @@ def validate_password_strength(plain: str) -> None:
 
 
 def generate_random_password(length: int = RANDOM_PASSWORD_LENGTH) -> str:
-    """生成首启随机管理密码（24 位，大小写字母 + 数字）。
+    """生成首启随机管理密码（32 位，大小写字母 + 数字）。
 
     Args:
-        length: 密码长度，默认 24。
+        length: 密码长度，默认 32（与全站生成密码统一）。
 
     Returns:
         随机密码明文（调用方负责一次性展示，不落库、不落日志）。
