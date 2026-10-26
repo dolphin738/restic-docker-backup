@@ -1,10 +1,14 @@
 # rclone 配置生成工具设计方案
 
-> 版本：v1.11（2026-10-27）
+> 版本：v1.15（2026-10-27）
 > 层级：方案层——rclone 远端配置管理（查询/生成/编辑/删除，Crypt / WebDAV）的唯一方案源
 > 关联：`app/services/rclone.py`（只读探测，Q17 档位）、架构设计文档 R-022（rclone 生命周期）、代码审查规范 §3.1（S6 危险操作清单）、部署指南（rclone.conf 挂载形态变更）
 
 > **修订记录**：
+> - v1.15（2026-10-27）：**全站「自动生成密码」统一（B9，owner 两点指令）**。①**生成器合并为唯一实现**：`utils/password.ts` 的 `generatePassword()` 成为全站唯一生成器（32 位、四类字符剔除易混 `0O1lI`、每类至少一个 + Fisher-Yates + 拒绝采样），删除 `passwordStrength.generateStrongPassword()` 与 `REPO_PASSWORD_LENGTH`（两套并存导致同系统内 24/32 位不一致）；后端同步 32 位——`constants.REPO_PASSWORD_LENGTH 24 → 32`（仓库密码）、`auth/password.py` 的 `RANDOM_PASSWORD_LENGTH 24 → 32`（首启管理密码，字符集仍为字母+数字，因为要打印到日志供抄录）。②**一次性展示统一为「仓库设置密码那种方式」**：抽出 `components/SecretReveal.vue`（alert + 等宽只读明文 + 复制 + 返回/确认）作为唯一呈现，`PasswordEntryModal` 生成态改用它；**rclone 三处密码生成与导出口令生成改为「弹窗一次性展示 → 确认后才写入」**（旧行为是直接把明文塞进掩码框，用户既看不到也复制不了——crypt 密码与导出口令丢失都不可逆）。③**按钮文案统一**：唯一键 `common.generatePassword` =「生成密码」，删除 `repo.passwordGenerate` / `settings.rclone.generatePassword` / `settings.transfer.generatePassword` 三个分散键；复制提示上提 `common.copy*`。测试：`SecretReveal.spec.ts`（新增 6 例，锁死复制/确认/返回语义）、`password.spec.ts` 扩到 10 例（32 位 / 剔除易混 / 每类至少一个 / 强度恒 4 档）、面板生成用例改为「弹窗 → 确认 → 写入」。
+> - v1.14（2026-10-27）：**线上缺陷修复 + 密码框全项目统一（B8，owner 实测三项反馈）**。①**「新增 crypt 填好却提示参数校验失败」根因 = 前端双重序列化**：`api/repo.ts` 的 `createRcloneConfig` / `updateRcloneConfig` 写成 `body: JSON.stringify(payload)`，而 `http.request` 内部已统一 `JSON.stringify(body)` → 实际发出的是**字符串字面量** `"{\"type\":…}"`，后端 pydantic 期望对象 → `RequestValidationError` → 422「参数校验失败」。修法：`body` 直接传对象。**既有测试为何漏掉**：`api/__tests__/*.spec.ts` 一贯 mock 掉 `@/api/http`、断言传给 `request` 的原始对象，序列化层从未被执行 → 新增 `api/__tests__/rclone-config.spec.ts`（**不 mock http，只 stub `global.fetch`**，断言真实 body 解析后是对象）。②**密码框太短 / 各处不一致**：项目内 18 处各自写 `n-input type="password"`，`n-form-item` 里被拉满整行、`n-space` 里塌缩到几十像素（32 位密码看不到几位）→ 抽出 **`components/PasswordInput.vue`**（唯一实现：`show-password-on="click"` + 可配宽度 `width`（默认 320px）+ 可选「生成」按钮 + `$attrs` 透传 maxlength/keyup.enter），**全项目 18 处全部迁移**（登录、bootstrap 三步改密、仪表盘导出、通知邮件密码、设置页 7 处、仓库页凭据、仓库密码弹窗、rclone 3 处），并加护栏「除组件自身外 src 下不得出现裸 password 输入」；rclone 三个密码栏宽 400px（32 位密码完整可见）。③**远端名栏过长**：由撑满整行收口为 320px（`.rclone-panel__field`）。另：生成密码后 `message.success` 提示「点击眼睛图标查看明文」（掩码态下不提示会被当成没反应）。
+> - v1.13（2026-10-27）：**B7 落地（owner 裁决：抽共用组件）**——新增 `components/DirPickerInline.vue`（容器视角内联双栏：`PathBreadcrumb` + `VirtualTree`(E33) + 路径值输入框 + 手输），把仓库页 local 行的内联实现**抽出复用**（repo 页删 ~66 行脚本 + 52 行样式 + 3 个 import，S-4 单一实现）。rclone crypt 表单升级为**双模式**：① 远端（NSelect 在册远端 + 远端内路径）② 本地目录（该组件，容器视角）。组件内固化三条纪律：挂载点独立预取（E33 只在根请求回 `mounts`）、点目录名不移动树、**只对外部赋值重定位**（自 emit 回流不重定位，防树跳）。测试：DirPickerInline 7 例 + 面板 +2 例（本地模式提交绝对路径 / 非绝对路径拦截）。
+> - v1.12（2026-10-27）：**owner 复盘纠正「crypt 不能填本地路径」的错误结论**——查 rclone 官方文档 §Specifying the remote：`You may also specify a local filesystem path, such as /path/to/dir on Linux, C:\path\to\dir on Windows`，即 crypt **可以**包裹本地目录做纯本地加密；原实现（`^[A-Za-z0-9_-]+:.+$` 强制冒号 + 强制在册）**过严**，属缺陷。落地 **B6**：①新增 `classify_crypt_remote()` 三态分类（远端指针 / **本地绝对路径放行** / 相对路径拒绝），并修正 Windows 盘符 `C:/x`、`C:\x` 被误判成名为 `C` 的远端；②`update()` 补底层在册校验（此前只有 create 校验，编辑可存进不在册远端）；③crypt 表单改「NSelect 选在册远端 + 路径输入框」（在册校验前移），本地路径 UI 入口**押后**（B7）。单测 → **63 例**；裁决 10/11/12 入档。
 > - v1.11（2026-10-27）：**B4 文档同步完成 + B5 验证收口**——架构设计文档升 **v1.10**（新增 E48–E51 四个端点条目 + E45 Q17 放宽注 + §3 目录树 `rclone.py`/`rclone_config.py` + §11 追溯矩阵 R-022 行）、部署指南 2026-10-27 校准（§1 仓库类型更正 + §4.2 目录挂载迁移指引与「界面配置管理」能力矩阵）、PRD 升 **v1.14**（需求池 R-022 行）。验证：前端 typecheck 0 错、vitest **458 passed / 47 文件**、build exit 0；后端 pytest 全量与红线待 B5 收口记录。
 >   顺带修正：`RcloneConfigPanel.spec.ts` 的快照夹具缺显式类型标注（两段形状不同 → TS 推断出带 `key?: undefined` 的联合类型，与 `RcloneConfigItem[]` 不兼容，typecheck 报 TS2345）——加 `: RcloneConfigsOut` 标注。
 > - v1.10（2026-10-27）：**owner 指令：Crypt `filename_encoding` 默认值 base32 → `base64`**（文件名更短、适配大小写敏感远端；base32/base32768 仍在白名单可选）。改动落点：后端 `CryptGenerator.defaults`、前端表单默认与编辑态回落、相关单测与本文 §1.1 裁决 4 / §3.1 字段表 / 示例。
@@ -36,6 +40,11 @@
 | 7 | conf 写入路径（v1.2） | **方案 A：rclone CLI + compose 目录挂载**。conf 增删改全走官方 `rclone config` 命令；compose 由单文件挂载改为**目录挂载** `./rclone:/etc/rclone:rw`（查证：rclone 保存 = 临时文件 + 双 rename，单文件挂载上 rename 报 EBUSY，目录挂载则正常） |
 | 8 | 删除能力范围（v1.3） | **放宽到全部段**：CLI 路径对全段一致，清理废弃远端（含 OAuth 网盘）是真实需求；OAuth 段删除时加重提示（删后需重新授权），确认门 + 审计留痕控风险 |
 | 9 | 编辑能力范围（v1.3） | **随注册表扩展**：一期仅 crypt/webdav；二期 s3/b2/sftp 进 GENERATORS 即自然获得字段级编辑表单（不做自由改键口）；OAuth 类型**永不进注册表**（无授权流支撑，编辑无意义） |
+| 10 | crypt 底层目标口径（v1.12，owner 指出原实现过严） | **三态分类**，依据 rclone 官方文档 §Specifying the remote：① `remote:path`/`remote:bucket` → 远端名须在册；② **本地绝对路径**（`/repo/x`、`C:/x`、`C:\x`、`\\srv\share`）→ **放行**（官方支持纯本地加密）；③ 无冒号相对路径 → **拒绝**（rclone 按进程 cwd 下子目录处理，容器内不可控，属静默错误）。**Windows 盘符必须判 local**，否则被误当成名为 `C` 的远端 |
+| 11 | 编辑的在册校验（v1.12） | `update()` **补**底层在册校验——此前只有 `create` 校验，编辑把 remote 改成不在册的也能存进去（保存成功、用时报错）。与 create 同口径，local 形态跳过 |
+| 12 | 底层远端输入形态（v1.12/v1.13） | 两模式：①**远端** = NSelect 选在册远端 + 路径输入框（在册校验前移为「选不到就填不了」）；②**本地目录** = 容器视角目录树选择（E33 + VirtualTree + PathBreadcrumb，**从仓库页 local 行抽出的共用组件** `DirPickerInline.vue`，S-4 单一实现）。两模式互斥，提交时本地模式直接取绝对路径 |
+| 13 | 密码框与字段宽度（v1.14，B8） | 抽出 `PasswordInput.vue` 作为**项目唯一密码输入实现**（宽度可配、明文切换、可选生成按钮），全项目 18 处迁移；rclone 表单远端名收口 320px、密码三栏 400px。纪律：新密码框一律用该组件，不得再写裸 `n-input type="password"`（护栏断言） |
+| 14 | 密码「生成」与一次性展示统一（v1.15，B9） | 全站一套：唯一生成器 `utils/password.ts`（**32 位**）、唯一呈现 `SecretReveal.vue`（弹窗一次性明文 + 复制 + 确认）、唯一按钮文案 `common.generatePassword`（「生成密码」）。后端 `REPO_PASSWORD_LENGTH` / `RANDOM_PASSWORD_LENGTH` 同步 32 |
 
 ### 1.2 背景：对 Q17 档位的主动放宽
 
@@ -108,7 +117,7 @@ GENERATORS: dict[str, ConfigGenerator] = {
 | 字段 | 必填 | 校验/处理 |
 |---|---|---|
 | `remote_name` | ✅ | 生成的配置段名（remote 名），限 `[A-Za-z0-9_-]+`；新增时与既有段重名 → 409（dump 预检 + rclone 自身也报错） |
-| `remote` | ✅ | 底层远端路径 `远端名:桶内路径`；格式校验 + 「远端名」须在现有 remotes 清单中（复用 `RcloneProbe`） |
+| `remote` | ✅ | 底层目标，**三态**（v1.12，官方文档 §Specifying the remote）：① `远端名:路径`（如 `mywebdav:backup/restic`）→ 远端名须在现有 remotes 清单中；② 本地绝对路径 `/repo/encrypted`、`C:/x`、`C:\x`、`\\srv\share` → 放行（本地路径不做存在性校验：rclone 会自动创建）；③ 无冒号相对路径 → 422 拒绝（rclone 视为进程 cwd 下子目录，容器内不可控）。**UI 两模式**（裁决 12）：远端 = 下拉+路径；本地 = 目录树选择（`DirPickerInline`，容器视角） |
 | `password` | ✅ | 默认明文提交，`--obscure` 由 rclone 混淆；`already_obscured: true` 时提交混淆值且命令不加 `--obscure` |
 | `password2` | 可选 | 文件名加密 salt，规则同上 |
 | `filename_encryption` | 默认 `standard` | 白名单 `standard / obfuscate / off` |
@@ -188,7 +197,8 @@ filename_encoding = base64
 
 - 请求体与创建相同；**type 必须与现有段一致**（dump 预检，不一致 → 422）；**语义为全量更新**；
 - **密码留空 = 保持不变**（该键不出现在 `rclone config update` 参数中，conf 既有值不动）；
-- 实现：Lock 内 dump 预检（在册 + managed + type 一致）→ `rclone config update <name> key=value... [--obscure]` → `listremotes` 验证；
+- **底层在册校验与 create 同口径**（v1.12，裁决 11）：此前 `update()` 漏了这步，编辑把 crypt 的 remote 改成不在册远端也能保存成功、用时报错；现在同样过 `_check_underlying`（local 形态按裁决 10 跳过）；
+- 实现：Lock 内 dump 预检（在册 + managed + type 一致 + **底层在册**）→ `rclone config update <name> key=value... [--obscure]` → 写后 dump 复核；
 - 审计：`rclone.config_edit`（detail：remote 名、type、是否改了凭据布尔，不含值）。
 
 ### 5.4 删除：`DELETE /api/rclone/config/{remote_name}`
@@ -253,9 +263,50 @@ filename_encoding = base64
 - **面板结构**（`RcloneConfigPanel.vue`），上下两区：
   1. **已有配置列表**：`GET /api/rclone/configs` 渲染（managed 段展示非凭据参数 + `has_*` 徽标；非 managed 段灰显参数区，只露名字与 type）；每行操作：**编辑**（仅 managed 段显示）/ **删除**（全部段显示，n-popconfirm 确认；OAuth 段文案加重「删除后需重新授权」）；
   2. **生成/编辑表单**：类型 Select（Crypt/WebDAV）→ 按 v-if 切换字段组（与后端 §3 一致）；密码输入框旁「生成」按钮（§4）+ 明文切换；编辑模式复用同一表单（进入编辑 = 预填非凭据字段、密码框空 + placeholder「留空保持不变」、`remote_name` 只读）；`already_obscured` 复选框（勾选后密码框语义变为「已混淆值」，提交命令整体不加 `--obscure`）；提交后刷新列表并 `message.success`；409/422/503 错误 reason 直出；
-  3. 底部说明：OAuth 网盘类型不在本工具范围（宿主机生成），指向部署指南；
+     - **Crypt 底层目标（v1.12/1.13，裁决 12）**：先选**底层类型**（NRadioGroup 两模式）——
+       **① 远端**：「**NSelect 选在册远端**（候选 = 列表快照里的全部段，排除正在编辑的段自身，避免自引用成环）+ 路径输入框（留空 = 远端根）」，提交时拼回 `name:path`；未选远端时前端拦截不发请求；
+       **② 本地目录**：容器视角目录树选择（`DirPickerInline.vue`：`PathBreadcrumb` + `VirtualTree`(E33) + 路径值输入框），提交时整串作为 `remote`（绝对路径）；
+       编辑态自动判形态回填——`/x`、`C:/x`、`C:\x`、`\\srv\share` → 本地模式整串进路径位；其余按**首个冒号**拆两段；无法识别的历史值原样落路径位（不静默丢值）；
+       **共用组件（S-4）**：`DirPickerInline` 由仓库页 local 行抽出，两处共用一份实现（内含三条纪律：挂载点独立预取、点目录名不移动树、只对外部赋值重定位）；
+  3. 底部说明：OAuth 网盘类型不在本工具范围（宿主机生成），指向部署指南；crypt 底层候选**包含**网盘段（crypt 可叠加在任何 remote 上，含 OAuth 网盘）；
+- **字段宽度收口（v1.14）**：远端名 320px（原撑满整行，观感「太长」）；密码三栏 400px（原在 `n-space` 内塌缩，32 位随机密码只看得见前几位）；其余 Select 200px。密码框统一走 **`components/PasswordInput.vue`**（唯一实现，见 §7.1）；
 - **i18n**：`settings.rclone.*` 键中英双 locale 同步（i18n-parity.spec.ts 护栏）；
 - **测试**：面板组件测（列表渲染/类型切换字段组/编辑预填/密码留空语义/提交调用/错误展示/删除确认门）+ 设置页分区切换含 `rclone` + 随机密码生成器单测（长度/字符集/熵采样无偏）。
+
+### 7.1 密码输入统一组件（v1.14，B8）
+
+`components/PasswordInput.vue` 是**项目唯一密码输入实现**（S-4 单一实现 / 审查规范重复实现条款）。
+
+| 项 | 说明 |
+|---|---|
+| 为什么要有它 | `n-input type="password"` 的宽度行为完全取决于容器：`n-form-item` 内默认 `width:100%`（宽面板里被拉成一整行），`n-space` 内无 `flex-basis`（塌缩到几十像素，32 位密码看不全）。宽度在组件内一次收口 |
+| 宽度语义 | `width` 属性（CSS 值）：**表单字段型**用默认 `320px`，**容器撑满型**传 `100%`，**定宽场景**传具体值（如导出口令 260px）；外层恒 `max-width:100%` 防窄屏溢出 |
+| 行为 | `show-password-on="click"`（点眼睛图标切明文，不用 hover 预览——会频繁误触发）；可选 `generate-label` → 渲染「生成」按钮并 emit `generate`（生成实现归调用方） |
+| 属性透传 | `inheritAttrs: false` + `v-bind="$attrs"` 落到内部 NInput——`maxlength`、`@keyup.enter`、`placeholder` 等不必逐个声明 |
+| 迁移范围 | 18 处：登录页、bootstrap 三步改密、仪表盘导出、通知邮件密码、设置页 7 处（dump / metrics / 改密 ×3 / 导出 / 导入口令）、仓库页凭据行、仓库密码弹窗、rclone 面板 3 处 |
+| 护栏 | `components/__tests__/PasswordInput.spec.ts` 断言「除组件自身外，`src/**/*.vue` 不得出现 `type="password"` 或 `type: 'password'`」——防止将来又散回裸实现 |
+
+### 7.2 密码生成与「一次性展示」统一（v1.15，B9）
+
+全站「自动生成密码」收敛为**一套生成器 + 一套呈现 + 一个文案**（S-4 单一实现）：
+
+| 关注点 | 统一口径 |
+|---|---|
+| **生成器** | `utils/password.ts` 的 `generatePassword()` 是**唯一实现**：长度 32、四类字符（小写 / 大写 / 数字 / 符号，均剔除易混 `0O1lI`）、每类至少取一个再 Fisher-Yates 洗牌、拒绝采样无模偏置。`utils/passwordStrength.ts` 的 `generateStrongPassword()` / `REPO_PASSWORD_LENGTH` **已删除**（曾并存 24 位版，导致同一系统里密码位数不一致） |
+| **长度** | 全站 32 位。后端两处同口径：`constants.REPO_PASSWORD_LENGTH = 32`（仓库密码）、`auth/password.py` 的 `RANDOM_PASSWORD_LENGTH = 32`（首启管理密码，字符集仍为字母+数字——要打印到日志供人抄录，符号易被 shell/输入法吞掉） |
+| **按钮文案** | 唯一键 `common.generatePassword` =「生成密码」/「Generate password」（不带位数）。删除 `repo.passwordGenerate` / `settings.rclone.generatePassword` / `settings.transfer.generatePassword` 三个分散键 |
+| **一次性展示** | `components/SecretReveal.vue` 是**唯一呈现**：success 提示 + 等宽只读明文 + 复制 + 返回/确认。`PasswordEntryModal` 的生成态、rclone 三处密码生成、导出口令生成全部复用它 |
+| **防误丢** | 生成 → **弹窗展示（可复制）** → 用户点「我已备份」才写入表单/提交。旧行为（rclone / 导出口令直接把明文塞进掩码框）用户既看不到也复制不了，凭据丢失即不可逆 |
+
+接入点（5 类场景 / 4 个复用处）：
+
+| 场景 | 生成实现 | 呈现 |
+|---|---|---|
+| 仓库设置密码 E44 | 后端 `REPO_PASSWORD_LENGTH` 生成，响应一次性回显 | `PasswordEntryModal` → `SecretReveal` |
+| 密钥轮换 C4 | 前端 `generatePassword()`（确认后才提交） | 同上 |
+| 重建默认仓库结果 | 后端返回的一次性新密码 | 同上（仅展示态） |
+| rclone crypt/webdav 密码 ×3 | 前端 `generatePassword()` | 面板内 `NModal` + `SecretReveal` |
+| 配置迁移导出口令 | 前端 `generatePassword()` | 同上（确认后填入输入框） |
 
 ## 8. 可扩展类型路线（注册表即插即用；编辑能力随注册表扩展，裁决 9）
 
@@ -306,13 +357,19 @@ filename_encoding = base64
 | B3 ✅ | **已完成 2026-10-27**：compose 目录挂载（含注释重写）+ 设置页 `rclone` 分区 + `RcloneConfigPanel.vue`（列表 + 表单 + 编辑态 + 删除确认门 + 生成密码）+ `utils/password.ts`（32 位 Web Crypto）+ i18n 双 locale；组件测 6 例 + 密码工具测 6 例；typecheck / build 通过 | B1 |
 | B4 ✅ | **已完成 2026-10-27**：架构设计文档 **v1.10**（E48–E51 四端点条目 + E45 Q17 放宽注 + 写后复核护栏 + §3 目录树 + §11 R-022 行）、部署指南（2026-10-27 校准：§1 仓库类型更正、§4.2 目录挂载迁移指引 + 界面配置管理能力矩阵）、PRD **v1.14**（需求池 R-022 行） | 全部 |
 | B5 ✅ | **已完成 2026-10-27**：后端 pytest 全量 **1128 passed** · ruff 全绿 · `verify_redlines.sh` **19 项全绿**；前端 typecheck **0 错误** · vitest **458 passed / 47 文件** · build **exit 0** | 全部 |
+| B6 ✅ | **已完成 2026-10-27（owner 复盘后的口径修正）**：①crypt 底层目标三态分类 `classify_crypt_remote`（远端 / **本地绝对路径放行** / 相对路径拒绝；修 Windows 盘符被误判为远端名 `C`）；②`update()` 补底层在册校验（此前只有 create 校验）；③crypt 表单改「NSelect 选在册远端 + 路径输入框」，在册校验前移；④单测 46 → **63 例**（含 10 例三态分类参数化）；⑤方案写入裁决 10/11/12 | 裁决 10–12 |
+| B7 ✅ | **已完成 2026-10-27（owner 裁决：抽共用组件）**：抽出 `components/DirPickerInline.vue`（容器视角：`PathBreadcrumb` + `VirtualTree`(E33) + 路径值输入框），**仓库页 local 行改为调用它**（删本地实现 ~66 行脚本 + 52 行样式 + 3 个 import），rclone crypt 面板接入为「本地目录」模式；组件测 7 例（挂载点预取 / 树起点=父目录 / 点选与文件忽略 / 手输 / 外部赋值重定位 vs 自 emit 不重定位 / disabled）；面板测 +2 例（本地模式提交绝对路径 / 非绝对路径拦截） | 裁决 12 |
+| B8 ✅ | **已完成 2026-10-27（owner 实测三项反馈）**：①修复「新增 crypt 提示参数校验失败」——`api/repo.ts` 双重 `JSON.stringify` 使请求体变字符串字面量，后端 pydantic 422；改为 `body` 直接传对象。②抽出 `components/PasswordInput.vue` 并迁移全项目 18 处密码框（宽度可配 / 明文切换 / 可选生成 / `$attrs` 透传），护栏断言无裸 password 输入。③rclone 表单远端名收口 320px、密码三栏 400px；生成密码后给明文提示。护栏新增 `api/__tests__/rclone-config.spec.ts`（fetch 级序列化断言）与 `components/__tests__/PasswordInput.spec.ts` | 实测反馈 |
+| B9 ✅ | **已完成 2026-10-27（owner：统一生成方式 + 文案 + 32 位）**：①合并生成器（删 `generateStrongPassword`/`REPO_PASSWORD_LENGTH`，前后端统一 32 位）；②抽 `SecretReveal.vue` 并接入 5 类场景（仓库设置密码 / 轮换 / 重建结果 / rclone ×3 / 导出口令），rclone 与导出口令从「静默塞掩码框」改为「弹窗一次性展示 → 确认写入」；③按钮文案统一 `common.generatePassword`=「生成密码」 | 实测反馈 |
 
 ## 11. 测试与护栏清单
 
-- 生成器单测：两类型 `build_args` 渲染（含 `filename_encoding`）、白名单校验、缺字段 422、`already_obscured` 分支（不加 `--obscure`）；
-- 编排层单测：dump JSON 解析与 managed 过滤、凭据键替换 `has_*`、非 managed 段零参数回显、CLI 非零退出/超时/缺二进制降级（**含 host 档「未装 rclone」路径**）、Lock 串行断言；
+- 生成器单测：两类型 `build_args` 渲染（含 `filename_encoding`）、白名单校验、缺字段 422、`already_obscured` 分支（不加 `--obscure`）、**crypt 底层目标三态分类**（`classify_crypt_remote` 参数化 10 例：远端指针 / 本地绝对路径 Linux·盘符·UNC / 相对路径拒绝）；
+- 编排层单测：dump JSON 解析与 managed 过滤、凭据键替换 `has_*`、非 managed 段零参数回显、CLI 非零退出/超时/缺二进制降级（**含 host 档「未装 rclone」路径**）、Lock 串行断言、**create 与 update 双路径的底层在册校验**（local 形态跳过）、编辑改不在册远端时零 CLI 调用；
 - 端点测试：鉴权 + Origin + 审计埋点 ×3 断言 + 能力边界双向断言（OAuth 段编辑 422 / 删除可用且审计含 type）+ 响应/异常/日志零凭据泄漏；
-- 前端：面板组件测 + 随机密码生成器单测 + i18n parity；
+- 前端：面板组件测（列表 / 编辑预填拆两段 / 未选底层远端时拦截不发请求 / `remote` 拼成 `name:path` / **本地模式提交绝对路径 + 非绝对路径拦截**）+ `DirPickerInline` 组件测 7 例（挂载点独立预取 / 树起点=父目录 / 点目录名选中且不移动树 / 文件不选中 / 手输 / 外部赋值重定位 vs 自 emit 不重定位 / disabled）+ 随机密码生成器单测 + i18n parity；
+- **请求体序列化护栏（v1.14，B8）**：`api/__tests__/rclone-config.spec.ts` **不 mock `@/api/http`**（mock 掉就拿不到序列化层——这正是本次 422 缺陷逃逸的原因），改 stub `global.fetch`，断言真实 `init.body` 解析后是**对象**而非字符串；
+- **密码输入单一实现护栏（v1.14，B8）**：`components/__tests__/PasswordInput.spec.ts` 全量扫描 `src/**/*.vue`，除组件自身外零 `type="password"`；
 - 红线：`bash scripts/verify_redlines.sh` 全绿（含 S6 新增断言）；
 - 真机验收（B1 spike + B5）：容器内 create→update→delete round-trip + 设置页全旅程。
 
@@ -368,3 +425,5 @@ filename_encoding = base64
 | 与宿主机编辑/OAuth 回写的并发窗口 | 双端都可能写 conf | Lock 内「dump 预检 → CLI 写 → 验证」缩小窗口；目录挂载下 rclone 原子替换 + 权限镜像兜底 |
 | 管理能力边界（v1.3） | 编辑随注册表扩展（一期 crypt/webdav）、删除全段放开 | 编辑口只走字段级表单；删除确认门分级 + 审计留痕；测试覆盖「OAuth 段编辑 422 / 删除可用」双向断言 |
 | Q17 档位放宽的文档一致性 | 三处文档（架构/部署指南/PRD）需同批登记 | B4 批次强制收口 |
+| **本地路径不做存在性校验**（v1.12，裁决 10） | 官方文档：`The path you specify does not have to exist, rclone will create it when needed`。若填了**宿主机路径**（容器内不存在），rclone **不报错**、会在容器可写层建同名目录，数据落容器层 → 容器重建即丢 | 后端无法静态判定（本地路径合法且可自动创建）；**UI 侧缓解（v1.13 已落地）**：目录树（E33 只列真实存在项）+ 挂载点快跳 + 明确提示「容器内视角 / 宿主机目录须先挂载」；手输仍保留（目录可先不存在），故仍属**知情风险** |
+| 本地路径形态不校验可写性 | 路径存在但只读/无权限 → 备份运行时才报错 | 属运行期错误，`failure_reason` 直出；不前置探测（探测成本高且与运行期权限可能不同） |

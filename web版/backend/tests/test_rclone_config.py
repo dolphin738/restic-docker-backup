@@ -31,6 +31,7 @@ from app.services.rclone_config import (
     RcloneConfigService,
     RcloneConfigUnavailable,
     WebDAVGenerator,
+    classify_crypt_remote,
     resolve_conf_path,
 )
 from app.settings import Settings
@@ -196,6 +197,40 @@ def test_crypt_rejects_malformed_underlying_remote():
     assert "远端名:桶内路径" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # ① 远端指针
+        ("mywebdav:backup/restic", ("remote", "mywebdav")),
+        ("mywebdav:", ("remote", "mywebdav")),
+        ("s3-bucket:bucket/x", ("remote", "s3-bucket")),
+        # ② 本地绝对路径（官方文档 §Specifying the remote 明确支持）
+        ("/repo/encrypted", ("local", None)),
+        ("/", ("local", None)),
+        ("C:/backup/crypt", ("local", None)),
+        ("C:\\backup\\crypt", ("local", None)),
+        ("\\\\nas\\share\\crypt", ("local", None)),
+        # ③ 相对路径：rclone 按进程 cwd 下的子目录处理，容器内不可控 → 判为 relative 并拒绝
+        ("backup/restic", ("relative", None)),
+        ("mycrypt", ("relative", None)),
+        ("", ("relative", None)),
+    ],
+)
+def test_classify_crypt_remote_three_kinds(value, expected):
+    """三态口径：远端指针 / 本地绝对路径 / 相对路径（后者拒绝）。
+
+    重点回归：Windows 盘符 ``C:/x``、``C:\\x`` 必须判 local——旧实现会把它当成
+    名为 ``C`` 的远端而报「远端不在册」。
+    """
+    assert classify_crypt_remote(value) == expected
+
+
+@pytest.mark.parametrize("local_path", ["/repo/encrypted", "C:/backup/crypt", "C:\\backup\\crypt"])
+def test_crypt_accepts_local_absolute_path(local_path):
+    args = GENERATORS["crypt"].build_args({"remote": local_path, "password": "p"})
+    assert args[0] == f"remote={local_path}"
+
+
 # ---------------------------------------------------------------- 生成器：webdav
 
 
@@ -274,6 +309,31 @@ async def test_create_checks_underlying_remote_in_registry():
     with pytest.raises(RcloneConfigInvalid) as exc:
         await svc.create("mycrypt", "crypt", CRYPT_FULL, available_remotes=("other",))
     assert "mywebdav" in str(exc.value)
+
+
+async def test_create_local_path_skips_registry_check():
+    """本地绝对路径无远端名可查 → 跳过在册校验（旧实现会误报「远端 C 不在册」）。"""
+    svc, exec_ = _service({})
+    result = await svc.create(
+        "mycrypt", "crypt", {**CRYPT_FULL, "remote": "C:/backup/crypt"}, available_remotes=()
+    )
+    assert result.action == "create"
+    assert exec_.argv_for("create")[exec_.argv_for("create").index("create") + 1] == "mycrypt"
+
+
+async def test_update_checks_underlying_remote_in_registry():
+    """编辑把底层远端改成不在册的 → 422 且不执行 CLI（此前只有 create 校验，属缺陷）。"""
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    with pytest.raises(RcloneConfigInvalid) as exc:
+        await svc.update("mycrypt", "crypt", {**CRYPT_FULL, "remote": "nope:bucket"})
+    assert "nope" in str(exc.value)
+    assert all("update" not in c for c in exec_.calls)
+
+
+async def test_update_allows_local_path():
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION})
+    await svc.update("mycrypt", "crypt", {**CRYPT_FULL, "remote": "/repo/encrypted"})
+    assert "update" in exec_.argv_for("update")
 
 
 async def test_update_password_blank_keeps_existing():

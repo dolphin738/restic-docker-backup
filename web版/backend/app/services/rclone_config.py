@@ -38,8 +38,30 @@ REMOTE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 # 权限类失败与「参数校验失败」分开：前者 503（部署/权限问题），后者 422（用户输入）
 _PERMISSION_HINT = re.compile(r"permission denied|read-only file system|operation not permitted", re.I)
-# crypt 的 remote 形如 `远端名:桶内路径`
-_CRYPT_REMOTE_PATTERN = re.compile(r"^[A-Za-z0-9_-]+:.+$")
+# crypt 的 remote 目标支持三态（rclone 官方文档 §Specifying the remote）：
+#   ① 远端指针 `remote:path` / `remote:bucket` —— remote 名须在册
+#   ② **本地绝对路径** `/path/to/dir`（Linux）、`C:\path` / `C:/path`（Windows）
+#      —— 官方明确支持，用于纯本地文件加密（如可移动介质）
+#   ③ 无冒号相对路径 —— rclone 按「进程 cwd 下的子目录」处理；容器内 cwd 不可控，
+#      用户以为指向某处实际指到别处（静默错），故一律拒绝
+_WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+_REMOTE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def classify_crypt_remote(value: str) -> tuple[str, str | None]:
+    """判定 crypt 底层目标形态：``("local", None)`` / ``("remote", 远端名)`` / ``("relative", None)``。
+
+    注意 Windows 盘符（``C:\\x`` / ``C:/x``）必须判为 local——否则会被误当成
+    名为 ``C`` 的远端而报「远端不在册」。
+    """
+    text = (value or "").strip()
+    if text.startswith("/") or text.startswith("\\\\") or _WINDOWS_DRIVE_PATTERN.match(text):
+        return "local", None
+    head, sep, _ = text.partition(":")
+    if sep and _REMOTE_NAME_PATTERN.match(head):
+        return "remote", head
+    return "relative", None
+
 # 写后校验失败提示（真机 spike A/B：单文件 bind mount 下 rclone 退出码 0 却没写进去）
 _MOUNT_HINT = "请将 compose 改为目录挂载 ./rclone:/etc/rclone:rw（宿主机 conf 移入该目录）"
 _SILENT_WRITE_LOSS_HINT = (
@@ -184,8 +206,15 @@ class CryptGenerator(ConfigGenerator):
     bool_keys = ("directory_name_encryption",)
 
     def _validate_value(self, key: str, value: str) -> None:
-        if key == "remote" and not _CRYPT_REMOTE_PATTERN.match(value):
-            raise RcloneConfigInvalid("底层远端应为「远端名:桶内路径」形式（如 mywebdav:backup/restic）")
+        if key != "remote":
+            return
+        kind, _ = classify_crypt_remote(value)
+        if kind == "relative":
+            raise RcloneConfigInvalid(
+                "底层目标填「远端名:桶内路径」（如 mywebdav:backup/restic）或**本地绝对路径**"
+                "（如 /repo/encrypted、C:/backup/encrypted）；相对路径会被 rclone 当作进程当前目录下的子目录"
+                "（容器内不可控），已拒绝"
+            )
 
 
 class WebDAVGenerator(ConfigGenerator):
@@ -371,6 +400,9 @@ class RcloneConfigService:
                 raise RcloneConfigInvalid(
                     f"远端「{remote_name}」的类型是 {existing_type or '未知'}，不能按 {gen.type_name} 编辑"
                 )
+            # 与 create 同口径：编辑把底层远端改成不在册的也能存进去（保存成功、用时报错），
+            # 故编辑同样过在册校验（local 形态在 _check_underlying 内跳过）
+            self._check_underlying(args, sections, None)
             await self._run(
                 [*self._rclone(), "config", "update", remote_name, *args, *self._obscure_flag(already_obscured)]
             )
@@ -477,11 +509,18 @@ class RcloneConfigService:
     def _check_underlying(
         self, args: Sequence[str], sections: Mapping[str, dict[str, Any]], available_remotes: Sequence[str] | None
     ) -> None:
-        """crypt 的底层远端必须在册（防「保存即失败」）。"""
+        """crypt 的底层目标校验（防「保存即失败」）。
+
+        - ``远端名:路径``：远端名必须在册；
+        - **本地绝对路径**：跳过在册校验（rclone 会在需要时自动创建目录，官方文档确认）；
+        - 相对路径：`CryptGenerator._validate_value` 已拒绝，不会走到这里。
+        """
         base = next((a.split("=", 1)[1] for a in args if a.startswith("remote=")), None)
         if base is None:
             return
-        target = base.split(":", 1)[0]
+        kind, target = classify_crypt_remote(base)
+        if kind != "remote" or target is None:
+            return
         pool = tuple(sections) if available_remotes is None else tuple(available_remotes)
         if target not in pool:
             raise RcloneConfigInvalid(

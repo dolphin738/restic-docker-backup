@@ -118,7 +118,9 @@ export function createRcloneConfig(
 ): Promise<RcloneConfigWriteOut> {
   return request<RcloneConfigWriteOut>(`/api/rclone/config/${encodeURIComponent(remote)}`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    // body 传**对象**：http.request 内部统一 JSON.stringify；
+    // 此处再 stringify 会把请求体变成字符串字面量 → 后端 pydantic 422「参数校验失败」。
+    body: payload,
   })
 }
 
@@ -133,7 +135,7 @@ export function updateRcloneConfig(
 ): Promise<RcloneConfigWriteOut> {
   return request<RcloneConfigWriteOut>(`/api/rclone/config/${encodeURIComponent(remote)}`, {
     method: 'PUT',
-    body: JSON.stringify(payload),
+    body: payload, // 同上：交给 http.request 序列化，勿二次 stringify
   })
 }
 
