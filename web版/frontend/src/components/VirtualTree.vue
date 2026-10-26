@@ -34,7 +34,7 @@ export interface TreePage {
  *   - excludedPaths（排除规则，展示形态）：自身或祖先命中 → 置灰 + 删除线，
  *     后代同样置灰（前缀匹配，无需展开加载）——「未选中」的持久视觉；
  *   - 展开/收起始终由 caret 触发；点名称在 selectDir 模式下 emit select；
- *   - 高度：固定 height（仓库/快照/恢复树）或**内容驱动**（源树：行数×行高，
+ *   - 高度：固定 height（仓库/快照树）或**内容驱动**（源树、恢复树：行数×行高，
  *     min/maxHeight 夹住；曾用 height:100%+ResizeObserver，百分比链在 flex 自动
  *     高度容器里不可靠——盒子被撑高出现死空白，已废）。
  */
@@ -431,6 +431,22 @@ watch(
 .vtree__row--highlight,
 .vtree__row--highlight:hover {
   background: color-mix(in srgb, var(--rw-focus) 16%, var(--rw-surface));
+}
+
+/* 单选态（selectedPath，如仓库/快照浏览的「当前项」）与多选态（selectedPaths，
+   如恢复向导的文件勾选）此前只挂了类名、**没有任何样式规则**——点了毫无反馈，
+   用户会误以为不支持选择。此处补齐（2026-10-26 owner 反馈）。
+   多选态额外加一条左侧竖线，使「已勾选」在长列表里可一眼扫到；颜色全部取
+   --rw-focus 令牌 + color-mix 派生，零硬编码色值（亮暗自动适配）。 */
+.vtree__row--selected,
+.vtree__row--selected:hover {
+  background: color-mix(in srgb, var(--rw-focus) 12%, var(--rw-surface));
+}
+
+.vtree__row--checked,
+.vtree__row--checked:hover {
+  background: color-mix(in srgb, var(--rw-focus) 16%, var(--rw-surface));
+  box-shadow: inset 2px 0 0 var(--rw-focus);
 }
 
 /* 排除态优先于高亮：border 45% 混 surface 的中性灰底 */

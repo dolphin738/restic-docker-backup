@@ -118,6 +118,16 @@ export const spacing = {
 export const sourceTreeViewMinHeight = spacing[6] * 11 // 352px
 export const sourceTreeViewMaxHeight = spacing[6] * 24 // 768px
 
+// ─── 恢复向导「选择文件」树视口高度（px） ──────────────────────────────────
+
+/** 恢复树视口同样**内容驱动**（owner 2026-10-26）。原先固定 520px（P9 满高决定），
+ *  快照根目录只有两三个条目时下方留下大片死空白，把「已选清单」推到首屏之外。
+ *  取 spacing[6]（32px）的倍数：×8 = 256px ≈ 7 行保底（空快照也有树盒，且明显低于
+ *  原 520），×21 = 672px ≈ 18 行封顶（更多层展开后内部滚动，不再生长挤压页脚）。
+ *  恢复树下方紧跟「已选清单」，封顶低于源树（768）以免长清单被推到屏幕外。 */
+export const restoreFileTreeMinHeight = spacing[6] * 8 // 256px
+export const restoreFileTreeMaxHeight = spacing[6] * 21 // 672px
+
 /** 亮色主题覆盖：UI全量改造方案 §6（原《UI界面设计方案》） §2.1（AA 对比度实测值）+ §4.6.4 彻底档组件级形态。 */
 export const lightThemeOverrides: GlobalThemeOverrides = {
   common: {

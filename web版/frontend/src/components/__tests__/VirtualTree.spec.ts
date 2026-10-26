@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import naive from 'naive-ui'
@@ -141,6 +143,13 @@ describe('VirtualTree 展开与选中分工', () => {
     expect(rowsOf(wrapper)[1].classes()).not.toContain('vtree__row--selected')
   })
 
+  it('selectedPaths（多选集合）命中的行打 checked 样式', async () => {
+    const wrapper = mountTree({ selectDir: true, selectedPaths: new Set(['/c']) })
+    await flushLoads()
+    expect(rowsOf(wrapper)[0].classes()).not.toContain('vtree__row--checked')
+    expect(rowsOf(wrapper)[1].classes()).toContain('vtree__row--checked')
+  })
+
   it('加载失败：错误区展示且不再保留旧行', async () => {
     const failing = vi.fn(() => Promise.reject(new Error('无权限读取目录：/x')))
     const wrapper = mountTree({ loadChildren: failing })
@@ -170,7 +179,7 @@ describe('VirtualTree 展开与选中分工', () => {
     expect(style).toContain('height: 360px') // 2 行内容 72 < 360 → 保底
   })
 
-  it('固定 height 模式优先（仓库/快照/恢复树不受内容驱动影响）', async () => {
+  it('固定 height 模式优先（仓库/快照树不受内容驱动影响）', async () => {
     const wrapper = mountTree({ height: 520, minHeight: 360 })
     await flushLoads()
     expect(wrapper.find('.vtree__viewport').attributes('style')).toContain('height: 520px')
@@ -217,5 +226,25 @@ describe('VirtualTree 高亮与排除视觉（名称点击统一切换，owner 2
     })
     await flushLoads()
     expect(wrapper.find('.vtree__mount').exists()).toBe(true)
+  })
+})
+
+/**
+ * 不变量护栏：**行状态类名必须都有对应样式规则**。
+ *
+ * 真实事故（2026-10-26 owner 反馈「恢复向导里勾选文件没反应」）：模板给行挂
+ * `vtree__row--checked` / `vtree__row--selected` 两个类，但 style 块里只有
+ * `--highlight` 与 `--excluded` 的规则 —— 类加上去了、视觉零变化，jsdom 与
+ * vue-tsc 都查不出来，只有真机才暴露「点了像没点」。此用例把该缺口钉死：
+ * 模板里出现的每个 `vtree__row--*` 状态类，style 块必须有 `.vtree__row--*` 规则。
+ */
+describe('VirtualTree 状态类名与样式规则一致', () => {
+  it('模板中每个 vtree__row--* 状态类都有对应 CSS 规则', () => {
+    const src = readFileSync(join(process.cwd(), 'src/components/VirtualTree.vue'), 'utf8')
+    // 只取模板里以引号包裹的类名字面量（:class 对象键）
+    const used = [...src.matchAll(/'vtree__row--([a-z-]+)'/g)].map((m) => m[1])
+    expect(used.length).toBeGreaterThan(0)
+    const missing = [...new Set(used)].filter((name) => !src.includes(`.vtree__row--${name}`))
+    expect(missing).toEqual([])
   })
 })

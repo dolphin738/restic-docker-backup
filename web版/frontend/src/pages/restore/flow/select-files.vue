@@ -11,12 +11,14 @@
  * 「快照+关键词」30s 缓存，前端仍须防逐键触发。
  */
 
-import { NAlert, NButton, NInput, NSelect, NSpace, NSpin, NText } from 'naive-ui'
-import { onUnmounted, ref, watch } from 'vue'
+import { NAlert, NButton, NIcon, NInput, NSelect, NSpace, NSpin, NText } from 'naive-ui'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listSnapshotFiles, searchSnapshotFiles } from '@/api/snapshots'
 import type { SnapshotFileOut } from '@/api/types'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
+import { IconX } from '@/components/icons/icons'
+import { restoreFileTreeMaxHeight, restoreFileTreeMinHeight } from '@/theme/tokens'
 
 const props = defineProps<{
   /** 当前选中快照 id；null = 未选（列表加载中或空列表）。 */
@@ -34,11 +36,18 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:snapshotId', value: string | null): void
   (e: 'toggle-file', path: string): void
+  /** 从「已选清单」移除单条（owner 2026-10-26：清单项可逐条取消）。 */
+  (e: 'remove-file', path: string): void
+  /** 清空全部已选（回到「恢复整个快照」）。 */
+  (e: 'clear-files'): void
   (e: 'next'): void
   (e: 'back'): void
 }>()
 
 const { t } = useI18n()
+
+/** 已选清单（排序后展示，避免勾选顺序随点击抖动；Set 无重复天然去重）。 */
+const selectedList = computed(() => [...props.selectedFiles].sort((a, b) => a.localeCompare(b)))
 
 // ---------------------------------------------------------------- 文件搜索（B3 契约）
 
@@ -111,10 +120,9 @@ onUnmounted(() => {
 
 // ---------------------------------------------------------------- 文件树多选（B1，E18）
 
-/** P9 满高：步骤 1 专属——文件树需要确定高度才能内部滚动。
- *  诚实边界：BasicLayout 内容区没有 height 继承链，真实 flex 撑满需先给布局层高度
- *  （属 P14 视觉层），故这里以「文件树高度上探」落地，是当前唯一有实际效果的做法。 */
-const FILE_TREE_HEIGHT_FILL = 520
+// 树视口高度走 VirtualTree 的 auto 模式（行数 × 行高，min/max 夹住）——
+// owner 2026-10-26：原固定 520px 在快照根只有两三项时留下大片死空白，
+// 把下方「已选清单」推出首屏。详见 theme/tokens 的 restoreFileTree* 注释。
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   const id = props.snapshotId ?? ''
@@ -194,7 +202,8 @@ function onSnapshotChange(value: string | null): void {
       :key="`files-${snapshotId}`"
       root-path="/"
       :load-children="treeLoader"
-      :height="FILE_TREE_HEIGHT_FILL"
+      :min-height="restoreFileTreeMinHeight"
+      :max-height="restoreFileTreeMaxHeight"
       select-dir
       :selected-paths="selectedFiles"
       @select="onFileSelect"
@@ -203,6 +212,34 @@ function onSnapshotChange(value: string | null): void {
       {{ t('restore.filesSelected', { n: selectedFiles.size }) }}
     </n-text>
     <n-text v-else depth="3">{{ t('restore.filesWhole') }}</n-text>
+
+    <!-- 已选清单（owner 2026-10-26）：不只报数量，还要把「到底选了哪些」列出来，
+         支持逐条取消与一键清空——长树里靠高亮找不全时以本清单为最终核对口径。 -->
+    <div v-if="selectedFiles.size > 0" class="restore__picked">
+      <n-space justify="space-between" align="center" :size="8">
+        <n-text depth="3">{{ t('restore.filesPickedHint') }}</n-text>
+        <n-button size="tiny" quaternary @click="emit('clear-files')">
+          {{ t('restore.filesClear') }}
+        </n-button>
+      </n-space>
+      <ul class="restore__picked-list">
+        <li v-for="path in selectedList" :key="path" class="restore__picked-item">
+          <span class="restore__picked-path" :title="path">{{ path }}</span>
+          <n-button
+            size="tiny"
+            quaternary
+            circle
+            :title="t('restore.filesRemove')"
+            :aria-label="t('restore.filesRemove')"
+            @click="emit('remove-file', path)"
+          >
+            <template #icon>
+              <n-icon :size="14"><IconX /></n-icon>
+            </template>
+          </n-button>
+        </li>
+      </ul>
+    </div>
   </n-space>
 
   <!-- P10 页脚两端对齐（对标 Duplicati 向导页脚）：左返回入口 / 右下一步 -->
@@ -231,5 +268,53 @@ function onSnapshotChange(value: string | null): void {
 
 .restore__hit.is-selected {
   font-weight: 600;
+  /* 与文件树的 checked 行同色（focus 16% 混 surface），保证「搜索命中」与
+     「树里勾选」两处选中视觉一致，不再只有一个字重差。 */
+  background: color-mix(in srgb, var(--rw-focus) 16%, var(--rw-surface));
+}
+
+/* 已选清单：卡片式容器 + 内部滚动（选了很多条也不把页面撑长），
+   路径等宽字体 + 单行省略，标题靠 title 属性看全路径。 */
+.restore__picked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rw-space-1);
+  max-height: 180px;
+  overflow-y: auto;
+  padding: var(--rw-space-2);
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-control);
+  background: var(--rw-surface);
+}
+
+.restore__picked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.restore__picked-item {
+  display: flex;
+  align-items: center;
+  gap: var(--rw-space-2);
+  padding: 2px 4px;
+  border-radius: var(--rw-radius-control);
+}
+
+.restore__picked-item:hover {
+  background: var(--rw-surface-hover);
+}
+
+.restore__picked-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-mono);
+  font-size: 12px;
 }
 </style>

@@ -231,6 +231,25 @@ function onToggleFile(path: string): void {
   selectedFiles.value = next
 }
 
+/** 已选清单里逐条移除（owner 2026-10-26）。与 toggle 等价，但语义独立：
+ *  清单项只会移除、绝不会「加回」，故不共用 toggle 的分支判断。 */
+function onRemoveFile(path: string): void {
+  if (!selectedFiles.value.has(path)) {
+    return
+  }
+  const next = new Set(selectedFiles.value)
+  next.delete(path)
+  selectedFiles.value = next
+}
+
+/** 清空全部已选 = 回到「恢复整个快照」语义。 */
+function onClearFiles(): void {
+  if (selectedFiles.value.size === 0) {
+    return
+  }
+  selectedFiles.value = new Set()
+}
+
 const selectedFileList = computed(() => [...selectedFiles.value])
 const selectedFileCount = computed(() => selectedFiles.value.size)
 
@@ -581,6 +600,8 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           :selected-files="selectedFiles"
           @update:snapshot-id="onSnapshotIdUpdate"
           @toggle-file="onToggleFile"
+          @remove-file="onRemoveFile"
+          @clear-files="onClearFiles"
           @next="goConfirm"
           @back="goEntry"
         />
