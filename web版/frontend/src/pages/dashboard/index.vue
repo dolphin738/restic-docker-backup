@@ -17,7 +17,6 @@ import {
   NGi,
   NGrid,
   NIcon,
-  NInput,
   NModal,
   NSelect,
   NSkeleton,
@@ -25,6 +24,7 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
+import PasswordInput from '@/components/PasswordInput.vue'
 import { computed, h, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -794,10 +794,9 @@ async function onDeleteConfirmed(): Promise<void> {
   >
     <n-space vertical :size="12">
       <n-text depth="3">{{ t('task.exportHint', { name: exportTarget?.name ?? '' }) }}</n-text>
-      <n-input
-        v-model:value="exportPassword"
-        type="password"
-        show-password-on="click"
+      <PasswordInput
+        v-model="exportPassword"
+        width="100%"
         :placeholder="t('task.exportPassword')"
         :maxlength="256"
         @keyup.enter="onExportConfirmed"

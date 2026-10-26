@@ -26,6 +26,7 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
+import PasswordInput from '@/components/PasswordInput.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getNotifyConfig, testNotify, updateNotifyConfig } from '@/api/notify'
@@ -534,10 +535,9 @@ async function runTest(): Promise<void> {
             </n-form-item>
             <n-form-item :label="t('notify.mailPassword')">
               <n-space vertical :size="4" class="notify__field">
-                <n-input
-                  v-model:value="form.mailPassword"
-                  type="password"
-                  show-password-on="click"
+                <PasswordInput
+                  v-model="form.mailPassword"
+                  width="100%"
                   :placeholder="
                     configQuery.data.value?.mail_password_set
                       ? t('notify.urlConfigured')

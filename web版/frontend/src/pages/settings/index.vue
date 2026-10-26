@@ -32,6 +32,7 @@ import {
   NIcon,
   NInput,
   NInputNumber,
+  NModal,
   NSelect,
   NSpace,
   NSwitch,
@@ -48,13 +49,17 @@ import { saveDumpBehaviorConfig } from '@/api/settings'
 import { getSystemTime, syncSystemTime } from '@/api/system'
 import { IconCheckCircle, IconClock, IconDownload, IconLock, IconShieldCheck } from '@/components/icons/icons'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import PasswordInput from '@/components/PasswordInput.vue'
+import SecretReveal from '@/components/SecretReveal.vue'
 import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // P6 形态层：分段控件从本页私有实现提升为共用组件（S-4 单一实现）；
 // 深链（#sec-<id>）与未知 id 防御已内置于组件（hashPrefix='sec'）。
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
-// G4：导出口令强度条（纯函数估算 + 强随机生成，见 utils/passwordStrength.ts）
-import { estimatePasswordStrength, generateStrongPassword } from '@/utils/passwordStrength'
+// G4：导出口令强度条（纯函数估算，见 utils/passwordStrength.ts）
+// 生成统一走全站唯一生成器 utils/password.ts（32 位，与仓库密码同口径）
+import { generatePassword } from '@/utils/password'
+import { estimatePasswordStrength } from '@/utils/passwordStrength'
 import { formatDateTime, setDisplayTimezone } from '@/utils/datetime'
 
 const { t } = useI18n()
@@ -699,9 +704,25 @@ const strengthLabelKey = computed(() => {
   return `settings.transfer.strength${score}`
 })
 
-/** 生成强随机口令（crypto 随机源，20 位必然落在「强」档）；生成后可直接导出。 */
+/** 一次性明文弹窗（生成后只显示这一次，与仓库设置密码同一呈现：SecretReveal）。 */
+const generatedExportPassword = ref<string | null>(null)
+
+/** 点「生成」：CSPRNG 生成 32 位口令 → 弹窗一次性展示（确认后才填入输入框）。 */
 function onGenerateExportPassword(): void {
-  exportPassword.value = generateStrongPassword()
+  generatedExportPassword.value = generatePassword()
+}
+
+/** 确认已备份 → 填入导出口令输入框（随后可直接点导出）。 */
+function confirmGeneratedExportPassword(): void {
+  exportPassword.value = generatedExportPassword.value ?? ''
+  generatedExportPassword.value = null
+}
+
+/** 弹窗关闭（点遮罩 / ESC / 右上角）：丢弃未确认的一次性口令，不写入输入框。 */
+function onExportSecretShow(value: boolean): void {
+  if (!value) {
+    generatedExportPassword.value = null
+  }
 }
 
 // ---------------------------------------------------------------- 导出动作
@@ -870,10 +891,9 @@ function onSectionChange(id: string): void {
                   {{ dumpPasswordClear ? t('settings.dump.passwordClearUndo') : t('settings.dump.passwordClear') }}
                 </n-button>
               </n-space>
-              <n-input
-                v-model:value="dumpPasswordInput"
-                type="password"
-                show-password-on="click"
+              <PasswordInput
+                v-model="dumpPasswordInput"
+                width="100%"
                 :disabled="dumpPasswordClear"
                 :placeholder="t('settings.dump.passwordNewPlaceholder')"
               />
@@ -1038,10 +1058,9 @@ function onSectionChange(id: string): void {
             <StatusTag v-else kind="default" :label="t('settings.metrics.tokenUnset')" />
           </n-space>
           <n-form-item :label="t('settings.metrics.newToken')">
-            <n-input
-              v-model:value="metricsTokenInput"
-              type="password"
-              show-password-on="click"
+            <PasswordInput
+              v-model="metricsTokenInput"
+              width="100%"
               :placeholder="t('settings.metrics.newTokenPlaceholder')"
             />
           </n-form-item>
@@ -1249,18 +1268,16 @@ function onSectionChange(id: string): void {
     <n-card v-else-if="activeSection === 'password'" id="sec-password" class="settings__panel" :title="t('settings.password.title')" size="small">
       <n-form label-placement="top" class="settings__password-form">
         <n-form-item :label="t('settings.password.oldPassword')">
-          <n-input
-            v-model:value="oldPassword"
-            type="password"
-            show-password-on="click"
+          <PasswordInput
+            v-model="oldPassword"
+            width="100%"
             :placeholder="t('settings.password.oldPassword')"
           />
         </n-form-item>
         <n-form-item :label="t('settings.password.newPassword')">
-          <n-input
-            v-model:value="newPassword"
-            type="password"
-            show-password-on="click"
+          <PasswordInput
+            v-model="newPassword"
+            width="100%"
             :placeholder="t('settings.password.newPassword')"
           />
         </n-form-item>
@@ -1269,10 +1286,9 @@ function onSectionChange(id: string): void {
           :validation-status="passwordMismatch ? 'error' : undefined"
           :feedback="passwordMismatch ? t('settings.password.mismatch') : undefined"
         >
-          <n-input
-            v-model:value="confirmPassword"
-            type="password"
-            show-password-on="click"
+          <PasswordInput
+            v-model="confirmPassword"
+            width="100%"
             :placeholder="t('settings.password.confirmPassword')"
           />
         </n-form-item>
@@ -1292,20 +1308,33 @@ function onSectionChange(id: string): void {
     <n-card v-else-if="activeSection === 'transfer'" id="sec-transfer" class="settings__panel" :title="t('settings.transfer.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.transfer.desc') }}</n-text>
-        <n-space align="center" :size="8" wrap>
-          <n-input
-            v-model:value="exportPassword"
-            type="password"
-            show-password-on="click"
-            :placeholder="t('settings.transfer.exportPassword')"
-            class="settings__transfer-pw"
+        <!-- 生成口令后的一次性明文（全站统一呈现 SecretReveal；确认后才填入输入框） -->
+        <n-modal
+          :show="generatedExportPassword !== null"
+          preset="card"
+          :title="t('settings.transfer.passwordGeneratedTitle')"
+          style="width: min(520px, calc(100vw - 32px))"
+          @update:show="onExportSecretShow"
+        >
+          <SecretReveal
+            :secret="generatedExportPassword ?? ''"
+            :hint="t('settings.transfer.passwordGeneratedHint')"
+            :confirm-label="t('settings.transfer.passwordSavedClose')"
+            @confirm="confirmGeneratedExportPassword"
           />
-          <!-- G4：生成强随机口令（对齐 Duplicati export.component.html 的口令区） -->
+        </n-modal>
+        <n-space align="center" :size="8" wrap>
+          <PasswordInput
+            v-model="exportPassword"
+            width="260px"
+            :placeholder="t('settings.transfer.exportPassword')"
+          />
+          <!-- 生成 32 位导出口令 → 弹窗一次性展示（SecretReveal），确认后才填入输入框 -->
           <n-button size="small" secondary @click="onGenerateExportPassword">
             <template #icon>
               <n-icon :size="16"><IconShieldCheck /></n-icon>
             </template>
-            {{ t('settings.transfer.generatePassword') }}
+            {{ t('common.generatePassword') }}
           </n-button>
           <n-button
             size="small"
@@ -1346,12 +1375,10 @@ function onSectionChange(id: string): void {
             {{ t('settings.transfer.pickFile') }}
           </n-button>
           <n-text v-if="pickedName" depth="2">{{ pickedName }}</n-text>
-          <n-input
-            v-model:value="importPassword"
-            type="password"
-            show-password-on="click"
+          <PasswordInput
+            v-model="importPassword"
+            width="260px"
             :placeholder="t('settings.transfer.importPassword')"
-            class="settings__transfer-pw"
             :disabled="!pickedPack"
           />
           <n-checkbox v-model:checked="replace_existing" :disabled="!pickedPack">
@@ -1535,10 +1562,6 @@ function onSectionChange(id: string): void {
 
 .settings__hint {
   font-size: 12px;
-}
-
-.settings__transfer-pw {
-  width: 260px;
 }
 
 /* G4 强度条：四段等宽，颜色由 JS 按分档给出（语义色沿用主题基准值） */

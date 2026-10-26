@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { NAlert, NButton, NCard, NForm, NFormItem, NIcon, NInput, NSpace, NText, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCard, NForm, NFormItem, NIcon, NSpace, NText, useMessage } from 'naive-ui'
+import PasswordInput from '@/components/PasswordInput.vue'
 import { computed, onUnmounted, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -117,10 +118,9 @@ async function onSubmit(): Promise<void> {
 
         <n-form @submit.prevent="onSubmit">
           <n-form-item :label="t('login.password')">
-            <n-input
-              v-model:value="form.password"
-              type="password"
-              show-password-on="click"
+            <PasswordInput
+              v-model="form.password"
+              width="100%"
               :placeholder="t('login.passwordPlaceholder')"
               :disabled="locked"
             />

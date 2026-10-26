@@ -21,7 +21,10 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NModal,
   NPopconfirm,
+  NRadio,
+  NRadioGroup,
   NSelect,
   NSpace,
   NSwitch,
@@ -29,6 +32,9 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
+import DirPickerInline from '@/components/DirPickerInline.vue'
+import PasswordInput from '@/components/PasswordInput.vue'
+import SecretReveal from '@/components/SecretReveal.vue'
 import {
   createRcloneConfig,
   deleteRcloneConfig,
@@ -52,7 +58,12 @@ const TYPE_OPTIONS = MANAGED_TYPES.map((value) => ({ label: value, value }))
 interface FormState {
   remoteName: string
   type: ManagedType
-  cryptRemote: string
+  /** 底层目标形态：远端叠加（`name:path`）或本地目录（绝对路径，官方支持的纯本地加密）。 */
+  cryptRemoteMode: 'remote' | 'local'
+  /** 远端指针模式下的「所选远端」；本地模式不用。 */
+  cryptRemoteName: string
+  /** 远端指针模式 = 远端内路径；本地模式 = 绝对路径（互斥，按 mode 解释）。 */
+  cryptRemotePath: string
   password: string
   password2: string
   filenameEncryption: string
@@ -69,7 +80,9 @@ function emptyForm(): FormState {
   return {
     remoteName: '',
     type: 'crypt',
-    cryptRemote: '',
+    cryptRemoteMode: 'remote',
+    cryptRemoteName: '',
+    cryptRemotePath: '',
     password: '',
     password2: '',
     filenameEncryption: 'standard',
@@ -89,6 +102,21 @@ const snapshot = ref<RcloneConfigsOut | null>(null)
 const form = ref<FormState>(emptyForm())
 /** 非空 = 编辑态（远端名只读，密码留空 = 保持不变）。 */
 const editingRemote = ref<string | null>(null)
+
+/** 一次性明文弹窗：生成密码后**只显示一次**（可复制），确认才写进表单。
+ *  收敛口径与仓库设置密码一致（SecretReveal 唯一实现）——crypt 密码丢失 = 数据无法解密，
+ *  直接把明文塞进掩码框（旧实现）用户既看不到也复制不了。 */
+const generatedField = ref<'password' | 'password2' | 'pass' | null>(null)
+const generatedValue = ref('')
+const generatedShow = computed({
+  get: () => generatedField.value !== null,
+  set: (value: boolean) => {
+    if (!value) {
+      generatedField.value = null
+      generatedValue.value = ''
+    }
+  },
+})
 
 const FILENAME_ENCRYPTION_OPTIONS = [
   { label: 'standard', value: 'standard' },
@@ -201,6 +229,14 @@ function isOauthType(type: string): boolean {
   return !MANAGED_TYPES.includes(type as ManagedType)
 }
 
+/** 底层远端候选：conf 内**所有**段（crypt 可叠加在任何 remote 上，含 OAuth 网盘），
+ *  排除正在编辑的段自身（自引用会成环）；在册校验由此**前移**为「选不到就填不了」。 */
+const remoteOptions = computed(() =>
+  (snapshot.value?.configs ?? [])
+    .filter((c) => c.remote !== editingRemote.value)
+    .map((c) => ({ label: c.remote, value: c.remote })),
+)
+
 async function refresh(): Promise<void> {
   loading.value = true
   try {
@@ -212,6 +248,12 @@ async function refresh(): Promise<void> {
   }
 }
 
+/** 本地绝对路径判定（与后端 `classify_crypt_remote` 的 local 分支同口径：
+ *  `/x`、`C:/x`、`C:\x`、`\\srv\share`）。仅用于**表单模式回填**，真校验在后端。 */
+function isLocalTarget(value: string): boolean {
+  return /^(\/|[A-Za-z]:[\\/]|\\\\)/.test((value || '').trim())
+}
+
 function startEdit(row: RcloneConfigItem): void {
   editingRemote.value = row.remote
   const next = emptyForm()
@@ -219,7 +261,22 @@ function startEdit(row: RcloneConfigItem): void {
   next.type = (MANAGED_TYPES.includes(row.type as ManagedType) ? row.type : 'crypt') as ManagedType
   const p = row.params ?? {}
   if (next.type === 'crypt') {
-    next.cryptRemote = p.remote ?? ''
+    // 本地绝对路径（`/x`、`C:/x`、`C:\x`、`\\srv\share`）→ 本地模式，整串进路径位；
+    // 其余按 `name:path` 拆两段（首个冒号；path 内允许再出现冒号）
+    const raw = p.remote ?? ''
+    if (isLocalTarget(raw)) {
+      next.cryptRemoteMode = 'local'
+      next.cryptRemotePath = raw
+    } else {
+      const idx = raw.indexOf(':')
+      if (idx > 0) {
+        next.cryptRemoteName = raw.slice(0, idx)
+        next.cryptRemotePath = raw.slice(idx + 1)
+      } else {
+        // 无法识别的历史值 → 原样落路径位，不静默丢值
+        next.cryptRemotePath = raw
+      }
+    }
     next.filenameEncryption = p.filename_encryption ?? 'standard'
     next.directoryNameEncryption = p.directory_name_encryption !== 'false'
     next.filenameEncoding = p.filename_encoding ?? 'base64'
@@ -237,15 +294,32 @@ function cancelEdit(): void {
   form.value = emptyForm()
 }
 
-function fillPassword(field: 'password' | 'password2' | 'pass'): void {
-  form.value[field] = generatePassword()
+/** 点「生成」：本地 CSPRNG 生成 32 位密码 → 弹窗一次性展示（确认后才写入表单）。 */
+function requestGenerate(field: 'password' | 'password2' | 'pass'): void {
+  generatedField.value = field
+  generatedValue.value = generatePassword()
+}
+
+/** 确认已备份 → 写入对应密码栏并关闭弹窗。 */
+function confirmGenerated(): void {
+  const field = generatedField.value
+  if (field) {
+    form.value[field] = generatedValue.value
+  }
+  generatedShow.value = false
 }
 
 function buildParams(): Record<string, string> {
   const f = form.value
   if (f.type === 'crypt') {
     const params: Record<string, string> = {
-      remote: f.cryptRemote,
+      // 本地模式：整串就是绝对路径；远端模式：拼回 `name:path`（路径留空 = 远端根）
+      remote:
+        f.cryptRemoteMode === 'local'
+          ? f.cryptRemotePath.trim()
+          : f.cryptRemoteName
+            ? `${f.cryptRemoteName}:${f.cryptRemotePath.trim()}`
+            : '',
       filename_encryption: f.filenameEncryption,
       directory_name_encryption: String(f.directoryNameEncryption),
       filename_encoding: f.filenameEncoding,
@@ -264,6 +338,17 @@ async function submit(): Promise<void> {
   if (!name) {
     message.error(t('settings.rclone.remoteName'))
     return
+  }
+  if (form.value.type === 'crypt') {
+    if (form.value.cryptRemoteMode === 'local') {
+      if (!isLocalTarget(form.value.cryptRemotePath)) {
+        message.error(t('settings.rclone.cryptLocalRequired'))
+        return
+      }
+    } else if (!form.value.cryptRemoteName) {
+      message.error(t('settings.rclone.cryptRemoteRequired'))
+      return
+    }
   }
   submitting.value = true
   try {
@@ -345,38 +430,69 @@ defineExpose({ refresh })
             v-model:value="form.remoteName"
             :placeholder="t('settings.rclone.remoteNamePlaceholder')"
             :disabled="isEdit"
+            class="rclone-panel__field"
           />
         </NFormItem>
 
         <template v-if="form.type === 'crypt'">
-          <NFormItem :label="t('settings.rclone.cryptRemote')">
-            <NInput v-model:value="form.cryptRemote" :placeholder="t('settings.rclone.cryptRemotePlaceholder')" />
+          <NFormItem :label="t('settings.rclone.cryptRemoteMode')">
+            <NRadioGroup v-model:value="form.cryptRemoteMode">
+              <NSpace :size="16">
+                <NRadio value="remote">{{ t('settings.rclone.cryptRemoteModeRemote') }}</NRadio>
+                <NRadio value="local">{{ t('settings.rclone.cryptRemoteModeLocal') }}</NRadio>
+              </NSpace>
+            </NRadioGroup>
+          </NFormItem>
+
+          <!-- ① 远端叠加：远端名下拉（在册校验前移）+ 远端内路径 -->
+          <NFormItem v-if="form.cryptRemoteMode === 'remote'" :label="t('settings.rclone.cryptRemote')">
+            <NSpace vertical :size="4" style="width: 100%">
+              <NSpace :size="8" wrap :align="'center'">
+                <NSelect
+                  v-model:value="form.cryptRemoteName"
+                  :options="remoteOptions"
+                  :placeholder="t('settings.rclone.cryptRemoteNamePlaceholder')"
+                  filterable
+                  style="width: 220px"
+                />
+                <NInput
+                  v-model:value="form.cryptRemotePath"
+                  :placeholder="t('settings.rclone.cryptRemotePathPlaceholder')"
+                  style="width: 280px"
+                />
+              </NSpace>
+              <span class="rclone-panel__muted">{{ t('settings.rclone.cryptRemoteHint') }}</span>
+            </NSpace>
+          </NFormItem>
+
+          <!-- ② 本地目录：容器视角目录树（E33 + VirtualTree + PathBreadcrumb，与仓库页 local 行同一组件） -->
+          <NFormItem v-else :label="t('settings.rclone.cryptLocalPath')">
+            <DirPickerInline
+              v-model:path="form.cryptRemotePath"
+              :placeholder="t('settings.rclone.cryptLocalPlaceholder')"
+              :hint="t('settings.rclone.cryptLocalHint')"
+              :value-label="t('settings.rclone.cryptLocalValueLabel')"
+              :value-hint="t('settings.rclone.cryptLocalValueHint')"
+              :height="240"
+            />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.password')">
-            <NSpace :size="8" wrap :align="'center'">
-              <NInput
-                v-model:value="form.password"
-                type="password"
-                show-password-on="click"
-                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              />
-              <NButton size="small" @click="fillPassword('password')">
-                {{ t('settings.rclone.generatePassword') }}
-              </NButton>
-            </NSpace>
+            <PasswordInput
+              v-model="form.password"
+              width="400px"
+              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+              :generate-label="t('common.generatePassword')"
+              @generate="requestGenerate('password')"
+            />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.password2')">
-            <NSpace :size="8" wrap :align="'center'">
-              <NInput
-                v-model:value="form.password2"
-                type="password"
-                show-password-on="click"
-                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              />
-              <NButton size="small" @click="fillPassword('password2')">
-                {{ t('settings.rclone.generatePassword') }}
-              </NButton>
-            </NSpace>
+            <PasswordInput
+              v-model="form.password2"
+              width="400px"
+              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+              :generate-label="t('common.generatePassword')"
+              @generate="requestGenerate('password2')"
+            />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.filenameEncryption')">
             <NSelect v-model:value="form.filenameEncryption" :options="FILENAME_ENCRYPTION_OPTIONS" style="width: 200px" />
@@ -403,17 +519,13 @@ defineExpose({ refresh })
             <NInput v-model:value="form.user" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.pass')">
-            <NSpace :size="8" wrap :align="'center'">
-              <NInput
-                v-model:value="form.pass"
-                type="password"
-                show-password-on="click"
-                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              />
-              <NButton size="small" @click="fillPassword('pass')">
-                {{ t('settings.rclone.generatePassword') }}
-              </NButton>
-            </NSpace>
+            <PasswordInput
+              v-model="form.pass"
+              width="400px"
+              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+              :generate-label="t('common.generatePassword')"
+              @generate="requestGenerate('pass')"
+            />
           </NFormItem>
         </template>
 
@@ -430,6 +542,16 @@ defineExpose({ refresh })
         </NSpace>
       </NForm>
     </NCard>
+
+    <!-- 生成密码后的一次性明文（全站统一呈现，SecretReveal） -->
+    <NModal v-model:show="generatedShow" preset="card" :title="t('settings.rclone.passwordGeneratedTitle')" style="width: min(520px, calc(100vw - 32px))">
+      <SecretReveal
+        :secret="generatedValue"
+        :hint="t('settings.rclone.passwordGeneratedHint')"
+        :confirm-label="t('settings.rclone.passwordSavedClose')"
+        @confirm="confirmGenerated"
+      />
+    </NModal>
 
     <p class="rclone-panel__muted">{{ deployHint }}</p>
   </div>
@@ -454,6 +576,10 @@ defineExpose({ refresh })
 .rclone-panel__warn {
   margin-top: 4px;
   color: var(--n-warning-color, #f0a020);
+}
+.rclone-panel__field {
+  width: 320px;
+  max-width: 100%;
 }
 .rclone-panel__inline {
   margin-left: 8px;

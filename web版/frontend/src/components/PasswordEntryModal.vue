@@ -10,11 +10,13 @@
  * 本组件只管输入形态：生成实现、提交副作用全部由父组件事件决定。
  * 宽度收口为 min(520px, 视口-32px)——n-modal preset=card 默认无宽度约束，
  * 不设会被内容撑成全屏宽瘦长条。
- * 复制提示复用 repo.passwordCopy* 键（该组键源于仓库页，现为共用 UI 语言）。
+ * 生成态的呈现与复制已抽到 `SecretReveal`（唯一实现）——本组件只管两段式输入形态。
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NSpace, useMessage } from 'naive-ui'
+import { NAlert, NButton, NForm, NFormItem, NModal, NSpace } from 'naive-ui'
+import PasswordInput from '@/components/PasswordInput.vue'
+import SecretReveal from '@/components/SecretReveal.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -56,7 +58,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const message = useMessage()
 
 const pw = ref('')
 // 每次打开都清空自填草稿，避免上一次会话的残留被意外提交
@@ -75,17 +76,6 @@ function close(): void {
   emit('update:show', false)
 }
 
-async function copyGenerated(): Promise<void> {
-  if (!props.generated) {
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(props.generated)
-    message.success(t('repo.passwordCopied'))
-  } catch {
-    message.warning(t('repo.passwordCopyFailed'))
-  }
-}
 </script>
 
 <template>
@@ -97,30 +87,23 @@ async function copyGenerated(): Promise<void> {
     @update:show="emit('update:show', $event)"
   >
     <n-space vertical :size="10">
-      <template v-if="generated">
-        <n-alert type="success" :show-icon="false">{{ generatedHint }}</n-alert>
-        <!-- 等宽字体便于人工抄录（tokens.ts fontFamilyMono 经全局变量） -->
-        <n-input :value="generated" readonly style="font-family: var(--font-family-mono)" />
-        <n-space justify="end">
-          <n-button secondary @click="copyGenerated">{{ t('repo.passwordCopy') }}</n-button>
-          <n-button v-if="showGeneratedCancel" quaternary @click="close">
-            {{ t('common.cancel') }}
-          </n-button>
-          <n-button type="primary" :loading="loading" @click="emit('confirm-generated')">
-            {{ confirmLabel }}
-          </n-button>
-        </n-space>
-      </template>
+      <!-- 生成态 = 一次性明文展示，复用全站唯一实现（SecretReveal）：
+           呈现/复制/确认三件事在 rclone、导出口令、仓库密码等处完全一致 -->
+      <SecretReveal
+        v-if="generated"
+        :secret="generated"
+        :hint="generatedHint"
+        :confirm-label="confirmLabel"
+        :show-back="showGeneratedCancel"
+        :loading="loading"
+        @confirm="emit('confirm-generated')"
+        @back="close"
+      />
       <template v-else>
         <n-alert type="warning" :show-icon="false">{{ intro }}</n-alert>
         <n-form label-placement="top" size="small">
           <n-form-item :label="customLabel">
-            <n-input
-              v-model:value="pw"
-              type="password"
-              show-password-on="click"
-              :placeholder="customPlaceholder"
-            />
+            <PasswordInput v-model="pw" width="100%" :placeholder="customPlaceholder" />
           </n-form-item>
         </n-form>
         <n-space justify="end">

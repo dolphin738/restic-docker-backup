@@ -23,7 +23,6 @@ import {
 } from 'naive-ui'
 import { computed, h, nextTick, onUnmounted, reactive, ref, watch, type FunctionalComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { browseFs } from '@/api/fs'
 import { getConfig, putConfig } from '@/api/config'
 import { createJob } from '@/api/jobs'
 // E25 缓存端点已在 api/settings.ts（GET /api/cache、POST /api/cache/clear）。
@@ -57,12 +56,13 @@ import type {
   RepoUpdateRequest,
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import DirPickerInline from '@/components/DirPickerInline.vue'
+import PasswordInput from '@/components/PasswordInput.vue'
 // P6 形态层：add-new 行动卡（对齐 Duplicati destinations.html：plus-circle + 标题 + 描述，
 // 整卡可点 + Enter/Space）——替代原卡右上角「新建仓库」按钮（用户 2026-10-22 指令改回原样式）。
 import ActionCard from '@/components/dashboard/ActionCard.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
-import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // 密钥身份小节（keys/ 是仓库唯一明文文件；只读展示，确认中性化是否生效）
 import KeyIdentity from './KeyIdentity.vue'
@@ -70,11 +70,10 @@ import KeyIdentity from './KeyIdentity.vue'
 import { backendIcon } from '@/components/icons/icons'
 // add-new 卡图标（Duplicati destinations.html：plus-circle）
 import { IconPlusCircle } from '@/components/icons/icons'
-import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
 import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'
 // G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
-import { generateStrongPassword } from '@/utils/passwordStrength'
+import { generatePassword as generateRandomPassword } from '@/utils/password'
 
 const { t } = useI18n()
 const ui = useUiStore()
@@ -434,11 +433,6 @@ function onTypeChange(value: string | null): void {
   repoForm.remote = ''
   repoForm.raw = ''
   rclonePresetKey.value = ''
-  // 选到 local 即备好挂载点快跳（树此刻起点是 /，但编辑态回填后可能不是——统一由
-  // ensureMounts 兜底，函数声明在本函数之后、运行时调用无 TDZ 风险）
-  if (next === 'local') {
-    void ensureMounts()
-  }
 }
 
 /** A8：向服务端要一个候选仓库标识（r<YYMMDD>-xxxxxx）预填；失败不阻断（用户可手填/留空）。 */
@@ -461,11 +455,8 @@ const generatingId = ref(false)
 /** 进入新建态（对齐 Duplicati selectDestination('new')）：编辑态 + 空表单，类型未选前只出类型下拉。 */
 function openCreate(): void {
   clearRepoForm()
-  browsePath.value = CONTAINER_ROOT
   creatingNew.value = true
   editing.value = true
-  // 挂载点独立取（不能靠树响应顺带，见 ensureMounts 注释）
-  void ensureMounts()
 }
 
 /** 落库一次创建（不含「之后干什么」的决策）：成功返回新仓库 id 并已设为当前仓库；
@@ -747,72 +738,6 @@ const rcloneRemotesQuery = useQuery({
 const rcloneRemotes = computed<RcloneRemotesOut | null>(() => rcloneRemotesQuery.data.value ?? null)
 
 /** 已存仓库 → 表单（对齐 Duplicati mapper.from 的装载路径：URL 解析回字段）。 */
-// ---------------------------------------------------------------- 本地路径：目录树选择 + 路径展示（P20）
-/** 形态与仪表盘「编辑任务」第②步（SourcesPicker 左栏）一致：地址栏（D 形态面包屑）
- *  + 目录树 + 提示，点目录名即选为仓库路径；手输保留在下方输入框（新仓库目录可能尚不存在，
- *  纯树选无法表达「尚未创建的目录」，故不做成树的唯一入口）。
- *  S-4：复用 PathBreadcrumb / VirtualTree / browseFs(E33)，不另写一份选择器。 */
-const CONTAINER_ROOT = '/'
-const browsePath = ref(CONTAINER_ROOT)
-const mountChips = ref<string[]>([])
-
-/** 挂载点快跳（地址栏根段旁的三角菜单）：**与树位置解耦**，独立取一次容器根。
- *
- *  ⚠️ 不能靠树的响应顺带填：后端 E33 只在 `container == "/"` 的请求里回 `mounts`
- *  （`app/routers/fs.py:91` 实证），而本页树起点是**已填路径的父目录**（很可能不是 `/`），
- *  于是一次也拿不到 → 三角因 `v-if="mounts.length > 0"` 恒不渲染，用户只能手动点回 `/`
- *  才出现（2026-10-26 实拍缺陷）。与 `RestoreTargetPicker` 同款写法（S-4：复用既有解）。
- *  取数失败静默降级——挂载菜单只是快跳便利，不影响选路径。 */
-async function ensureMounts(): Promise<void> {
-  if (mountChips.value.length > 0) {
-    return
-  }
-  try {
-    const page = await browseFs(CONTAINER_ROOT, null, 1)
-    mountChips.value = (page.mounts ?? []).filter((m) => m.trim() && m !== CONTAINER_ROOT)
-  } catch {
-    // 快跳降级：静默
-  }
-}
-
-function fsLoader(path: string, cursor?: string): Promise<TreePage> {
-  return browseFs(path, cursor).then((page) => ({
-    items: page.items.map((item) => ({
-      key: item.path,
-      name: item.name,
-      type: item.type,
-      path: item.path,
-    })),
-    nextCursor: page.next_cursor,
-  }))
-}
-
-/** 点目录名 = 选为仓库路径（与向导「点名称即选」同手势）。
- *  只写 repoForm.path，**不改 browsePath**——导航交给地址栏/三角形，避免「浏览一下就把
- *  已填路径冲掉」（VirtualTree 的 selectDir 会自行展开该目录，视觉上仍有下钻反馈）。 */
-function onTreeSelect(item: TreeItem): void {
-  if (item.type === 'dir') {
-    repoForm.path = item.path
-  }
-}
-
-function jumpTo(path: string): void {
-  browsePath.value = path
-}
-
-/** 父目录（用于把树定位到已填路径的**上一层**：直接停在仓库目录里会摊开 restic 内部结构）。 */
-function parentOf(path: string): string {
-  const trimmed = (path || '').replace(/\/+$/, '')
-  if (!trimmed) {
-    return CONTAINER_ROOT
-  }
-  const idx = trimmed.lastIndexOf('/')
-  return idx <= 0 ? CONTAINER_ROOT : trimmed.slice(0, idx) || CONTAINER_ROOT
-}
-
-// 树起点由 loadRepoIntoForm / openCreate 播种（见各自注释）——此处不用 watch(repoForm.type)：
-// 类型切换会先清空 path，watch 拿到的恒是空串，播种不出「定位到已填路径父目录」的效果。
-
 function loadRepoIntoForm(): void {
   const r = repo.value
   if (!r) {
@@ -832,12 +757,6 @@ function loadRepoIntoForm(): void {
     }
   }
   savedUrl.value = url
-  // 本地仓库：把目录树定位到已填路径的**父目录**（停在仓库目录里会摊开 restic 内部结构），
-  // 编辑既有仓库时省去从根逐层展开。browsePath 声明在本函数之前，无 TDZ 风险。
-  if (repoForm.type === 'local') {
-    browsePath.value = parentOf(repoForm.path)
-    void ensureMounts()
-  }
 }
 
 watch(
@@ -989,9 +908,9 @@ function openRotate(): void {
   rotateShow.value = true
 }
 
-/** 前端本地生成强随机密码（G4 passwordStrength，纯 crypto 源，不经网络、不落任何存储）。 */
+/** 前端本地生成 32 位随机密码（唯一生成器 utils/password.ts，纯 crypto 源，不经网络、不落任何存储）。 */
 function generateRotatePw(): void {
-  rotateGenerated.value = generateStrongPassword()
+  rotateGenerated.value = generateRandomPassword()
 }
 
 async function onRotate(newPassword: string): Promise<void> {
@@ -1735,33 +1654,17 @@ function formatBytes(value: number): string {
                    env 覆盖时整段只读，树隐去（地址不可改，给了就是假开关）。 -->
               <n-form-item v-if="repoForm.type === 'local'">
                 <template #label><ReqLabel :label="t('repo.fieldPath')" /></template>
-                <!-- ⚠️ 必须自己包一层布局容器：naive 的 .n-form-item-blank 是
-                     `display:flex; flex-direction:row`（实证），两个裸子节点会被平分成
-                     左右各 50%（曾因此把树挤成半宽）。此处显式声明左右比例与窄屏回落。 -->
-                <div class="repo__path-row">
-                  <div v-if="!envLocked" class="repo__path-tree">
-                    <PathBreadcrumb :path="browsePath" :mounts="mountChips" @select="jumpTo" />
-                    <VirtualTree
-                      :root-path="browsePath"
-                      :load-children="fsLoader"
-                      :height="260"
-                      select-dir
-                      :selected-path="repoForm.path"
-                      @select="onTreeSelect"
-                    />
-                    <n-text depth="3" class="repo__path-hint">{{ t('repo.pickPathHint') }}</n-text>
-                  </div>
-                  <div class="repo__path-value">
-                    <n-text strong class="repo__path-label">{{ t('repo.pickedPath') }}</n-text>
-                    <n-input
-                      v-model:value="repoForm.path"
-                      :placeholder="t('repo.dest.localPlaceholder')"
-                      :disabled="envLocked"
-                      class="repo__path-input"
-                    />
-                    <n-text depth="3" class="repo__path-hint">{{ t('repo.pickPathValueHint') }}</n-text>
-                  </div>
-                </div>
+                <!-- 目录选择器已抽为共用组件（S-4：与 rclone crypt 本地目录同一实现），
+                     组件自带双栏布局容器，解决 .n-form-item-blank 平分问题。 -->
+                <DirPickerInline
+                  v-model:path="repoForm.path"
+                  :placeholder="t('repo.dest.localPlaceholder')"
+                  :hint="t('repo.pickPathHint')"
+                  :value-label="t('repo.pickedPath')"
+                  :value-hint="t('repo.pickPathValueHint')"
+                  :height="260"
+                  :disabled="envLocked"
+                />
               </n-form-item>
 
               <!-- s3：服务器地址（Endpoint）+ Bucket + 文件夹路径。
@@ -1992,11 +1895,10 @@ function formatBytes(value: number): string {
                     </n-space>
                     <n-tooltip v-if="!creatingNew && itemOf(field.suffix)?.source === 'env'" trigger="hover">
                       <template #trigger>
-                        <n-input
-                          :value="''"
+                        <PasswordInput
+                          :model-value="''"
+                          width="100%"
                           :placeholder="t('repo.credEnvNote')"
-                          type="password"
-                          show-password-on="click"
                           disabled
                         />
                       </template>
@@ -2011,12 +1913,16 @@ function formatBytes(value: number): string {
                       :get-show="() => true"
                       :placeholder="t('repo.credNewPlaceholder')"
                     />
+                    <PasswordInput
+                      v-else-if="field.kind === 'secret'"
+                      v-model="credInput[field.suffix]"
+                      width="100%"
+                      :placeholder="t('repo.credNewPlaceholder')"
+                    />
                     <n-input
                       v-else
                       v-model:value="credInput[field.suffix]"
                       :placeholder="t('repo.credNewPlaceholder')"
-                      :type="field.kind === 'secret' ? 'password' : 'text'"
-                      show-password-on="click"
                     />
                   </n-space>
                 </n-form-item>
@@ -2327,7 +2233,7 @@ function formatBytes(value: number): string {
       :generated-hint="t('repo.passwordGeneratedHint')"
       :custom-label="t('repo.passwordCustomLabel')"
       :custom-placeholder="t('repo.passwordCustomPlaceholder')"
-      :generate-label="t('repo.passwordGenerate')"
+      :generate-label="t('common.generatePassword')"
       :submit-label="t('repo.passwordUseCustom')"
       :confirm-label="t('repo.passwordSavedClose')"
       :generated="generatedPassword"
@@ -2350,7 +2256,7 @@ function formatBytes(value: number): string {
       :generated-hint="t('repo.rotateGeneratedHint')"
       :custom-label="t('repo.rotateNewPw')"
       :custom-placeholder="t('repo.rotateNewPwPlaceholder')"
-      :generate-label="t('repo.passwordGenerate')"
+      :generate-label="t('common.generatePassword')"
       :submit-label="t('repo.rotateUseCustom')"
       :confirm-label="t('repo.rotateConfirmLabel')"
       :generated="rotateGenerated"
@@ -2626,58 +2532,6 @@ function formatBytes(value: number): string {
   gap: 12px;
 }
 
-/* 本地路径：目录树选择 + 路径展示（P20；比例与断点照抄 SourcesPicker 左树右栏，
-   保证与仪表盘「编辑任务」第②步同视觉语言）。
-   align-items: flex-start —— 右栏不该被左栏的树高拉伸；min-width:0 防窄屏横向溢出。 */
-.repo__path-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  width: 100%;
-  min-width: 0;
-}
-
-.repo__path-tree {
-  display: flex;
-  flex: 1 1 55%;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.repo__path-value {
-  display: flex;
-  flex: 1 1 45%;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.repo__path-label {
-  font-size: 14px;
-}
-
-.repo__path-hint {
-  display: block;
-  font-size: 12px;
-}
-
-.repo__path-input {
-  width: 100%;
-}
-
-/* 窄屏回落单栏（项目断点惯例 ≤960，§4.3） */
-@media (max-width: 960px) {
-  .repo__path-row {
-    flex-direction: column;
-  }
-
-  .repo__path-tree,
-  .repo__path-value {
-    flex: 1 1 auto;
-    width: 100%;
-  }
-}
 
 /* 编辑态（对齐 Duplicati destinations 编辑态）：顶部返回行 + 底部动作栏 */
 .repo__edit-header {

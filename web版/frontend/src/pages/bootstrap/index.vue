@@ -11,6 +11,7 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
+import PasswordInput from '@/components/PasswordInput.vue'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -165,13 +166,13 @@ async function autoLogin(newPassword: string): Promise<void> {
         <n-form v-else-if="step === 2" @submit.prevent="submitChange">
           <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
           <n-form-item :label="t('bootstrap.oldPassword')">
-            <n-input v-model:value="form.oldPassword" type="password" show-password-on="click" />
+            <PasswordInput v-model="form.oldPassword" width="100%" />
           </n-form-item>
           <n-form-item :label="t('bootstrap.newPassword')">
-            <n-input v-model:value="form.newPassword" type="password" show-password-on="click" />
+            <PasswordInput v-model="form.newPassword" width="100%" />
           </n-form-item>
           <n-form-item :label="t('bootstrap.confirmPassword')">
-            <n-input v-model:value="form.confirmPassword" type="password" show-password-on="click" />
+            <PasswordInput v-model="form.confirmPassword" width="100%" />
           </n-form-item>
           <n-text depth="3">{{ t('bootstrap.passwordRule') }}</n-text>
           <n-button

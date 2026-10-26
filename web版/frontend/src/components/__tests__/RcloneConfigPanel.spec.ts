@@ -13,16 +13,20 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { NConfigProvider, NMessageProvider, NPopconfirm } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect } from 'naive-ui'
 import { createPinia, setActivePinia } from 'pinia'
 import { h, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 
+import SecretReveal from '@/components/SecretReveal.vue'
 import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 import type { RcloneConfigsOut } from '@/api/types'
 import enUS from '@/i18n/locales/en-US'
 import zhCN from '@/i18n/locales/zh-CN'
 import * as repoApi from '@/api/repo'
+
+// 本地目录模式会挂 DirPickerInline（内部走 E33）——测试不发真实请求
+vi.mock('@/api/fs', () => ({ browseFs: vi.fn().mockResolvedValue({ path: '/', items: [], mounts: [], next_cursor: null }) }))
 
 // 显式标注：两段形状不同（managed 有参数 / 非 managed 空对象），不标注会被推断成
 // 带 `key?: undefined` 的联合类型，与 `RcloneConfigItem[]` 不兼容（typecheck 会红）。
@@ -62,6 +66,31 @@ function mountPanel() {
 
 function textOf(wrapper: ReturnType<typeof mountPanel>): string {
   return wrapper.element.textContent ?? ''
+}
+
+/** 按 placeholder 定位输入框（不用 DOM 下标：NSelect 内部也渲染 input，下标会漂）。 */
+function fillInput(w: ReturnType<typeof mountPanel>, placeholder: string, value: string): void {
+  const input = ([...w.element.querySelectorAll('input')] as HTMLInputElement[]).find(
+    (i) => i.placeholder === placeholder,
+  )
+  expect(input).toBeTruthy()
+  input!.value = value
+  input!.dispatchEvent(new Event('input'))
+}
+
+function clickSubmit(w: ReturnType<typeof mountPanel>, label: string): void {
+  const btn = [...w.element.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)
+  expect(btn).toBeTruthy()
+  btn!.dispatchEvent(new Event('click'))
+}
+
+/** 选底层远端：naive Select 需点开再点选项（选项 teleport 到 body），测试直接发 v-model 事件。 */
+function pickCryptRemote(w: ReturnType<typeof mountPanel>, value: string): void {
+  const select = w
+    .findAllComponents(NSelect)
+    .find((c) => c.props('placeholder') === zhCN.settings.rclone.cryptRemoteNamePlaceholder)
+  expect(select).toBeTruthy()
+  select!.vm.$emit('update:value', value)
 }
 
 describe('RcloneConfigPanel', () => {
@@ -144,8 +173,17 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
 
     const inputs = [...w.element.querySelectorAll('input')] as HTMLInputElement[]
-    const remoteInput = inputs.find((i) => i.value === 'mywebdav:bucket')
-    expect(remoteInput).toBeTruthy()
+    // 底层目标已拆两段：`mywebdav:bucket` → 远端（NSelect 选中态）+ 路径输入框 value=bucket
+    const pathInput = inputs.find(
+      (i) => i.placeholder === zhCN.settings.rclone.cryptRemotePathPlaceholder,
+    )
+    expect(pathInput).toBeTruthy()
+    expect(pathInput!.value).toBe('bucket')
+    const remoteSelect = w
+      .findAllComponents(NSelect)
+      .find((c) => c.props('placeholder') === zhCN.settings.rclone.cryptRemoteNamePlaceholder)
+    expect(remoteSelect).toBeTruthy()
+    expect(remoteSelect!.props('value')).toBe('mywebdav')
     // 密码框（type=password）必须为空——凭据不预填（S3）
     const passwordInputs = inputs.filter((i) => i.type === 'password')
     expect(passwordInputs.length).toBeGreaterThan(0)
@@ -154,39 +192,60 @@ describe('RcloneConfigPanel', () => {
     }
   })
 
-  it('生成随机密码按钮填充 32 位密码', async () => {
+  it('生成随机密码：先弹一次性明文（32 位），确认后才填入密码栏', async () => {
     const w = mountPanel()
     await nextTick()
 
     const genButtons = [...w.element.querySelectorAll('button')].filter(
-      (b) => b.textContent?.trim() === zhCN.settings.rclone.generatePassword,
+      (b) => b.textContent?.trim() === zhCN.common.generatePassword,
     )
     expect(genButtons.length).toBeGreaterThan(0)
     genButtons[0]!.dispatchEvent(new Event('click'))
     await nextTick()
+    await nextTick()
 
+    // ① 弹窗出现，明文 32 位（全站统一长度），且此刻**尚未**写入表单
+    const reveal = w.findComponent(SecretReveal)
+    expect(reveal.exists()).toBe(true)
+    const secret = reveal.props('secret') as string
+    expect(secret).toHaveLength(32)
+    const passwordInputs = [...w.element.querySelectorAll('input')] as HTMLInputElement[]
+    expect(passwordInputs.filter((i) => i.type === 'password' && i.value.length === 32)).toHaveLength(0)
+
+    // ② 确认（我已备份）→ 写入当前密码栏并关闭
+    reveal.vm.$emit('confirm')
+    await nextTick()
     const filled = ([...w.element.querySelectorAll('input')] as HTMLInputElement[]).find(
-      (i) => i.type === 'password' && i.value.length === 32,
+      (i) => i.type === 'password' && i.value === secret,
     )
     expect(filled).toBeTruthy()
   })
 
-  it('新增提交调用 createRcloneConfig（带 type 与 params）', async () => {
+  it('未选底层远端时提交被前端拦截（不发请求）', async () => {
     const w = mountPanel()
     await nextTick()
 
-    const submit = [...w.element.querySelectorAll('button')].find(
-      (b) => b.textContent?.trim() === zhCN.settings.rclone.submitNew,
-    )
-    expect(submit).toBeTruthy()
-
-    // 填远端名后提交（默认 crypt，密码非必填于前端：后端负责必填校验）
-    const remoteInput = ([...w.element.querySelectorAll('input')] as HTMLInputElement[])[0]!
-    remoteInput.value = 'newone'
-    remoteInput.dispatchEvent(new Event('input'))
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'newone')
     await nextTick()
 
-    submit!.dispatchEvent(new Event('click'))
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
+    await nextTick()
+    await nextTick()
+
+    expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
+  })
+
+  it('新增提交调用 createRcloneConfig（remote 拼成 name:path）', async () => {
+    const w = mountPanel()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'newone')
+    // 底层候选来自列表快照（gdrive 段也在册：crypt 可叠在网盘段上）
+    pickCryptRemote(w, 'gdrive')
+    fillInput(w, zhCN.settings.rclone.cryptRemotePathPlaceholder, 'backup/restic')
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
     await nextTick()
 
@@ -194,6 +253,47 @@ describe('RcloneConfigPanel', () => {
     const [name, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
     expect(name).toBe('newone')
     expect(payload.type).toBe('crypt')
+    expect(payload.params.remote).toBe('gdrive:backup/restic')
     expect(payload.params.filename_encoding).toBe('base64')
+  })
+
+  it('本地目录模式：提交 remote = 绝对路径（crypt 可包裹本地目录）', async () => {
+    const w = mountPanel()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'localcrypt')
+    w.findComponent(NRadioGroup).vm.$emit('update:value', 'local')
+    await nextTick()
+
+    // 本地模式换成目录树 + 路径输入（DirPickerInline 的输入框）
+    fillInput(w, zhCN.settings.rclone.cryptLocalPlaceholder, '/repo/encrypted')
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
+    await nextTick()
+    await nextTick()
+
+    expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
+    const [name, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
+    expect(name).toBe('localcrypt')
+    expect(payload.params.remote).toBe('/repo/encrypted')
+  })
+
+  it('本地目录模式：非绝对路径被前端拦截', async () => {
+    const w = mountPanel()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'badlocal')
+    w.findComponent(NRadioGroup).vm.$emit('update:value', 'local')
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.cryptLocalPlaceholder, 'backup/restic')
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
+    await nextTick()
+    await nextTick()
+
+    expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
   })
 })
