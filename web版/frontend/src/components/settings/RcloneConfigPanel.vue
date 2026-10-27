@@ -11,7 +11,7 @@
  *
  * 存储形态（裁决 16）：开关 = **目标存储形态**（开到「混淆」由 rclone 混淆一次后落盘，
  * 关到「明文」原样落盘）——新建与编辑**同一语义**，不再因模式而反转；提交侧「值本身
- * 已是 rclone obscure 产物」为独立副复选框（与明文存储互斥）。形态未知（历史配置）
+ * 已是混淆后凭证」为独立副复选框（与明文存储互斥）。形态未知（历史配置）
  * 用「存储形态声明」登记一次（只写记录、不改密码），登记后开关即可就地转换。
  *
  * 凭据零回显（S3）：列表只渲染 has_* 布尔与形态布尔，表单密码框在编辑态**永不预填**。
@@ -79,6 +79,8 @@ interface FormState {
   vendor: string
   user: string
   pass: string
+  /** WebDAV Bearer 令牌（替代 user/pass 的认证方式；与密码同属凭据，零回显）。 */
+  bearerToken: string
   /** 目标存储形态（裁决 16：开关 = 存储形态，新建与编辑同一语义）。 */
   storeForm: 'obscured' | 'plain'
   /** 提交的凭据本身已是 rclone obscure 产物（不再混淆一次）。 */
@@ -101,7 +103,8 @@ function emptyForm(): FormState {
     vendor: 'other',
     user: '',
     pass: '',
-    // 默认以混淆形态存储（conf 里是 rclone obscure 产物）——与旧实现落盘结果一致
+    bearerToken: '',
+    // 默认以混淆形态存储（conf 里是混淆后凭证）——与旧实现落盘结果一致
     storeForm: 'obscured',
     valueObscured: false,
   }
@@ -117,7 +120,7 @@ const editingRemote = ref<string | null>(null)
 /** 一次性明文弹窗：生成密码后**只显示一次**（可复制），确认才写进表单。
  *  收敛口径与仓库设置密码一致（SecretReveal 唯一实现）——crypt 密码丢失 = 数据无法解密，
  *  直接把明文塞进掩码框（旧实现）用户既看不到也复制不了。 */
-const generatedField = ref<'password' | 'password2' | 'pass' | null>(null)
+const generatedField = ref<'password' | 'password2' | 'pass' | 'bearerToken' | null>(null)
 const generatedValue = ref('')
 const generatedShow = computed({
   get: () => generatedField.value !== null,
@@ -150,7 +153,7 @@ const isEdit = computed(() => editingRemote.value !== null)
 const hasCredentialInput = computed(() => {
   const f = form.value
   if (f.type === 'crypt') return !!(f.password || f.password2)
-  return !!f.pass
+  return !!(f.pass || f.bearerToken)
 })
 
 /** 编辑目标的已存凭据形态（方案 A sidecar）：只要有一个键形态已知，编辑态开关即可
@@ -369,6 +372,7 @@ function startEdit(row: RcloneConfigItem): void {
     next.webdavUrl = p.url ?? ''
     next.vendor = p.vendor ?? 'other'
     next.user = p.user ?? ''
+    next.bearerToken = p.bearer_token ?? ''
   }
   // 凭据**不预填**（S3）：留空 = 保持不变
   form.value = next
@@ -381,7 +385,7 @@ function cancelEdit(): void {
 }
 
 /** 点「生成」：本地 CSPRNG 生成 32 位密码 → 弹窗一次性展示（确认后才写入表单）。 */
-function requestGenerate(field: 'password' | 'password2' | 'pass'): void {
+function requestGenerate(field: 'password' | 'password2' | 'pass' | 'bearerToken'): void {
   generatedField.value = field
   generatedValue.value = generatePassword()
 }
@@ -416,6 +420,7 @@ function buildParams(): Record<string, string> {
   }
   const params: Record<string, string> = { url: f.webdavUrl, vendor: f.vendor, user: f.user }
   if (f.pass) params.pass = f.pass
+  if (f.bearerToken) params.bearer_token = f.bearerToken
   return params
 }
 
@@ -617,6 +622,16 @@ defineExpose({ refresh })
           <NFormItem :label="t('settings.rclone.user')">
             <NInput v-model:value="form.user" />
           </NFormItem>
+          <NFormItem :label="t('settings.rclone.bearerToken')">
+            <PasswordInput
+              v-model="form.bearerToken"
+              width="400px"
+              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : t('settings.rclone.bearerTokenPlaceholder')"
+              :generate-label="t('common.generatePassword')"
+              @generate="requestGenerate('bearerToken')"
+            />
+            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
+          </NFormItem>
           <NFormItem :label="t('settings.rclone.pass')">
             <PasswordInput
               v-model="form.pass"
@@ -651,7 +666,7 @@ defineExpose({ refresh })
                     : t('settings.rclone.alreadyObscuredHint')
               }}
             </span>
-            <!-- 提交侧形态（只在填了新值时有意义）：值本身已是 rclone obscure 产物 -->
+            <!-- 提交侧形态（只在填了新值时有意义）：值本身已是混淆后凭证 -->
             <NCheckbox
               v-model:checked="form.valueObscured"
               :disabled="valueObscuredDisabled"

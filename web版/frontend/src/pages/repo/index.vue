@@ -6,6 +6,8 @@ import {
   NButton,
   NCard,
   NCheckbox,
+  NDrawer,
+  NDrawerContent,
   NForm,
   NFormItem,
   NGrid,
@@ -74,6 +76,8 @@ import { useUiStore } from '@/stores/ui'
 import { formatDateTime } from '@/utils/datetime'
 // G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
 import { generatePassword as generateRandomPassword } from '@/utils/password'
+// rclone 远端配置面板（原设置页分区；B11 迁入本页，A 方案改为抽屉浮层按需唤出，不占主页纵向）
+import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 
 const { t } = useI18n()
 const ui = useUiStore()
@@ -260,13 +264,13 @@ import { composeRepoUrl, isS3Endpoint, parseRepoUrl, parseS3Url, type RepoTypeKe
 /** 类型下拉选项（用户裁决：本项目无后端类型列表端点，用下拉替代 Duplicati 类型选择器列表）。 */
 const REPO_TYPES = computed<Array<{ key: RepoTypeKey; label: string }>>(() => [
   { key: 'local', label: t('repo.typeLocal') },
+  { key: 'rclone', label: t('repo.typeRclone') },
   { key: 's3', label: t('repo.typeS3') },
   { key: 'b2', label: t('repo.typeB2') },
   { key: 'sftp', label: t('repo.typeSftp') },
   { key: 'azure', label: t('repo.typeAzure') },
   { key: 'gcs', label: t('repo.typeGcs') },
   { key: 'rest', label: t('repo.typeRest') },
-  { key: 'rclone', label: t('repo.typeRclone') },
 ])
 
 /** 类型下拉选项（n-select options）。 */
@@ -736,6 +740,16 @@ const rcloneRemotesQuery = useQuery({
   staleTime: 60_000,
 })
 const rcloneRemotes = computed<RcloneRemotesOut | null>(() => rcloneRemotesQuery.data.value ?? null)
+
+// A 方案：rclone 远端配置改为抽屉浮层（不占主页纵向、按需浮出；列表头与建仓表单两处入口）。
+// 抽屉关闭时让背后表单的 rcloneRemotes 探测重新拉取，使在抽屉里新建的远端即时在表单状态提示中可见。
+const rcloneDrawerOpen = ref(false)
+function openRcloneDrawer() {
+  rcloneDrawerOpen.value = true
+}
+watch(rcloneDrawerOpen, (open) => {
+  if (!open) rcloneRemotesQuery.refetch()
+})
 
 /** 已存仓库 → 表单（对齐 Duplicati mapper.from 的装载路径：URL 解析回字段）。 */
 function loadRepoIntoForm(): void {
@@ -1355,6 +1369,11 @@ function formatBytes(value: number): string {
          行卡 = [类型图标][名称 + 状态标签][地址·主机标识][右侧操作]，整行点击 = 设为当前
          （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。 -->
     <n-card :title="t('repo.listTitle')" size="small">
+      <template #header-extra>
+        <n-button size="tiny" secondary @click="openRcloneDrawer">
+          {{ t('repo.rcloneManageBtn') }}
+        </n-button>
+      </template>
       <n-space vertical :size="12">
         <ActionCard
           :icon="IconPlusCircle"
@@ -1793,12 +1812,20 @@ function formatBytes(value: number): string {
               <n-grid v-else-if="repoForm.type === 'rclone'" cols="1 m:2" :x-gap="12" responsive="screen">
                 <n-gi>
                   <n-form-item>
-                    <template #label><ReqLabel :label="t('repo.fieldRemote')" /></template>
-                    <n-input
-                      v-model:value="repoForm.remote"
-                      :placeholder="t('repo.fieldRemotePlaceholder')"
-                      :disabled="envLocked"
-                    />
+                    <template #label>
+                      <ReqLabel :label="t('repo.fieldRemote')" />
+                    </template>
+                    <div style="display: flex; align-items: center; gap: 8px; width: 100%">
+                      <n-input
+                        v-model:value="repoForm.remote"
+                        :placeholder="t('repo.fieldRemotePlaceholder')"
+                        :disabled="envLocked"
+                        style="flex: 1"
+                      />
+                      <n-button size="small" @click="openRcloneDrawer">
+                        {{ t('repo.rcloneManageBtn') }}
+                      </n-button>
+                    </div>
                   </n-form-item>
                 </n-gi>
                 <n-gi>
@@ -2071,6 +2098,18 @@ function formatBytes(value: number): string {
         </div>
       </n-card>
     </template>
+
+    <!-- A 方案：rclone 远端配置抽屉浮层（列表态 / 编辑态均可唤出；宽度 min(1040px,92vw) 容纳 780px 远端表 + 表单） -->
+    <n-drawer
+      v-model:show="rcloneDrawerOpen"
+      width="min(1040px, 92vw)"
+      placement="right"
+      :title="t('repo.rcloneManageTitle')"
+    >
+      <n-drawer-content :native-scrollbar="false">
+        <RcloneConfigPanel />
+      </n-drawer-content>
+    </n-drawer>
 
     <!-- 手动解锁：三步确认门 -->
     <ConfirmGate

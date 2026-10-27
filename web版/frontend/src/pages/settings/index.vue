@@ -51,7 +51,6 @@ import { IconCheckCircle, IconClock, IconDownload, IconLock, IconShieldCheck } f
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
-import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 import StatusTag from '@/components/StatusTag.vue'
 // P6 形态层：分段控件从本页私有实现提升为共用组件（S-4 单一实现）；
 // 深链（#sec-<id>）与未知 id 防御已内置于组件（hashPrefix='sec'）。
@@ -806,7 +805,6 @@ const SECTIONS = [
   { id: 'dump', title: 'settings.dump.title' },
   { id: 'behavior', title: 'settings.behavior.title' },
   { id: 'credential', title: 'settings.credential.title' },
-  { id: 'rclone', title: 'settings.rclone.title' },
   { id: 'metrics', title: 'settings.metrics.title' },
   { id: 'timezone', title: 'settings.timezone.title' },
   { id: 'system', title: 'settings.system.title' },
@@ -1035,14 +1033,6 @@ function onSectionChange(id: string): void {
           <n-text>{{ t('settings.credential.enabled') }}</n-text>
         </n-space>
         <n-text depth="3" class="settings__hint">{{ t('settings.credential.hint') }}</n-text>
-      </n-space>
-    </n-card>
-
-    <!-- rclone 远端配置（配置生成工具 B3：Crypt/WebDAV 段的增删改查） -->
-    <n-card v-else-if="activeSection === 'rclone'" id="sec-rclone" class="settings__panel" :title="t('settings.rclone.title')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3">{{ t('settings.rclone.desc') }}</n-text>
-        <RcloneConfigPanel />
       </n-space>
     </n-card>
 

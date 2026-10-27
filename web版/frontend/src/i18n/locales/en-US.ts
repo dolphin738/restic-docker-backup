@@ -845,6 +845,8 @@ export default {
     repairJobTitle: 'Repository repair job',
     // G6 maintenance section (Duplicati Maintenance paradigm: explain the risk first, then offer the action)
     maintenanceTitle: 'Repository maintenance',
+    rcloneManageBtn: 'Manage remotes',
+    rcloneManageTitle: 'Manage rclone remotes',
     maintenanceIntro:
       'The actions below rewrite repository metadata, rotate keys, or delete local cache — use them only when no other recovery path remains. Do not read/write the same repository concurrently while one runs; every action is written to the audit log.',
     unlockHint: 'Removes the restic repository lock; run only after confirming no job is running.',
@@ -878,6 +880,7 @@ export default {
   jobs: {
     tabActive: 'Running',
     tabHistory: 'All history',
+    tabAria: 'Task view switcher',
     taskOptionLabel: '{name} ({tag})',
     check: {
       resultButton: 'Check result',
@@ -1357,6 +1360,8 @@ export default {
       vendor: 'Vendor',
       user: 'User',
       pass: 'Password',
+      bearerToken: 'Bearer token',
+      bearerTokenPlaceholder: 'e.g. a Macaroon; alternative to user/password',
       // Password helpers
       passwordGeneratedTitle: 'crypt password generated',
       passwordGeneratedHint:
@@ -1364,16 +1369,16 @@ export default {
       passwordSavedClose: 'Saved — fill it in',
       passwordKeepHint: 'leave blank to keep unchanged',
       storeForm: 'Stored form',
-      storeFormObscured: 'Obscured (rclone obscure output)',
+      storeFormObscured: 'Obscured credential',
       storeFormPlain: 'Plaintext',
-      valueObscured: 'The value I entered is already an rclone obscure output (do not obscure it again)',
+      valueObscured: 'The value I entered is already an obscured credential (do not obscure it again)',
       valueObscuredHint: 'Checked = the value is stored as-is; mutually exclusive with the "plaintext" form. Meaningless when the password field is blank — use the stored-form declaration below for existing values.',
       alreadyObscuredHint: 'The switch = target stored form: on ("obscured") lets rclone obscure the value once before storing; off ("plaintext") stores it as-is (plaintext in the conf file — security then relies on file permissions).',
       alreadyObscuredEditHint: 'When editing with a blank field: switch matching the stored form = keep unchanged; mismatched = convert the stored form in place per the switch (plaintext never leaves the backend; the form is never backfilled).',
       obscureSwitchDisabled: 'Enter a password first, or the stored form must be known (or declared), for this switch to apply',
       declareForm: 'Stored form declaration',
       declareUnknown: 'Not declared (keep as-is)',
-      declareObscured: 'Obscured (rclone obscure output)',
+      declareObscured: 'Obscured credential',
       declarePlain: 'Plaintext',
       declareHint: 'The stored credential form is unknown (legacy config or maintained on the host; the tool cannot reliably detect it) — declare it once here to unlock form conversion. Declaring does **not** change the password itself; do not declare if you are unsure.',
       passwordObscureNote: 'Leave blank = keep the existing password (converted in place if the switch mismatches the stored form). When you type a new password, the switch decides how it is stored.',

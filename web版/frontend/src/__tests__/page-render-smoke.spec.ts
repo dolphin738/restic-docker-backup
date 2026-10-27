@@ -271,9 +271,12 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     const w = mountPage(RepoPage)
     await flushPromises()
 
-    const text = w.text()
-    expect(text.indexOf('仓库状态')).toBeLessThan(text.indexOf('仓库列表'))
-    expect(text.indexOf('仓库列表')).toBeLessThan(text.indexOf('仓库维护'))
+    // 顶部新增「仓库维护 / rclone 远端配置」分段条（B11：rclone 配置迁入本页为第二页签）。
+    // 分段条标签含「仓库维护」，与维护卡标题同名，会使全文序断言失真；
+    // 故改用维护卡体标记 .repo__maint-row 定位维护卡，验证 状态→列表→维护 三卡顺序。
+    const html = w.html()
+    expect(html.indexOf('仓库状态')).toBeLessThan(html.indexOf('仓库列表'))
+    expect(html.indexOf('仓库列表')).toBeLessThan(html.indexOf('repo__maint-row'))
     // 仓库行卡 + 类型图标（:is 函数式 SVG 真渲染）
     const rows = w.findAll('.repo__dest')
     expect(rows.length).toBe(4)
