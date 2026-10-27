@@ -252,7 +252,7 @@ export interface RcloneRemotesOut {
 
 // ---------------------------------------------------------------- rclone 配置管理
 
-/** rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + has_* 布尔）。 */
+/** rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + has_* 布尔 + 形态布尔）。 */
 export interface RcloneConfigItem {
   /** 段名（远端名）。 */
   remote: string
@@ -264,6 +264,11 @@ export interface RcloneConfigItem {
   params: Record<string, string>
   /** 凭据键 → 是否已配置（不含值）。 */
   has_credentials: Record<string, boolean>
+  /**
+   * 凭据键 → 落盘形态是否 obscure 产物（方案 A sidecar 记录；null = 形态未知——
+   * 非本服务写入 / conf 被外部改过，就地转换会跳过）。
+   */
+  credential_obscured?: Record<string, boolean | null>
 }
 
 /** rclone conf 全段查询快照。 */
@@ -280,8 +285,18 @@ export interface RcloneConfigsOut {
 export interface RcloneConfigWriteRequest {
   type: string
   params: Record<string, string>
-  /** 提交的凭据已是混淆值 → 服务端命令不加 --obscure。 */
-  already_obscured?: boolean
+  /**
+   * **目标存储形态**（裁决 16：开关 = 存储形态，新建与编辑同一语义）：
+   * `obscured` = 以混淆形态落盘（conf 里是 rclone obscure 产物）/ `plain` = 以明文落盘。
+   */
+  store_form?: 'obscured' | 'plain'
+  /** 提交的凭据**本身已是**混淆产物（不再混淆一次）；与 `store_form='plain'` 矛盾。 */
+  value_obscured?: boolean
+  /**
+   * 对**形态未知**的已存凭据一次性声明其现值形态（true=混淆值 / false=明文）。
+   * 只写形态记录、**不改密码本身**；声明后「存储形态」开关即可做真正的就地转换。
+   */
+  declare_form?: boolean | null
 }
 
 /** 写操作结果（凭据零回显）。 */

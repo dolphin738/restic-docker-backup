@@ -13,7 +13,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect } from 'naive-ui'
+import { NCheckbox, NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect, NSwitch } from 'naive-ui'
 import { createPinia, setActivePinia } from 'pinia'
 import { h, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -42,6 +42,8 @@ const SNAPSHOT: RcloneConfigsOut = {
       managed: true,
       params: { remote: 'mywebdav:bucket', filename_encoding: 'base32' },
       has_credentials: { password: true, password2: false },
+      // 方案 A sidecar 形态记录：password 已知为混淆形态，password2 未知（null）
+      credential_obscured: { password: true, password2: null },
     },
     {
       remote: 'gdrive',
@@ -51,6 +53,12 @@ const SNAPSHOT: RcloneConfigsOut = {
       has_credentials: {},
     },
   ],
+}
+
+/** 形态未知的快照（conf 被外部维护过 / 非本服务写入）。 */
+const SNAPSHOT_UNKNOWN_FORM: RcloneConfigsOut = {
+  ...SNAPSHOT,
+  configs: SNAPSHOT.configs.map((c) => (c.remote === 'mycrypt' ? { ...c, credential_obscured: { password: null, password2: null } } : c)),
 }
 
 function mountPanel() {
@@ -255,6 +263,57 @@ describe('RcloneConfigPanel', () => {
     expect(payload.type).toBe('crypt')
     expect(payload.params.remote).toBe('gdrive:backup/restic')
     expect(payload.params.filename_encoding).toBe('base64')
+    // 裁决 16：默认目标存储形态 = 混淆（后端据此加 --obscure，rclone 混淆一次后落盘）
+    expect(payload.store_form).toBe('obscured')
+    expect(payload.value_obscured).toBe(false)
+  })
+
+  it('存储形态开关决定提交体的 store_form（关到明文 = 原样落盘）', async () => {
+    const w = mountPanel()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'plainone')
+    pickCryptRemote(w, 'gdrive')
+    await nextTick()
+
+    // 表单里有两个 NSwitch：目录名加密（crypt 字段）+ 表单末尾的「存储形态」
+    const switches = w.findAllComponents(NSwitch)
+    expect(switches.length).toBeGreaterThanOrEqual(2)
+    switches[switches.length - 1]!.vm.$emit('update:value', false)
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
+    await nextTick()
+    await nextTick()
+
+    expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
+    const [, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
+    expect(payload.store_form).toBe('plain')
+  })
+
+  it('副复选框「值已是混淆产物」：勾选 → value_obscured=true 且强制目标形态=混淆', async () => {
+    const w = mountPanel()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'obscuredone')
+    pickCryptRemote(w, 'gdrive')
+    // 先把目标形态拨到明文，再勾副框 → 勾选应把目标形态拉回混淆（两轴不矛盾）
+    const switches = w.findAllComponents(NSwitch)
+    switches[switches.length - 1]!.vm.$emit('update:value', false)
+    await nextTick()
+
+    const check = w.findAllComponents(NCheckbox)
+    expect(check.length).toBeGreaterThan(0)
+    check[0]!.vm.$emit('update:checked', true)
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitNew)
+    await nextTick()
+    await nextTick()
+
+    const [, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
+    expect(payload.value_obscured).toBe(true)
+    expect(payload.store_form).toBe('obscured')
   })
 
   it('本地目录模式：提交 remote = 绝对路径（crypt 可包裹本地目录）', async () => {
@@ -295,5 +354,118 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
 
     expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
+  })
+
+  // ---------------- 方案 A：sidecar 形态记录 + 编辑态就地转换 ----------------
+
+  function clickEdit(w: ReturnType<typeof mountPanel>): void {
+    const editBtn = [...w.element.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.edit,
+    )
+    expect(editBtn).toBeTruthy()
+    editBtn!.dispatchEvent(new Event('click'))
+  }
+
+  it('编辑态：开关初始值 = 已存形态（混淆 → 开），不动开关保存 = 保持不变', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const sw = w.findAllComponents(NSwitch).at(-1)!
+    expect(sw.props('value')).toBe(true) // 已存形态为混淆 → 初始开（保存无副作用）
+    expect(sw.props('disabled')).toBe(false) // 形态已知 → 编辑态可用
+
+    clickSubmit(w, zhCN.settings.rclone.submitEdit)
+    await nextTick()
+    await nextTick()
+
+    expect(repoApi.updateRcloneConfig).toHaveBeenCalledTimes(1)
+    const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
+    expect(payload.store_form).toBe('obscured')
+  })
+
+  it('编辑态：已存形态未知 → 开关禁用（就地转换无从谈起，提示外部维护）', async () => {
+    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_UNKNOWN_FORM)
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const sw = w.findAllComponents(NSwitch).at(-1)!
+    // 形态未知 → 默认取安全的「混淆」目标形态，但开关禁用（无可作用对象，需先声明）
+    expect(sw.props('value')).toBe(true)
+    expect(sw.props('disabled')).toBe(true)
+    expect(textOf(w)).toContain(zhCN.settings.rclone.obscureSwitchDisabled)
+  })
+
+  it('编辑态：拨下开关（与已存形态不一致）→ 提交 store_form=plain，后端就地转换', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const sw = w.findAllComponents(NSwitch).at(-1)!
+    sw.vm.$emit('update:value', false)
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitEdit)
+    await nextTick()
+    await nextTick()
+
+    const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
+    expect(payload.store_form).toBe('plain')
+  })
+
+  it('编辑态：形态未知 → 出现形态声明下拉，选中后提交 declare_form（不改密码）', async () => {
+    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_UNKNOWN_FORM)
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    // 声明下拉（选项含 obscured / plain）出现在表单里
+    const declareSelect = w
+      .findAllComponents(NSelect)
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
+    expect(declareSelect).toBeTruthy()
+    declareSelect!.vm.$emit('update:value', 'obscured')
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitEdit)
+    await nextTick()
+    await nextTick()
+
+    const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
+    expect(payload.declare_form).toBe(true)
+    // 声明不提交任何凭据值（密码保持留空 = 不改密码本身）
+    expect(payload.params.password).toBeUndefined()
+  })
+
+  it('编辑态：形态已知时不出现声明下拉（避免多余声明覆盖真实形态）', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const declareSelect = w
+      .findAllComponents(NSelect)
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
+    expect(declareSelect).toBeUndefined()
   })
 })

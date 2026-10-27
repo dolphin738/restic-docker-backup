@@ -77,7 +77,7 @@ const configQuery = useQuery({
 
 /** 按 key 取配置项；E06 敏感键只回 has_value + source（S3 UI 面）。 */
 function configItem(key: string) {
-  return configQuery.data.value?.items.find((item) => item.key === key) ?? null
+  return configQuery.data.value?.items?.find((item) => item.key === key) ?? null
 }
 
 // ---------------------------------------------------------------- DB dump（批次 B：dump.* 八键）

@@ -50,7 +50,8 @@ describe('rclone 配置写入 API 的请求体', () => {
     await createRcloneConfig('mycrypt', {
       type: 'crypt',
       params: { remote: 'mywebdav:bucket', password: 'p' },
-      already_obscured: false,
+      store_form: 'obscured',
+      value_obscured: false,
     })
 
     const body = lastBody()
@@ -58,7 +59,8 @@ describe('rclone 配置写入 API 的请求体', () => {
     expect(body).toEqual({
       type: 'crypt',
       params: { remote: 'mywebdav:bucket', password: 'p' },
-      already_obscured: false,
+      store_form: 'obscured',
+      value_obscured: false,
     })
     expect(lastMethod()).toBe('POST')
   })
@@ -67,12 +69,14 @@ describe('rclone 配置写入 API 的请求体', () => {
     await updateRcloneConfig('mycrypt', {
       type: 'crypt',
       params: { filename_encoding: 'base64' },
-      already_obscured: true,
+      store_form: 'plain',
+      value_obscured: true,
     })
 
     const body = lastBody()
     expect(typeof body).toBe('object')
-    expect((body as Record<string, unknown>)['already_obscured']).toBe(true)
+    expect((body as Record<string, unknown>)['store_form']).toBe('plain')
+    expect((body as Record<string, unknown>)['value_obscured']).toBe(true)
     expect(lastMethod()).toBe('PUT')
   })
 

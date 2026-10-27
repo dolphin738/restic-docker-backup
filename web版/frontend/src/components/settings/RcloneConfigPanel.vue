@@ -9,14 +9,20 @@
  * 2. **生成/编辑表单**：类型 Select 切换字段组；密码框旁「生成 32 位随机密码」
  *    （Web Crypto，客户端生成，不经服务端）；编辑态预填非凭据字段、密码留空 = 保持不变。
  *
- * 凭据零回显（S3）：列表只渲染 has_* 布尔，表单密码框在编辑态**永不预填**。
+ * 存储形态（裁决 16）：开关 = **目标存储形态**（开到「混淆」由 rclone 混淆一次后落盘，
+ * 关到「明文」原样落盘）——新建与编辑**同一语义**，不再因模式而反转；提交侧「值本身
+ * 已是 rclone obscure 产物」为独立副复选框（与明文存储互斥）。形态未知（历史配置）
+ * 用「存储形态声明」登记一次（只写记录、不改密码），登记后开关即可就地转换。
+ *
+ * 凭据零回显（S3）：列表只渲染 has_* 布尔与形态布尔，表单密码框在编辑态**永不预填**。
  */
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NDataTable,
   NForm,
   NFormItem,
@@ -73,7 +79,10 @@ interface FormState {
   vendor: string
   user: string
   pass: string
-  alreadyObscured: boolean
+  /** 目标存储形态（裁决 16：开关 = 存储形态，新建与编辑同一语义）。 */
+  storeForm: 'obscured' | 'plain'
+  /** 提交的凭据本身已是 rclone obscure 产物（不再混淆一次）。 */
+  valueObscured: boolean
 }
 
 function emptyForm(): FormState {
@@ -92,7 +101,9 @@ function emptyForm(): FormState {
     vendor: 'other',
     user: '',
     pass: '',
-    alreadyObscured: false,
+    // 默认以混淆形态存储（conf 里是 rclone obscure 产物）——与旧实现落盘结果一致
+    storeForm: 'obscured',
+    valueObscured: false,
   }
 }
 
@@ -134,6 +145,64 @@ const VENDOR_OPTIONS = ['other', 'owncloud', 'nextcloud', 'sharepoint'].map((val
 }))
 
 const isEdit = computed(() => editingRemote.value !== null)
+
+/** 是否已填写任一凭据：开关作用于「本次填入的值」时必须有输入。 */
+const hasCredentialInput = computed(() => {
+  const f = form.value
+  if (f.type === 'crypt') return !!(f.password || f.password2)
+  return !!f.pass
+})
+
+/** 编辑目标的已存凭据形态（方案 A sidecar）：只要有一个键形态已知，编辑态开关即可
+ *  作用于「就地转换」（留空也能转换存储形态）；全未知则无可作用对象。 */
+const editingRow = computed(
+  () => snapshot.value?.configs.find((c) => c.remote === editingRemote.value) ?? null,
+)
+const storedFormKnown = computed(() => {
+  const forms = Object.values(editingRow.value?.credential_obscured ?? {})
+  return forms.length > 0 && forms.some((f) => f !== null)
+})
+
+/** 开关禁用：新增态无输入禁用（无可作用值）；编辑态仅「形态未知且无输入」禁用。 */
+const switchDisabled = computed(() =>
+  isEdit.value ? !storedFormKnown.value && !hasCredentialInput.value : !hasCredentialInput.value,
+)
+
+/** 存储形态开关（ON=混淆 / OFF=明文）的可点性：编辑态形态未知且无输入时无对象可作用。 */
+const storeFormLabel = computed(() =>
+  form.value.storeForm === 'obscured'
+    ? t('settings.rclone.storeFormObscured')
+    : t('settings.rclone.storeFormPlain'),
+)
+
+/** 副复选框（我填入的已是混淆产物）：只在填了新值时有意义；与「明文存储」互斥。 */
+const valueObscuredDisabled = computed(() => !hasCredentialInput.value || form.value.storeForm === 'plain')
+
+/** 勾选「值已是混淆产物」→ 目标形态必须为混淆（矛盾组合前端直接拦住）。 */
+watch(
+  () => form.value.valueObscured,
+  (checked) => {
+    if (checked) form.value.storeForm = 'obscured'
+  },
+)
+/** 目标形态改成明文 → 取消「值已是混淆产物」（否则两者矛盾）。 */
+watch(
+  () => form.value.storeForm,
+  (form_) => {
+    if (form_ === 'plain') form.value.valueObscured = false
+  },
+)
+
+/** 形态声明（编辑态 + 形态未知时出现）：该段凭据在 conf 里究竟是混淆值还是明文——
+ *  本工具无法可靠自动判定（rclone reveal 无认证校验，§12.5 实证），由用户声明一次。
+ *  声明只登记形态、**不改密码**；声明后开关即可做真正的就地转换。 */
+const declareOptions = computed(() => [
+  { label: t('settings.rclone.declareUnknown'), value: '' },
+  { label: t('settings.rclone.declareObscured'), value: 'obscured' },
+  { label: t('settings.rclone.declarePlain'), value: 'plain' },
+])
+const declareForm = ref<'' | 'obscured' | 'plain'>('')
+const showDeclare = computed(() => isEdit.value && !storedFormKnown.value)
 const formTitle = computed(() =>
   isEdit.value ? t('settings.rclone.formTitleEdit', { name: editingRemote.value }) : t('settings.rclone.formTitleNew'),
 )
@@ -152,11 +221,13 @@ const confStatus = computed(() => {
 })
 
 const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
-  { title: t('settings.rclone.colRemote'), key: 'remote', width: 160, ellipsis: { tooltip: true } },
-  { title: t('settings.rclone.colType'), key: 'type', width: 100 },
+  { title: t('settings.rclone.colRemote'), key: 'remote', width: 150, ellipsis: { tooltip: true } },
+  { title: t('settings.rclone.colType'), key: 'type', width: 92 },
   {
     title: t('settings.rclone.colParams'),
     key: 'params',
+    minWidth: 180,
+    ellipsis: { tooltip: true },
     render: (row) => {
       if (!row.managed) {
         return h('span', { class: 'rclone-panel__muted' }, t('settings.rclone.unmanaged'))
@@ -169,33 +240,37 @@ const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
   {
     title: t('settings.rclone.hasCredential'),
     key: 'credentials',
-    width: 180,
+    width: 220,
     render: (row) => {
       if (!row.managed) return '—'
       const entries = Object.entries(row.has_credentials ?? {})
       if (entries.length === 0) return '—'
+      // 徽标必须自己成行并可换行：DataTable 单元格**不做 overflow 裁剪**，此前用
+      // `NSpace wrap=false` 时两个 `password: 已配置` 直接溢出到相邻「操作」列下方，
+      // 视觉上按钮压在徽标上（2026-10-27 实拍重叠）。内联样式不受 scoped 作用域限制。
       return h(
-        NSpace,
-        { size: 4, wrap: false },
-        () =>
-          entries.map(([k, v]) =>
-            h(
-              NTag,
-              { size: 'small', type: v ? 'success' : 'default', bordered: false },
-              { default: () => `${k}: ${v ? t('settings.rclone.hasCredential') : t('settings.rclone.noCredential')}` },
-            ),
+        'div',
+        { style: 'display:flex;flex-wrap:wrap;gap:4px;min-width:0' },
+        entries.map(([k, v]) =>
+          h(
+            NTag,
+            { size: 'small', type: v ? 'success' : 'default', bordered: false, style: 'margin:0' },
+            { default: () => `${k}: ${v ? t('settings.rclone.hasCredential') : t('settings.rclone.noCredential')}` },
           ),
+        ),
       )
     },
   },
   {
     title: '',
     key: 'actions',
-    width: 150,
+    width: 132,
+    align: 'right',
+    fixed: 'right',
     render: (row) =>
       h(
         NSpace,
-        { size: 8, wrap: false },
+        { size: 8, wrap: false, justify: 'end' },
         () => [
           row.managed
             ? h(
@@ -260,6 +335,16 @@ function startEdit(row: RcloneConfigItem): void {
   next.remoteName = row.remote
   next.type = (MANAGED_TYPES.includes(row.type as ManagedType) ? row.type : 'crypt') as ManagedType
   const p = row.params ?? {}
+  // 开关初始值 = 已存形态（方案 A）：已存为混淆形态 → 初始开（保存 = 保持不变，
+  // 不触发转换）；已存明文 → 初始关。让「编辑只改别的字段就保存」默认无副作用，
+  // 刻意拨动开关才触发就地转换。形态未知（外部改过 conf）→ 关 + 禁用提示。
+  const forms = row.credential_obscured ?? {}
+  const primary = next.type === 'crypt' ? forms.password : forms.pass
+  // 目标存储形态初始值 = 已存形态（方案 A）：已存为混淆 → 开关开（保存 = 保持不变，不
+  // 触发转换）；已存明文 → 开关关。让「编辑只改别的字段就保存」默认无副作用，刻意
+  // 拨动开关才触发就地转换。形态未知（外部改过 conf）→ 默认混淆 + 需先声明。
+  next.storeForm = primary === false ? 'plain' : 'obscured'
+  declareForm.value = ''
   if (next.type === 'crypt') {
     // 本地绝对路径（`/x`、`C:/x`、`C:\x`、`\\srv\share`）→ 本地模式，整串进路径位；
     // 其余按 `name:path` 拆两段（首个冒号；path 内允许再出现冒号）
@@ -292,6 +377,7 @@ function startEdit(row: RcloneConfigItem): void {
 function cancelEdit(): void {
   editingRemote.value = null
   form.value = emptyForm()
+  declareForm.value = ''
 }
 
 /** 点「生成」：本地 CSPRNG 生成 32 位密码 → 弹窗一次性展示（确认后才写入表单）。 */
@@ -333,6 +419,14 @@ function buildParams(): Record<string, string> {
   return params
 }
 
+/** 形态声明载荷：仅编辑态 + 形态未知 + 用户明确选择时才发（None=不声明）。 */
+function declarePayload(): boolean | undefined {
+  if (!isEdit.value || !showDeclare.value) return undefined
+  if (declareForm.value === 'obscured') return true
+  if (declareForm.value === 'plain') return false
+  return undefined
+}
+
 async function submit(): Promise<void> {
   const name = form.value.remoteName.trim()
   if (!name) {
@@ -356,14 +450,17 @@ async function submit(): Promise<void> {
       await updateRcloneConfig(editingRemote.value, {
         type: form.value.type,
         params: buildParams(),
-        already_obscured: form.value.alreadyObscured,
+        store_form: form.value.storeForm,
+        value_obscured: form.value.valueObscured,
+        declare_form: declarePayload(),
       })
       message.success(t('settings.rclone.updated', { name: editingRemote.value }))
     } else {
       await createRcloneConfig(name, {
         type: form.value.type,
         params: buildParams(),
-        already_obscured: form.value.alreadyObscured,
+        store_form: form.value.storeForm,
+        value_obscured: form.value.valueObscured,
       })
       message.success(t('settings.rclone.created', { name }))
     }
@@ -413,6 +510,7 @@ defineExpose({ refresh })
         :loading="loading"
         size="small"
         :bordered="false"
+        :scroll-x="780"
         :row-key="(row: RcloneConfigItem) => row.remote"
       />
       <p v-if="snapshot && snapshot.configs.length === 0" class="rclone-panel__muted">
@@ -484,6 +582,7 @@ defineExpose({ refresh })
               :generate-label="t('common.generatePassword')"
               @generate="requestGenerate('password')"
             />
+            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
           </NFormItem>
           <NFormItem :label="t('settings.rclone.password2')">
             <PasswordInput
@@ -526,12 +625,52 @@ defineExpose({ refresh })
               :generate-label="t('common.generatePassword')"
               @generate="requestGenerate('pass')"
             />
+            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
           </NFormItem>
         </template>
 
         <NFormItem>
-          <NSwitch v-model:value="form.alreadyObscured" />
-          <span class="rclone-panel__inline">{{ t('settings.rclone.alreadyObscured') }}</span>
+          <NSpace vertical :size="4">
+            <NSpace :size="8" :wrap="false" align="center">
+              <NSwitch
+                :value="form.storeForm === 'obscured'"
+                :disabled="switchDisabled"
+                @update:value="(v: boolean) => (form.storeForm = v ? 'obscured' : 'plain')"
+              />
+              <span class="rclone-panel__inline">{{ t('settings.rclone.storeForm') }}</span>
+              <NTag size="small" :bordered="false" :type="form.storeForm === 'obscured' ? 'success' : 'warning'">
+                {{ storeFormLabel }}
+              </NTag>
+            </NSpace>
+            <span class="rclone-panel__muted">
+              {{
+                switchDisabled
+                  ? t('settings.rclone.obscureSwitchDisabled')
+                  : isEdit && storedFormKnown
+                    ? t('settings.rclone.alreadyObscuredEditHint')
+                    : t('settings.rclone.alreadyObscuredHint')
+              }}
+            </span>
+            <!-- 提交侧形态（只在填了新值时有意义）：值本身已是 rclone obscure 产物 -->
+            <NCheckbox
+              v-model:checked="form.valueObscured"
+              :disabled="valueObscuredDisabled"
+              class="rclone-panel__check"
+            >
+              {{ t('settings.rclone.valueObscured') }}
+            </NCheckbox>
+            <span v-if="hasCredentialInput" class="rclone-panel__muted">
+              {{ t('settings.rclone.valueObscuredHint') }}
+            </span>
+          </NSpace>
+        </NFormItem>
+
+        <!-- 形态未知（历史配置 / 宿主机手工维护）：一次性声明现值形态，声明不改密码 -->
+        <NFormItem v-if="showDeclare" :label="t('settings.rclone.declareForm')">
+          <NSpace vertical :size="4">
+            <NSelect v-model:value="declareForm" :options="declareOptions" style="width: 320px" />
+            <span class="rclone-panel__muted">{{ t('settings.rclone.declareHint') }}</span>
+          </NSpace>
         </NFormItem>
 
         <NSpace>
@@ -583,6 +722,14 @@ defineExpose({ refresh })
 }
 .rclone-panel__inline {
   margin-left: 8px;
+  font-size: 12px;
+}
+.rclone-panel__note {
+  display: block;
+  margin-top: 4px;
+}
+.rclone-panel__check {
+  margin-top: 4px;
   font-size: 12px;
 }
 </style>
