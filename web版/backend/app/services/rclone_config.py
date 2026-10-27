@@ -240,14 +240,30 @@ class CryptGenerator(ConfigGenerator):
 
 
 class WebDAVGenerator(ConfigGenerator):
-    """webdav 后端：WebDAV 远端（url + vendor + 用户名/密码）。"""
+    """webdav 后端：WebDAV 远端（url + vendor + 用户名/密码 + Bearer 令牌）。"""
 
     type_name = "webdav"
-    required_keys = ("url", "user", "pass")
+    # url 必填；认证至少提供 user/pass 或 bearer_token 之一（见 build_args 校验）。
+    required_keys = ("url",)
     credential_keys = ("pass", "bearer_token")
     display_keys = ("url", "vendor", "user")
     defaults = {"vendor": "other"}
     choices = {"vendor": ("other", "owncloud", "nextcloud", "sharepoint")}
+
+    def build_args(self, params: Mapping[str, Any], *, update: bool = False) -> list[str]:
+        args = super().build_args(params, update=update)
+        # bearer_token 可替代 user/pass：至少提供其一（更新态下空值 = 保留既有凭据）。
+        user = _clean_value("user", params.get("user"))
+        pwd = _clean_value("pass", params.get("pass"))
+        bearer = _clean_value("bearer_token", params.get("bearer_token"))
+        if bearer:
+            return args
+        if update and not pwd:
+            # 更新态：pass 留空 = 保留既有 user/pass，无需再校验
+            return args
+        if not (user and pwd):
+            raise RcloneConfigInvalid("WebDAV 至少需要 user/pass 或 bearer_token 之一")
+        return args
 
     def _validate_value(self, key: str, value: str) -> None:
         if key == "url" and not value.lower().startswith(("http://", "https://")):

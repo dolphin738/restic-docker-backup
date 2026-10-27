@@ -292,6 +292,19 @@ def test_control_chars_rejected_ini_injection():
     assert "控制字符" in str(exc.value)
 
 
+def test_webdav_bearer_token_sufficient():
+    """bearer_token 可替代 user/pass：仅提供 bearer 也能建段。"""
+    args = GENERATORS["webdav"].build_args({"url": "https://dav.example.com", "bearer_token": "tok"})
+    assert "bearer_token=tok" in args
+    assert "pass" not in " ".join(args)
+
+
+def test_webdav_requires_user_pass_or_bearer():
+    """仅提供 user（无 pass、无 bearer）应被拒。"""
+    with pytest.raises(RcloneConfigInvalid):
+        GENERATORS["webdav"].build_args({"url": "https://dav.example.com", "user": "u"})
+
+
 # ---------------------------------------------------------------- 编排：create / update / delete
 
 
