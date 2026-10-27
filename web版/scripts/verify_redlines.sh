@@ -164,6 +164,19 @@ for action in AUDIT_RCLONE_CONFIG_APPEND AUDIT_RCLONE_CONFIG_EDIT AUDIT_RCLONE_C
   fi
 done
 
+# 反向锚点（v1.15，删除保护方案 P2）：危险清单 20 → 23 的三个新增动作常量必须真实存在，
+# 且归档生命周期用到的三个保留期键也必须登记（防「规范写了、代码里悬空」）。
+for action in AUDIT_REPO_PURGE AUDIT_REPO_ID_RELEASE AUDIT_RCLONE_CONFIG_RESTORE; do
+  if ! grep -q "^$action = " backend/app/constants.py 2>/dev/null; then
+    violation "S6 缺少审计动作常量 $action（删除保护 P2 埋点悬空）"
+  fi
+done
+for key in RETENTION_REPO_ARCHIVE_DAYS_KEY RETENTION_REPO_TOMBSTONE_DAYS_KEY RETENTION_RCLONE_ARCHIVE_DAYS_KEY; do
+  if ! grep -q "^$key = " backend/app/constants.py 2>/dev/null; then
+    violation "S6 缺少归档保留期键常量 $key（归档页保留策略悬空）"
+  fi
+done
+
 # 唯一实现点锚点（v1.14）：rclone conf 的写入 CLI（create/update/delete）只允许出现在
 # services/rclone_config.py——散落在路由/其他服务 = 绕过 Lock 与审计的第二条写路径（S6+A5 同源风险）。
 # 说明：只扫 .py 且排除 constants.py；docstring 若复述命令写法请改写措辞（不改断言）。
