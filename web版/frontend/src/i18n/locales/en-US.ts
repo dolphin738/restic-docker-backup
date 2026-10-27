@@ -960,6 +960,7 @@ export default {
   },
   snap: {
     id: 'Snapshot ID',
+    task: 'Task',
     time: 'Time',
     host: 'Host',
     tags: 'Tags',

@@ -958,6 +958,7 @@ export default {
   },
   snap: {
     id: '快照 ID',
+    task: '任务',
     time: '时间',
     host: '主机',
     tags: '标签',

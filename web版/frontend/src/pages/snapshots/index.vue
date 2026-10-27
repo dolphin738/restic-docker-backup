@@ -294,7 +294,21 @@ function fileMeta(size: number | null, mtime: string | null): string | undefined
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
+/** 从快照 tags 中取 task-<id> 反查任务名（任务已删除时回退显示原始 tag，无任务标签显示 —）。 */
+function taskNameForRow(row: SnapshotOut): string {
+  const taskTag = row.tags.find((tag) => /^task-\d+$/.test(tag))
+  if (!taskTag) return '—'
+  const task = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === taskTag)
+  return task?.name ?? taskTag
+}
+
 const columns = computed<DataTableColumns<SnapshotOut>>(() => [
+  {
+    title: t('snap.task'),
+    key: 'task',
+    width: 180,
+    render: (row) => taskNameForRow(row),
+  },
   {
     title: t('snap.id'),
     key: 'id',
