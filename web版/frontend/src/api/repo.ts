@@ -6,17 +6,22 @@
 
 import { request } from './http'
 import type {
+  ArchiveListOut,
   KeyRotateResponse,
   ManualCopyRequest,
   ManualCopyResponse,
   OkResponse,
   RepoCreateRequest,
   RepoIdSuggestion,
+  RcloneArchivesOut,
   RcloneConfigsOut,
   RcloneConfigWriteOut,
   RcloneConfigWriteRequest,
   RcloneRemotesOut,
+  RcloneRemoteUsageOut,
   RepoKeyRotateRequest,
+  RepoRepointOut,
+  RepoUsageOut,
   RepoKeysOut,
   RepoOut,
   RepoPasswordRequest,
@@ -71,6 +76,15 @@ export function getRepoStatus(id: string): Promise<RepoStatusResponse> {
   return request<RepoStatusResponse>(`/api/repos/${encodeURIComponent(id)}/status`)
 }
 
+/** 仓库占用明细（删除保护方案 P1，裁决 5/6）：镜像引用清单 + 快照总条数。
+ *
+ * 供删除确认门动态展示后果。`snapshot_total` 为 null = 此刻不可知（**不可当 0**）；
+ * 后端走 `SnapshotCatalog` 的 TTL 缓存，命中缓存零成本，冷缓存一次探测（5s 上限）。
+ */
+export function getRepoUsage(id: string): Promise<RepoUsageOut> {
+  return request<RepoUsageOut>(`/api/repos/${encodeURIComponent(id)}/usage`)
+}
+
 /** E29 仓库连通性测试（失败不静默：ok=false + reason）。 */
 export function testRepo(id: string): Promise<RepoTestResponse> {
   return request<RepoTestResponse>(`/api/repos/${encodeURIComponent(id)}/test`, { method: 'POST' })
@@ -105,6 +119,75 @@ export function listRcloneRemotes(): Promise<RcloneRemotesOut> {
  */
 export function listRcloneConfigs(): Promise<RcloneConfigsOut> {
   return request<RcloneConfigsOut>('/api/rclone/configs')
+}
+
+// ---------------------------------------------------------------- 归档（删除保护方案 P2）
+
+/** 归档页数据：可恢复的归档仓库 + 只剩记录的墓碑（GET /api/archive/repos）。 */
+export function getArchiveList(): Promise<ArchiveListOut> {
+  return request<ArchiveListOut>('/api/archive/repos')
+}
+
+/** 恢复归档仓库（数据与凭据从未被删，恢复即刻可用）。 */
+export function restoreArchivedRepo(id: string): Promise<OkResponse> {
+  return request<OkResponse>(`/api/archive/repos/${encodeURIComponent(id)}/restore`, {
+    method: 'POST',
+  })
+}
+
+/** 释放归档仓库 ID（需原样输入仓库 id；旧快照自此与本应用失去关联）。 */
+export function releaseArchivedRepo(id: string, confirmId: string): Promise<OkResponse> {
+  return request<OkResponse>(`/api/archive/repos/${encodeURIComponent(id)}/release`, {
+    method: 'POST',
+    body: JSON.stringify({ confirm_id: confirmId }),
+  })
+}
+
+/** 删除归档记录（墓碑）：只删记录，绝不删数据。 */
+export function deleteRepoTombstone(id: string): Promise<OkResponse> {
+  return request<OkResponse>(`/api/archive/tombstones/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 批量改指向：把引用该 remote 的仓库 url 前缀切到新 remote（删远端前的受控出口）。 */
+export function repointRcloneRemote(remote: string, newRemote: string): Promise<RepoRepointOut> {
+  return request<RepoRepointOut>(
+    `/api/rclone/config/${encodeURIComponent(remote)}/repoint`,
+    { method: 'POST', body: { new_remote: newRemote } },
+  )
+}
+
+/** rclone 配置归档清单（GET /api/rclone/archives；只有键名，永不回值）。 */
+export function listRcloneArchives(): Promise<RcloneArchivesOut> {
+  return request<RcloneArchivesOut>('/api/rclone/archives')
+}
+
+/** 把归档的 rclone 段原样写回 conf（同名段已存在则 409）。 */
+export function restoreRcloneArchive(remote: string): Promise<RcloneConfigWriteOut> {
+  return request<RcloneConfigWriteOut>(
+    `/api/rclone/archives/${encodeURIComponent(remote)}/restore`,
+    { method: 'POST' },
+  )
+}
+
+/** 清理 rclone 归档记录（放弃这条后路；不碰 conf）。 */
+export function deleteRcloneArchive(remote: string): Promise<OkResponse> {
+  return request<OkResponse>(`/api/rclone/archives/${encodeURIComponent(remote)}`, {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * 查询某 rclone 远端的占用明细（GET /api/rclone/config/{remote}/usage）。
+ *
+ * 与安全删除共用同一匹配口径：直接引用（仓库 url）+ 传递依赖（crypt 段底层）。
+ * 面板「查看占用」弹窗的懒加载数据源。
+ */
+export function getRcloneRemoteUsage(remote: string): Promise<RcloneRemoteUsageOut> {
+  return request<RcloneRemoteUsageOut>(
+    `/api/rclone/config/${encodeURIComponent(remote)}/usage`,
+  )
 }
 
 /**

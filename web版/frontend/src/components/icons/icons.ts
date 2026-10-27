@@ -311,6 +311,14 @@ export const IconRestore: FunctionalComponent<SVGAttributes> = () =>
     h('path', { d: 'M 2.5 2.5 v 4.17 h 4.17'}),
   ])
 
+/** 归档：档案盒（顶盖 + 盒体 + 抽手）——导航「数据」组归档页。 */
+export const IconArchive: FunctionalComponent<SVGAttributes> = () =>
+  h('svg', LINE_ICON_BASE, [
+    h('rect', { x: 2.5, y: 3.33, width: 15, height: 3.75, rx: 0.83 }),
+    h('path', { d: 'M 3.75 7.08 v 8.75 a 1 1 0 0 0 1 1 h 10.5 a 1 1 0 0 0 1 -1 V 7.08'}),
+    h('path', { d: 'M 8.12 10.83 h 3.75'}),
+  ])
+
 /** 通知设置：铃铛。 */
 export const IconBell: FunctionalComponent<SVGAttributes> = () =>
   h('svg', LINE_ICON_BASE, [

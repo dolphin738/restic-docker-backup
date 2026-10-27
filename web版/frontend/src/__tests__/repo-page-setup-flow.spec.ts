@@ -52,12 +52,15 @@ const mocks = vi.hoisted(() => ({
     reason: '仓库不存在或未初始化（请检查 repo.url，或先执行 init）',
     failure_kind: 'not_initialized',
   } as Record<string, unknown>,
+  /** 删除门占用明细（删除保护方案 P1）：默认「12 个快照、无镜像引用」。 */
+  usage: { repo_id: 'x', mirror_refs: [], snapshot_total: 12 } as Record<string, unknown>,
 }))
 
 vi.mock('@/api/repo', () => ({
   listRepos: vi.fn(async () => mocks.repos),
   getRepo: vi.fn(async () => ({ ...mocks.repos[0], passfile_status: mocks.passfile })),
   getRepoStatus: vi.fn(async () => mocks.rowStatus),
+  getRepoUsage: vi.fn(async () => mocks.usage),
   listRcloneRemotes: vi.fn(async () => ({ conf_present: false, remotes: [] })),
   createRepo: vi.fn(async () => ({ id: 'repo-new' })),
   deleteRepo: vi.fn(async () => ({ ok: true })),
@@ -152,8 +155,20 @@ async function clickBody(label: string): Promise<void> {
   await flushPromises()
 }
 
+/** 走完**无关键词**确认门（预览 → 二次确认）：归档分支的轻门。 */
+async function passLightGate(confirmLabel = '归档'): Promise<boolean> {
+  await clickBody('下一步')
+  const confirmBtn = bodyButton(confirmLabel)
+  if (!confirmBtn) {
+    return false
+  }
+  confirmBtn.click()
+  await flushPromises()
+  return true
+}
+
 /** 走完 ConfirmGate 三步（预览 → 输入 INIT → 二次确认），返回是否成功触发确认。 */
-async function passConfirmGate(keyword: string): Promise<boolean> {
+async function passConfirmGate(keyword: string, confirmLabel = '确认执行'): Promise<boolean> {
   await clickBody('下一步')
   const input = document.body.querySelector('input')
   if (!input) {
@@ -163,7 +178,7 @@ async function passConfirmGate(keyword: string): Promise<boolean> {
   input.dispatchEvent(new Event('input'))
   await flushPromises()
   await clickBody('下一步')
-  const confirmBtn = bodyButton('确认执行')
+  const confirmBtn = bodyButton(confirmLabel)
   if (!confirmBtn) {
     return false
   }
@@ -384,14 +399,15 @@ describe('仓库页：死循环修复（重建入口放开 + 删除磁盘清理�
     // 没有 input 元素——点它本身，勾中态以 n-checkbox--checked 类标记（VTU 挂在脱离文档的
     // div 上，确认门却 teleport 到 body，故只能在 document 上找；按文案定位防误中）。
     const checkbox = Array.from(document.body.querySelectorAll('.n-checkbox')).find((el) =>
-      el.textContent?.includes('同时删除磁盘数据'),
+      el.textContent?.includes('同时销毁磁盘数据'),
     ) as HTMLElement | null
     expect(checkbox).not.toBeNull()
     checkbox?.click()
     await flushPromises()
     expect(checkbox?.classList.contains('n-checkbox--checked')).toBe(true)
 
-    expect(await passConfirmGate('DELETE')).toBe(true)
+    // 勾选销毁 → 重门，关键词 = 仓库 id（不再是固定 DELETE）
+    expect(await passConfirmGate('r2', '销毁并删除')).toBe(true)
     const repoApi = await import('@/api/repo')
     expect(repoApi.deleteRepo).toBeCalledWith('r2', { purgeDisk: true })
     w.unmount()
@@ -421,9 +437,133 @@ describe('仓库页：死循环修复（重建入口放开 + 删除磁盘清理�
     await deleteBtn?.trigger('click')
     await flushPromises()
 
-    expect(await passConfirmGate('DELETE')).toBe(true)
+    // 不勾 = 归档（可逆）→ 轻门，无需输入关键词
+    expect(await passLightGate()).toBe(true)
     const repoApi = await import('@/api/repo')
     expect(repoApi.deleteRepo).toBeCalledWith('r3', { purgeDisk: false })
+    w.unmount()
+  })
+})
+
+/**
+ * 删除门「后果可视化」（删除保护方案 P1，裁决 5/6）：
+ * 打开删除确认门时按仓库拉一次占用明细，把「快照总数 / 被镜像引用」摊给用户看。
+ * 锁三件事：
+ *   ⑥ 快照数取**总条数**（后端 tally.total），显示为「该仓库内快照数：12」；
+ *   ⑦ 探测不可用（null）显示「不可知」而**不是 0**——0 会让用户误判「从没备过」；
+ *   ⑧ 被别仓任务当镜像目的地时列出任务名并明示「删除会被拒绝」。
+ */
+describe('仓库删除门：占用统计与提示', () => {
+  function twoRepos(): void {
+    mocks.repos = [
+      { ...mocks.repos[0], passfile_status: 'configured' },
+      {
+        id: 'rd',
+        name: '待删仓库',
+        type: 'local',
+        url: '/repo/rd',
+        host_tag: null,
+        url_source: 'db',
+        host_tag_source: 'db',
+        passfile_status: 'configured',
+        created_at: '2026-10-01T00:00:00Z',
+      },
+    ]
+  }
+
+  async function openDeleteGate(): Promise<ReturnType<typeof mountRepoPage>> {
+    const w = mountRepoPage()
+    await flushPromises()
+    const btn = w
+      .findAll('button')
+      .find((b) => b.text() === '删除' && b.attributes('disabled') === undefined)
+    await btn?.trigger('click')
+    await flushPromises()
+    return w
+  }
+
+  it('展示快照总条数（非 tag 求和）', async () => {
+    twoRepos()
+    mocks.usage = { repo_id: 'rd', mirror_refs: [], snapshot_total: 12 }
+    const w = await openDeleteGate()
+    expect(document.body.textContent).toContain('该仓库内快照数：12')
+    w.unmount()
+  })
+
+  it('快照数不可知 → 显示「不可知」而不是 0', async () => {
+    twoRepos()
+    mocks.usage = { repo_id: 'rd', mirror_refs: [], snapshot_total: null }
+    const w = await openDeleteGate()
+    expect(document.body.textContent).toContain('快照数：不可知')
+    expect(document.body.textContent).not.toContain('该仓库内快照数：0')
+    w.unmount()
+  })
+
+  it('被镜像引用 → 列出任务名并提示删除会被拒绝', async () => {
+    twoRepos()
+    mocks.usage = {
+      repo_id: 'rd',
+      mirror_refs: [{ id: 7, name: '财务数据备份' }],
+      snapshot_total: 3,
+    }
+    const w = await openDeleteGate()
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('仍被 1 个任务作为镜像目的地使用')
+    expect(text).toContain('财务数据备份')
+    expect(text).toContain('删除会被拒绝')
+    w.unmount()
+  })
+})
+
+/**
+ * 仓库不可达告警（删除保护方案 P1-3）：列表级横幅 + 行级「不可达」标签。
+ * 目的：让「快照暂时打不开」在仓库页就可见，不必点进快照页才吃 500。
+ * 关键口径：**探测结论缺失不误报**（加载中 / 请求失败 → 不标红）。
+ */
+describe('仓库不可达告警', () => {
+  function twoRepos(): void {
+    mocks.repos = [
+      { ...mocks.repos[0], passfile_status: 'configured' },
+      {
+        id: 'ru',
+        name: '远端仓库',
+        type: 'local',
+        url: '/repo/ru',
+        host_tag: null,
+        url_source: 'db',
+        host_tag_source: 'db',
+        passfile_status: 'configured',
+        created_at: '2026-10-01T00:00:00Z',
+      },
+    ]
+  }
+
+  it('探测为不可达 → 横幅列出数量与仓库名，行内出现「不可达」标签', async () => {
+    twoRepos()
+    mocks.rowStatus = { connected: false, failure_kind: 'network' }
+    const w = mountRepoPage()
+    await flushPromises()
+
+    // 横幅不是 teleport 内容（挂在列表卡内），故读 wrapper 而非 document.body
+    const banner = w.find('.repo__unreachable')
+    expect(banner.exists()).toBe(true)
+    const text = banner.text()
+    expect(text).toContain('2 个仓库当前不可达')
+    expect(text).toContain('默认仓库')
+    expect(text).toContain('远端仓库')
+    // 行级标签（两行各一个）
+    expect(w.text()).toContain('不可达')
+    w.unmount()
+  })
+
+  it('探测为已连接 → 不出现横幅（不误报）', async () => {
+    twoRepos()
+    mocks.rowStatus = { connected: true, failure_kind: null }
+    const w = mountRepoPage()
+    await flushPromises()
+
+    expect(w.find('.repo__unreachable').exists()).toBe(false)
+    expect(w.text()).not.toContain('个仓库当前不可达')
     w.unmount()
   })
 })

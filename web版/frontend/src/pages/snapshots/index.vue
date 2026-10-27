@@ -83,14 +83,20 @@ const tasksQuery = useQuery({
   queryFn: () => listBackupTasks(50),
 })
 
+/** 归档仓库只读视图（删除保护方案 D13）：`?repo=<id>` 覆盖全局 X-Repo-Id。
+ *  归档仓库不在切换器里、也不在 /api/repos 列表里，只能用这个 query 参数定位；
+ *  该视图**只读**——恢复入口会明确拒绝（否则会误恢复当前仓库的快照）。 */
+const repoOverride = computed(() => (typeof route.query.repo === 'string' ? route.query.repo : ''))
+
 const snapshotsQuery = useQuery({
-  queryKey: ['snapshots', page, tagFilter, hostFilter],
+  queryKey: ['snapshots', page, tagFilter, hostFilter, repoOverride],
   queryFn: () =>
     listSnapshots(
       PAGE_SIZE,
       (page.value - 1) * PAGE_SIZE,
       tagFilter.value ?? undefined,
       hostFilter.value ?? undefined,
+      repoOverride.value || undefined,
     ),
   placeholderData: (previous) => previous,
 })
@@ -195,6 +201,11 @@ const isMobile = useMediaQuery('(max-width: 959px)')
 const restoreDrawerWidth = computed(() => (isMobile.value ? '100%' : '1080px'))
 
 function openRestore(snapshotId: string): void {
+  // 归档仓库视图只读：恢复会落到「当前仓库」，误操作代价太大 → 明确拒绝并指路
+  if (repoOverride.value) {
+    message.warning(t('archive.readOnlyRestore'))
+    return
+  }
   restoreSeedId.value = snapshotId
   restoreShow.value = true
   // 从文件树抽屉点「恢复此快照」时先收起它，避免两层抽屉叠遮罩
@@ -261,7 +272,7 @@ function goRepo(): void {
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
   const snapshotId = activeSnapshot.value?.id ?? ''
-  return listSnapshotFiles(snapshotId, path, cursor).then((data) => {
+  return listSnapshotFiles(snapshotId, path, cursor, 200, repoOverride.value || undefined).then((data) => {
     if (data.truncated) {
       treeTruncated.value = true
     }
@@ -616,6 +627,12 @@ async function applyTag(): Promise<void> {
           </n-button>
         </n-space>
       </template>
+      <!-- 归档仓库只读视图提示（删除保护方案 D13）：`?repo=<id>` 进来的场景。
+           放在卡片内而非 n-space 直接子节点——n-space 展平子节点按索引发 key，
+           多一个条件兄弟会让索引相撞（本项目既有纪律）。 -->
+      <n-alert v-if="repoOverride" type="warning" :show-icon="false" style="margin-bottom: 12px">
+        {{ t('snap.archivedView', { id: repoOverride }) }}
+      </n-alert>
       <!-- 筛选器（共用形态层 FilterBar，与任务历史页同版式）：draft 值只在点「应用」后
            才落到查询参数，避免改一次下拉就打一次 restic。 -->
       <FilterBar :loading="snapshotsQuery.isFetching.value" @apply="applyFilters" @reset="resetFilters">

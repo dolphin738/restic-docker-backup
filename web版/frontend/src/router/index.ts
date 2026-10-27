@@ -74,6 +74,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/pages/snapshots/index.vue'),
         meta: { titleKey: 'nav.snapshots' },
       },
+      // 归档（删除保护方案 D13）：只读数据面，与「快照」同级挂在「数据」导航组。
+      // 三段分区：仓库归档 / rclone 配置归档 / 保留策略（配置入口在本页，不回设置页）。
+      {
+        path: 'archive',
+        name: 'archive',
+        component: () => import('@/pages/archive/index.vue'),
+        meta: { titleKey: 'nav.archive' },
+      },
       // 2026-10-28：恢复流程（三步：选文件 → 恢复选项 → 执行与结果）并入快照浏览页，
       // 原 `/restore` 入口页与 `/restore/:id/{select-files,options,progress}` 三个向导路由
       // **整体删除**，且**不保留 redirect 兼容**（owner 2026-10-28 裁决：全仓核实无任何

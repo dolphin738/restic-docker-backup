@@ -40,6 +40,7 @@ import {
   IconRepo,
   IconSettings,
   IconSnapshots,
+  IconArchive,
   IconSun,
   IconUser,
 } from '@/components/icons/icons'
@@ -83,6 +84,8 @@ const navItems = computed<Record<string, MenuOption>>(() => ({
   jobs: { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
   reports: { label: t('nav.reports'), key: 'reports', icon: withNIcon(IconReports) },
   snapshots: { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
+  // 归档（删除保护方案 D13）：与「快照」同级——都是只读数据面，不属于管理区
+  archive: { label: t('nav.archive'), key: 'archive', icon: withNIcon(IconArchive) },
   notifications: { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
   settings: { label: t('nav.settings'), key: 'settings', icon: withNIcon(IconSettings) },
   audit: { label: t('nav.audit'), key: 'audit', icon: withNIcon(IconAudit) },
@@ -106,7 +109,7 @@ const groupedMenuOptions = computed<MenuOption[]>(() => [
     type: 'group',
     label: t('nav.group.data'),
     key: 'group-data',
-    children: [navItems.value.snapshots],
+    children: [navItems.value.snapshots, navItems.value.archive],
   },
   {
     type: 'group',

@@ -16,8 +16,18 @@ import type {
 
 /** tag 为空串/undefined = 不过滤（R-026-10：按任务标签筛选；**包含**语义——快照 tags 数组含该 tag 即命中，与 E17 服务端口径一致）。
  * host 为空串/undefined = 不过滤（R-023 多主机视图：按快照主机标识过滤，与当前 X-Repo-Id 仓库叠加生效）。 */
-export function listSnapshots(limit = 50, offset = 0, tag?: string, host?: string): Promise<Page<SnapshotOut>> {
-  return request<Page<SnapshotOut>>('/api/snapshots', { query: { limit, offset, tag, host } })
+export function listSnapshots(
+  limit = 50,
+  offset = 0,
+  tag?: string,
+  host?: string,
+  /** 只看某个指定仓库（含**归档仓库**）：覆盖全局 X-Repo-Id 头（删除保护方案 D13）。 */
+  repoId?: string,
+): Promise<Page<SnapshotOut>> {
+  return request<Page<SnapshotOut>>('/api/snapshots', {
+    query: { limit, offset, tag, host },
+    headers: repoId ? { 'X-Repo-Id': repoId } : undefined,
+  })
 }
 
 /** P3 快照内文件搜索（R6）：服务端对展示路径做子串匹配 + 游标分页，30s 缓存。
@@ -41,9 +51,12 @@ export function listSnapshotFiles(
   path?: string,
   cursor?: string | null,
   limit = 200,
+  /** 同 :func:`listSnapshots`：看归档仓库时必须带上它的 id。 */
+  repoId?: string,
 ): Promise<SnapshotFilesResponse> {
   return request<SnapshotFilesResponse>(`/api/snapshots/${encodeURIComponent(snapshotId)}/files`, {
     query: { path, cursor: passCursor(cursor), limit },
+    headers: repoId ? { 'X-Repo-Id': repoId } : undefined,
   })
 }
 

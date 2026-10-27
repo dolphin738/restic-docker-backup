@@ -269,6 +269,86 @@ export interface RcloneConfigItem {
    * 非本服务写入 / conf 被外部改过，就地转换会跳过）。
    */
   credential_obscured?: Record<string, boolean | null>
+  /**
+   * 直接引用本 remote 的仓库数（含归档仓库）。
+   *
+   * ``>0`` 时禁止删除（删除保护方案 P0，裁决 1）：删除会让这些仓库的快照
+   * 全部无法打开/恢复。
+   */
+  used_by_repos?: number
+}
+
+/** rclone 远端占用明细（删除保护方案 P0，裁决 2/4）：引用仓库 + crypt 传递依赖。 */
+export interface RcloneRemoteUsageOut {
+  /** 远端名。 */
+  remote: string
+  /** 直接引用该 remote 的仓库。 */
+  repos: { id: string; name: string }[]
+  /** 以该 remote 为底层的 crypt 段名（传递依赖）。 */
+  dependent_remotes: string[]
+  /** 该 remote 自身是否 crypt 类型。 */
+  crypt: boolean
+}
+
+/** 仓库占用明细（删除保护方案 P1，裁决 5/6）：镜像引用 + 快照**总条数**。 */
+export interface RepoUsageOut {
+  repo_id: string
+  /** 把本仓当镜像目的地的任务（非空 → 后端删除 409 REPO_IN_USE_AS_MIRROR）。 */
+  mirror_refs: { id: number; name: string }[]
+  /** 仓库内快照总条数；null = 此刻不可知（**不可当 0 展示**）。 */
+  snapshot_total: number | null
+}
+
+/** 批量改指向结果（把引用某 remote 的仓库切到另一个 remote）。 */
+export interface RepoRepointOut {
+  old_remote: string
+  new_remote: string
+  repos: { id: string; url: string }[]
+}
+
+/** 归档的 rclone 配置段（**永远没有值**：只有键名清单，后端零回显）。 */
+export interface RcloneArchiveItemOut {
+  remote: string
+  type: string
+  deleted_at: string
+  /** 删除时刻被多少个仓库 url 引用（0 = 删时无引用）。 */
+  used_by_repos: number
+  /** 该段的键名清单（可安全展示；不含值）。 */
+  keys: string[]
+}
+
+export interface RcloneArchivesOut {
+  items: RcloneArchiveItemOut[]
+}
+
+/** 归档仓库（可一键恢复：行、凭据、密码文件都还在）。 */
+export interface ArchivedRepoOut {
+  repo_id: string
+  name: string
+  type: string
+  url: string | null
+  archived_at: string
+  passfile_status: string
+}
+
+/** 墓碑（归档记录）：只记「这里曾经有过什么」，不含密码与凭据。 */
+export interface RepoTombstoneOut {
+  repo_id: string
+  name: string
+  type: string
+  url_display: string | null
+  archived_at: string
+  /** 归档时快照数；null = 当时不可知。 */
+  snapshot_count: number | null
+  /** 走过 purge_disk：目录内容 + 密码文件已销毁，不可恢复。 */
+  data_destroyed: boolean
+  /** 非空 = ID 已释放（新仓库可复用该 id）。 */
+  released_at: string | null
+}
+
+export interface ArchiveListOut {
+  repos: ArchivedRepoOut[]
+  tombstones: RepoTombstoneOut[]
 }
 
 /** rclone conf 全段查询快照。 */

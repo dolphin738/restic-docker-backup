@@ -36,6 +36,7 @@ import {
   deleteRepo,
   getRepo,
   getRepoStatus,
+  getRepoUsage,
   listRepos,
   listRcloneRemotes,
   manualCopy,
@@ -56,6 +57,7 @@ import type {
   RepoStatusResponse,
   RepoTestResponse,
   RepoUpdateRequest,
+  RepoUsageOut,
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import DirPickerInline from '@/components/DirPickerInline.vue'
@@ -149,6 +151,20 @@ function passwordAction(r: RepoOut): 'set' | 'reset' | null {
   }
   return null
 }
+
+/** 行级可达性（删除保护方案 P1-3）：已填地址 + 探测结论为不可达。
+ *  「不可达」= 快照暂时打不开，用户不必点进快照页才吃 500——列表就把它标出来。
+ *  探测结论缺失（加载中 / 请求失败）**不**判为不可达：宁可不报，也不误报红。 */
+function isUnreachable(r: RepoOut): boolean {
+  if (!r.url) {
+    return false
+  }
+  const st = rowStatusById.value[r.id]
+  return Boolean(st && !st.connected)
+}
+
+/** 当前不可达仓库清单（页面级告警用；随行状态查询自动刷新，无额外请求）。 */
+const unreachableRepos = computed(() => repos.value.filter((r) => isUnreachable(r)))
 
 /** 行内初始化：先把该仓库设为当前（init 作业按当前仓库寻址），再开确认门。 */
 function openInit(id: string): void {
@@ -544,6 +560,42 @@ const deletePurge = ref(false)
 /** 删除目标仓库行（勾选框仅本地 FS 显示：远程后端无本地数据可清）。 */
 const deleteTargetRepo = computed(() => repos.value.find((x) => x.id === deleteTarget.value))
 
+// 删除门的「后果可视化」（删除保护方案 P1，裁决 6）：打开门时查一次占用明细。
+// snapshot_total = 仓库内快照**总条数**（含无 tag 的手工快照）；null = 不可知，
+// UI 必须显示「不可知」而不是 0——0 会让用户误判「从没备过」而放心删除。
+const deleteUsage = ref<RepoUsageOut | null>(null)
+const deleteUsageLoading = ref(false)
+
+/** 删除门描述：按是否勾选「同时删除磁盘数据」分两档（口径见方案 §3.1 / §4 L3）。
+ *  - 不勾：快照数据与密码文件都留在磁盘，但本应用**再无入口**——需以相同 id 与地址
+ *    重建仓库才能恢复；删除误导句「仓库内的 restic 快照不受影响」。
+ *  - 勾选：目录内容 + 密码文件一并销毁，**不可逆、无归档可救**。
+ */
+const deleteDescription = computed(() => (deletePurge.value ? t('repo.deletePurgeConfirm') : t('repo.deleteConfirm')))
+
+/** 快照数展示文案：null / 加载中 → 不可知（不写 0）。 */
+const deleteSnapshotText = computed(() => {
+  if (deleteUsageLoading.value) return t('repo.usageLoading')
+  const total = deleteUsage.value?.snapshot_total
+  return typeof total === 'number' ? t('repo.usageSnapshots', { n: total }) : t('repo.usageUnknown')
+})
+
+/** 镜像引用（非空 → 后端必然 409，门里提前说清去哪解）。 */
+const deleteMirrorRefs = computed(() => deleteUsage.value?.mirror_refs ?? [])
+
+async function loadDeleteUsage(id: string): Promise<void> {
+  deleteUsage.value = null
+  deleteUsageLoading.value = true
+  try {
+    deleteUsage.value = await getRepoUsage(id)
+  } catch {
+    // 占用明细只用于「让后果可见」，取不到不阻断删除门（失败即显示不可知）
+    deleteUsage.value = null
+  } finally {
+    deleteUsageLoading.value = false
+  }
+}
+
 function onDeleteClick(id: string): void {
   if (id === 'default') {
     message.warning(t('repo.deleteDefaultForbidden'))
@@ -551,7 +603,9 @@ function onDeleteClick(id: string): void {
   }
   deleteTarget.value = id
   deletePurge.value = false
+  deleteUsage.value = null
   deleteShow.value = true
+  void loadDeleteUsage(id)
 }
 
 async function confirmDelete(): Promise<void> {
@@ -559,10 +613,11 @@ async function confirmDelete(): Promise<void> {
   if (!id) {
     return
   }
+  const purging = deletePurge.value
   deleting.value = true
   try {
-    await deleteRepo(id, { purgeDisk: deletePurge.value })
-    message.success(t('repo.deleted'))
+    await deleteRepo(id, { purgeDisk: purging })
+    message.success(purging ? t('repo.destroyed') : t('repo.archived'))
     if (ui.currentRepoId === id) {
       onSetCurrent('default')
     }
@@ -1374,6 +1429,16 @@ function formatBytes(value: number): string {
           {{ t('repo.rcloneManageBtn') }}
         </n-button>
       </template>
+      <!-- 不可达仓库告警（删除保护方案 P1-3）：让「快照暂时打不开」在列表就可见，
+           不必点进快照页才吃 500。刻意**放在 n-space 之外**：n-space 展平插槽子节点
+           按索引发 key，多一个条件兄弟会让索引相撞（本项目既有纪律）。 -->
+      <div v-if="unreachableRepos.length > 0" class="repo__unreachable">
+        <n-alert type="warning" :show-icon="false">
+          {{ t('repo.unreachableBanner', { n: unreachableRepos.length }) }}
+          <span class="repo__del-names">{{ unreachableRepos.map((r) => r.name).join(' / ') }}</span>
+          <div class="repo__del-hint">{{ t('repo.unreachableBannerHint') }}</div>
+        </n-alert>
+      </div>
       <n-space vertical :size="12">
         <ActionCard
           :icon="IconPlusCircle"
@@ -1414,6 +1479,13 @@ function formatBytes(value: number): string {
                 :kind="r.passfile_status === 'configured' ? 'success' : 'warning'"
                 :label="r.passfile_status === 'configured' ? t('repo.passfileConfigured') : t('repo.passfileMissingShort')"
               />
+              <!-- 行级不可达标记（P1-3）：只做提示，不阻断任何动作（用户仍可编辑/修复）。 -->
+              <n-tooltip v-if="isUnreachable(r)" trigger="hover">
+                <template #trigger>
+                  <StatusTag size="tiny" kind="error" :label="t('repo.unreachableTag')" />
+                </template>
+                {{ t('repo.unreachableHint') }}
+              </n-tooltip>
             </span>
             <n-text depth="3" class="repo__dest-desc">
               {{ r.url || '—' }}<template v-if="r.host_tag"> · {{ r.host_tag }}</template>
@@ -2189,16 +2261,29 @@ function formatBytes(value: number): string {
       </template>
     </ConfirmGate>
 
-    <!-- 删除仓库：三步确认门 -->
+    <!-- 删除仓库：两档确认门（删除保护方案 §4 L3）
+         默认 = **归档**：数据/密码文件/凭据全留，可一键恢复 → 轻门（无关键词）；
+         勾「同时删除磁盘数据」= **销毁**：目录内容 + 口令都没了 → 重门（关键词 = 仓库 id）。 -->
     <ConfirmGate
       v-model:show="deleteShow"
-      :title="t('repo.delete')"
-      :keyword="'DELETE'"
-      :description="t('repo.deleteConfirm')"
+      :title="deletePurge ? t('repo.destroyTitle') : t('repo.archiveTitle')"
+      :keyword="deletePurge ? (deleteTarget ?? '') : ''"
+      :description="deleteDescription"
       :loading="deleting"
+      :confirm-label="deletePurge ? t('repo.destroyBtn') : t('repo.archiveBtn')"
       @confirm="confirmDelete"
     >
       <template #preview>
+        <!-- 后果可视化（删除保护方案 P1）：快照总数 + 镜像引用清单。
+             统计不阻塞删除门：取不到就显示「不可知」，绝不写 0。 -->
+        <div class="repo__del-facts">
+          <div class="repo__del-fact">{{ deleteSnapshotText }}</div>
+          <div v-if="deleteMirrorRefs.length" class="repo__del-fact repo__del-fact--warn">
+            {{ t('repo.usageMirrorRefs', { n: deleteMirrorRefs.length }) }}
+            <span class="repo__del-names">{{ deleteMirrorRefs.map((r) => r.name).join(' / ') }}</span>
+            <div class="repo__del-hint">{{ t('repo.usageMirrorHint') }}</div>
+          </div>
+        </div>
         <!-- 磁盘清理勾选（仅本地 FS，默认不勾）：不勾 = 保留磁盘数据与密码文件
              （重新添加同 id 仓库仍可复用，但同址新建会撞上打不开的旧仓库）；
              勾选 = rmtree 仓库目录 + 删密码文件，该地址可干净重用。
@@ -2379,6 +2464,35 @@ function formatBytes(value: number): string {
 .repo__init-progress {
   width: 100%;
   margin-top: 8px;
+}
+
+/* 不可达仓库横幅（P1-3）：v-show 隐藏时不占位，故外边距也只在此处生效。 */
+.repo__unreachable {
+  margin-bottom: 12px;
+}
+
+/* 删除门「后果可视化」（删除保护方案 P1）：快照数 + 镜像引用清单。
+   用 flex 列而非 n-space（同 UI 全量改造方案 §192 的结构行约定）。 */
+.repo__del-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.repo__del-fact--warn {
+  color: var(--n-text-color-warning, #d07a00);
+}
+
+.repo__del-names {
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.repo__del-hint {
+  margin-top: 2px;
+  font-weight: 400;
+  opacity: 0.85;
 }
 
 /* A5 目的地类型卡片网格（对齐 Duplicati 选择器：图标 + 名称竖排） */

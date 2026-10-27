@@ -35,6 +35,7 @@ import {
   NSpace,
   NSwitch,
   NTag,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
@@ -44,7 +45,9 @@ import SecretReveal from '@/components/SecretReveal.vue'
 import {
   createRcloneConfig,
   deleteRcloneConfig,
+  getRcloneRemoteUsage,
   listRcloneConfigs,
+  repointRcloneRemote,
   updateRcloneConfig,
 } from '@/api/repo'
 import type { RcloneConfigItem, RcloneConfigsOut } from '@/api/types'
@@ -267,7 +270,8 @@ const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
   {
     title: '',
     key: 'actions',
-    width: 132,
+    // 宽度容纳「编辑 / 查看占用 / 删除」三档（含禁用态），避免按钮挤压换行
+    width: 214,
     align: 'right',
     fixed: 'right',
     render: (row) =>
@@ -282,21 +286,45 @@ const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
                 { default: () => t('settings.rclone.edit') },
               )
             : null,
-          h(
-            NPopconfirm,
-            { onPositiveClick: () => remove(row.remote) },
-            {
-              trigger: () =>
-                h(NButton, { size: 'small', type: 'error', secondary: true }, { default: () => t('settings.rclone.delete') }),
-              default: () =>
-                h('div', {}, [
-                  h('div', {}, t('settings.rclone.deleteConfirm', { name: row.remote })),
-                  isOauthType(row.type)
-                    ? h('div', { class: 'rclone-panel__warn' }, t('settings.rclone.deleteOauthWarn'))
-                    : null,
-                ]),
-            },
-          ),
+          // 有仓库引用 → 删除按钮禁用，改为「查看占用」入口（裁决 1/2：阻断 + 可见）
+          (row.used_by_repos ?? 0) > 0
+            ? h(NButton, { size: 'small', onClick: () => openUsage(row.remote) }, () =>
+                t('settings.rclone.usage'),
+              )
+            : null,
+          (row.used_by_repos ?? 0) > 0
+            ? h(
+                NTooltip,
+                {},
+                {
+                  trigger: () =>
+                    h(
+                      NButton,
+                      { size: 'small', type: 'error', secondary: true, disabled: true },
+                      { default: () => t('settings.rclone.delete') },
+                    ),
+                  default: () => t('settings.rclone.deleteBlocked', { n: row.used_by_repos ?? 0 }),
+                },
+              )
+            : h(
+                NPopconfirm,
+                { onPositiveClick: () => remove(row.remote) },
+                {
+                  trigger: () =>
+                    h(
+                      NButton,
+                      { size: 'small', type: 'error', secondary: true },
+                      { default: () => t('settings.rclone.delete') },
+                    ),
+                  default: () =>
+                    h('div', {}, [
+                      h('div', {}, t('settings.rclone.deleteConfirm', { name: row.remote })),
+                      isOauthType(row.type)
+                        ? h('div', { class: 'rclone-panel__warn' }, t('settings.rclone.deleteOauthWarn'))
+                        : null,
+                    ]),
+                },
+              ),
         ].filter(Boolean) as unknown[],
       ),
   },
@@ -323,6 +351,81 @@ async function refresh(): Promise<void> {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     loading.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 占用明细（删除保护方案 P0，裁决 2）
+
+/** 「查看占用」弹窗目标远端名；空串 = 关闭。 */
+const usageRemote = ref('')
+/** 编辑态下当前远端被多少仓库引用（>0 即触发删除阻断）。 */
+const usedByCount = computed(
+  () =>
+    (snapshot.value?.configs ?? []).find((c) => c.remote === editingRemote.value)?.used_by_repos ??
+    0,
+)
+const usageOpen = computed({
+  get: () => usageRemote.value !== '',
+  set: (value: boolean) => {
+    if (!value) usageRemote.value = ''
+  },
+})
+const usageLoading = ref(false)
+const usageError = ref('')
+const usageRepos = ref<{ id: string; name: string }[]>([])
+const usageDependents = ref<string[]>([])
+const usageCrypt = ref(false)
+
+/** 打开「查看占用」：懒加载明细（列表接口只给计数，不给清单）。 */
+async function openUsage(remote: string): Promise<void> {
+  usageRemote.value = remote
+  usageLoading.value = true
+  usageError.value = ''
+  usageRepos.value = []
+  usageDependents.value = []
+  usageCrypt.value = false
+  try {
+    const usage = await getRcloneRemoteUsage(remote)
+    usageRepos.value = usage.repos ?? []
+    usageDependents.value = usage.dependent_remotes ?? []
+    usageCrypt.value = Boolean(usage.crypt)
+  } catch (err) {
+    usageError.value = err instanceof Error ? err.message : String(err)
+    usageRemote.value = '' // 取不到就别留个空壳弹窗
+    message.error(usageError.value)
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+/** 「改指向」目标 remote（空 = 未选）；与 openUsage 同弹窗内操作。 */
+const repointTarget = ref('')
+const repointing = ref(false)
+
+/** 可选目标：conf 内除当前 remote 之外的其余段。 */
+const repointOptions = computed(() =>
+  (snapshot.value?.configs ?? [])
+    .filter((item) => item.remote !== usageRemote.value)
+    .map((item) => ({ label: `${item.remote}（${item.type}）`, value: item.remote })),
+)
+
+/** 批量改指向：把引用当前 remote 的仓库 url 切到目标 remote，之后旧段即可删除。 */
+async function onRepoint(): Promise<void> {
+  const target = repointTarget.value
+  if (!target || !usageRemote.value) {
+    return
+  }
+  repointing.value = true
+  try {
+    const result = await repointRcloneRemote(usageRemote.value, target)
+    message.success(t('settings.rclone.repointDone', { n: result.repos.length, name: target }))
+    repointTarget.value = ''
+    usageRemote.value = ''
+    await refresh()
+  } catch {
+    // 错误由 http 层统一提示（422 目标不在册 / 409 env 覆盖）
+  } finally {
+    repointing.value = false
   }
 }
 
@@ -515,7 +618,7 @@ defineExpose({ refresh })
         :loading="loading"
         size="small"
         :bordered="false"
-        :scroll-x="780"
+        :scroll-x="860"
         :row-key="(row: RcloneConfigItem) => row.remote"
       />
       <p v-if="snapshot && snapshot.configs.length === 0" class="rclone-panel__muted">
@@ -674,6 +777,11 @@ defineExpose({ refresh })
             >
               {{ t('settings.rclone.valueObscured') }}
             </NCheckbox>
+
+            <!-- 有仓库引用该远端 → 明示阻断原因与占用清单（裁决 1/2/3） -->
+            <NAlert v-if="isEdit && usedByCount > 0" type="warning" :bordered="false" class="rclone-panel__note">
+              {{ t('settings.rclone.deleteBlocked', { n: usedByCount }) }}
+            </NAlert>
             <span v-if="hasCredentialInput" class="rclone-panel__muted">
               {{ t('settings.rclone.valueObscuredHint') }}
             </span>
@@ -697,6 +805,48 @@ defineExpose({ refresh })
       </NForm>
     </NCard>
 
+    <!-- 「查看占用」：删除被阻断时，列出是谁在引用这个远端 -->
+    <NModal v-model:show="usageOpen" preset="card" :title="t('settings.rclone.usageTitle', { name: usageRemote })" style="width: min(520px, calc(100vw - 32px))">
+      <NSpace vertical :size="8">
+        <template v-if="usageLoading">
+          <span class="rclone-panel__muted">{{ t('settings.rclone.usageLoading') }}</span>
+        </template>
+        <template v-else>
+          <div v-if="usageRepos.length > 0">
+            <div class="rclone-panel__muted">{{ t('settings.rclone.usageRepos') }}</div>
+            <NTag v-for="repo in usageRepos" :key="repo.id" size="small" :bordered="false">
+              {{ repo.name }}
+            </NTag>
+            <!-- 改指向（删除前的那条出路）：把引用它的仓库切到另一个远端，之后旧段即可删 -->
+            <div class="rclone-panel__repoint">
+              <div class="rclone-panel__muted">{{ t('settings.rclone.repointHint') }}</div>
+              <div class="rclone-panel__repoint-row">
+                <NSelect
+                  v-model:value="repointTarget"
+                  :options="repointOptions"
+                  size="small"
+                  :placeholder="t('settings.rclone.repointPlaceholder')"
+                  style="flex: 1"
+                />
+                <NButton size="small" :disabled="!repointTarget" :loading="repointing" @click="onRepoint">
+                  {{ t('settings.rclone.repointBtn') }}
+                </NButton>
+              </div>
+            </div>
+          </div>
+          <div v-if="usageDependents.length > 0">
+            <div class="rclone-panel__muted">{{ t('settings.rclone.usageDependents') }}</div>
+            <NTag v-for="dep in usageDependents" :key="dep" size="small" type="warning" :bordered="false">
+              {{ dep }}
+            </NTag>
+          </div>
+          <NAlert v-if="usageCrypt" type="error" :bordered="false">
+            {{ t('settings.rclone.deleteCryptWarn') }}
+          </NAlert>
+        </template>
+      </NSpace>
+    </NModal>
+
     <!-- 生成密码后的一次性明文（全站统一呈现，SecretReveal） -->
     <NModal v-model:show="generatedShow" preset="card" :title="t('settings.rclone.passwordGeneratedTitle')" style="width: min(520px, calc(100vw - 32px))">
       <SecretReveal
@@ -712,6 +862,19 @@ defineExpose({ refresh })
 </template>
 
 <style scoped>
+.rclone-panel__repoint {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rclone-panel__repoint-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .rclone-panel {
   display: flex;
   flex-direction: column;

@@ -469,3 +469,74 @@ describe('RcloneConfigPanel', () => {
     expect(declareSelect).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------- 删除保护（删除依赖与快照可用性保护方案 P0，裁决 1/2）
+
+const SNAPSHOT_IN_USE: RcloneConfigsOut = {
+  ...SNAPSHOT,
+  configs: SNAPSHOT.configs.map((c) => (c.remote === 'mycrypt' ? { ...c, used_by_repos: 1 } : c)),
+}
+
+function buttonOf(w: ReturnType<typeof mountPanel>, label: string): HTMLButtonElement | undefined {
+  return ([...w.element.querySelectorAll('button')] as HTMLButtonElement[]).find(
+    (b) => b.textContent?.trim() === label,
+  )
+}
+
+describe('RcloneConfigPanel 删除保护', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+    vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    vi.spyOn(repoApi, 'deleteRcloneConfig').mockResolvedValue({
+      remote: 'gdrive',
+      type: 'drive',
+      conf_path: '/etc/rclone/rclone.conf',
+      action: 'delete',
+      remotes_after: ['mycrypt'],
+    })
+  })
+
+  it('无仓库引用：删除按钮可点，且不出现查看占用入口', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    expect(buttonOf(w, zhCN.settings.rclone.usage)).toBeUndefined()
+    const del = buttonOf(w, zhCN.settings.rclone.delete)
+    expect(del).toBeTruthy()
+    expect(del!.disabled).toBe(false)
+  })
+
+  it('有仓库引用：删除按钮禁用，改为查看占用入口', async () => {
+    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_IN_USE)
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    const usage = buttonOf(w, zhCN.settings.rclone.usage)
+    expect(usage).toBeTruthy()
+    const del = buttonOf(w, zhCN.settings.rclone.delete)
+    expect(del).toBeTruthy()
+    expect(del!.disabled).toBe(true)
+  })
+
+  it('查看占用：点击后按 remote 拉取明细（清单渲染在弹窗内）', async () => {
+    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_IN_USE)
+    const spy = vi.spyOn(repoApi, 'getRcloneRemoteUsage').mockResolvedValue({
+      remote: 'mycrypt',
+      repos: [{ id: 'x1', name: '加密仓' }],
+      dependent_remotes: [],
+      crypt: true,
+    })
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    buttonOf(w, zhCN.settings.rclone.usage)!.dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+
+    expect(spy).toHaveBeenCalledWith('mycrypt')
+  })
+})
