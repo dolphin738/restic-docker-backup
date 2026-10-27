@@ -41,7 +41,6 @@ import { isAppError } from '@/api/http'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
@@ -50,15 +49,6 @@ const ui = useUiStore()
 const message = useMessage()
 ui.setMessageApi(message)
 onUnmounted(() => ui.setMessageApi(null))
-
-/** 视图切换：active = 进行中卡片（P1 既有）；history = 全量筛选表格（P2 批次 A）。 */
-const viewTab = ref<'active' | 'history'>('active')
-
-/** 视图切换（复用共用分段控件 SegmentedTabs；不传 hashPrefix，无深链）。 */
-const jobTabItems = computed(() => [
-  { id: 'active', label: t('jobs.tabActive') },
-  { id: 'history', label: t('jobs.tabHistory') },
-])
 
 // ================================================================ 进行中视图（P1 既有，零行为变更）
 
@@ -161,7 +151,6 @@ const historyQuery = useQuery({
       offset: (historyPage.value - 1) * HISTORY_PAGE_SIZE,
     }),
   placeholderData: (previous) => previous,
-  enabled: computed(() => viewTab.value === 'history'),
 })
 
 const historyRows = computed(() => historyQuery.data.value?.items ?? [])
@@ -374,7 +363,6 @@ onMounted(() => {
   }
   void getJob(jobId)
     .then((job) => {
-      viewTab.value = 'history' // 校验通常是短任务，落地即已终态 → 直接切历史视图
       if (job.type === 'check') {
         openCheckDetail(job)
       } else {
@@ -389,13 +377,9 @@ onMounted(() => {
 
 <template>
   <n-space vertical :size="16">
-    <SegmentedTabs
-      :items="jobTabItems"
-      v-model="viewTab"
-      :aria-label="t('jobs.tabAria')"
-    />
-      <!-- ================= 进行中（P1 既有卡片视图，零行为变更） ================= -->
-    <template v-if="viewTab === 'active'">
+    <!-- ================= 进行中（P1 既有卡片视图，零行为变更） ================= -->
+    <n-card :title="t('jobs.tabActive')" size="small">
+      <n-space vertical :size="12">
         <n-alert v-if="jobsQuery.error.value" type="error" :show-icon="false">
           {{ String(jobsQuery.error.value) }}
         </n-alert>
@@ -432,10 +416,11 @@ onMounted(() => {
         <n-card v-else size="small">
           <n-empty :description="t('dashboard.jobsEmpty')" />
         </n-card>
-      </template>
+      </n-space>
+    </n-card>
 
       <!-- ================= 全量历史（E13 完整版：缺省不过滤，条件显式传入） ================= -->
-    <template v-else>
+    <n-card :title="t('jobs.tabHistory')" size="small">
         <n-space vertical :size="12">
           <n-space align="center" justify="space-between" :size="8" wrap>
             <n-text depth="3">{{ t('jobs.historyLimitNote', { n: HISTORY_PAGE_SIZE }) }}</n-text>
@@ -503,7 +488,7 @@ onMounted(() => {
             {{ t('jobs.historyEmpty') }}
           </n-text>
         </n-space>
-    </template>
+    </n-card>
 
     <!-- check 校验结果抽屉（E22）：错误列表 + summary 指标；不做进度条（V4 定稿） -->
     <n-drawer v-model:show="checkShow" :width="680" placement="right">

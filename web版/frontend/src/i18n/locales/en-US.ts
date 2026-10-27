@@ -880,7 +880,6 @@ export default {
   jobs: {
     tabActive: 'Running',
     tabHistory: 'All history',
-    tabAria: 'Task view switcher',
     taskOptionLabel: '{name} ({tag})',
     check: {
       resultButton: 'Check result',

@@ -878,7 +878,6 @@ export default {
   jobs: {
     tabActive: '进行中',
     tabHistory: '全部历史',
-    tabAria: '任务视图切换',
     taskOptionLabel: '{name}（{tag}）',
     check: {
       resultButton: '校验结果',
