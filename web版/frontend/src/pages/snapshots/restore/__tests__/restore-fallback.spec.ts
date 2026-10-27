@@ -22,7 +22,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import WizardPage from '@/pages/restore/flow/index.vue'
+import RestorePanel from '@/pages/snapshots/restore/panel.vue'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
 
@@ -45,24 +45,24 @@ vi.mock('@/api/restore', () => ({
   restoreSnapshot: vi.fn(async () => ({ job_id: 'job-1', restore_target: '/restore/x' })),
 }))
 
-const RouterHost = { template: '<router-view />' }
-
+/** 直接挂面板（2026-10-28 并入快照页后不再经路由渲染）：预选改 props 传入。 */
 async function mountWizard(initialPath: string) {
+  const snapshotId = initialPath.split('/')[2] ?? null
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [
-      { path: '/restore/:id/select-files', name: 'restore-select-files', component: WizardPage },
-      { path: '/restore/:id/options', name: 'restore-options', component: WizardPage },
-      { path: '/restore/:id/progress', name: 'restore-progress', component: WizardPage },
-      { path: '/:pathMatch(.*)*', component: WizardPage },
-    ],
+    routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }],
   })
-  await router.push(initialPath)
+  // vue-router 4 的 isReady() 依赖「首次导航已完成」：不 push 会永久 pending，
+  // 表现为每个用例 5s 超时（本次实证），故先导航再等就绪。
+  await router.push('/')
   await router.isReady()
   const wrapper = mount(NConfigProvider, {
     props: { themeOverrides: lightThemeOverrides },
-    slots: { default: () => h(NMessageProvider, null, { default: () => h(RouterHost) }) },
+    slots: {
+      default: () =>
+        h(NMessageProvider, null, { default: () => h(RestorePanel, { initialSnapshotId: snapshotId }) }),
+    },
     global: {
       plugins: [i18n, createPinia(), [VueQueryPlugin, { queryClient }], router],
     },

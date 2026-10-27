@@ -47,9 +47,10 @@ src/
   composables/  useJobStream（SSE 订阅层）
   i18n/         vue-i18n 装配与中英词条
   layouts/      BasicLayout（侧边导航 + 顶栏）
-  pages/        login / bootstrap / dashboard / repo / sources / policies /
-                jobs / snapshots / restore
-  router/       路由表（9 条）+ 全局前置守卫
+  pages/        login / bootstrap / dashboard / repo / taskWizard / jobs / reports /
+                snapshots（+ restore/ 恢复面板：三步恢复流程以抽屉复用）/ notifications /
+                settings / audit
+  router/       路由表 + 全局前置守卫
   stores/       ui（me 缓存、主题、语言、全局 message）
 ```
 
@@ -70,7 +71,7 @@ src/
 
 ## 当前未实现（下一阶段）
 
-- 危险操作覆盖范围：ConfirmGate 目前只接了仓库解锁（/repo）与恢复执行（/restore），
+- 危险操作覆盖范围：ConfirmGate 目前只接了仓库解锁（/repo）与恢复执行（快照页恢复抽屉），
   forget --prune 的 dry-run 门禁等后端补齐契约后接入；
 - `/api/policies` 的多策略写、`limit_up/limit_down` 生效、原位恢复（P2）；
 - JobProgress 的 skipped 明细已接 E27（任务历史页日志抽屉），仅尾部窗口范围内。

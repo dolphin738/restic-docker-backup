@@ -242,9 +242,10 @@ function onSnapshotChange(value: string | null): void {
     </div>
   </n-space>
 
-  <!-- P10 页脚两端对齐（对标 Duplicati 向导页脚）：左返回入口 / 右下一步 -->
+  <!-- 页脚两端对齐（对标 Duplicati 向导页脚）：左「关闭」（原「返回入口」，入口页删除后
+       即关闭抽屉，由父级执行）/ 右下一步 -->
   <n-space justify="space-between" align="center">
-    <n-button quaternary @click="emit('back')">{{ t('restore.flow.backToEntry') }}</n-button>
+    <n-button quaternary @click="emit('back')">{{ t('restore.flow.close') }}</n-button>
     <n-button type="primary" :disabled="!snapshotId" @click="emit('next')">
       {{ t('confirm.next') }}
     </n-button>

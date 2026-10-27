@@ -100,7 +100,7 @@ const STUBS = {
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     // 真实旅程：select-files → 下一步（原位流 goConfirm 会触发 loadPreview）
-    await page.goto(`${BASE}/restore/${SNAPSHOT_ID}/select-files`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/snapshots?restore=${SNAPSHOT_ID}`, { waitUntil: 'networkidle' });
     await page.waitForSelector('.restore-flow__section', { timeout: 15000 });
     await page.waitForTimeout(800);
     await page.locator('button', { hasText: '下一步' }).first().click();

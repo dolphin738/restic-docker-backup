@@ -352,8 +352,10 @@ function goNewTask(): void {
   void router.push({ name: 'task-new' })
 }
 
+/** 恢复入口：2026-10-28 恢复流程并入快照浏览页（原 `/restore` 独立向导页已删除），
+ *  故仪表盘一律把用户送到快照页选快照——恢复必须从某个快照开始，这里不猜版本。 */
 function goRestore(): void {
-  void router.push({ name: 'restore' })
+  void router.push({ name: 'snapshots' })
 }
 
 function onEdit(taskId: number): void {

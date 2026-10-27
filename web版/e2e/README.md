@@ -57,6 +57,8 @@ node p17-host-restore.cjs http://localhost:5173   # 也可显式传 base
 | `p20-stepper-contrast.cjs` | 向导步骤条对比度（WCAG 2.1） | 亮暗双主题逐元素量 `color` / `opacity` / `background-color`，按 alpha 合成后算对比度（阈值 ≥4.5）；四处向导 | `.e2e/p20-contrast/` |
 | `p21-restore-pick.cjs` | 恢复第一步勾选反馈 | **取计算样式**（不查类名）：未选行 `rgba(0,0,0,0)` vs 选中行 12%/16% 底色 + `inset 2px` 左竖线；多选 2 行 + 已选清单 2 条；逐条 ×／清空后归零；亮暗双跑；零 pageerror | `.e2e/p21-restore-pick/` |
 
+> **恢复类探针入口变更（2026-10-28）**：恢复流程已并入快照浏览页（原 `/restore` 入口页与 `/restore/:id/{select-files,options,progress}` 三条路由删除，且不做 redirect 兼容）。p14 / p16 / p17 / p21 的入口统一改为 `/snapshots?restore=<id>`；其中 **p16 需在进页后再点一次「下一步」**（面板不再支持直达步骤 2，恒从步骤 1 起步），p14 的路由清单项由 `restore` 改为 `snapshots-restore`。
+
 ## 收录 / 退役规则
 
 **进**：绑定某个**验收门**、以后还会再跑、且断言能给出可复核数值（计算样式/像素/对比度/溢出量）的探针。

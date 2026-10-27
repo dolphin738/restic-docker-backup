@@ -127,7 +127,8 @@ function mountPage() {
     history: createMemoryHistory(),
     routes: [
       { path: '/snapshots', name: 'snapshots', component: SnapshotsPage },
-      { path: '/restore', name: 'restore', component: SnapshotsPage },
+      // 2026-10-28：`/restore` 已并入本页（原独立向导路由删除），此处不再设同名路由
+      { path: '/jobs', name: 'jobs', component: { template: '<div />' } },
     ],
   })
   lastRouter = router

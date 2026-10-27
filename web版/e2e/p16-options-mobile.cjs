@@ -95,8 +95,12 @@ const VIEWPORTS = [1440, 960, 768, 390];
 
   for (const width of VIEWPORTS) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto(`${BASE}/restore/${SNAPSHOT_ID}/options`, { waitUntil: 'networkidle' });
+    // 2026-10-28 恢复流程并入快照浏览页：`/restore/:id/options` 已删除，
+    // 面板总从步骤 1 起步，进选项页必须点一次「下一步」。
+    await page.goto(`${BASE}/snapshots?restore=${SNAPSHOT_ID}`, { waitUntil: 'networkidle' });
     await page.waitForSelector('.restore-flow__section', { timeout: 15000 });
+    await page.locator('button', { hasText: '下一步' }).first().click();
+    await page.waitForSelector('.restore-options', { timeout: 15000 });
     await page.waitForTimeout(600);
 
     const metrics = await page.evaluate(() => ({

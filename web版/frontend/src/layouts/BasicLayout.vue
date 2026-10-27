@@ -38,7 +38,6 @@ import {
   IconMoon,
   IconReports,
   IconRepo,
-  IconRestore,
   IconSettings,
   IconSnapshots,
   IconSun,
@@ -76,14 +75,14 @@ function withNIcon(icon: Component): () => VNodeChild {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
-/** 九个导航项（key = route.name，不得改名；R-026/Q2 退役备份源/策略；P2 批次 A 增设系统设置 + 审计日志）。 */
+/** 八个导航项（key = route.name，不得改名；R-026/Q2 退役备份源/策略；P2 批次 A 增设系统设置 + 审计日志；
+ *  2026-10-28 撤「恢复向导」项——恢复流程并入快照浏览页，入口在列表行内与文件树抽屉）。 */
 const navItems = computed<Record<string, MenuOption>>(() => ({
   dashboard: { label: t('nav.dashboard'), key: 'dashboard', icon: withNIcon(IconDashboard) },
   repo: { label: t('nav.repo'), key: 'repo', icon: withNIcon(IconRepo) },
   jobs: { label: t('nav.jobs'), key: 'jobs', icon: withNIcon(IconJobs) },
   reports: { label: t('nav.reports'), key: 'reports', icon: withNIcon(IconReports) },
   snapshots: { label: t('nav.snapshots'), key: 'snapshots', icon: withNIcon(IconSnapshots) },
-  restore: { label: t('nav.restore'), key: 'restore', icon: withNIcon(IconRestore) },
   notifications: { label: t('nav.notifications'), key: 'notifications', icon: withNIcon(IconBell) },
   settings: { label: t('nav.settings'), key: 'settings', icon: withNIcon(IconSettings) },
   audit: { label: t('nav.audit'), key: 'audit', icon: withNIcon(IconAudit) },
@@ -107,7 +106,7 @@ const groupedMenuOptions = computed<MenuOption[]>(() => [
     type: 'group',
     label: t('nav.group.data'),
     key: 'group-data',
-    children: [navItems.value.snapshots, navItems.value.restore],
+    children: [navItems.value.snapshots],
   },
   {
     type: 'group',

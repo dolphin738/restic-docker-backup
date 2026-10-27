@@ -16,7 +16,7 @@ import { createPinia } from 'pinia'
 import { h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import Options from '@/pages/restore/flow/options.vue'
+import Options from '@/pages/snapshots/restore/options.vue'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
 

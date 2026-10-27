@@ -16,7 +16,7 @@ import naive from 'naive-ui'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18n } from '@/i18n'
-import SelectFiles from '@/pages/restore/flow/select-files.vue'
+import SelectFiles from '@/pages/snapshots/restore/select-files.vue'
 
 // 只 mock 文件树/搜索两个 API：清单用例传 snapshotId=null 不会触发，
 // 树高度用例传 snapshotId 才会真的发请求并渲染树。

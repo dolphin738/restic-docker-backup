@@ -1,12 +1,14 @@
 /**
- * P9 恢复向导外壳护栏（方案 §4.8.5 R4/R10，风险 V-2）。
+ * 恢复面板护栏（2026-10-28 恢复流程并入快照浏览页后重写）。
  *
- * 存在理由：外壳把只读 `n-steps` 换成可跳步步骤条后，最容易坏的是三件事——
- * ① 未过步骤被跳过（必填未填就进了下一步）；② 跳步后 URL 与内容不同步；
- * ③ 进行中离开无确认。vue-tsc 查不到这三类语义，故在此锁死：
- *   - RestoreStepper：inactive 步骤**鼠标与键盘双向不可达**（V-2）；
- *   - 外壳：点步骤 → 路由 name 同步（select-files / options / progress）；
- *   - 外壳：脏态离开被拦截（confirm 返回 false 则不跳转）。
+ * 存在理由：原 `/restore/:id/*` 独立向导页已被删除，三步流程改由快照页抽屉承载，
+ * 面板不再持有路由。最容易**静默坏掉**的因此变成四件事，本规格逐条锁死：
+ *   ① 未过步骤仍被跳过（必填未填就进下一步）——步骤条 inactive，鼠标键盘双向不可达；
+ *   ② 预选失效：入口传入的快照 id 不再被选中的话，用户点「恢复」却恢复到别的快照；
+ *   ③ 面板一开就被判定为「脏」（原「有快照即脏」口径直接搬进抽屉 → 每次关闭都弹确认）；
+ *   ④ 步骤推进与提交链（含跨 OS 门、原位换算、host 形态恒等）行为回归。
+ *
+ * 布局/像素断言不在本规格范围（happy-dom 无 CSS 布局）。
  */
 
 import { flushPromises, mount } from '@vue/test-utils'
@@ -21,7 +23,8 @@ import ConfirmGate from '@/components/ConfirmGate.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import RestoreProgressRing from '@/components/restore/RestoreProgressRing.vue'
 import WizardStepper from '@/components/WizardStepper.vue'
-import WizardPage from '@/pages/restore/flow/index.vue'
+import RestorePanel from '@/pages/snapshots/restore/panel.vue'
+import SelectFiles from '@/pages/snapshots/restore/select-files.vue'
 import { i18n } from '@/i18n'
 import { useRuntimeStore } from '@/stores/runtime'
 import { lightThemeOverrides } from '@/theme/tokens'
@@ -132,85 +135,75 @@ describe('WizardStepper（P9 可跳步步骤条 / P20 全站统一步骤条）',
   })
 })
 
-/** 经 router-view 渲染的宿主：onBeforeRouteLeave 必须挂在有 active route record 的
- *  组件上才生效——直接 mount 组件会报「No active route record」且**守卫不注册**，
- *  离开确认用例会假失败（真实运行时组件由 router-view 渲染，无此问题）。 */
-const RouterHost = { template: '<router-view />' }
+/** 挂载恢复面板：抽屉容器在快照页，面板本身与路由无关（useRouter 只服务「前往任务历史」），
+ *  故这里只提供 router 插件实例、不渲染路由——面板不再读 route，也就没有「预选读不到」的假通过风险。 */
+async function mountPanel(props: { initialSnapshotId?: string | null } = { initialSnapshotId: 'snap-1' }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const pinia = createPinia()
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }],
+  })
+  // vue-router 4 的 isReady() 依赖「首次导航已完成」：不 push 会永久 pending，
+  // 表现为每个用例 5s 超时（本次实证），故先导航再等就绪。
+  await router.push('/')
+  await router.isReady()
+  const wrapper = mount(NConfigProvider, {
+    props: { themeOverrides: lightThemeOverrides },
+    slots: { default: () => h(NMessageProvider, null, { default: () => h(RestorePanel, props) }) },
+    global: {
+      plugins: [i18n, pinia, [VueQueryPlugin, { queryClient }], router],
+    },
+  })
+  return { wrapper, router, pinia }
+}
 
-/** 挂载向导：宿主路由注册三个步骤 name（契约与真实路由表一致）。 */
-async function mountWizard(initialPath: string) {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const pinia = createPinia()
-    const router = createRouter({
-      history: createMemoryHistory(),
-      routes: [
-        { path: '/restore/:id/select-files', name: 'restore-select-files', component: WizardPage },
-        { path: '/restore/:id/options', name: 'restore-options', component: WizardPage },
-        { path: '/restore/:id/progress', name: 'restore-progress', component: WizardPage },
-        { path: '/:pathMatch(.*)*', component: WizardPage },
-      ],
-    })
-    await router.push(initialPath)
-    await router.isReady()
-    const wrapper = mount(NConfigProvider, {
-      props: { themeOverrides: lightThemeOverrides },
-      slots: { default: () => h(NMessageProvider, null, { default: () => h(RouterHost) }) },
-      global: {
-        plugins: [i18n, pinia, [VueQueryPlugin, { queryClient }], router],
-      },
-    })
-    return { wrapper, router, pinia }
-  }
-
-describe('恢复向导外壳（P9 步骤 ↔ 路由 + 离开确认）', () => {
-  it('④ 进入 options 路由 → 步骤条当前步为第 2 步', async () => {
-    const { wrapper } = await mountWizard('/restore/snap-1/options')
+describe('恢复面板（步骤推进 + 预选 + 关闭脏判定）', () => {
+  it('① 打开即落在步骤 1，步骤条当前步为「选择文件」', async () => {
+    const { wrapper } = await mountPanel()
     await flushPromises()
-    expect(wrapper.findAll('.wizard-stepper__btn')[1].classes()).toContain('is-current')
+    expect(wrapper.findAll('.wizard-stepper__btn')[0].classes()).toContain('is-current')
   })
 
-  it('⑤ 点第 1 步跳回 → URL 同步到 select-files', async () => {
-    const { wrapper, router } = await mountWizard('/restore/snap-1/options')
+  it('② 预选生效：props 传入的快照 id 成为当前选中版本', async () => {
+    mocks.snapshots = [
+      { id: 'snap-1', time: '2026-10-01T00:00:00Z', host: 'host-a', tags: [], paths: ['/data'], size: 1024 },
+      { id: 'snap-2', time: '2026-10-02T00:00:00Z', host: 'host-a', tags: [], paths: ['/etc'], size: 2048 },
+    ]
+    const { wrapper } = await mountPanel({ initialSnapshotId: 'snap-1' })
     await flushPromises()
-    await wrapper.findAll('.wizard-stepper__btn')[0].trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.name).toBe('restore-select-files')
-    expect(router.currentRoute.value.params.id).toBe('snap-1')
+    // 版本下拉显示的是被预选的那一条（而非「最新的 snap-2」）
+    const select = wrapper.findComponent({ name: 'Select' })
+    expect(select.props('value')).toBe('snap-1')
   })
 
-  it('⑥ 未提交作业时第 3 步 inactive（不能跳到进度页）', async () => {
-    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+  it('③ 未提交作业时第 3 步 inactive（不能跳到进度页）', async () => {
+    const { wrapper } = await mountPanel()
     await flushPromises()
     expect(wrapper.findAll('.wizard-stepper__btn')[2].classes()).toContain('is-inactive')
   })
 
-  it('⑦ 跳步不弹离开确认（内部步骤切换不算离开，防误报回归）', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
-    try {
-      const { wrapper, router } = await mountWizard('/restore/snap-1/options')
-      await flushPromises()
-      await wrapper.findAll('.wizard-stepper__btn')[0].trigger('click')
-      await flushPromises()
-      expect(router.currentRoute.value.name).toBe('restore-select-files')
-      expect(confirmSpy).not.toHaveBeenCalled()
-    } finally {
-      vi.unstubAllGlobals()
-    }
+  it('④ 关闭脏判定：刚打开时 isDirty() === false（不与用户纠缠）', async () => {
+    const { wrapper } = await mountPanel()
+    await flushPromises()
+    // 面板一打开就默认选中快照——若沿用原「有快照即脏」口径，关闭必弹确认
+    // 注：wrapper 根是 NConfigProvider（与既有挂载方式一致），面板实例要 findComponent 取
+    const panel = wrapper.findComponent(RestorePanel)
+    expect((panel.vm as unknown as { isDirty: () => boolean }).isDirty()).toBe(false)
   })
 
-  it('⑧ 脏态离开被拦截：confirm 返回 false 则不跳转', async () => {
-    const confirmSpy = vi.fn(() => false)
-    vi.stubGlobal('confirm', confirmSpy)
-    try {
-      const { router } = await mountWizard('/restore/snap-1/select-files')
-      await flushPromises()
-      await router.push('/somewhere-else').catch(() => undefined)
-      expect(confirmSpy).toHaveBeenCalled()
-      expect(router.currentRoute.value.name).toBe('restore-select-files')
-    } finally {
-      vi.unstubAllGlobals()
-    }
+  it('⑤ 关闭脏判定：勾选文件后 isDirty() === true，清空后回到 false', async () => {
+    const { wrapper } = await mountPanel()
+    await flushPromises()
+    // 直接驱动子组件的勾选事件（树的行渲染由 VirtualTree 单测覆盖，此处只验面板脏态聚合）
+    const panel = wrapper.findComponent(RestorePanel)
+    const dirty = (): boolean => (panel.vm as unknown as { isDirty: () => boolean }).isDirty()
+    wrapper.findComponent(SelectFiles).vm.$emit('toggle-file', '/etc/passwd')
+    await flushPromises()
+    expect(dirty()).toBe(true)
+    wrapper.findComponent(SelectFiles).vm.$emit('clear-files')
+    await flushPromises()
+    expect(dirty()).toBe(false)
   })
 })
 
@@ -222,7 +215,7 @@ describe('P10 文件搜索框（R6 / B3 前端契约）', () => {
   it('B3-① 关键词 < 2 字符：不发请求', async () => {
     const { searchSnapshotFiles } = await import('@/api/snapshots')
     vi.mocked(searchSnapshotFiles).mockClear()
-    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    const { wrapper } = await mountPanel()
     await flushPromises()
     await wrapper.find('.restore__search input').setValue('a')
     await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_WAIT))
@@ -233,7 +226,7 @@ describe('P10 文件搜索框（R6 / B3 前端契约）', () => {
   it('B3-② 关键词 ≥2 字符：debounce 未到不发，过了才发', async () => {
     const { searchSnapshotFiles } = await import('@/api/snapshots')
     vi.mocked(searchSnapshotFiles).mockClear()
-    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    const { wrapper } = await mountPanel()
     await flushPromises()
     await wrapper.find('.restore__search input').setValue('etc')
     // debounce 未到：不应发请求
@@ -249,7 +242,7 @@ describe('P10 文件搜索框（R6 / B3 前端契约）', () => {
       { name: 'a.txt', type: 'file', path: '/data/a.txt', display_path: '/data/a.txt', size: 1 },
     ]
     mocks.searchTotal = 3
-    const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+    const { wrapper } = await mountPanel()
     await flushPromises()
     await wrapper.find('.restore__search input').setValue('data')
     await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_WAIT))
@@ -292,7 +285,7 @@ describe('P11 进度页三卡（R8 / SSE 终态）', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
 
     try {
-      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      const { wrapper } = await mountPanel()
       await flushPromises()
 
       // 步骤 1 → 步骤 2（select-files 页脚「下一步」）
@@ -332,7 +325,7 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
     const confirmSpy = vi.fn(() => false)
     vi.stubGlobal('confirm', confirmSpy)
     try {
-      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      const { wrapper } = await mountPanel()
       await flushPromises()
       await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
       await flushPromises()
@@ -358,7 +351,7 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
     // 确认门通过后进步骤 3，Progress 挂载会建 SSE——stub 掉（与 ④ 同口径）
     vi.stubGlobal('EventSource', FakeEventSource)
     try {
-      const { wrapper } = await mountWizard('/restore/snap-1/select-files')
+      const { wrapper } = await mountPanel()
       await flushPromises()
 
       await wrapper.findAll('button').find((b) => b.text().includes('下一步'))!.trigger('click')
@@ -390,7 +383,7 @@ describe('P16 恢复选项状态与提交前门（§4.9 V-6/V-7）', () => {
     vi.mocked(restoreSnapshot).mockClear()
     vi.stubGlobal('EventSource', FakeEventSource)
     try {
-      const { wrapper, pinia } = await mountWizard('/restore/snap-1/select-files')
+      const { wrapper, pinia } = await mountPanel()
       // host 形态：runtime 下发 inplace_root=/（展示形态已含主机前缀 → 换算恒等）
       const runtime = useRuntimeStore(pinia)
       runtime.deployMode = 'host'

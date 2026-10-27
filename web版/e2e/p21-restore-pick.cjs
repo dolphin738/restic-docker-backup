@@ -101,7 +101,7 @@ async function runTheme(browser, theme) {
     await route.fulfill({ json: {} });
   });
 
-  await page.goto(`${BASE}/restore/${SNAPSHOT_ID}/select-files`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/snapshots?restore=${SNAPSHOT_ID}`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.vtree__row', { timeout: 15000 });
   await page.waitForTimeout(500);
 

@@ -73,7 +73,7 @@ node e2e/p13-wizard-probe.cjs       # 退出码 0 = PASS；产物落 web版/.e2e
 
    自查（区分两类合法调用点，避免误伤时间戳路径既有注入点）：
 
-   `grep -rn "overwrite" backend/app frontend/src --include=*.py --include=*.ts --include=*.vue | grep -v "restic.py\|job_runner.py\|routers/restore.py\|services/compare.py\|constants.py\|locales\|pages/restore/index.vue\|overwrite_mode\|overwrite_count\|overwrite="` —— 应零命中。**末三项是收窄豁免**：请求/响应模型与前端请求出口必然出现 `overwrite_mode` / `overwrite_count` 这两个契约字段名、docstring 必然引用 `--overwrite=if-changed` 写法（均非覆盖能力入口），故只豁免这三个字面——**其他形态的 overwrite 命中仍属违规**（不整文件排除，避免放过真正的越界）；
+   `grep -rn "overwrite" backend/app frontend/src --include=*.py --include=*.ts --include=*.vue | grep -v "restic.py\|job_runner.py\|routers/restore.py\|services/compare.py\|constants.py\|locales\|pages/snapshots/restore/\|overwrite_mode\|overwrite_count\|overwrite="` —— 应零命中。**末三项是收窄豁免**（2026-10-28 起豁免目录由 `pages/restore/` 迁为 `pages/snapshots/restore/`——恢复流程并入快照页）：请求/响应模型与前端请求出口必然出现 `overwrite_mode` / `overwrite_count` 这两个契约字段名、docstring 必然引用 `--overwrite=if-changed` 写法（均非覆盖能力入口），故只豁免这三个字面——**其他形态的 overwrite 命中仍属违规**（不整文件排除，避免放过真正的越界）；
 
    辅助断言：`OVERWRITE_MODES` 是模式枚举唯一出处（`restic.py`）；`job_runner.py` 的 overwrite 透传点 ≤2（时间戳固定注入 + 原位 params 透传）。
 7. **[A1] DB 访问只在 `app/db/repositories/`**——路由层与服务层不得直接 import aiosqlite 或拼 SQL。**豁免仅限已合入的 `app/auth/`（独立 auth 模块，自成表边界）与 `routers/health.py` 探针；新增代码不得援引此豁免**。

@@ -23,7 +23,9 @@ const PAGES = [
   ['settings', '/settings'],
   ['jobs', '/jobs'],
   ['snapshots', '/snapshots'],
-  ['restore', '/restore'],
+  // 2026-10-28 恢复流程并入快照页（原 /restore 独立页删除）：本项改为验证
+  // 「快照页 + 恢复抽屉」组合的响应式溢出（抽屉是新的移动端风险面）。
+  ['snapshots-restore', () => `/snapshots?restore=${SNAPSHOTS[0].id}`],
   ['audit', '/audit'],
   ['notifications', '/notifications'],
 ];
@@ -158,7 +160,8 @@ const STUBS = {
     page.on('pageerror', (e) => errors.push(`${width}px ${page.url()} ${e.message}`));
 
     for (const [name, route] of PAGES) {
-      await page.goto(BASE + route, { waitUntil: 'domcontentloaded' });
+      const path = typeof route === 'function' ? route() : route;
+      await page.goto(BASE + path, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(1200);
       const o = await page.evaluate(() => ({
         sw: document.documentElement.scrollWidth,

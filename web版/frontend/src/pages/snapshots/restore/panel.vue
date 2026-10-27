@@ -1,9 +1,25 @@
 <script setup lang="ts">
+/** 恢复面板（原 `/restore` 独立向导页，2026-10-28 并入快照浏览页）。
+ *
+ * 形态：快照页右侧宽抽屉（`pages/snapshots/index.vue` 的「恢复」入口唤醒），
+ * 三步流程原样保留（选文件 → 恢复选项 → 执行与结果）。
+ *
+ * 与原独立页的差异（本次并入的全部改动面）：
+ *  - **不再持有路由**：步骤只是内部状态（1/2/3），不再与 `/restore/:id/*` 双向同步——
+ *    抽屉天生没有独立 URL，步骤可回退但不可深链；深链改由快照页 `?restore=<id>` 承担。
+ *  - **离开确认改为关闭确认**：原 `onBeforeRouteLeave` 由父级抽屉的 `@update:show` 拦截
+ *    （`isDirty` 经 defineExpose 暴露），`beforeunload` 仍在（刷新/关标签页仍属离开）。
+ *  - **「返回入口」改为「关闭」**：入口页已删除，`emit('close')` 交父级关抽屉。
+ *  - 预选源改 props `initialSnapshotId`（原 `route.params.id` / `query.snapshot` 双通道）。
+ *
+ * 保留不变：E19/E20 提交与预览、S7 覆盖语义四要件、确认门形态、三步骤组件边界。
+ */
+
 import { useQuery } from '@tanstack/vue-query'
 import { NAlert, NSpace, NText, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { listSnapshots } from '@/api/snapshots'
 import {
   INPLACE_TARGET_ROOT,
@@ -14,13 +30,21 @@ import {
 import type { JobDonePayload, RestorePreviewItem } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import WizardStepper from '@/components/WizardStepper.vue'
-import Options from '@/pages/restore/flow/options.vue'
-import Progress from '@/pages/restore/flow/progress.vue'
-import SelectFiles from '@/pages/restore/flow/select-files.vue'
+import Options from '@/pages/snapshots/restore/options.vue'
+import Progress from '@/pages/snapshots/restore/progress.vue'
+import SelectFiles from '@/pages/snapshots/restore/select-files.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { formatBytesOr } from '@/utils/format'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
+
+const props = defineProps<{
+  /** 预选快照 id（快照页点「恢复」时传该行 id）；null = 回落最新版本。
+   *  父级以 `v-if` + `:key` 重建本组件，故预选只在挂载时消费一次即可。 */
+  initialSnapshotId?: string | null
+}>()
+
+const emit = defineEmits<{ (e: 'close'): void }>()
 
 /** E20 覆盖预览单页条数（游标分页，配合「加载更多」续拉）。 */
 const PREVIEW_PAGE_SIZE = 200
@@ -29,7 +53,6 @@ const GATE_PREVIEW_LIMIT = 20
 
 const { t } = useI18n()
 const router = useRouter()
-const route = useRoute()
 const ui = useUiStore()
 
 const message = useMessage()
@@ -40,20 +63,8 @@ onUnmounted(() => ui.setMessageApi(null))
 const step = ref(1)
 /** 当前选中快照；列表加载后默认取最新版本，之后用户可自由改选。 */
 const snapshotId = ref<string | null>(null)
-/** 预选源（P8 路由重排后两个入口并存，语义一致：命中即预选，不命中回落最新）：
- *  ① `?snapshot=<id>` —— 快照页「恢复此快照」老直达（PRD §5 页面 8，兼容保留）；
- *  ② 路由参数 `:id` —— `/restore/:id/select-files` 新直达（入口页行动卡 + V-1 重定向）。
- *  缺省 null。 */
-function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === 'string' && value) {
-      return value
-    }
-  }
-  return null
-}
-
-const requestedSnapshotId = ref<string | null>(firstString(route.query.snapshot, route.params.id))
+/** 预选源：props `initialSnapshotId`（快照页点「恢复」时传该行 id）。缺省 null = 回落最新版本。 */
+const requestedSnapshotId = computed(() => props.initialSnapshotId ?? null)
 const gateShow = ref(false)
 const restoring = ref(false)
 const result = ref<{
@@ -460,23 +471,10 @@ function goJobs(): void {
   void router.push({ name: 'jobs' })
 }
 
-// ---------------------------------------------------------------- P9 向导外壳：步骤 ↔ 路由
+// ---------------------------------------------------------------- 步骤条（纯内部状态，不写 URL）
 
-/** 步骤 ↔ 路由名映射（P8 建路由骨架，P9 让 URL 与当前步骤真正同步）。
- *  语义映射：1=选快照/文件(select-files) 2=确认(options) 3=执行与结果(progress)。
- *  P10 步骤重组、P11 progress 三卡、2026-10-23 三步骤组件拆出均只改步骤内容，
- *  本映射与外壳不动。 */
-const STEP_ROUTE: Record<number, string> = {
-  1: 'restore-select-files',
-  2: 'restore-options',
-  3: 'restore-progress',
-}
-const ROUTE_STEP: Record<string, number> = {
-  'restore-select-files': 1,
-  'restore-options': 2,
-  'restore-progress': 3,
-}
-
+/** 步骤条三项：1=选快照/文件 2=恢复选项 3=执行与结果。
+ *  并入快照页后不再与路由双向同步（抽屉无独立 URL），步骤元数据只服务展示与跳步校验。 */
 const stepItems = computed(() => [
   { key: 1, title: t('restore.flow.stepSelectFiles') },
   { key: 2, title: t('restore.flow.stepOptions') },
@@ -490,33 +488,13 @@ const stepEnabled = computed<Record<number, boolean>>(() => ({
   3: Boolean(result.value),
 }))
 
-/** 路由 → 步骤：首次进入、浏览器前进/后退、入口页跳转都经此。 */
-watch(
-  () => route.name,
-  (name) => {
-    const next = ROUTE_STEP[String(name)]
-    if (next && next !== step.value) {
-      step.value = next
-    }
-  },
-  { immediate: true },
-)
-
-/** 步骤 → 路由：跳步与内部推进都经此，URL 始终反映当前步骤。 */
-watch(step, (value) => {
-  const name = STEP_ROUTE[value]
-  if (name && route.name !== name) {
-    void router.replace({ name, params: { id: route.params.id ?? snapshotId.value ?? '' } })
-  }
-})
-
 function onStepSelect(key: number): void {
   step.value = key
 }
 
-/** 返回恢复入口页（页脚左侧动作，P10 页脚两端对齐）。 */
-function goEntry(): void {
-  void router.push({ name: 'restore' })
+/** 关闭面板（原「返回恢复入口页」，入口页删除后语义即关闭抽屉，由父级执行）。 */
+function closePanel(): void {
+  emit('close')
 }
 
 // ---------------------------------------------------------------- P9 布局信号（对标 isSelectFilesPage）
@@ -531,34 +509,28 @@ const isFillHeight = computed(() => step.value === 1)
  *  步骤 2（options）保持 500px 居中列。 */
 const isWidePage = computed(() => step.value !== 2)
 
-// ---------------------------------------------------------------- P9 离开确认（R10）
+// ---------------------------------------------------------------- 关闭确认（原 R10 离开确认）
 
-/** 脏判定：已选快照/文件但未走完，或作业未到终态（走到终态即放行）。 */
-const leaveDirty = computed(() => {
-  if (step.value === 3) {
+/** 脏判定（并入抽屉后收紧口径）：面板一打开就默认选中快照，若沿用原「有快照即脏」，
+ *  用户每点一次关闭都会被拦一次——这正是并入后最容易招骂的噪声。
+ *  只有当用户**真的投入了操作**才算脏：已勾选文件 / 已进入选项步骤 / 已提交作业未到终态。 */
+const closeDirty = computed(() => {
+  if (result.value) {
     return !jobFinished.value
   }
-  return Boolean(snapshotId.value) || selectedFiles.value.size > 0
+  if (step.value >= 2) {
+    return true
+  }
+  return selectedFiles.value.size > 0
 })
 
-/** 路由级离开确认（侧栏导航、浏览器后退均覆盖）。
- *  沿用 `TaskWizard` 的 window.confirm 模式（E2 离开保护）：不新造弹窗组件，
- *  也不打断 naive 的消息队列。 */
-onBeforeRouteLeave((to) => {
-  // 向导**内部**步骤切换（跳步 / 内部推进写回 URL）不算「离开」，直接放行——
-  // 否则点步骤条跳一步就弹一次「确定离开吗」，是误报。
-  if (ROUTE_STEP[String(to.name)]) {
-    return true
-  }
-  if (!leaveDirty.value) {
-    return true
-  }
-  return window.confirm(t('restore.flow.leaveConfirm'))
-})
+/** 父级关闭抽屉前调用（`pages/snapshots/index.vue`）：true = 需二次确认。
+ *  沿用 `TaskWizard` 的 window.confirm 模式（E2 离开保护）：不新造弹窗组件。 */
+defineExpose({ isDirty: () => closeDirty.value })
 
 /** 关闭标签页/刷新：浏览器只认 preventDefault + returnValue，文案由浏览器提供。 */
 function onBeforeUnload(event: BeforeUnloadEvent): void {
-  if (!leaveDirty.value) {
+  if (!closeDirty.value) {
     return
   }
   event.preventDefault()
@@ -603,7 +575,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
           @remove-file="onRemoveFile"
           @clear-files="onClearFiles"
           @next="goConfirm"
-          @back="goEntry"
+          @back="closePanel"
         />
 
         <!-- 步骤 2：options 组件（P16 按 Duplicati options 重写：三折叠卡 +
@@ -723,7 +695,8 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
    内容区居中列——options 500px / select-files·progress 1000px 双档。 */
 .restore-flow__stepper {
   display: block;
-  margin: 24px 0 16px;
+  /* 抽屉内已是内容区顶部，不再需要原独立页的 24px 上边距 */
+  margin: 0 0 16px;
 }
 
 .restore-flow__section {

@@ -24,7 +24,8 @@ import {
 } from 'naive-ui'
 import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { useMediaQuery } from '@vueuse/core'
 import { getBackupTask, listBackupTasks } from '@/api/backupTasks'
 import { isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
@@ -38,16 +39,18 @@ import type {
   TagSnapshotsResponse,
 } from '@/api/types'
 import { previewPrune } from '@/api/prune'
-import { IconEdit, IconRestore, IconSearch } from '@/components/icons/icons'
+import { IconEdit, IconRestore, IconSearch, IconServer, IconUpload } from '@/components/icons/icons'
 import FilterBar from '@/components/FilterBar.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
+import RestorePanel from '@/pages/snapshots/restore/panel.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
 import { formatBytes, formatBytesOr } from '@/utils/format'
 
 const PAGE_SIZE = 20
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const message = useMessage()
 
 const page = ref(1)
@@ -177,13 +180,83 @@ function openTree(snapshot: SnapshotOut): void {
   treeShow.value = true
 }
 
-/** 「恢复此快照」直达恢复向导（PRD §5 页面 8）：快照 ID 走 query，由恢复页负责预选。 */
+// ---------------------------------------------------------------- 恢复流程抽屉（2026-10-28 并入快照页）
+// 原 `/restore` 入页与三步向导的独立路由已整体删除：三步流程组件（select-files /
+// options / progress）原样复用，容器换成快照页右侧宽抽屉，由**列表行内「恢复」**与
+// **文件树抽屉「恢复此快照」**两个入口唤醒。深链 `?restore=<id>` 同时是旧 `/restore*`
+// 地址的转址落点（见 router/index.ts 的两条 redirect）。
+
+const restoreShow = ref(false)
+/** 打开抽屉时的预选快照 id；null = 面板回落最新版本。 */
+const restoreSeedId = ref<string | null>(null)
+const restorePanelRef = ref<InstanceType<typeof RestorePanel> | null>(null)
+/** 抽屉宽度：桌面 1080（三步流程本身要 1000px 满宽列），移动端全屏。 */
+const isMobile = useMediaQuery('(max-width: 959px)')
+const restoreDrawerWidth = computed(() => (isMobile.value ? '100%' : '1080px'))
+
+function openRestore(snapshotId: string): void {
+  restoreSeedId.value = snapshotId
+  restoreShow.value = true
+  // 从文件树抽屉点「恢复此快照」时先收起它，避免两层抽屉叠遮罩
+  treeShow.value = false
+  if (route.query.restore !== snapshotId) {
+    void router.replace({ name: 'snapshots', query: { ...route.query, restore: snapshotId } })
+  }
+}
+
+/** 关闭（遮罩 / ESC / 右上角 X / 面板内「关闭」都汇到此处）：脏态先确认。
+ *  脏判定在面板内部（只有面板知道自己选了什么），这里只消费 `isDirty()`。 */
+function requestCloseRestore(): void {
+  if (restorePanelRef.value?.isDirty() && !window.confirm(t('restore.flow.leaveConfirm'))) {
+    return
+  }
+  restoreShow.value = false
+  restoreSeedId.value = null
+  if (route.query.restore) {
+    const query = { ...route.query }
+    delete query.restore
+    void router.replace({ name: 'snapshots', query })
+  }
+}
+
+/** n-drawer 的 show 统一经此：mask / ESC / X 都会触发 update:show(false)。 */
+function onRestoreShowUpdate(value: boolean): void {
+  if (value) {
+    restoreShow.value = true
+    return
+  }
+  requestCloseRestore()
+}
+
+/** 深链落点：`?restore=<id>`（含旧 `/restore*` 转址）自动开抽屉并预选。 */
+watch(
+  () => route.query.restore,
+  (value) => {
+    if (typeof value === 'string' && value) {
+      restoreSeedId.value = value
+      restoreShow.value = true
+    }
+  },
+  { immediate: true },
+)
+
+/** 「恢复此快照」（文件树抽屉内）：打开恢复面板（内部会收起文件树抽屉）。 */
 function restoreActiveSnapshot(): void {
   const snapshotId = activeSnapshot.value?.id
   if (!snapshotId) {
     return
   }
-  void router.push({ name: 'restore', query: { snapshot: snapshotId } })
+  openRestore(snapshotId)
+}
+
+/** 配置恢复入口（原恢复入口页「从配置恢复」卡）：复用设置页「配置导入导出」分区。 */
+function goSettingsTransfer(): void {
+  void router.push({ path: '/settings', hash: '#sec-transfer' })
+}
+
+/** 其他仓库恢复入口（原入口页「从其他仓库恢复」卡）：先换激活仓库，回本页再选快照。 */
+function goRepo(): void {
+  void router.push({ name: 'repo' })
 }
 
 function treeLoader(path: string, cursor?: string): Promise<TreePage> {
@@ -269,13 +342,22 @@ const columns = computed<DataTableColumns<SnapshotOut>>(() => [
   {
     title: '',
     key: 'actions',
-    width: 110,
+    // 110 → 190：2026-10-28 恢复流程并入本页，行内新增「恢复」按钮。
+    // 两个 tiny 按钮并排后宽度不足会被挤成两行、行高 40→61，故必须同步加宽。
+    width: 190,
     render: (row) =>
-      h(
-        NButton,
-        { size: 'tiny', secondary: true, onClick: () => openTree(row) },
-        () => t('snap.browse'),
-      ),
+      h(NSpace, { size: 8, wrap: false, justify: 'end' }, () => [
+        h(
+          NButton,
+          { size: 'tiny', secondary: true, onClick: () => openTree(row) },
+          () => t('snap.browse'),
+        ),
+        h(
+          NButton,
+          { size: 'tiny', type: 'primary', secondary: true, onClick: () => openRestore(row.id) },
+          () => t('snap.restore'),
+        ),
+      ]),
   },
 ])
 
@@ -502,6 +584,24 @@ async function applyTag(): Promise<void> {
     <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
 
     <n-card :title="t('nav.snapshots')" size="small">
+      <!-- 2026-10-28：原「恢复入口页」删除后，它的两张备选卡（从配置恢复 / 从其他仓库恢复）
+           收敛为本页顶部的两个轻量入口——不再单独占一页。 -->
+      <template #header-extra>
+        <n-space :size="4" :wrap="false">
+          <n-button size="tiny" quaternary @click="goSettingsTransfer">
+            <template #icon>
+              <n-icon :size="14"><IconUpload /></n-icon>
+            </template>
+            {{ t('snap.fromConfig') }}
+          </n-button>
+          <n-button size="tiny" quaternary @click="goRepo">
+            <template #icon>
+              <n-icon :size="14"><IconServer /></n-icon>
+            </template>
+            {{ t('snap.fromOtherRepo') }}
+          </n-button>
+        </n-space>
+      </template>
       <!-- 筛选器（共用形态层 FilterBar，与任务历史页同版式）：draft 值只在点「应用」后
            才落到查询参数，避免改一次下拉就打一次 restic。 -->
       <FilterBar :loading="snapshotsQuery.isFetching.value" @apply="applyFilters" @reset="resetFilters">
@@ -536,7 +636,7 @@ async function applyTag(): Promise<void> {
       <template v-else>
         <n-data-table
           size="small"
-          :scroll-x="860"
+          :scroll-x="940"
           :columns="columns"
           :data="snapshots"
           :loading="snapshotsQuery.isFetching.value"
@@ -802,6 +902,29 @@ async function applyTag(): Promise<void> {
           </n-space>
           <VirtualTree v-if="treeShow" root-path="/" :load-children="treeLoader" :height="520" />
         </n-space>
+      </n-drawer-content>
+    </n-drawer>
+
+    <!-- 恢复流程抽屉：三步流程组件（选文件 → 恢复选项 → 执行与结果）复用原独立页的全部实现。
+         入口 = 列表行内「恢复」/ 文件树抽屉「恢复此快照」/ 深链 `?restore=<id>`（旧 `/restore*` 转址落点）。
+         `v-if="restoreShow"` 让每次打开都重建面板：预选快照与步骤从 1 开始（关闭即弃状态）。 -->
+    <n-drawer
+      :show="restoreShow"
+      :width="restoreDrawerWidth"
+      placement="right"
+      @update:show="onRestoreShowUpdate"
+    >
+      <n-drawer-content
+        class="snap-restore-drawer"
+        :title="t('snap.restoreDrawerTitle', { id: (restoreSeedId ?? '').slice(0, 8) })"
+        closable
+      >
+        <RestorePanel
+          v-if="restoreShow"
+          ref="restorePanelRef"
+          :initial-snapshot-id="restoreSeedId"
+          @close="requestCloseRestore"
+        />
       </n-drawer-content>
     </n-drawer>
   </n-space>
