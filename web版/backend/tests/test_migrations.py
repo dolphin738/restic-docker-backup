@@ -313,3 +313,36 @@ async def test_rclone_credential_forms_table_exists(tmp_path):
     # 表内**不得**出现任何凭据列（形态记录不存密码）
     assert not (columns & {"password", "password2", "pass", "value", "secret"})
     await db.close()
+
+
+async def test_0009_repos_deleted_at_column(tmp_path):
+    """0009：`repos.deleted_at` 新增列（NULL = 未归档，归档只置位不删行）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {row[1] for row in (await db.fetch_all("PRAGMA table_info(repos)"))}
+    assert "deleted_at" in columns
+    # 既有行默认未归档（迁移不改写任何现存仓库的可达性）
+    row = await db.fetch_one("SELECT deleted_at FROM repos WHERE id = 'default'")
+    assert row["deleted_at"] is None
+    await db.close()
+
+
+async def test_0009_tombstone_and_rclone_archive_tables(tmp_path):
+    """0009：墓碑表 + rclone 段归档表结构（归档表**不含凭据明文列**，S3）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+
+    tomb = {row[1] for row in (await db.fetch_all("PRAGMA table_info(repo_tombstones)"))}
+    assert tomb == {
+        "repo_id", "name", "type", "url_display",
+        "archived_at", "snapshot_count", "data_destroyed", "released_at",
+    }
+
+    arch = {row[1] for row in (await db.fetch_all("PRAGMA table_info(rclone_config_archives)"))}
+    assert arch == {"remote", "type", "config_json", "deleted_at", "used_by_repos"}
+    # 值整体装在 config_json 里（API 永不回值），不得有逐字段的凭据列
+    assert not (arch & {"password", "pass", "token", "secret", "value"})
+
+    indexes = {row[1] for row in (await db.fetch_all("PRAGMA index_list(repos)"))}
+    assert "idx_repos_deleted_at" in indexes
+    await db.close()

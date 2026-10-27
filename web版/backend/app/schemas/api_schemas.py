@@ -1036,6 +1036,80 @@ class RepoOut(_Base):
     created_at: str
 
 
+class ArchivedRepoOut(_Base):
+    """归档仓库（仍可通过「恢复」一键还原：行、凭据、密码文件都还在）。"""
+
+    repo_id: str
+    name: str
+    type: str
+    url: str | None
+    archived_at: str
+    passfile_status: str
+
+
+class RepoTombstoneOut(_Base):
+    """墓碑（归档记录）：只记「这里曾经有过什么」，**不含密码与凭据**。
+
+    ``data_destroyed`` = 该仓库走过 ``purge_disk``（目录内容 + 密码文件已销毁）；
+    ``released_at`` 非空 = ID 已被手动释放（新仓库可复用该 id）。
+    """
+
+    repo_id: str
+    name: str
+    type: str
+    url_display: str | None
+    archived_at: str
+    snapshot_count: int | None
+    data_destroyed: bool
+    released_at: str | None
+
+
+class RepoRepointRequest(_Base):
+    """把引用某 rclone remote 的仓库批量改指向另一个 remote（受控出口）。
+
+    **只改 url 前缀**，不碰数据、不碰凭据；目标是删除被引用 remote 前的那条出路。
+    """
+
+    new_remote: str
+
+
+class RepoRepointOut(_Base):
+    """改指向结果：动过的仓库清单（id + 新地址）。"""
+
+    old_remote: str
+    new_remote: str
+    repos: list[dict[str, str]] = Field(default_factory=list)
+
+
+class RcloneArchiveItemOut(_Base):
+    """归档的 rclone 段（**零凭据回显**：只给键名清单，永不回值）。"""
+
+    remote: str
+    type: str
+    deleted_at: str
+    used_by_repos: int
+    keys: list[str] = Field(default_factory=list)
+
+
+class RcloneArchivesOut(_Base):
+    """归档页「rclone 配置归档」分区数据（最近删除在前）。"""
+
+    items: list[RcloneArchiveItemOut] = Field(default_factory=list)
+
+
+class ArchiveListOut(_Base):
+    """归档页「仓库归档」分区数据：可恢复的归档仓库 + 只剩记录的墓碑。"""
+
+    repos: list[ArchivedRepoOut] = Field(default_factory=list)
+    tombstones: list[RepoTombstoneOut] = Field(default_factory=list)
+
+
+class RepoReleaseRequest(_Base):
+    """释放归档仓库 ID：**必须原样输入仓库 id** 才算确认（不可逆地放弃找回）。"""
+
+    confirm_id: str
+
+
 class RcloneRemotesOut(_Base):
     """A1 rclone 只读探测结果（Q17 档位：不生成、不编辑、不展示 conf 内凭据）。
 
@@ -1063,6 +1137,49 @@ class RcloneConfigItemOut(_Base):
     params: dict[str, str]  # 非凭据参数（非 managed 段恒空）
     has_credentials: dict[str, bool]  # 凭据键 → 是否已配置
     credential_obscured: dict[str, bool | None] = {}  # 凭据键 → 落盘形态（None=未知）
+    used_by_repos: int = Field(
+        default=0,
+        description="直接引用本 remote 的仓库数（含归档仓库）；>0 时禁止删除（删除保护方案 P0，裁决 1/3）",
+    )
+
+
+class RepoUsageMirrorRef(_Base):
+    """占用明细里「把我当镜像目的地的任务」引用（不含凭据与地址）。"""
+
+    id: int
+    name: str
+
+
+class RepoUsageOut(_Base):
+    """仓库占用明细（删除保护方案 P1，裁决 5/6）：镜像引用 + 快照总数。
+
+    ``snapshot_total`` 为 ``null`` 表示**此刻不可知**（仓库未配置 / 探测失败），
+    前端必须显示「不可知」而非 0——0 会让用户误判「从没备过」而放心删除。
+    """
+
+    repo_id: str
+    mirror_refs: list[RepoUsageMirrorRef] = Field(default_factory=list)
+    snapshot_total: int | None = Field(default=None, ge=0)
+
+
+class RcloneUsageRepoRef(_Base):
+    """占用明细里的仓库引用（不含凭据与地址，避免扩大暴露面）。"""
+
+    id: str
+    name: str
+
+
+class RcloneRemoteUsageOut(_Base):
+    """rclone 远端占用明细（删除保护方案 P0，裁决 2）。
+
+    ``repos``：直接引用该 remote 的仓库；``dependent_remotes``：以该 remote 为
+    底层的 crypt 段名（传递依赖）；``crypt``：待查段自身是否 crypt。
+    """
+
+    remote: str
+    repos: list[RcloneUsageRepoRef] = Field(default_factory=list)
+    dependent_remotes: list[str] = Field(default_factory=list)
+    crypt: bool = False
 
 
 class RcloneConfigsOut(_Base):

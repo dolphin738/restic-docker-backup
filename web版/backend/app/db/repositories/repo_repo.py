@@ -18,7 +18,12 @@ from typing import Any
 
 from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from app.db.database import Database
-from app.errors import EnvOverriddenError, RepoNotEmptyError, ValidationError
+from app.errors import (
+    EnvOverriddenError,
+    RepoInUseAsMirrorError,
+    RepoNotEmptyError,
+    ValidationError,
+)
 from app.schemas.enums import ConfigSource, RepoType
 from app.utils.time import utc_iso
 
@@ -72,6 +77,9 @@ class Repo:
     url_source: str
     host_tag_source: str
     created_at: str
+    # 归档时刻（ISO 8601 UTC）；None = 在用。归档只置位，不删行、不动磁盘与凭据
+    # （《删除依赖与快照可用性保护方案》v1.2 §4 L4 / 迁移 0009）。
+    deleted_at: str | None = None
 
     @property
     def type(self) -> str:
@@ -93,26 +101,190 @@ class ReposRepo:
     # ---------------------------------------------------------------- 读
 
     async def get(self, repo_id: str) -> Repo | None:
-        """按 id 读取仓库；不存在返回 None。"""
+        """按 id 读取仓库；不存在返回 None。
+
+        **包含归档仓库**（``deleted_at`` 非空）：归档后仍要能只读浏览其快照，
+        故本方法不做过滤，由调用方按 ``deleted_at`` 自行决定语义。
+        """
         row = await self._db.fetch_one(
-            "SELECT id, name, url, host_tag, url_source, host_tag_source, created_at "
+            "SELECT id, name, url, host_tag, url_source, host_tag_source, created_at, deleted_at "
             "FROM repos WHERE id = ?",
             (repo_id,),
         )
         return _to_repo(row) if row else None
 
     async def list_all(self) -> list[Repo]:
-        """返回全部仓库（default 恒首位，其余按创建序）。"""
+        """返回**在用**仓库（default 恒首位，其余按创建序）。
+
+        归档仓库不在其中（删除保护方案 D8）：它们只出现在 :meth:`list_archived`
+        与归档页；备份/任务解析、切换器、配置导出都不应再看到它们。
+        """
         rows = await self._db.fetch_all(
-            "SELECT id, name, url, host_tag, url_source, host_tag_source, created_at "
-            "FROM repos ORDER BY (id = 'default') DESC, created_at ASC, id ASC"
+            "SELECT id, name, url, host_tag, url_source, host_tag_source, created_at, deleted_at "
+            "FROM repos WHERE deleted_at IS NULL ORDER BY (id = 'default') DESC, created_at ASC, id ASC"
         )
         return [_to_repo(row) for row in rows]
+
+    async def list_archived(self) -> list[Repo]:
+        """返回归档仓库（按归档时间倒序，最近归档在前）。"""
+        rows = await self._db.fetch_all(
+            "SELECT id, name, url, host_tag, url_source, host_tag_source, created_at, deleted_at "
+            "FROM repos WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id ASC"
+        )
+        return [_to_repo(row) for row in rows]
+
+    async def archive(self, repo_id: str) -> None:
+        """归档仓库：只置 ``deleted_at``，**不动磁盘数据、不清凭据、不删密码文件**。
+
+        这是「可一键原样恢复」的全部前提——凭据与口令还在，恢复后快照立即可读。
+        """
+        await self._db.write(
+            "UPDATE repos SET deleted_at = ? WHERE id = ?", (utc_iso(), repo_id)
+        )
+
+    async def restore(self, repo_id: str) -> None:
+        """撤销归档（``deleted_at`` 置空）。数据与凭据从未被删，故恢复即完成。"""
+        await self._db.write("UPDATE repos SET deleted_at = NULL WHERE id = ?", (repo_id,))
+
+    # ---------------------------------------------------------------- 墓碑（repo_tombstones）
+
+    async def insert_tombstone(
+        self,
+        *,
+        repo_id: str,
+        name: str,
+        repo_type: str,
+        url_display: str | None,
+        archived_at: str,
+        snapshot_count: int | None,
+        data_destroyed: bool,
+        released_at: str | None = None,
+    ) -> None:
+        """写墓碑（**不含密码与凭据**）：名称/类型/地址展示/归档时刻/当时快照数/是否已销毁数据。
+
+        只记「这里曾经有过什么」，绝不存恢复能力（守 §6 双轨红线：记录与数据解耦）。
+        """
+        await self._db.write(
+            "INSERT OR REPLACE INTO repo_tombstones "
+            "(repo_id, name, type, url_display, archived_at, snapshot_count, data_destroyed, released_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                repo_id,
+                name,
+                repo_type,
+                url_display,
+                archived_at,
+                snapshot_count,
+                1 if data_destroyed else 0,
+                released_at,
+            ),
+        )
+
+    async def list_tombstones(self) -> list[dict[str, Any]]:
+        """返回全部墓碑行（按归档时间倒序）。"""
+        rows = await self._db.fetch_all(
+            "SELECT repo_id, name, type, url_display, archived_at, snapshot_count, "
+            "data_destroyed, released_at FROM repo_tombstones "
+            "ORDER BY archived_at DESC, repo_id ASC"
+        )
+        return [dict(row) for row in rows]
+
+    async def delete_tombstone(self, repo_id: str) -> bool:
+        """删除墓碑记录（「删除记录」动作）。返回是否确有该行。"""
+        row = await self._db.fetch_one(
+            "SELECT 1 FROM repo_tombstones WHERE repo_id = ?", (repo_id,)
+        )
+        if row is None:
+            return False
+        await self._db.write("DELETE FROM repo_tombstones WHERE repo_id = ?", (repo_id,))
+        return True
+
+    async def release_id(self, repo_id: str, *, snapshot_count: int | None = None) -> list[str]:
+        """释放归档仓库的 ID：落墓碑（``released_at`` = 现在）后删除 ``repos`` 行。
+
+        释放后该 id 立即可被新仓库复用（:meth:`create` 只查 ``repos``）。语义上等于
+        用户声明「旧快照我不再通过本应用找回」——但**不删任何磁盘数据**，数据仍是
+        手工可救的（守 §6 红线：记录/数据分离）。
+
+        Returns:
+            被级联删除的终态作业 ``log_path`` 列表（同 :meth:`delete`）。
+        """
+        repo = await self.get(repo_id)
+        if repo is None:
+            return []
+        now = utc_iso()
+        await self.insert_tombstone(
+            repo_id=repo_id,
+            name=repo.name,
+            repo_type=repo.type,
+            url_display=repo.url,
+            archived_at=repo.deleted_at or now,
+            snapshot_count=snapshot_count,
+            data_destroyed=False,
+            released_at=now,
+        )
+        return await self._drop_row(repo_id)
+
+    async def hard_delete(
+        self,
+        repo_id: str,
+        *,
+        data_destroyed: bool,
+        snapshot_count: int | None = None,
+    ) -> list[str]:
+        """彻底删除仓库行（+ 终态作业级联），并留一条墓碑。
+
+        与 :meth:`delete` 的区别只在「留墓碑」：``data_destroyed=True`` 表示走了
+        ``purge_disk``（目录内容 + 密码文件已销毁，**不可恢复**）。
+        """
+        repo = await self.get(repo_id)
+        if repo is None:
+            return []
+        now = utc_iso()
+        await self.insert_tombstone(
+            repo_id=repo_id,
+            name=repo.name,
+            repo_type=repo.type,
+            url_display=repo.url,
+            archived_at=repo.deleted_at or now,
+            snapshot_count=snapshot_count,
+            data_destroyed=data_destroyed,
+        )
+        return await self._drop_row(repo_id)
+
+    async def _drop_row(self, repo_id: str) -> list[str]:
+        """删除仓库行并级联清终态作业行，返回被删作业的日志路径（不做前置校验）。"""
+        terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
+            (repo_id, *TERMINAL_JOB_STATUSES),
+        )
+        if rows:
+            await self._db.write(
+                f"DELETE FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
+                (repo_id, *TERMINAL_JOB_STATUSES),
+            )
+        await self._db.write("DELETE FROM repos WHERE id = ?", (repo_id,))
+        return [str(r["log_path"]) for r in rows]
 
     async def exists(self, repo_id: str) -> bool:
         """仓库是否存在（路由层 404 REPO_NOT_FOUND 判定的唯一实现点）。"""
         row = await self._db.fetch_one("SELECT 1 FROM repos WHERE id = ?", (repo_id,))
         return row is not None
+
+    async def list_rclone_backed(self) -> list[tuple[str, str, str]]:
+        """返回 ``url`` 以 ``rclone:`` 开头的仓库 ``[(id, name, url), ...]``。
+
+        删除保护方案 P0：供「删 rclone 段前扫引用」使用。**只做 SQL 过滤**
+        （``LIKE 'rclone:%'``），remote 段的精确比对由路由层完成——本层不解析
+        rclone 语义，避免仓储层与命令行语义耦合。
+        含归档仓库（``deleted_at`` 非空）一并返回，避免归档后引用被漏判。
+        """
+        rows = await self._db.fetch_all(
+            "SELECT id, name, url FROM repos WHERE url LIKE 'rclone:%' "
+            "ORDER BY (id = 'default') DESC, id ASC"
+        )
+        return [(str(row["id"]), str(row["name"]), str(row["url"] or "")) for row in rows]
 
     # ---------------------------------------------------------------- 写
 
@@ -191,16 +363,41 @@ class ReposRepo:
             raise RuntimeError(f"仓库 {repo_id} 更新后无法读回")
         return updated
 
+    async def list_mirror_refs(self, repo_id: str) -> list[tuple[int, str]]:
+        """返回把本仓当**镜像目的地**的任务 ``[(id, name), ...]``（删除保护方案 P1，裁决 5）。
+
+        ``mirror_repo_ids`` 是 **JSON 文本列**，故用 ``json_each`` 展开后按元素
+        **完整相等**比对——不用 ``LIKE '%"id"%'``（会把 ``foo`` 误命中 ``foobar``，
+        且手工维护的脏值/转义都会失真）。
+        """
+        rows = await self._db.fetch_all(
+            "SELECT backup_tasks.id AS id, backup_tasks.name AS name "
+        "FROM backup_tasks, json_each("
+        "  CASE WHEN backup_tasks.mirror_repo_ids IS NULL OR backup_tasks.mirror_repo_ids = '' "
+        "       THEN '[]' ELSE backup_tasks.mirror_repo_ids END"
+        ") WHERE json_each.value = ? ORDER BY backup_tasks.id",
+            (repo_id,),
+        )
+        return [(int(row["id"]), str(row["name"])) for row in rows]
+
     async def ensure_deletable(self, repo_id: str) -> None:
-        """删除前置校验（**零副作用**）：default 禁删；有任务/活跃作业即拒。
+        """删除前置校验（**零副作用**）：default 禁删；有任务/活跃作业即拒；**被镜像引用亦拒**。
 
         从 :meth:`delete` 抽出的独立入口，供路由层的 ``purge_disk`` 流程
         **先校验后清理**——rmtree 若发生在校验之后，「拒绝删除却已毁数据」
         会比原来的死循环更糟（典型：default 禁删，但数据已被清空）。
 
+        三门顺序**固定**（先廉后贵、先强后弱）：
+
+        1. default 禁删（不查库即可判定）；
+        2. 有备份任务或有活跃作业 → ``REPO_NOT_EMPTY``；
+        3. 被其他仓库任务当**镜像目的地** → ``REPO_IN_USE_AS_MIRROR``（删除保护方案 P1，
+           裁决 5：全量生效，不区分存量/新建）。
+
         Raises:
             ValidationError: default 仓库不可删。
             RepoNotEmptyError: 仓库下仍有备份任务或活跃作业。
+            RepoInUseAsMirrorError: 仍被其他备份任务作为镜像目的地引用。
         """
         if repo_id == DEFAULT_REPO_ID:
             raise ValidationError("默认仓库不可删除", data={"repo_id": repo_id})
@@ -214,6 +411,11 @@ class ReposRepo:
         active_jobs = int(row["active_jobs"]) if row else 0
         if tasks or active_jobs:
             raise RepoNotEmptyError(repo_id, tasks=tasks, active_jobs=active_jobs)
+
+        # 第三门：镜像引用（查询口径见 :meth:`list_mirror_refs`）
+        mirror_rows = await self.list_mirror_refs(repo_id)
+        if mirror_rows:
+            raise RepoInUseAsMirrorError(repo_id, tasks=mirror_rows)
 
     async def delete(self, repo_id: str) -> list[str]:
         """删除仓库，并级联清理其终态作业历史行（E41 v2，2026-10-21 修订）。
@@ -242,18 +444,7 @@ class ReposRepo:
             RepoNotEmptyError: 仓库下仍有备份任务或活跃作业。
         """
         await self.ensure_deletable(repo_id)
-        terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
-        rows = await self._db.fetch_all(
-            f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
-            (repo_id, *TERMINAL_JOB_STATUSES),
-        )
-        if rows:
-            await self._db.write(
-                f"DELETE FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
-                (repo_id, *TERMINAL_JOB_STATUSES),
-            )
-        await self._db.write("DELETE FROM repos WHERE id = ?", (repo_id,))
-        return [str(r["log_path"]) for r in rows]
+        return await self._drop_row(repo_id)
 
     # ---------------------------------------------------------------- env 同步专用（无写保护）
 
@@ -293,6 +484,8 @@ def _validate_repo_id(repo_id: str) -> None:
 
 def _to_repo(row: Any) -> Repo:
     """将 sqlite3.Row 转换为 :class:`Repo`。"""
+    keys = row.keys() if hasattr(row, "keys") else ()
+    deleted_at = row["deleted_at"] if "deleted_at" in keys else None
     return Repo(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -301,4 +494,5 @@ def _to_repo(row: Any) -> Repo:
         url_source=str(row["url_source"]),
         host_tag_source=str(row["host_tag_source"]),
         created_at=str(row["created_at"]),
+        deleted_at=None if deleted_at is None else str(deleted_at),
     )

@@ -110,9 +110,13 @@ BOOTSTRAP_REQUIRED = "BOOTSTRAP_REQUIRED"          # 403 首启未改密门
 TASK_RUNNING = "TASK_RUNNING"                      # 409 E35''：运行中/等待中任务拒绝删除
 REPO_NOT_FOUND = "REPO_NOT_FOUND"                  # 404 E34–E36：repo 作用域 id 不存在（P2 仅 default）
 REPO_NOT_EMPTY = "REPO_NOT_EMPTY"                  # 409 E41：仓库下仍有任务/历史任务，拒绝删除（R-023）
+# 409 仓库被其他仓库的备份任务当镜像目的地（删除保护方案 P1，裁决 5）
+REPO_IN_USE_AS_MIRROR = "REPO_IN_USE_AS_MIRROR"
 CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密文无法解密（密码文件被换/数据损坏）
 # 503 rclone 配置管理：二进制缺失 / 超时 / 事件循环不支持 / conf 不可写（含单文件挂载）
 RCLONE_UNAVAILABLE = "RCLONE_UNAVAILABLE"
+# 409 删除 rclone 段时仍有仓库 URL 引用该 remote，或有 crypt 段以它为底层（删除保护方案 P0）
+RCLONE_REMOTE_IN_USE = "RCLONE_REMOTE_IN_USE"
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
 ERROR_STATUS: dict[str, int] = {
@@ -138,8 +142,10 @@ ERROR_STATUS: dict[str, int] = {
     TASK_RUNNING: 409,
     REPO_NOT_FOUND: 404,
     REPO_NOT_EMPTY: 409,
+    REPO_IN_USE_AS_MIRROR: 409,
     CREDENTIAL_DECRYPT_FAILED: 500,
     RCLONE_UNAVAILABLE: 503,
+    RCLONE_REMOTE_IN_USE: 409,
 }
 
 # ---------------------------------------------------------------- 审计动作（§4.6 / §7.6）
@@ -179,6 +185,17 @@ AUDIT_REPO_REBUILD = "repo.rebuild"  # 自救通道：清空快照并用新密�
 # R-023 删除仓库：级联清除终态作业历史（jobs 行 + 日志文件）与该仓库凭据键——不可逆删除，
 # 入 S6 危险操作清单（15 项）；detail 只含计数与仓库名，不回显凭据（S3）。
 AUDIT_REPO_DELETE = "repo.delete"
+# 删除保护方案（《删除依赖与快照可用性保护方案》v1.2 §7.3）：
+# 归档 = 只置 deleted_at，凭据与密码文件保留 → 可一键原样恢复，入审计但**不入危险清单**；
+# 恢复同理。危险的是下面两条：purge 销毁数据 + 口令（不可逆）、id_release 让旧快照失去关联。
+AUDIT_REPO_ARCHIVE = "repo.archive"
+AUDIT_REPO_RESTORE = "repo.restore"
+AUDIT_REPO_PURGE = "repo.purge"  # 危险：清目录内容 + 删密码文件 + 落墓碑，不可恢复
+AUDIT_REPO_ID_RELEASE = "repo.id_release"  # 危险：释放归档仓库 ID，旧快照自此与应用失去关联
+AUDIT_REPO_PURGE_REMOTE_ACK = "repo.purge_remote_ack"  # 埋点：用户已确认远程数据需自行清理（detail 只含 id + 桶内路径）
+# 批量改指向（受控出口）：把引用某 remote 的仓库 url 前缀切到另一个 remote。
+# 属**纯配置写入**（无删除副作用），与 repo.update 同性质 → **不入 S6 危险清单**。
+AUDIT_REPO_REPOINT = "repo.repoint"
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_CONFIG_EXPORT = "config.export"  # 批次 E：配置导出（凭据口令加密，文件出系统边界，危险操作留痕）
@@ -198,6 +215,7 @@ AUDIT_KEY_ROTATE = "key.rotate"  # C4 多目的地：restic key 轮换仓库密�
 AUDIT_RCLONE_CONFIG_APPEND = "rclone.config_append"
 AUDIT_RCLONE_CONFIG_EDIT = "rclone.config_edit"
 AUDIT_RCLONE_CONFIG_DELETE = "rclone.config_delete"  # 含 OAuth 网盘段：删后需在宿主机重新授权
+AUDIT_RCLONE_CONFIG_RESTORE = "rclone.config_restore"  # 危险：把归档段写回 conf，直接决定后端可达性
 # E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
 AUDIT_TIME_SYNC = "time.sync"
 # R-020 裁决3：审计归档（压缩落盘，append-only 的「整段滚动导出」落地）
@@ -386,6 +404,18 @@ RETENTION_AUDIT_ARCHIVE_DIR_KEY = "retention.audit_archive_dir"
 RETENTION_AUDIT_ARCHIVE_COLD_TARGET_KEY = "retention.audit_archive_cold_target"
 # 归档单文件（按年切分、追加不覆盖）：audit-<YYYY>.jsonl.gz（同一年的每日维护都追加进同一文件）
 AUDIT_ARCHIVE_FILE_GLOB = "audit-*.jsonl.gz"
+
+# retention（删除保护方案 D16）：仓库归档生命周期，语义与 retention.audit_days 一致
+# - retention.repo_archive_days：活跃归档期，可一键原样恢复（缺省 30）
+# - retention.repo_tombstone_days：墓碑期，仅留元数据（缺省 365）
+# - retention.rclone_archive_days：rclone 段配置归档保留期（缺省 365）
+# 三者一律 ``<=0`` = 不启用自动清理（永久保留）
+RETENTION_REPO_ARCHIVE_DAYS_KEY = "retention.repo_archive_days"
+RETENTION_REPO_ARCHIVE_DAYS_DEFAULT = 30
+RETENTION_REPO_TOMBSTONE_DAYS_KEY = "retention.repo_tombstone_days"
+RETENTION_REPO_TOMBSTONE_DAYS_DEFAULT = 365
+RETENTION_RCLONE_ARCHIVE_DAYS_KEY = "retention.rclone_archive_days"
+RETENTION_RCLONE_ARCHIVE_DAYS_DEFAULT = 365
 
 # 缓存占用统计（E25，Q14 基线）：du 超时 + 30s 进程内结果缓存（援 E30 REPO_STATUS_CACHE_SECONDS 先例）
 CACHE_USAGE_TIMEOUT_SECONDS = 30.0

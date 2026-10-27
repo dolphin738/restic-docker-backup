@@ -28,10 +28,11 @@ utils/time）、S1（文件只触碰 ``settings.jobs_dir`` 与 ``audit_archive_d
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,10 +49,18 @@ from app.constants import (
     RETENTION_JOBS_DAYS_DEFAULT,
     RETENTION_JOBS_DAYS_KEY,
     RETENTION_LOGS_DAYS_KEY,
+    RETENTION_RCLONE_ARCHIVE_DAYS_DEFAULT,
+    RETENTION_RCLONE_ARCHIVE_DAYS_KEY,
+    RETENTION_REPO_ARCHIVE_DAYS_DEFAULT,
+    RETENTION_REPO_ARCHIVE_DAYS_KEY,
+    RETENTION_REPO_TOMBSTONE_DAYS_DEFAULT,
+    RETENTION_REPO_TOMBSTONE_DAYS_KEY,
 )
 from app.db.repositories.audit_repo import AuditRepo, AuditRow
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.rclone_archive_repo import RcloneArchiveRepo
+from app.db.repositories.repo_repo import ReposRepo
 from app.settings import Settings, get_settings
 from app.utils.time import now_utc, utc_iso
 
@@ -88,6 +97,20 @@ class AuditArchiveReport:
     archive_file: str | None
 
 
+@dataclass
+class ArchiveCleanupReport:
+    """一次归档生命周期清理的结果（删除保护方案 §5 三档）。
+
+    只记「记录」层面的变化：``repos_expired`` = 归档期到期转墓碑的仓库 id；
+    ``tombstones_deleted`` = 墓碑到期删除；``rclone_archives_expired`` = 配置归档到期删除。
+    **一个字节的备份数据都不会出现在这里**——数据永不自动删。
+    """
+
+    repos_expired: list[str] = field(default_factory=list)
+    tombstones_deleted: list[str] = field(default_factory=list)
+    rclone_archives_expired: list[str] = field(default_factory=list)
+
+
 class RetentionService:
     """任务历史/日志保留服务（挂调度器每日维护任务 ``maintenance-retention``）。"""
 
@@ -97,6 +120,9 @@ class RetentionService:
         config: ConfigRepo,
         audit: AuditRepo,
         settings: Settings | None = None,
+        *,
+        repos: ReposRepo | None = None,
+        rclone_archives: RcloneArchiveRepo | None = None,
     ) -> None:
         """构造保留服务。
 
@@ -110,6 +136,10 @@ class RetentionService:
         self._config = config
         self._audit = audit
         self._settings = settings or get_settings()
+        # 归档生命周期（删除保护方案 §5）：可选端口——测试基座不注入时整段跳过，
+        # 行为差异仅「不做归档到期清理」，既有 jobs/审计清理口径完全不变。
+        self._repos = repos
+        self._rclone_archives = rclone_archives
 
     async def cleanup_once(self, *, now: datetime | None = None) -> RetentionReport:
         """执行一次**完整**每日维护：jobs 清理 + 审计归档/清理 + 旧归档清理。
@@ -123,6 +153,8 @@ class RetentionService:
         report = await self._cleanup_jobs(moment)
         await self._archive_and_purge_audit(moment)
         await self._cleanup_old_archives(moment)
+        # 归档生命周期（删除保护方案 §5）：与审计保留同一挂载点，不另开调度域
+        await self.cleanup_archives(now=moment)
         return report
 
     async def cleanup_jobs_only(self, *, now: datetime | None = None) -> RetentionReport:
@@ -303,6 +335,85 @@ class RetentionService:
         archive_dir = await self._resolve_archive_dir()
         return await asyncio.to_thread(_list_archives_sync, archive_dir)
 
+    # ------------------------------------------------------------------ 归档生命周期（删除保护方案 §5）
+
+    async def cleanup_archives(self, *, now: datetime | None = None) -> ArchiveCleanupReport:
+        """按三个保留期键推进归档生命周期（每日维护的一部分）。
+
+        三档（与《删除依赖与快照可用性保护方案》§5 一一对应）：
+
+        1. ``retention.repo_archive_days``（缺省 30）到期 → 清**凭据 + 密码文件**、
+           仓库行转墓碑。**不碰磁盘数据**（数据自始至终不归应用删）。
+        2. ``retention.repo_tombstone_days``（缺省 365）到期 → 删墓碑记录。
+        3. ``retention.rclone_archive_days``（缺省 365）到期 → 删 rclone 配置归档。
+
+        三者 ``<=0`` 一律不启用（永久保留），与 ``retention.audit_days`` 同语义。
+
+        Returns:
+            :class:`ArchiveCleanupReport`（零删除也返回，便于调用方记录一条审计）。
+        """
+        moment = now or now_utc()
+        report = ArchiveCleanupReport()
+
+        if self._repos is not None:
+            archive_days = await self._resolve_days(
+                RETENTION_REPO_ARCHIVE_DAYS_KEY, RETENTION_REPO_ARCHIVE_DAYS_DEFAULT
+            )
+            if archive_days > 0:
+                cutoff = utc_iso(moment - timedelta(days=archive_days))
+                for repo in await self._repos.list_archived():
+                    if not repo.deleted_at or repo.deleted_at >= cutoff:
+                        continue
+                    # 先清恢复能力（凭据 + 口令文件），再把行转墓碑——顺序不能反：
+                    # 中途失败时行还在，下一轮还会重试（幂等）。
+                    for row in await self._config.list_all_raw():
+                        if (
+                            row.key.startswith(f"cred.{repo.id}.")
+                            and row.source != "env"
+                            and row.value
+                        ):
+                            await self._config.delete(row.key)
+                    await asyncio.to_thread(_unlink_passfile_sync, self._settings, repo.id)
+                    await self._repos.hard_delete(repo.id, data_destroyed=False)
+                    report.repos_expired.append(repo.id)
+
+            tomb_days = await self._resolve_days(
+                RETENTION_REPO_TOMBSTONE_DAYS_KEY, RETENTION_REPO_TOMBSTONE_DAYS_DEFAULT
+            )
+            if tomb_days > 0:
+                cutoff = utc_iso(moment - timedelta(days=tomb_days))
+                for row in await self._repos.list_tombstones():
+                    if str(row["archived_at"]) < cutoff:
+                        await self._repos.delete_tombstone(str(row["repo_id"]))
+                        report.tombstones_deleted.append(str(row["repo_id"]))
+
+        if self._rclone_archives is not None:
+            rclone_days = await self._resolve_days(
+                RETENTION_RCLONE_ARCHIVE_DAYS_KEY, RETENTION_RCLONE_ARCHIVE_DAYS_DEFAULT
+            )
+            if rclone_days > 0:
+                cutoff = utc_iso(moment - timedelta(days=rclone_days))
+                report.rclone_archives_expired = await self._rclone_archives.purge_older_than(cutoff)
+
+        if report.repos_expired or report.tombstones_deleted or report.rclone_archives_expired:
+            await self._audit.record(
+                AUDIT_RETENTION_CLEANUP,
+                target="archive",
+                detail={
+                    "repos_expired": len(report.repos_expired),
+                    "tombstones_deleted": len(report.tombstones_deleted),
+                    "rclone_archives_expired": len(report.rclone_archives_expired),
+                },
+                result="ok",
+            )
+            logger.info(
+                "归档生命周期清理：归档到期 %s / 墓碑删除 %s / rclone 归档到期 %s",
+                len(report.repos_expired),
+                len(report.tombstones_deleted),
+                len(report.rclone_archives_expired),
+            )
+        return report
+
     # ------------------------------------------------------------------ 配置读取
 
     async def _resolve_days(self, key: str, default: int, *, fallback_key: str | None = None) -> int:
@@ -428,6 +539,29 @@ def _list_archives_sync(archive_dir: Path) -> list[dict]:
         except OSError:
             continue
     return items
+
+
+def _unlink_passfile_sync(settings: Settings, repo_id: str) -> bool:
+    """删除某仓库的密码文件（归档期到期 = 放弃一键恢复能力），返回是否真的删掉。
+
+    **只删** ``<passfile_root>/<repo_id>/password``；目录仅在空时回收
+    （目录里若有用户手放的文件，不属应用管控范围——与 purge 同口径）。
+    失败静默（下一轮维护重试，幂等）。
+    """
+    try:
+        passfile = settings.passfile_path(repo_id)
+    except Exception:  # noqa: BLE001 - 路径派生失败不该拖垮维护任务
+        return False
+    removed = False
+    try:
+        passfile.unlink()
+        removed = True
+    except OSError:
+        pass  # 文件本不存在 / 无权限：保持原状
+    # 仅空目录 rmdir 成功；非空自然失败（目录里若有用户手放的文件，不属应用管控范围）
+    with contextlib.suppress(OSError):
+        passfile.parent.rmdir()
+    return removed
 
 
 def _unlink_paths_sync(paths: list[str]) -> int:

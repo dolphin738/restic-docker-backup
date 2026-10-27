@@ -21,6 +21,7 @@ import secrets
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
@@ -33,9 +34,15 @@ from app.constants import (
     AUDIT_RCLONE_CONFIG_APPEND,
     AUDIT_RCLONE_CONFIG_DELETE,
     AUDIT_RCLONE_CONFIG_EDIT,
+    AUDIT_RCLONE_CONFIG_RESTORE,
+    AUDIT_REPO_ARCHIVE,
     AUDIT_REPO_DELETE,
+    AUDIT_REPO_ID_RELEASE,
     AUDIT_REPO_PASSWORD_SET,
+    AUDIT_REPO_PURGE,
     AUDIT_REPO_REBUILD,
+    AUDIT_REPO_REPOINT,
+    AUDIT_REPO_RESTORE,
     AUDIT_REPO_TEST,
     KEY_OPERATION_TIMEOUT_SECONDS,
     REPO_ID_MAX_LENGTH,
@@ -49,20 +56,28 @@ from app.constants import (
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
 from app.errors import (
+    EnvOverriddenError,
     JobConflictError,
     NotFoundError,
+    RcloneRemoteInUseError,
     RcloneUnavailableError,
     RepoNotFoundError,
     ResticFailedError,
     ValidationError,
 )
 from app.schemas.api_schemas import (
+    ArchivedRepoOut,
+    ArchiveListOut,
     OkResponse,
+    RcloneArchiveItemOut,
+    RcloneArchivesOut,
     RcloneConfigItemOut,
     RcloneConfigsOut,
     RcloneConfigWriteOut,
     RcloneConfigWriteRequest,
     RcloneRemotesOut,
+    RcloneRemoteUsageOut,
+    RcloneUsageRepoRef,
     RepoCapacity,
     RepoCreateRequest,
     RepoIdSuggestion,
@@ -71,9 +86,15 @@ from app.schemas.api_schemas import (
     RepoOut,
     RepoPasswordRequest,
     RepoPasswordResponse,
+    RepoReleaseRequest,
+    RepoRepointOut,
+    RepoRepointRequest,
     RepoStatusResponse,
     RepoTestResponse,
+    RepoTombstoneOut,
     RepoUpdateRequest,
+    RepoUsageMirrorRef,
+    RepoUsageOut,
 )
 from app.services.env_sync import load_credentials, passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
@@ -325,6 +346,29 @@ def _validate_rclone_url_syntax(url: str) -> str:
     return remote
 
 
+def _rclone_remote_of(url: str) -> str | None:
+    """从 ``rclone:<remote>:<path>`` 宽松取出 remote 名；非 rclone 后端/语法不符返回 ``None``。
+
+    **与校验版的区别**：本函数用于扫描**既有**数据（可能含历史脏值），故不抛异常；
+    remote 段按**完整相等**比对（配合此处带尾冒号切分），杜绝 ``foo`` 误命中 ``foobar``。
+    """
+    text = (url or "").strip()
+    if not text.lower().startswith("rclone:"):
+        return None
+    head, sep, _ = text[len("rclone:") :].partition(":")
+    return head if sep and head else None
+
+
+def _count_remote_usage(backed: Sequence[tuple[str, str, str]]) -> dict[str, int]:
+    """按 remote 名聚合「直接引用它的仓库数」（含归档仓库，避免漏判）。"""
+    counts: dict[str, int] = {}
+    for _rid, _name, url in backed:
+        remote = _rclone_remote_of(url)
+        if remote:
+            counts[remote] = counts.get(remote, 0) + 1
+    return counts
+
+
 async def _validate_repo_url(url: str, probe: RcloneProbe) -> None:
     """仓库 URL 完整校验（语法 + rclone remote 存在性）。空地址跳过（允许日后再补）。
 
@@ -458,7 +502,7 @@ async def update_repo(
 @router.delete(
     "/repos/{repo_id}",
     response_model=OkResponse,
-    summary="R-023 删除仓库（default 禁删；有任务/活跃作业 409；终态历史级联清理；可选清空磁盘数据）",
+    summary="R-023 删除仓库（默认归档；hard=1 彻底删；purge_disk=1 销毁数据；三门守卫）",
     dependencies=_PROTECTED,
 )
 async def delete_repo(
@@ -466,23 +510,23 @@ async def delete_repo(
     request: Request,
     session: SessionContext = Depends(require_session),
     purge_disk: bool = False,
+    hard: bool = False,
 ) -> OkResponse:
-    """删除仓库：default 不可删；仍有 backup_tasks 或 running/pending 作业时 409
-    （先清理再删）；终态作业历史（jobs 行 + 日志文件）与该仓库的凭据键
-    （``cred.{repo_id}.*``，env 来源除外）随仓库一并移除。
+    """删除仓库，三条分支（《删除依赖与快照可用性保护方案》v1.2 裁决 D8/§5.1）：
 
-    ``purge_disk=true``（查询参数，默认 false）：删 DB 行**之前**先清空磁盘数据
-    （清空仓库目录**内容**、保留目录本身 + 删除该仓库密码文件并回收
-    ``<passfile_root>/<repo_id>/`` 空目录）。默认不清理——restic 仓库内的
-    物理快照与密码文件保留，重新添加同 id 仓库仍可复用；但**同址新建会撞上
-    打不开的旧仓库**（cat config 报「密码错误」），此时要么勾选本项干净重建，
-    要么走「重建仓库」。仅本地 FS 可自动清空：远程后端/未配置地址 → 422。
+    1. **默认 = 归档**（``deleted_at`` 置位）：行还在、**凭据与密码文件都保留**、
+       磁盘数据一个字节不动 → 归档期内一键原样恢复，快照立即可读。列表不再显示，
+       归档页可见。这正是「记录会过期、数据永不自动删」的落点。
+    2. ``hard=1`` = 彻底删除行（+ 终态作业级联）：**不保留可恢复能力**，但磁盘数据
+       仍原样留在原地（孤儿数据，供人工处置）；留不含凭据的墓碑。
+    3. ``purge_disk=1`` = 销毁数据：先清空仓库目录**内容** + 删密码文件，再删行；
+       与归档**互斥**（勾了就落不回归档），墓碑标 ``data_destroyed=1``。
 
-    清理刻意后置于删除前置校验（default 禁删 / 有任务或活跃作业 409）——
-    校验拒绝时数据必须原封不动，「拒绝删除却已毁数据」比不清理更糟。
+    三门守卫（default 禁删 / 仍有 backup_tasks / 仍有活跃作业）对三条分支一视同仁，
+    且**先于一切副作用**执行——校验拒绝时数据必须原封不动。
 
-    仓库不存在 → 404 ``REPO_NOT_FOUND``（先于删除校验，避免为无效 target 落审计）。
-    删除成功写审计 ``repo.delete``（S6 危险操作清单第 15 项）。
+    仓库不存在 → 404 ``REPO_NOT_FOUND``（先于校验，避免为无效 target 落审计）。
+    审计：归档 ``repo.archive``、彻底删 ``repo.delete``、销毁 ``repo.purge``。
     """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
@@ -491,11 +535,25 @@ async def delete_repo(
     existing = await repos_repo.get(repo_id)
     if existing is None:
         raise RepoNotFoundError(repo_id)
-    # 删除前置校验（default 禁删 + 无任务/无活跃作业）先于一切副作用——
+    # 删除前置校验（default 禁删 + 无任务/无活跃作业 + 未被镜像引用）先于一切副作用——
     # purge_disk 的磁盘清理尤其不能跑到校验前面
     await repos_repo.ensure_deletable(repo_id)
+
+    if not purge_disk and not hard:
+        # ---- 分支 1：归档（可逆，零数据风险）----
+        await repos_repo.archive(repo_id)
+        await request.app.state.audit.record(
+            AUDIT_REPO_ARCHIVE,
+            target=repo_id,
+            detail={"name": existing.name, "url": existing.url or ""},
+            result="ok",
+        )
+        invalidate_repo_status_cache()
+        invalidate_snapshot_catalog()
+        return OkResponse()
+
     purged = await _purge_repo_disk(request, repo_id, existing.url or "") if purge_disk else False
-    removed_logs = await repos_repo.delete(repo_id)
+    removed_logs = await repos_repo.hard_delete(repo_id, data_destroyed=purged)
     # 孤儿日志清理（口径同 retention：行没了，日志没有保留价值；缺失/失败静默跳过）
     if removed_logs:
         await asyncio.to_thread(_unlink_logs_sync, removed_logs)
@@ -508,9 +566,9 @@ async def delete_repo(
         cleared += 1
     if cleared:
         logger.info("仓库 %s 已删除：级联清理凭据键 %d 个", repo_id, cleared)
-    # 审计（S6 危险操作清单第 15 项）：只记计数与仓库名，不回显凭据（S3）
+    # 审计：只记计数与仓库名，不回显凭据（S3）。purge 入 S6 危险清单（不可逆销毁）。
     await request.app.state.audit.record(
-        AUDIT_REPO_DELETE,
+        AUDIT_REPO_PURGE if purged else AUDIT_REPO_DELETE,
         target=repo_id,
         detail={
             "name": existing.name,
@@ -521,6 +579,151 @@ async def delete_repo(
         result="ok",
     )
     invalidate_repo_status_cache()
+    # P0 L4-3：仓库行没了 → 该仓库的快照计数缓存随之失效（原先只清状态缓存）
+    invalidate_snapshot_catalog()
+    return OkResponse()
+
+
+@router.get(
+    "/archive/repos",
+    response_model=ArchiveListOut,
+    summary="归档页：仓库归档 + 墓碑清单（只读）",
+    dependencies=_PROTECTED,
+    tags=["repos"],
+)
+async def list_archive(request: Request, session: SessionContext = Depends(require_session)) -> ArchiveListOut:
+    """返回「可恢复的归档仓库」与「只剩记录的墓碑」。
+
+    刻意用 ``/archive/*`` 前缀而不是 ``/repos/archived``：``/repos/{repo_id}`` 已在
+    前面声明，FastAPI 按声明顺序匹配，``archived`` 会被当成 repo_id 吃掉。
+    """
+    del session
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    settings = request.app.state.settings
+    archived = await repos_repo.list_archived()
+    tombstones = await repos_repo.list_tombstones()
+    return ArchiveListOut(
+        repos=[
+            ArchivedRepoOut(
+                repo_id=repo.id,
+                name=repo.name,
+                type=repo.type,
+                url=repo.url,
+                archived_at=repo.deleted_at or "",
+                passfile_status=passfile_status(settings, repo.id),
+            )
+            for repo in archived
+        ],
+        tombstones=[
+            RepoTombstoneOut(
+                repo_id=str(row["repo_id"]),
+                name=str(row["name"]),
+                type=str(row["type"]),
+                url_display=None if row["url_display"] is None else str(row["url_display"]),
+                archived_at=str(row["archived_at"]),
+                snapshot_count=None if row["snapshot_count"] is None else int(row["snapshot_count"]),
+                data_destroyed=bool(row["data_destroyed"]),
+                released_at=None if row["released_at"] is None else str(row["released_at"]),
+            )
+            for row in tombstones
+        ],
+    )
+
+
+@router.post(
+    "/archive/repos/{repo_id}/restore",
+    response_model=OkResponse,
+    summary="恢复归档仓库（撤销归档；数据与凭据从未被删，故即刻可用）",
+    dependencies=_PROTECTED,
+    tags=["repos"],
+)
+async def restore_archived_repo(
+    repo_id: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """把归档仓库还原为「在用」：``deleted_at`` 置空，列表与切换器立刻可见。"""
+    del session
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    repo = await repos_repo.get(repo_id)
+    if repo is None:
+        raise RepoNotFoundError(repo_id)
+    if repo.deleted_at is None:
+        raise ValidationError("该仓库未归档，无需恢复", data={"repo_id": repo_id})
+    await repos_repo.restore(repo_id)
+    await request.app.state.audit.record(
+        AUDIT_REPO_RESTORE, target=repo_id, detail={"name": repo.name}, result="ok"
+    )
+    invalidate_repo_status_cache()
+    invalidate_snapshot_catalog()
+    return OkResponse()
+
+
+@router.post(
+    "/archive/repos/{repo_id}/release",
+    response_model=OkResponse,
+    summary="释放归档仓库 ID（需输入仓库 id 确认；旧快照自此与本应用失去关联）",
+    dependencies=_PROTECTED,
+    tags=["repos"],
+)
+async def release_archived_repo(
+    repo_id: str,
+    payload: RepoReleaseRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """释放 ID：删 ``repos`` 行（该 id 立即可被新仓库复用）+ 留墓碑 + 清凭据键。
+
+    **不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，只是本应用
+    不再持有入口。确认门槛是「原样输入仓库 id」，避免误点。
+    """
+    del session
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    config_repo: ConfigRepo = request.app.state.config_repo
+    repo = await repos_repo.get(repo_id)
+    if repo is None:
+        raise RepoNotFoundError(repo_id)
+    if (payload.confirm_id or "").strip() != repo_id:
+        raise ValidationError(
+            "请输入仓库 id 以确认释放", data={"repo_id": repo_id}
+        )
+    removed_logs = await repos_repo.release_id(repo_id)
+    if removed_logs:
+        await asyncio.to_thread(_unlink_logs_sync, removed_logs)
+    cleared = 0
+    for row in await config_repo.list_all_raw():
+        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
+            continue
+        await config_repo.delete(row.key)
+        cleared += 1
+    await request.app.state.audit.record(
+        AUDIT_REPO_ID_RELEASE,
+        target=repo_id,
+        detail={"name": repo.name, "removed_logs": len(removed_logs), "cleared_credentials": cleared},
+        result="ok",
+    )
+    invalidate_repo_status_cache()
+    invalidate_snapshot_catalog()
+    return OkResponse()
+
+
+@router.delete(
+    "/archive/tombstones/{repo_id}",
+    response_model=OkResponse,
+    summary="删除归档记录（墓碑）：只删记录，绝不删数据",
+    dependencies=_PROTECTED,
+    tags=["repos"],
+)
+async def delete_tombstone(
+    repo_id: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """删除墓碑行（「我连这里曾经有过什么也不想记」）。**不触碰任何数据**。"""
+    del session
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    if not await repos_repo.delete_tombstone(repo_id):
+        raise RepoNotFoundError(repo_id)
     return OkResponse()
 
 
@@ -727,7 +930,11 @@ async def rclone_configs(
     名字与 type，参数恒空（S3）。
     """
     del session
-    listing = await _rclone_config_service(request).list_configs()
+    service = _rclone_config_service(request)
+    listing = await service.list_configs()
+    # 一次仓库查询聚合出「每个 remote 被多少仓库引用」——列表页零额外探测（裁决 3）
+    backed = await request.app.state.repos_repo.list_rclone_backed()
+    used = _count_remote_usage(backed)
     return RcloneConfigsOut(
         conf_path=listing.conf_path,
         conf_present=listing.conf_present,
@@ -739,12 +946,252 @@ async def rclone_configs(
                 params=dict(item.params),
                 has_credentials=dict(item.has_credentials),
                 credential_obscured=dict(item.credential_obscured),
+                used_by_repos=used.get(item.remote, 0),
             )
             for item in listing.configs
         ],
         available=listing.available,
         reason=listing.reason,
     )
+
+
+@router.get(
+    "/rclone/config/{remote_name}/usage",
+    response_model=RcloneRemoteUsageOut,
+    summary="rclone 远端占用明细（引用仓库 + crypt 传递依赖）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def rclone_remote_usage(
+    remote_name: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneRemoteUsageOut:
+    """查询某 remote 被谁占用（**只读，零副作用**）。
+
+    供 rclone 面板「查看占用」弹窗渲染；与 :func:`delete_rclone_config` 的阻断判定
+    共用同一套匹配口径（remote 段完整相等），避免「提示说没人用、删时却 409」。
+    """
+    del session
+    service = _rclone_config_service(request)
+    backed = await request.app.state.repos_repo.list_rclone_backed()
+    usage = await service.inspect_usage(remote_name)
+    return RcloneRemoteUsageOut(
+        remote=remote_name,
+        repos=[
+            RcloneUsageRepoRef(id=rid, name=name)
+            for rid, name, url in backed
+            if _rclone_remote_of(url) == remote_name
+        ],
+        dependent_remotes=list(usage.dependent_remotes),
+        crypt=usage.crypt,
+    )
+
+
+@router.get(
+    "/repos/{repo_id}/usage",
+    response_model=RepoUsageOut,
+    summary="P1 仓库占用明细（被镜像引用 + 快照总数）",
+    dependencies=_PROTECTED,
+    tags=["repos"],
+)
+async def repo_usage(
+    repo_id: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RepoUsageOut:
+    """查询某仓库被谁占用（**只读，零副作用**），供删除确认门动态展示后果。
+
+    - ``mirror_refs``：把本仓当镜像目的地的任务清单（口径同 :meth:`ReposRepo.list_mirror_refs`）；
+    - ``snapshot_total``：仓库内快照**总条数**（走 ``SnapshotCatalog`` TTL 缓存，
+      含无 tag 的手工快照）；``null`` = 此刻不可知，**不可当 0 展示**。
+    """
+    del session
+    _validate_repo_id(repo_id)
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    existing = await repos_repo.get(repo_id)
+    if existing is None:
+        raise RepoNotFoundError(repo_id)
+    mirror_refs = await repos_repo.list_mirror_refs(repo_id)
+    catalog = getattr(request.app.state, "snapshot_catalog", None)
+    total: int | None = None
+    if catalog is not None and (existing.url or "").strip():
+        env = request.app.state.restic.build_env(
+            repo_url=(existing.url or "").strip(),
+            repo_id=repo_id,
+            env_extras=await load_credentials(request.app.state.config_repo, repo_id),
+        )
+        tally = await catalog.snapshot_tally(
+            restic=request.app.state.restic,
+            parser=request.app.state.parser,
+            repo_id=repo_id,
+            repo_url=(existing.url or "").strip(),
+            env=env,
+        )
+        if tally is not None:
+            total = tally.total
+    return RepoUsageOut(
+        repo_id=repo_id,
+        mirror_refs=[
+            RepoUsageMirrorRef(id=tid, name=name) for tid, name in mirror_refs
+        ],
+        snapshot_total=total,
+    )
+
+
+@router.post(
+    "/rclone/config/{remote_name}/repoint",
+    response_model=RepoRepointOut,
+    summary="批量改指向：把引用该 remote 的仓库切到另一个 remote（删除前的受控出口）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def repoint_rclone_remote(
+    remote_name: str,
+    payload: RepoRepointRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RepoRepointOut:
+    """把 ``rclone:<old>:<path>`` 的仓库 url 批量改成 ``rclone:<new>:<path>``。
+
+    这是「想删远端但还有仓库引用」时的正路：先改指向（快照仍可读，因为
+    conf 里新旧两个段指向同一后端），再删旧段。只改 url 前缀——**不动数据、不动凭据**。
+    地址被 env 覆盖的仓库（仅 default）拒绝参与（409 ENV_OVERRIDDEN，先改 env）。
+    """
+    del session
+    repos_repo: ReposRepo = request.app.state.repos_repo
+    new_remote = (payload.new_remote or "").strip()
+    if not new_remote or new_remote == remote_name:
+        raise ValidationError(
+            "目标远端名不能为空且不能与被替换者相同", data={"new_remote": new_remote}
+        )
+    backed = await repos_repo.list_rclone_backed()
+    refs = [(rid, name, url) for rid, name, url in backed if _rclone_remote_of(url) == remote_name]
+    if not refs:
+        raise ValidationError(
+            "没有任何仓库引用该远端，无需改指向", data={"remote": remote_name}
+        )
+    # 目标必须在册（否则改完仓库立刻不可达，比不改更糟）
+    listing = await _rclone_config_service(request).list_configs()
+    if new_remote not in {item.remote for item in listing.configs}:
+        raise ValidationError(
+            f"目标远端「{new_remote}」不在 rclone 配置中", data={"new_remote": new_remote}
+        )
+    for rid, _name, _url in refs:
+        repo = await repos_repo.get(rid)
+        if repo is not None and repo.url_source == "env":
+            raise EnvOverriddenError("url", data={"repo_id": rid})
+    updated: list[dict[str, str]] = []
+    for rid, _name, url in refs:
+        # rclone:<remote>:<path> → 保留 path，只换 remote 段
+        tail = url.split(":", 2)[2] if url.count(":") >= 2 else ""
+        new_url = f"rclone:{new_remote}:{tail}"
+        await repos_repo.update(rid, url=new_url)
+        updated.append({"id": rid, "url": new_url})
+    await request.app.state.audit.record(
+        AUDIT_REPO_REPOINT,
+        target=remote_name,
+        detail={"new_remote": new_remote, "repos": len(updated)},
+        result="ok",
+    )
+    invalidate_repo_status_cache()
+    invalidate_snapshot_catalog()
+    return RepoRepointOut(old_remote=remote_name, new_remote=new_remote, repos=updated)
+
+
+@router.get(
+    "/rclone/archives",
+    response_model=RcloneArchivesOut,
+    summary="rclone 配置归档清单（只回键名，永不回值）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def list_rclone_archives(
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneArchivesOut:
+    """列出已删除、仍可一键写回的配置段（D3：删除即自动归档，保留期默认 365 天）。"""
+    del session
+    archive_repo = request.app.state.rclone_archive_repo
+    return RcloneArchivesOut(
+        items=[
+            RcloneArchiveItemOut(
+                remote=item.remote,
+                type=item.type,
+                deleted_at=item.deleted_at,
+                used_by_repos=item.used_by_repos,
+                keys=item.keys,
+            )
+            for item in await archive_repo.list_all()
+        ]
+    )
+
+
+@router.post(
+    "/rclone/archives/{remote_name}/restore",
+    response_model=RcloneConfigWriteOut,
+    summary="写回归档的 rclone 段（一键恢复；同名段已存在则 409）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def restore_rclone_archive(
+    remote_name: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> RcloneConfigWriteOut:
+    """把归档段原样写回 conf（含混淆态凭据），成功后删除归档记录。
+
+    恢复后该 remote 的仓库立刻可再次访问（前提：底层 remote 仍在，crypt 链完整）。
+    """
+    del session
+    archive_repo = request.app.state.rclone_archive_repo
+    archive = await archive_repo.get(remote_name)
+    if archive is None:
+        raise NotFoundError(
+            f"未找到远端「{remote_name}」的配置归档", data={"remote": remote_name}
+        )
+    service = _rclone_config_service(request)
+    try:
+        result = await service.restore_section(remote_name, archive.config)
+    except RcloneConfigError as exc:
+        _raise_rclone_error(exc)
+    await archive_repo.delete(remote_name)
+    invalidate_repo_status_cache()
+    invalidate_snapshot_catalog()
+    await request.app.state.audit.record(
+        AUDIT_RCLONE_CONFIG_RESTORE,
+        target=remote_name,
+        detail={"type": result.type, "keys": len(archive.config)},
+        result="ok",
+    )
+    return RcloneConfigWriteOut(
+        remote=result.remote,
+        type=result.type,
+        conf_path=result.conf_path,
+        action=result.action,
+        remotes_after=list(result.remotes_after),
+    )
+
+
+@router.delete(
+    "/rclone/archives/{remote_name}",
+    response_model=OkResponse,
+    summary="删除 rclone 配置归档记录（只删记录，不碰 conf）",
+    dependencies=_PROTECTED,
+    tags=["rclone"],
+)
+async def delete_rclone_archive(
+    remote_name: str,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> OkResponse:
+    """清理归档记录（放弃这条后路）。conf 与其他数据一概不动。"""
+    del session
+    if not await request.app.state.rclone_archive_repo.delete(remote_name):
+        raise NotFoundError(
+            f"未找到远端「{remote_name}」的配置归档", data={"remote": remote_name}
+        )
+    return OkResponse()
 
 
 @router.post(
@@ -861,17 +1308,49 @@ async def delete_rclone_config(
     request: Request,
     session: SessionContext = Depends(require_session),
 ) -> RcloneConfigWriteOut:
-    """删除配置段（写 rclone ``config`` 的 delete 子命令；审计 ``rclone.config_delete``）。"""
+    """删除配置段（**有引用即 409**，删除保护方案 P0，裁决 1/2/3/4）。
+
+    顺序严守「先查后删」：①引用扫描（只读、零副作用）→ ②通过才落 rclone
+    命令 → ③成功后失效快照缓存。任一步拒绝时数据毫发无损（沿用
+    ``delete_repo`` 既有纪律）。
+
+    删除前顺手把**整段配置**归档（D3）：``delete()`` 内部本就要 dump 全段，
+    这里再取一次做快照，成本是一次已在缓存里的 dump；归档后可一键写回。
+    """
     del session
     service = _rclone_config_service(request)
+    # ① 引用扫描（只读）：直接引用 = 仓库 url；传递依赖 = 压在本 remote 上的 crypt 段
+    backed = await request.app.state.repos_repo.list_rclone_backed()
+    refs = tuple((rid, name) for rid, name, url in backed if _rclone_remote_of(url) == remote_name)
+    usage = await service.inspect_usage(remote_name)
+    if refs or usage.dependent_remotes:
+        raise RcloneRemoteInUseError(
+            remote_name,
+            repos=refs,
+            dependent_remotes=usage.dependent_remotes,
+            crypt=usage.crypt,
+        )
+    # 归档快照（**值等价于凭据**：只落 DB，绝不进响应/日志）
+    archived = await service.snapshot_section(remote_name)
     try:
         result = await service.delete(remote_name)
     except RcloneConfigError as exc:
         _raise_rclone_error(exc)
+    archive_repo = getattr(request.app.state, "rclone_archive_repo", None)
+    if archived and archive_repo is not None:
+        await archive_repo.save(
+            remote_name,
+            type_name=str(archived.get("type") or result.type),
+            config=archived,
+            used_by_repos=len(refs),
+        )
+    # ③ 段没了可能影响其他仓库可达性 → 一并失效快照缓存（P0 L4-3）
+    invalidate_snapshot_catalog()
+    invalidate_repo_status_cache()
     await request.app.state.audit.record(
         AUDIT_RCLONE_CONFIG_DELETE,
         target=remote_name,
-        detail={"type": result.type},
+        detail={"type": result.type, "archived_keys": len(archived or {})},
     )
     return RcloneConfigWriteOut(
         remote=result.remote,

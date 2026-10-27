@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from conftest import ORIGIN, finish_bootstrap
 
-from app.constants import AUDIT_REPO_DELETE
+from app.constants import AUDIT_REPO_ARCHIVE, AUDIT_REPO_DELETE, AUDIT_REPO_PURGE
 
 _SECRET = "s3cr3t-ak-value"
 
@@ -61,7 +61,7 @@ async def test_delete_repo_writes_audit_with_counts(app_client):
     log_path = await _insert_terminal_job(ns, "job-init-01", "r2")
     await ns.app.state.config_repo.set("cred.r2.ak", _SECRET)
 
-    resp = await ns.client.delete("/api/repos/r2", headers=ORIGIN)
+    resp = await ns.client.delete("/api/repos/r2?hard=1", headers=ORIGIN)
     assert resp.status_code == 200, resp.text
     assert resp.json()["code"] == "ok"
 
@@ -165,7 +165,8 @@ async def test_delete_with_purge_disk_clears_contents_keeps_dir(app_client, tmp_
     assert not passfile.exists()
     assert not passfile.parent.exists()
 
-    rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_DELETE)
+    # 销毁分支记 repo.purge（S6 危险清单），不再记 repo.delete
+    rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_PURGE)
     assert total == 1
     detail = json.loads(rows[0].detail or "{}")
     assert detail["purged_disk"] is True
@@ -254,7 +255,7 @@ async def test_delete_without_purge_keeps_disk_data(app_client, tmp_path):
     data_dir = await _seed_local_repo(ns, tmp_path, "r9")
     passfile = ns.app.state.settings.passfile_path("r9")
 
-    resp = await ns.client.delete("/api/repos/r9", headers=ORIGIN)
+    resp = await ns.client.delete("/api/repos/r9?hard=1", headers=ORIGIN)
     assert resp.status_code == 200, resp.text
 
     assert (await ns.app.state.repos_repo.get("r9")) is None
@@ -264,3 +265,188 @@ async def test_delete_without_purge_keeps_disk_data(app_client, tmp_path):
     rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_DELETE)
     detail = json.loads(rows[0].detail or "{}")
     assert detail["purged_disk"] is False
+
+
+# ---------------------------------------------------------------- 镜像引用保护（删除保护方案 P1，裁决 5）
+
+MIRROR_ERROR = "REPO_IN_USE_AS_MIRROR"
+
+
+async def _create_task(ns, repo_id: str, name: str, mirror_repo_ids: list[str]) -> None:
+    payload = {"name": name, "sources": ["/sources/data"], "mirror_repo_ids": mirror_repo_ids}
+    resp = await ns.client.post(f"/api/repos/{repo_id}/backup-tasks", json=payload, headers=ORIGIN)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def test_delete_repo_blocked_when_used_as_mirror(app_client):
+    """第三门：仓库仍被别仓任务当镜像目的地 → 409，删除未发生、无审计。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.create("mirror-target", "镜像目的地仓", url="/data/mirror")
+    await _create_task(ns, "default", "主任务", ["mirror-target"])
+
+    resp = await ns.client.delete("/api/repos/mirror-target", headers=ORIGIN)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == MIRROR_ERROR
+    # 阻断不留痕：审计表不得出现 repo.delete
+    assert await _audit_count(ns) == 0
+    # 仓库仍在
+    assert await ns.app.state.repos_repo.get("mirror-target") is not None
+
+
+async def test_delete_repo_allowed_when_no_mirror_reference(app_client):
+    """未被任何任务当镜像目的地 → 正常删除（不回归既有语义）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.create("plain-target", "普通仓", url="/data/plain")
+    await ns.app.state.repos_repo.create("other-repo", "其他仓", url="/data/other")
+    await _create_task(ns, "default", "主任务", ["other-repo"])
+
+    resp = await ns.client.delete("/api/repos/plain-target?hard=1", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    assert await _audit_count(ns) == 1
+    assert await ns.app.state.repos_repo.get("plain-target") is None
+
+
+# ---------------------------------------------------------------- 占用明细（删除门动态统计，裁决 6）
+
+
+async def test_repo_usage_lists_mirror_refs_and_snapshot_total(app_client, monkeypatch):
+    """占用明细：镜像引用清单 + 快照**总条数**（含无 tag 快照，故取 tally.total）。"""
+    from app.services.snapshot_catalog import SnapshotTally
+
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.create("used-repo", "被引用仓", url="/data/used")
+    await _create_task(ns, "default", "主任务", ["used-repo"])
+
+    class _StubCatalog:
+        async def snapshot_tally(self, **_kwargs):
+            # counts 求和 = 3，但 total = 5（2 条手工快照无 task tag）→ 必须回 5
+            return SnapshotTally(counts={"task-1": 2, "task-2": 1}, total=5)
+
+    monkeypatch.setattr(ns.app.state, "snapshot_catalog", _StubCatalog(), raising=False)
+
+    resp = await ns.client.get("/api/repos/used-repo/usage", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["repo_id"] == "used-repo"
+    assert [ref["name"] for ref in body["mirror_refs"]] == ["主任务"]
+    assert body["snapshot_total"] == 5
+
+
+async def test_repo_usage_unknown_repo_404(app_client):
+    """仓库不存在 → 404（与删除门同口径，不静默回空明细）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.get("/api/repos/nope/usage", headers=ORIGIN)
+    assert resp.status_code == 404, resp.text
+
+
+async def test_repo_usage_snapshot_total_null_when_unavailable(app_client, monkeypatch):
+    """探测不可用 → ``snapshot_total`` 为 null（**不可当 0**，否则用户误判「从没备过」）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await ns.app.state.repos_repo.create("dark-repo", "不可达仓", url="/data/dark")
+
+    class _StubCatalog:
+        async def snapshot_tally(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(ns.app.state, "snapshot_catalog", _StubCatalog(), raising=False)
+
+    resp = await ns.client.get("/api/repos/dark-repo/usage", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["snapshot_total"] is None
+
+
+# ---------------------------------------------------------------- 归档语义（删除保护方案 P2，裁决 D8）
+
+async def test_delete_default_archives_repo(app_client, tmp_path):
+    """默认 DELETE = **归档**：行还在（deleted_at 非空）、凭据与密码文件不动、数据不动。
+
+    「记录会过期，数据永不自动删」的第一条：这步唯一后果是列表不再显示它。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    data_dir = await _seed_local_repo(ns, tmp_path, "ra")
+    await ns.app.state.config_repo.set("cred.ra.ak", _SECRET)
+    passfile = ns.app.state.settings.passfile_path("ra")
+
+    resp = await ns.client.delete("/api/repos/ra", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+
+    repo = await ns.app.state.repos_repo.get("ra")
+    assert repo is not None and repo.deleted_at is not None
+    # 可恢复性全在：凭据 + 密码文件 + 磁盘数据
+    cred = await ns.app.state.config_repo.get("cred.ra.ak")
+    assert cred is not None and cred.value == _SECRET
+    assert passfile.read_text(encoding="utf-8") == "old-password"
+    assert data_dir.exists() and (data_dir / "config").exists()
+    # 列表不再返回它（归档页才有）
+    listed = [r.id for r in await ns.app.state.repos_repo.list_all()]
+    assert "ra" not in listed
+    assert [r.id for r in await ns.app.state.repos_repo.list_archived()] == ["ra"]
+    # 审计：repo.archive（非危险动作），且不产生 repo.delete
+    rows, total = await ns.app.state.audit.query(action=AUDIT_REPO_ARCHIVE)
+    assert total == 1 and rows[0].target == "ra"
+    assert await _audit_count(ns) == 0
+
+
+async def test_restore_archived_repo_reactivates(app_client, tmp_path):
+    """恢复归档：deleted_at 置空 → 重新出现在列表；凭据仍在（无需重建）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed_local_repo(ns, tmp_path, "rb")
+    await ns.client.delete("/api/repos/rb", headers=ORIGIN)
+
+    resp = await ns.client.post("/api/archive/repos/rb/restore", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    repo = await ns.app.state.repos_repo.get("rb")
+    assert repo is not None and repo.deleted_at is None
+    assert "rb" in [r.id for r in await ns.app.state.repos_repo.list_all()]
+
+
+async def test_release_id_requires_confirm_and_leaves_tombstone(app_client, tmp_path):
+    """释放 ID：必须原样输入仓库 id；成功后 id 可复用、留不含凭据的墓碑、**不删磁盘数据**。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    data_dir = await _seed_local_repo(ns, tmp_path, "rc")
+    await ns.app.state.config_repo.set("cred.rc.ak", _SECRET)
+    await ns.client.delete("/api/repos/rc", headers=ORIGIN)
+
+    bad = await ns.client.post("/api/archive/repos/rc/release", json={"confirm_id": "wrong"}, headers=ORIGIN)
+    assert bad.status_code == 422, bad.text
+
+    ok = await ns.client.post("/api/archive/repos/rc/release", json={"confirm_id": "rc"}, headers=ORIGIN)
+    assert ok.status_code == 200, ok.text
+
+    assert (await ns.app.state.repos_repo.get("rc")) is None
+    # id 可复用（repos 行已删）
+    await ns.app.state.repos_repo.create("rc", "新仓库")
+    # 墓碑留存，且不含凭据；磁盘数据未动
+    tombs = await ns.app.state.repos_repo.list_tombstones()
+    row = next(t for t in tombs if t["repo_id"] == "rc")
+    assert row["released_at"] is not None
+    assert "password" not in row and "cred" not in json.dumps(row, ensure_ascii=False)
+    assert data_dir.exists()
+
+
+async def test_archive_list_returns_repos_and_tombstones(app_client, tmp_path):
+    """归档页数据源：可恢复的归档仓库 + 墓碑（含 data_destroyed 标记）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed_local_repo(ns, tmp_path, "rd")
+    await ns.client.delete("/api/repos/rd", headers=ORIGIN)
+    await _seed_local_repo(ns, tmp_path, "re")
+    await ns.client.delete("/api/repos/re?purge_disk=true", headers=ORIGIN)
+
+    resp = await ns.client.get("/api/archive/repos", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    archived = {item["repo_id"]: item for item in body["repos"]}
+    assert "rd" in archived and archived["rd"]["archived_at"]
+    tombs = {item["repo_id"]: item for item in body["tombstones"]}
+    assert tombs["re"]["data_destroyed"] is True
+    assert "rd" not in tombs

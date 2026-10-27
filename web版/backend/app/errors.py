@@ -27,8 +27,10 @@ from app.constants import (
     PASSWORD_WRONG,
     PATH_OUT_OF_PREFIX,
     RATE_LIMITED,
+    RCLONE_REMOTE_IN_USE,
     RCLONE_UNAVAILABLE,
     READONLY_KEY,
+    REPO_IN_USE_AS_MIRROR,
     REPO_NOT_EMPTY,
     REPO_NOT_FOUND,
     RESTIC_FAILED,
@@ -360,4 +362,94 @@ class RepoNotEmptyError(AppError):
         super().__init__(
             detail,
             data={"repo_id": repo_id, "tasks": tasks, "active_jobs": active_jobs},
+        )
+
+
+class RcloneRemoteInUseError(AppError):
+    """409 rclone 远端仍被引用，拒绝删除（**删除保护方案 P0**，裁决 1/2/3/4）。
+
+    两类引用（命中任一即阻断）：
+
+    1. **直接引用**：某仓库 ``url`` 形如 ``rclone:<remote>:<path>``，且 remote 段
+       完整相等（带尾冒号匹配，避免 ``foo`` 误命中 ``foobar``）；
+    2. **传递依赖**：conf 内 ``type=crypt`` 段的 ``remote=<remote>:...``——crypt 是
+       独立段名，底层 remote 一删，加密层即废（crypt 密码丢失 = 永久不可读）。
+
+    ``data`` 携带 ``blockers`` 全部信息（远端名 / 引用仓库 / 依赖 crypt 段 / 是否
+    crypt 段），前端直接渲染「先处理这些」，无需二次请求。
+    """
+
+    code = RCLONE_REMOTE_IN_USE
+    status = ERROR_STATUS[RCLONE_REMOTE_IN_USE]
+    message = "该 rclone 远端仍被引用，请先处理后再删除"
+
+    def __init__(
+        self,
+        remote: str,
+        *,
+        repos: tuple[tuple[str, str], ...] = (),
+        dependent_remotes: tuple[str, ...] = (),
+        crypt: bool = False,
+    ) -> None:
+        """构造「远端被引用」错误。
+
+        Args:
+            remote: 待删除的 rclone 远端名（回显供前端定位）。
+            repos: 直接引用该 remote 的仓库 ``(id, name)``。
+            dependent_remotes: 以该 remote 为底层的 crypt 段名。
+            crypt: 待删段自身是否 crypt 类型（提示更严重：密码丢失不可逆）。
+        """
+        parts: list[str] = []
+        if repos:
+            names = "、".join(name or rid for rid, name in repos[:10])
+            parts.append(f"仍被 {len(repos)} 个仓库引用（{names}）")
+        if dependent_remotes:
+            names = "、".join(dependent_remotes[:10])
+            parts.append(f"仍被 {len(dependent_remotes)} 个 crypt 段作为底层（{names}）")
+        detail = f"rclone 远端「{remote}」" + "，".join(parts) if parts else f"rclone 远端「{remote}」仍被引用"
+        detail += "——请先删除或改指向这些仓库后再删除远端"
+        if crypt:
+            detail += "（该段为 crypt 加密层，密码丢失将导致数据永久不可读）"
+        super().__init__(
+            detail,
+            data={
+                "remote": remote,
+                "repos": [{"id": rid, "name": name} for rid, name in repos],
+                "dependent_remotes": list(dependent_remotes),
+                "crypt": crypt,
+            },
+        )
+
+
+class RepoInUseAsMirrorError(AppError):
+    """409 仓库仍被其他仓库的备份任务作为镜像目的地，拒绝删除（**删除保护方案 P1**，裁决 5）。
+
+    镜像仓是**跨仓引用**：``backup_tasks.mirror_repo_ids`` 是 JSON 文本列，删除主仓时
+    若它仍在别仓任务的镜像列表里，后续复制阶段会直接标失败
+    （运行期降级见 ``job_runner.py:820-828``）。与其让用户事后才发现，不如在删除
+    前给出引用任务清单。
+    """
+
+    code = REPO_IN_USE_AS_MIRROR
+    status = ERROR_STATUS[REPO_IN_USE_AS_MIRROR]
+    message = "该仓库仍被其他备份任务作为镜像目的地，请先处理后再删除"
+
+    def __init__(self, repo_id: str, *, tasks: tuple[tuple[int, str], ...] = ()) -> None:
+        """构造「仓库被镜像引用」错误。
+
+        Args:
+            repo_id: 被拒删的仓库 id。
+            tasks: 引用本仓为镜像目的地的任务 ``(id, name)``。
+        """
+        names = "、".join(name or str(tid) for tid, name in tasks[:10])
+        detail = (
+            f"仓库「{repo_id}」仍被 {len(tasks)} 个备份任务作为镜像目的地（{names}）——"
+            "请先从这些任务的镜像配置中移除本仓后再删除"
+        )
+        super().__init__(
+            detail,
+            data={
+                "repo_id": repo_id,
+                "tasks": [{"id": tid, "name": name} for tid, name in tasks],
+            },
         )

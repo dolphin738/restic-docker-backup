@@ -93,6 +93,19 @@ _SILENT_WRITE_LOSS_HINT = (
 
 RcloneExecutor = Callable[[Sequence[str]], Awaitable[tuple[int, str]]]
 
+# 归档段恢复时的凭据键提示：这些键的值等同凭据（conf 内是混淆态），
+# 恢复失败的任何报错都必须打码（S3）。只用于「登记脱敏」，不参与任何校验。
+_SECRET_KEY_HINTS = (
+    "pass",
+    "password",
+    "password2",
+    "token",
+    "bearer_token",
+    "client_secret",
+    "sas_url",
+    "key_file_pass",
+)
+
 
 # ---------------------------------------------------------------- 错误语义
 
@@ -303,6 +316,21 @@ class RcloneConfigItem:
 
 
 @dataclass(frozen=True)
+class RcloneRemoteUsage:
+    """一个 remote 的**引用占用情况**（删除保护方案 P0，裁决 4）。
+
+    Attributes:
+        remote: 远端名。
+        crypt: 待删段自身是否 crypt 类型（提示更严重：密码丢失不可逆）。
+        dependent_remotes: 以该 remote 为底层的 crypt 段名（**传递依赖**）。
+    """
+
+    remote: str
+    crypt: bool = False
+    dependent_remotes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RcloneConfigList:
     """查询结果的只读快照。"""
 
@@ -383,6 +411,31 @@ class RcloneConfigService:
             available=True,
             reason=None,
         )
+
+    async def inspect_usage(self, remote_name: str) -> RcloneRemoteUsage:
+        """扫描该 remote 的引用占用（**只读，零副作用**）。
+
+        两类命中任一即由调用方阻断：
+
+        1. 段自身为 crypt（``crypt=True``）：其密码不可导出后复原，删除即风险；
+        2. 存在以 ``<remote>:`` 为底层的 crypt 段（传递依赖）——底层一删，加密层即废。
+
+        注意 ``remote`` 值可能是本地绝对路径（rclone 允许 crypt 包裹本地目录），
+        此处只认 ``<remote>:`` 形态，与 :func:`classify_crypt_remote` 同口径。
+        """
+        sections = await self._dump_sections()
+        section = sections.get(remote_name)
+        crypt = bool(section) and str((section or {}).get("type", "")).strip().lower() == "crypt"
+        prefix = f"{remote_name}:"
+        dependents = tuple(
+            sorted(
+                name
+                for name, sec in sections.items()
+                if str(sec.get("type", "")).strip().lower() == "crypt"
+                and str(sec.get("remote", "")).strip().startswith(prefix)
+            )
+        )
+        return RcloneRemoteUsage(remote=remote_name, crypt=crypt, dependent_remotes=dependents)
 
     # ---- 写操作 ----
 
@@ -560,6 +613,62 @@ class RcloneConfigService:
             type=type_name,
             conf_path=self.conf_path,
             action="delete",
+            remotes_after=await self._listremotes_safe(),
+        )
+
+    # ---- 删除保护：删除前快照 + 归档恢复（《删除依赖与快照可用性保护方案》v1.2 D3） ----
+
+    async def snapshot_section(self, remote_name: str) -> dict[str, str] | None:
+        """读取某段的**完整 key-value**（删除前自动归档用）；段不存在返回 ``None``。
+
+        值保持 conf 原样（凭据在 conf 里本就是 rclone 混淆态，非明文），
+        故本方法的返回值**等价于凭据**：只允许落 ``rclone_config_archives``，
+        绝不经 API 回显、不进日志（S3）。
+        """
+        _check_remote_name(remote_name)
+        sections = await self._dump_sections()
+        section = sections.get(remote_name)
+        if not section:
+            return None
+        return {str(key): str(value) for key, value in section.items()}
+
+    async def restore_section(self, remote_name: str, params: Mapping[str, Any]) -> RcloneWriteResult:
+        """把归档的整段 key-value **原样写回** conf（一键恢复）。
+
+        与 :meth:`create` 的区别：不套字段注册表（归档段可能是任意 type，如 OAuth 网盘），
+        且落盘值已是 conf 形态 → 一律 ``--no-obscure``，避免把混淆产物再混淆一次。
+
+        Raises:
+            RcloneConfigConflict: 同名段已存在（先删或改名，不静默覆盖）。
+            RcloneConfigUnavailable: 写入后复核不到该段（单文件挂载静默丢写）。
+        """
+        _check_remote_name(remote_name)
+        type_name = str(params.get("type") or "").strip()
+        if not type_name:
+            raise RcloneConfigInvalid("归档内容缺少 type 字段，无法恢复该配置段")
+        args = [f"{key}={value}" for key, value in params.items() if key != "type"]
+        # 凭据原文登记脱敏（S3）：错误信息里出现的值一律打码
+        self._redactions = [
+            str(params[key])
+            for key in _SECRET_KEY_HINTS
+            if str(params.get(key) or "").strip()
+        ]
+        async with self._lock:
+            sections = await self._dump_sections()
+            if remote_name in sections:
+                raise RcloneConfigConflict(
+                    f"rclone 远端「{remote_name}」已存在，无法恢复同名段（请先删除或改名）"
+                )
+            await self._run(
+                [*self._rclone(), "config", "create", remote_name, type_name, *args, "--no-obscure"]
+            )
+            if remote_name not in await self._dump_sections():
+                raise RcloneConfigUnavailable(_SILENT_WRITE_LOSS_HINT.format(action="恢复"))
+        return RcloneWriteResult(
+            remote=remote_name,
+            type=type_name,
+            conf_path=self.conf_path,
+            action="restore",
             remotes_after=await self._listremotes_safe(),
         )
 

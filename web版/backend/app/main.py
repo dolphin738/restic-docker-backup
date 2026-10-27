@@ -50,6 +50,7 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.rclone_archive_repo import RcloneArchiveRepo
 from app.db.repositories.rclone_form_repo import RcloneFormRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.db.repositories.task_repo import TaskRepo
@@ -212,6 +213,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config_repo = ConfigRepo(db, encryption=encryption)
     # R-023 多仓库（P3-C）：repos 表为仓库事实源（0003 扩列）；TaskRepo 经它取 host_tag
     repos_repo = ReposRepo(db)
+    # 删除保护方案 D3：rclone 配置段删除自动归档（值等价于凭据 → 只落库、永不回显）
+    rclone_archive_repo = RcloneArchiveRepo(db)
     sessions = SessionService(db, settings)
     admin = AdminAccountStore(db, settings)
     auth_service = AuthService(audit, sessions, admin, settings)
@@ -258,7 +261,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 保留服务（R-020）与缓存服务（R-021）：retention 挂调度器每日维护任务；
     # cache_service 由 E25 路由经 app.state 消费
-    retention = RetentionService(job_repo, config_repo, audit, settings)
+    # 删除保护方案 §5：归档生命周期（归档期 / 墓碑 / rclone 归档三个保留期）挂同一个维护任务
+    retention = RetentionService(
+        job_repo,
+        config_repo,
+        audit,
+        settings,
+        repos=repos_repo,
+        rclone_archives=rclone_archive_repo,
+    )
     cache_service = CacheService(settings)
     # 覆盖比对服务（R-015 E20 预览 + 原位恢复审计计数；stateless，只持有依赖）
     compare_service = CompareService(restic_cmd, parser, config_repo, repos_repo=repos_repo)
@@ -314,6 +325,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.notifier = notifier
     app.state.rclone_probe = rclone_probe
     app.state.rclone_config_service = rclone_config_service
+    app.state.rclone_archive_repo = rclone_archive_repo
     app.state.snapshot_catalog = snapshot_catalog
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）

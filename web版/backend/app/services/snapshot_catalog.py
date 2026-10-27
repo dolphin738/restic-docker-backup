@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 
 from app.constants import (
     SNAPSHOT_COUNT_BACKOFF_MAX_SECONDS,
@@ -33,8 +34,24 @@ from app.services.restic import ResticCmd, WhitelistArgs
 
 logger = logging.getLogger(__name__)
 
-# 进程内 TTL 缓存：{repo_id: (monotonic_ts, counts|None, ttl_seconds, consecutive_failures)}
-_tag_counts_cache: dict[str, tuple[float, dict[str, int] | None, float, int]] = {}
+
+@dataclass(frozen=True)
+class SnapshotTally:
+    """一次快照列表探测的汇总（只读快照）。
+
+    Attributes:
+        counts: ``{tag: 快照数}``（同一快照带多个 tag 时各 tag 各计一次）。
+        total: 仓库内快照**总条数**——**含**无 tag / 被 ``tag --remove`` 摘掉
+            task tag 的手工快照，故 ``total >= sum(counts.values())``。
+            删除门/归档页显示「快照数」必须取 ``total``（裁决 D6）。
+    """
+
+    counts: dict[str, int] = field(default_factory=dict)
+    total: int = 0
+
+
+# 进程内 TTL 缓存：{repo_id: (monotonic_ts, tally|None, ttl_seconds, consecutive_failures)}
+_tag_counts_cache: dict[str, tuple[float, SnapshotTally | None, float, int]] = {}
 
 
 class SnapshotCatalog:
@@ -50,6 +67,52 @@ class SnapshotCatalog:
         self._cache_seconds = SNAPSHOT_LIST_CACHE_SECONDS if cache_seconds is None else cache_seconds
         self._timeout_seconds = SNAPSHOT_COUNT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
         self._lock = asyncio.Lock()
+
+    async def _cached_tally(
+        self,
+        *,
+        restic: ResticCmd,
+        parser: OutputParser,
+        repo_id: str,
+        repo_url: str,
+        env: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> SnapshotTally | None:
+        """带 TTL/退避的缓存层：一次探测、按 repo_id 复用（未命中的实现见 :meth:`_probe`）。"""
+        if not (repo_url or "").strip():
+            return None
+
+        cached = _tag_counts_cache.get(repo_id)
+        if cached is not None and time.monotonic() - cached[0] < cached[2]:
+            return cached[1]
+
+        async with self._lock:
+            cached = _tag_counts_cache.get(repo_id)  # 双检：等锁期间可能已被刷新
+            if cached is not None and time.monotonic() - cached[0] < cached[2]:
+                return cached[1]
+            prev_failures = cached[3] if cached is not None else 0
+            try:
+                tally = await self._probe(
+                    restic=restic,
+                    parser=parser,
+                    repo_url=repo_url,
+                    env=env,
+                    timeout_seconds=timeout_seconds or self._timeout_seconds,
+                )
+            except Exception:  # 探测异常（子进程启动失败等）不冒泡：卡片字段降级为 null
+                logger.warning("快照列表探测异常（snapshot_count 降级为 null）：repo=%s", repo_id, exc_info=True)
+                tally = None
+
+            if tally is None:
+                # 失败/不可知：指数退避（首次失败即 2× 起跳，避免立刻再白等一次超时）
+                failures = prev_failures + 1
+                ttl = min(SNAPSHOT_COUNT_BACKOFF_MAX_SECONDS, self._cache_seconds * (2**failures))
+                logger.warning("快照计数不可用（第 %s 次失败，%.0fs 内不再探测）：repo=%s", failures, ttl, repo_id)
+                _tag_counts_cache[repo_id] = (time.monotonic(), None, ttl, failures)
+                return None
+
+            _tag_counts_cache[repo_id] = (time.monotonic(), tally, self._cache_seconds, 0)
+            return tally
 
     async def counts_by_tag(
         self,
@@ -75,40 +138,39 @@ class SnapshotCatalog:
             ``{tag: count}``（同一快照带多个 tag 时各 tag 各计一次）；
             ``None`` = 不可用（未配置 / 探测失败 / 探测异常）。
         """
-        if not (repo_url or "").strip():
-            return None
+        tally = await self._cached_tally(
+            restic=restic,
+            parser=parser,
+            repo_id=repo_id,
+            repo_url=repo_url,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+        return tally.counts if tally is not None else None
 
-        cached = _tag_counts_cache.get(repo_id)
-        if cached is not None and time.monotonic() - cached[0] < cached[2]:
-            return cached[1]
+    async def snapshot_tally(
+        self,
+        *,
+        restic: ResticCmd,
+        parser: OutputParser,
+        repo_id: str,
+        repo_url: str,
+        env: dict[str, str],
+        timeout_seconds: float | None = None,
+    ) -> SnapshotTally | None:
+        """返回 ``SnapshotTally``（含**总条数**）；不可用时返回 ``None``。
 
-        async with self._lock:
-            cached = _tag_counts_cache.get(repo_id)  # 双检：等锁期间可能已被刷新
-            if cached is not None and time.monotonic() - cached[0] < cached[2]:
-                return cached[1]
-            prev_failures = cached[3] if cached is not None else 0
-            try:
-                counts = await self._probe(
-                    restic=restic,
-                    parser=parser,
-                    repo_url=repo_url,
-                    env=env,
-                    timeout_seconds=timeout_seconds or self._timeout_seconds,
-                )
-            except Exception:  # 探测异常（子进程启动失败等）不冒泡：卡片字段降级为 null
-                logger.warning("快照列表探测异常（snapshot_count 降级为 null）：repo=%s", repo_id, exc_info=True)
-                counts = None
-
-            if counts is None:
-                # 失败/不可知：指数退避（首次失败即 2× 起跳，避免立刻再白等一次超时）
-                failures = prev_failures + 1
-                ttl = min(SNAPSHOT_COUNT_BACKOFF_MAX_SECONDS, self._cache_seconds * (2**failures))
-                logger.warning("快照计数不可用（第 %s 次失败，%.0fs 内不再探测）：repo=%s", failures, ttl, repo_id)
-                _tag_counts_cache[repo_id] = (time.monotonic(), None, ttl, failures)
-                return None
-
-            _tag_counts_cache[repo_id] = (time.monotonic(), counts, self._cache_seconds, 0)
-            return counts
+        删除门与归档页展示「快照数」应取 :attr:`SnapshotTally.total`——
+        tag 求和只覆盖带 tag 的快照，会漏计手工备份或摘掉 task tag 的快照。
+        """
+        return await self._cached_tally(
+            restic=restic,
+            parser=parser,
+            repo_id=repo_id,
+            repo_url=repo_url,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def _probe(
         self,
@@ -118,8 +180,8 @@ class SnapshotCatalog:
         repo_url: str,
         env: dict[str, str],
         timeout_seconds: float,
-    ) -> dict[str, int] | None:
-        """执行一次 ``restic snapshots --json`` 并按 tag 分组计数（未缓存实现）。"""
+    ) -> SnapshotTally | None:
+        """执行一次 ``restic snapshots --json`` → 按 tag 分组计数 + 总条数（未缓存实现）。"""
         argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
         probe = await restic.run_json(argv, env=env, timeout_seconds=timeout_seconds)
         if probe.exit_code != 0:
@@ -130,13 +192,12 @@ class SnapshotCatalog:
             )
             return None
         records = await asyncio.to_thread(parser.parse_snapshot_list, "\n".join(probe.lines))
+        valid = [record for record in records if record.snapshot_id]
         counts: dict[str, int] = {}
-        for record in records:
-            if not record.snapshot_id:
-                continue
+        for record in valid:
             for tag in record.tags:
                 counts[tag] = counts.get(tag, 0) + 1
-        return counts
+        return SnapshotTally(counts=counts, total=len(valid))
 
 
 def invalidate_snapshot_catalog() -> None:

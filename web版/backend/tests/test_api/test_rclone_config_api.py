@@ -277,3 +277,159 @@ async def test_cli_unavailable_maps_to_503(app_client):
     )
     assert resp.status_code == 503, resp.text
     assert "目录挂载" in resp.text or "permission" in resp.text
+
+
+# ---------------------------------------------------------------- 删除保护（删除依赖与快照可用性保护方案 P0）
+
+
+async def _create_rclone_repo(ns, repo_id: str, name: str, url: str) -> None:
+    resp = await ns.client.post("/api/repos", json={"id": repo_id, "name": name, "url": url}, headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+
+
+async def test_delete_remote_in_use_by_repo_409_with_blockers(app_client):
+    """裁决 1/2/4：有仓库 url 引用该 remote → 409 + blockers 清单，且不落删除命令。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    exec_ = _install(ns, {"mywebdav": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "rclone1", "仓库一", "rclone:mywebdav:bucket")
+
+    resp = await ns.client.delete("/api/rclone/config/mywebdav", headers=ORIGIN)
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    assert body["code"] == "RCLONE_REMOTE_IN_USE"
+    assert body["data"]["remote"] == "mywebdav"
+    assert body["data"]["repos"] == [{"id": "rclone1", "name": "仓库一"}]
+    # 零副作用：校验挡在 rclone delete 命令之前
+    assert "mywebdav" in exec_.state
+
+
+async def test_delete_crypt_underlying_blocked_by_dependent(app_client):
+    """传递依赖：crypt 段以该 remote 为底层 → 删底层被阻断（加密层会失效）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    exec_ = _install(ns, {"mywebdav": WEBDAV_SECTION, "mycrypt": CRYPT_SECTION})
+
+    resp = await ns.client.delete("/api/rclone/config/mywebdav", headers=ORIGIN)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["data"]["dependent_remotes"] == ["mycrypt"]
+    assert "mywebdav" in exec_.state
+
+
+async def test_delete_crypt_segment_in_use_reports_crypt_flag(app_client):
+    """待删段自身是 crypt → crypt=True（提示密码丢失不可逆）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    exec_ = _install(ns, {"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "c1", "加密仓", "rclone:mycrypt:data")
+
+    resp = await ns.client.delete("/api/rclone/config/mycrypt", headers=ORIGIN)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["data"]["crypt"] is True
+    assert "mycrypt" in exec_.state  # 零副作用
+
+
+async def test_delete_remote_no_prefix_false_positive(app_client):
+    """foo 不误命中 foobar：remote 段按**完整相等**比对，非前缀/子串包含。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    # foo 与 foobar 均在册；仓库引用的是 foobar，与 foo 无关
+    exec_ = _install(ns, {"foo": WEBDAV_SECTION, "foobar": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "c2", "仓库二", "rclone:foobar:bucket")
+
+    # 引用的是 foobar，与 foo 无关 → 允许删除 foo
+    resp = await ns.client.delete("/api/rclone/config/foo", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    assert "foo" not in exec_.state
+
+
+async def test_delete_unreferenced_remote_audit_kept(app_client):
+    """无引用 → 正常删除，审计与段清理照旧（不回归）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    exec_ = _install(ns, {"mywebdav": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "c3", "无引用仓", "/data/no-rclone")
+
+    resp = await ns.client.delete("/api/rclone/config/mywebdav", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    rows, total = await ns.app.state.audit.query(action="rclone.config_delete")
+    assert total == 1 and rows[0].target == "mywebdav"
+    assert "mywebdav" not in exec_.state
+
+
+async def test_list_configs_reports_used_by_repos(app_client):
+    """列表页一次查询聚合出每个 remote 的引用仓库数（零额外探测）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    _install(ns, {"mywebdav": WEBDAV_SECTION, "other": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "u1", "仓A", "rclone:mywebdav:bucket")
+    await _create_rclone_repo(ns, "u2", "仓B", "rclone:mywebdav:other")
+    await _create_rclone_repo(ns, "u3", "本地仓", "/data/local")
+
+    resp = await ns.client.get("/api/rclone/configs", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    by_remote = {item["remote"]: item for item in resp.json()["configs"]}
+    assert by_remote["mywebdav"]["used_by_repos"] == 2
+    assert by_remote["other"]["used_by_repos"] == 0
+
+
+async def test_remote_usage_lists_repos_and_crypt_dependents(app_client):
+    """占用明细：直接引用仓库 + crypt 传递依赖 + 自身是否 crypt。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    _install(ns, {"mywebdav": WEBDAV_SECTION, "mycrypt": CRYPT_SECTION})
+    await _create_rclone_repo(ns, "x1", "加密仓", "rclone:mycrypt:data")
+
+    resp = await ns.client.get("/api/rclone/config/mywebdav/usage", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["remote"] == "mywebdav"
+    assert body["dependent_remotes"] == ["mycrypt"]
+    assert body["crypt"] is False
+
+    resp = await ns.client.get("/api/rclone/config/mycrypt/usage", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["crypt"] is True
+    assert {repo["id"] for repo in body["repos"]} == {"x1"}
+
+
+async def test_repoint_moves_referencing_repos_then_allows_delete(app_client):
+    """改指向 = 删远端前的受控出口：仓库 url 前缀切到新 remote 后，旧 remote 即可删除。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    _install(ns, {"oldremote": WEBDAV_SECTION, "newremote": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "rp", "搬迁仓", "rclone:oldremote:bucket/data")
+
+    resp = await ns.client.post(
+        "/api/rclone/config/oldremote/repoint",
+        json={"new_remote": "newremote"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["old_remote"] == "oldremote" and body["new_remote"] == "newremote"
+    assert [item["id"] for item in body["repos"]] == ["rp"]
+    # 只换 remote 段，路径原样保留
+    repo = await ns.app.state.repos_repo.get("rp")
+    assert repo is not None and repo.url == "rclone:newremote:bucket/data"
+    # 改完旧 remote 无引用 → 可以删了
+    resp = await ns.client.delete("/api/rclone/config/oldremote", headers=ORIGIN)
+    assert resp.status_code == 200, resp.text
+
+
+async def test_repoint_rejects_unknown_target(app_client):
+    """目标不在册 → 422（改完立刻不可达比不改更糟）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    _install(ns, {"oldremote": WEBDAV_SECTION})
+    await _create_rclone_repo(ns, "rq", "仓库", "rclone:oldremote:bucket")
+
+    resp = await ns.client.post(
+        "/api/rclone/config/oldremote/repoint",
+        json={"new_remote": "ghost"},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422, resp.text
+    repo = await ns.app.state.repos_repo.get("rq")
+    assert repo is not None and repo.url == "rclone:oldremote:bucket"
