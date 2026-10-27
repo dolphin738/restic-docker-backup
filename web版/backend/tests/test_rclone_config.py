@@ -18,10 +18,13 @@ managed 过滤与凭据零回显、降级（503/422）与脱敏、主机档路�
 from __future__ import annotations
 
 import json
+import tempfile
 from typing import Any
 
 import pytest
 
+from app.db.database import close_database, init_database
+from app.db.repositories.rclone_form_repo import RcloneFormRepo
 from app.services.rclone_config import (
     GENERATORS,
     CryptGenerator,
@@ -33,6 +36,11 @@ from app.services.rclone_config import (
     WebDAVGenerator,
     classify_crypt_remote,
     resolve_conf_path,
+)
+from app.services.rclone_forms import (
+    LEGACY_META_FILENAME,
+    LegacySidecarStore,
+    import_legacy_sidecar,
 )
 from app.settings import Settings
 
@@ -75,6 +83,15 @@ class FakeExec:
         self._apply_writes = apply_writes
         self.calls: list[list[str]] = []
 
+    CRED_KEYS = ("password", "password2", "pass", "bearer_token")
+
+    def _obscured_kv(self, args: list[str]) -> dict[str, str]:
+        """应用 key=value；带 ``--obscure`` 时模拟 rclone 混淆（凭据前缀 obscured-）。"""
+        kv = _kv(args)
+        if "--obscure" in args:
+            kv = {k: ("obscured-" + v if k in self.CRED_KEYS else v) for k, v in kv.items()}
+        return kv
+
     async def __call__(self, argv: list[str]) -> tuple[int, str]:
         self.calls.append(list(argv))
         for token, item in self._failures.items():
@@ -86,16 +103,20 @@ class FakeExec:
             return 0, json.dumps(self.state)
         if "listremotes" in argv:
             return 0, "".join(f"{name}:\n" for name in sorted(self.state))
+        # reveal <混淆值>：假实现按确定性规则「解回」明文（去 obscured- 前缀或加 revealed-）
+        if "reveal" in argv:
+            value = argv[-1]
+            return 0, value[len("obscured-"):] if value.startswith("obscured-") else "revealed-" + value
         # 下标按子命令定位（argv 含 --config <path>，位置会随前缀变化）
         if "create" in argv:
             i = argv.index("create")
             if self._apply_writes:
-                self.state[argv[i + 1]] = {"type": argv[i + 2], **_kv(argv[i + 3 :])}
+                self.state[argv[i + 1]] = {"type": argv[i + 2], **self._obscured_kv(argv[i + 3 :])}
             return 0, ""
         if "update" in argv:
             i = argv.index("update")
             if self._apply_writes:
-                self.state.setdefault(argv[i + 1], {}).update(_kv(argv[i + 2 :]))
+                self.state.setdefault(argv[i + 1], {}).update(self._obscured_kv(argv[i + 2 :]))
             return 0, ""
         if "delete" in argv:
             if self._apply_writes:
@@ -119,7 +140,9 @@ def _service(
     **kwargs: bool,
 ):
     exec_ = FakeExec(state, failures, **kwargs)
-    return RcloneConfigService(Settings(data_dir="/tmp/rclone-test", rclone_config=CONF), executor=exec_), exec_
+    # 每个服务实例独立 data_dir：sidecar 形态记录（rclone_meta.json）互不串扰
+    data_dir = tempfile.mkdtemp(prefix="rclone-meta-test-")
+    return RcloneConfigService(Settings(data_dir=data_dir, rclone_config=CONF), executor=exec_), exec_
 
 
 CRYPT_FULL: dict[str, Any] = {
@@ -130,6 +153,8 @@ CRYPT_FULL: dict[str, Any] = {
     "directory_name_encryption": "false",
     "filename_encoding": "base32768",
 }
+# 仅非凭据键（编辑态凭据留空 = 保持/就地转换的用例走这份，全量更新语义仍要求 display 键）
+CRYPT_DISPLAY: dict[str, str] = {k: v for k, v in CRYPT_FULL.items() if k not in ("password", "password2")}
 WEBDAV_FULL: dict[str, Any] = {
     "url": "https://dav.example.com",
     "vendor": "nextcloud",
@@ -282,10 +307,163 @@ async def test_create_argv_and_obscure_flag():
     assert "mycrypt" in result.remotes_after
 
 
-async def test_create_already_obscured_skips_obscure_flag():
+async def test_create_value_obscured_passes_no_obscure_flag():
+    """提交的值已是混淆产物 → 必须显式 ``--no-obscure``。
+
+    真机缺陷：旧实现「已混淆 → 不加 flag」，而 rclone 默认会自行判断，导致开关
+    开/关生成的 conf 逐字节相同（开关形同摆设）。
+    """
     svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
-    await svc.create("mycrypt", "crypt", CRYPT_FULL, already_obscured=True)
-    assert "--obscure" not in exec_.argv_for("create")
+    await svc.create("mycrypt", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=True)
+    argv = exec_.argv_for("create")
+    assert "--no-obscure" in argv
+    assert "--obscure" not in argv
+
+
+async def test_update_value_obscured_passes_no_obscure_flag():
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await svc.update("mycrypt", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=True)
+    argv = exec_.argv_for("update")
+    assert "--no-obscure" in argv
+    assert "--obscure" not in argv
+
+
+async def test_obscure_flags_are_mutually_exclusive():
+    """两个 flag 永不同时出现（rclone 会按最后一个生效，静默错）。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("c1", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=False)
+    await svc.create("c2", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=True)
+    creates = [c for c in exec_.calls if "create" in c]
+    assert len(creates) == 2
+    for argv in creates:
+        assert ("--obscure" in argv) != ("--no-obscure" in argv)
+    assert "--obscure" in creates[0] and "--no-obscure" in creates[1]
+
+
+# ---------------------------------------------------------------- sidecar 形态记录与就地转换（方案 A）
+
+
+async def test_create_records_obscured_forms_sidecar():
+    """写入后 sidecar 记录形态；查询返回 credential_obscured（布尔，仍零回显）。"""
+    svc, _ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured == {"password": True, "password2": True}
+    snapshot = await svc._load_forms()
+    obscured, digest = snapshot["mycrypt"]["password"]
+    assert obscured is True and len(digest) == 64
+
+
+async def test_list_form_unknown_when_conf_edited_externally():
+    """conf 值被外部改过（哈希对不上）→ 形态未知（None），就地转换将跳过。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    exec_.state["mycrypt"]["password"] = "externally-edited-value"
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured["password"] is None
+    assert item.credential_obscured["password2"] is True
+
+
+async def test_update_toggle_transforms_stored_credential_in_place():
+    """留空凭据 + 开关与已存形态不一致 → 就地转换：reveal 解明文后按开关重存。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    exec_.calls.clear()
+    # 已存形态 = 混淆；目标形态 = 明文 → reveal 后以 --no-obscure 原样重存
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain")
+    updates = [c for c in exec_.calls if "update" in c]
+    # password / password2 各一条就地转换命令 + 一条主更新（display 键）
+    cred_updates = [c for c in updates if any(a.startswith(("password=", "password2=")) for a in c)]
+    assert len(cred_updates) == 2, exec_.calls
+    # 假实现模拟 rclone：create --obscure 落盘 obscured-plain-password → reveal 解回
+    # plain-password → 目标形态明文，以 --no-obscure 原样重存
+    all_kv = {a for c in cred_updates for a in c if "=" in a and not a.startswith("--")}
+    assert all_kv == {"password=plain-password", "password2=plain-salt"}, all_kv
+    for argv in cred_updates:
+        assert "--no-obscure" in argv  # 目标形态 = 明文 → 显式 --no-obscure
+    main = next(c for c in updates if c not in cred_updates)
+    assert "remote=mywebdav:backup/restic" in main
+    assert not any(a.startswith(("password=", "password2=")) for a in main)
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured == {"password": False, "password2": False}
+
+
+async def test_update_toggle_matching_form_is_noop():
+    """留空凭据 + 开关与已存形态一致 → 无 reveal、无命令（保持不变）。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    exec_.calls.clear()
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="obscured")
+    # 主更新（display 键）正常跑；只断言没有凭据参数与 reveal（形态一致 → 零转换）
+    updates = [c for c in exec_.calls if "update" in c]
+    assert len(updates) == 1, exec_.calls
+    assert "remote=mywebdav:backup/restic" in updates[0]
+    assert not any(a.startswith(("password=", "password2=")) for a in updates[0])
+    assert not any("reveal" in c for c in exec_.calls)
+
+
+async def test_update_unknown_form_keeps_value_silent():
+    """形态未知（非本服务写入/外部改过）→ 宁缺勿错：不 reveal、不改值。"""
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain")
+    assert not any("reveal" in c for c in exec_.calls)
+    updates = [c for c in exec_.calls if "update" in c]
+    assert len(updates) == 1  # 只有主更新（display 键）
+    assert not any(a.startswith(("password=", "password2=")) for a in updates[0])
+    assert exec_.state["mycrypt"]["password"] == CRYPT_SECTION["password"]
+
+
+async def test_update_submitted_password_records_obscured_form():
+    """提交了新密码 → 无论开关，落盘都是混淆形态（--obscure 混淆 / --no-obscure 原样混淆产物）。"""
+    svc, _ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await svc.update("mycrypt", "crypt", {**CRYPT_DISPLAY, "password": "brand-new-pass"}, store_form="obscured")
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured["password"] is True
+
+
+async def test_delete_clears_sidecar_entry():
+    svc, _ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    await svc.delete("mycrypt")
+    snapshot = await svc._load_forms()
+    assert "mycrypt" not in snapshot
+
+
+async def test_declare_form_records_shape_without_touching_password():
+    """形态未知 + 用户声明 → **只写 sidecar 形态**：conf 里的密码原样不动、无 reveal。"""
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain", declare_form=True)
+    assert not any("reveal" in c for c in exec_.calls)
+    assert exec_.state["mycrypt"]["password"] == CRYPT_SECTION["password"]
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured["password"] is True
+    assert item.credential_obscured["password2"] is True
+
+
+async def test_declare_form_plain_records_plain_shape():
+    svc, exec_ = _service({"mycrypt": CRYPT_SECTION, "mywebdav": WEBDAV_SECTION})
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain", declare_form=False)
+    assert exec_.state["mycrypt"]["password"] == CRYPT_SECTION["password"]
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured["password"] is False
+
+
+async def test_declare_form_does_not_convert_known_shape():
+    """声明只作用于形态未知的键；形态已知时声明不得触发转换（互斥）。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL)
+    exec_.calls.clear()
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain", declare_form=False)
+    assert not any("reveal" in c for c in exec_.calls)
+    updates = [c for c in exec_.calls if "update" in c]
+    assert len(updates) == 1
+    assert not any(a.startswith(("password=", "password2=")) for a in updates[0])
 
 
 async def test_create_duplicate_remote_name_conflict():
@@ -515,3 +693,113 @@ def test_generators_registry_shape():
     assert set(GENERATORS) == {"crypt", "webdav"}
     assert isinstance(GENERATORS["crypt"], CryptGenerator)
     assert isinstance(GENERATORS["webdav"], WebDAVGenerator)
+
+
+# ---------------------------------------------------------------- 存储形态两轴（裁决 16）
+
+
+async def test_store_form_matrix_flag_mapping():
+    """目标存储形态 × 提交值形态 → flag 四象限（两轴正交，不再有语义反转）。"""
+    # 目标=混淆 + 提交明文 → --obscure
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("c1", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=False)
+    assert "--obscure" in exec_.argv_for("create")
+    # 目标=混淆 + 提交混淆产物 → --no-obscure
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("c1", "crypt", CRYPT_FULL, store_form="obscured", value_obscured=True)
+    assert "--no-obscure" in exec_.argv_for("create")
+    # 目标=明文 + 提交明文 → --no-obscure
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("c1", "crypt", CRYPT_FULL, store_form="plain", value_obscured=False)
+    argv = exec_.argv_for("create")
+    assert "--no-obscure" in argv and "--obscure" not in argv
+
+
+async def test_plain_store_form_with_obscured_value_conflicts():
+    """目标=明文 + 提交混淆产物 = 矛盾 → 422（否则落盘形态与声明不符）。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    with pytest.raises(RcloneConfigInvalid) as exc:
+        await svc.create("c1", "crypt", CRYPT_FULL, store_form="plain", value_obscured=True)
+    assert "矛盾" in str(exc.value)
+    assert "create" not in " ".join(" ".join(c) for c in exec_.calls)
+
+
+async def test_create_plain_form_records_plain_shape():
+    """以明文形态存储 → 形态记录为 False（conf 里确是明文，可被 rclone 直接读取）。"""
+    svc, _ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL, store_form="plain")
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured == {"password": False, "password2": False}
+
+
+async def test_update_target_plain_converts_obscured_to_plain():
+    """已存混淆 + 目标明文 → 就地转换（--no-obscure），落盘形态随之变 False。"""
+    svc, exec_ = _service({"mywebdav": WEBDAV_SECTION})
+    await svc.create("mycrypt", "crypt", CRYPT_FULL, store_form="obscured")
+    exec_.calls.clear()
+    await svc.update("mycrypt", "crypt", CRYPT_DISPLAY, store_form="plain")
+    cred = [c for c in exec_.calls if "update" in c and any(a.startswith("password=") for a in c)]
+    assert cred and all("--no-obscure" in c for c in cred)
+    listing = await svc.list_configs()
+    item = next(c for c in listing.configs if c.remote == "mycrypt")
+    assert item.credential_obscured["password"] is False
+
+
+# ---------------------------------------------------------------- 形态记录落 DB（裁决 16 迁库）
+
+
+async def test_db_backed_form_store_records_and_clears(tmp_path):
+    """DB 仓储路径：create → 记录落表；delete → 同事务清账。"""
+    db = await init_database(tmp_path / "forms.db")
+    try:
+        repo = RcloneFormRepo(db)
+        svc, _ = _service({"mywebdav": WEBDAV_SECTION})
+        svc._forms = repo
+        await svc.create("mycrypt", "crypt", CRYPT_FULL, store_form="obscured")
+        rows = await db.fetch_all("SELECT remote, field, obscured FROM rclone_credential_forms")
+        assert {str(r["remote"]) for r in rows} == {"mycrypt"}
+        assert all(int(r["obscured"]) == 1 for r in rows)
+        await svc.delete("mycrypt")
+        rows = await db.fetch_all("SELECT remote FROM rclone_credential_forms")
+        assert rows == []
+    finally:
+        await close_database()
+
+
+async def test_orphan_form_records_cleaned_on_list(tmp_path):
+    """宿主机在外部删段 → 孤儿记录在查询时惰性对齐清理。"""
+    db = await init_database(tmp_path / "forms.db")
+    try:
+        repo = RcloneFormRepo(db)
+        svc, _ = _service({"mywebdav": WEBDAV_SECTION})
+        svc._forms = repo
+        await svc.create("mycrypt", "crypt", CRYPT_FULL, store_form="obscured")
+        # 模拟外部删除：conf 里段没了，DB 记录还在
+        svc._forms = repo
+        await repo.replace_remote("ghost", {"password": (True, "0" * 64)})
+        await svc.list_configs()
+        rows = await db.fetch_all("SELECT remote FROM rclone_credential_forms")
+        assert {str(r["remote"]) for r in rows} == {"mycrypt"}
+    finally:
+        await close_database()
+
+
+async def test_legacy_sidecar_imported_then_removed(tmp_path):
+    """旧 sidecar 文件一次性导入目标存储后删除文件（升级迁移）。"""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    legacy = LegacySidecarStore(data_dir / LEGACY_META_FILENAME)
+    await legacy.replace_remote("mycrypt", {"password": (True, "a" * 64)})
+    db = await init_database(tmp_path / "forms.db")
+    try:
+        repo = RcloneFormRepo(db)
+        imported = await import_legacy_sidecar(repo, data_dir)
+        assert imported == 1
+        assert not (data_dir / LEGACY_META_FILENAME).exists()
+        snapshot = await repo.load()
+        assert snapshot["mycrypt"]["password"] == (True, "a" * 64)
+        # 重复导入：文件已删 → 0
+        assert await import_legacy_sidecar(repo, data_dir) == 0
+    finally:
+        await close_database()

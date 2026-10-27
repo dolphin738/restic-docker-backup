@@ -1051,13 +1051,18 @@ class RcloneRemotesOut(_Base):
 
 
 class RcloneConfigItemOut(_Base):
-    """rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + ``has_*`` 布尔）。"""
+    """rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + ``has_*`` 布尔 + 形态布尔）。
+
+    ``credential_obscured``：凭据键 → 落盘形态是否 obscure 产物；``None`` = 形态未知
+    （非本服务写入 / conf 被外部改过），就地转换会跳过该键（方案 A，owner 2026-10-27）。
+    """
 
     remote: str
     type: str
     managed: bool  # type 在注册表内 → 可字段级编辑
     params: dict[str, str]  # 非凭据参数（非 managed 段恒空）
     has_credentials: dict[str, bool]  # 凭据键 → 是否已配置
+    credential_obscured: dict[str, bool | None] = {}  # 凭据键 → 落盘形态（None=未知）
 
 
 class RcloneConfigsOut(_Base):
@@ -1073,13 +1078,23 @@ class RcloneConfigsOut(_Base):
 class RcloneConfigWriteRequest(_Base):
     """新增/编辑 rclone conf 段（字段随 ``type`` 变化，由生成器校验）。
 
-    ``params`` 只接受注册表内已知键（未知键 422，不开自由改键口）；
-    ``already_obscured=True`` 表示提交的凭据已是混淆值（命令不加 ``--obscure``）。
+    ``params`` 只接受注册表内已知键（未知键 422，不开自由改键口）。
+
+    存储形态两轴（裁决 16，**开关 = 目标存储形态**，新建与编辑同一语义）：
+
+    - ``store_form``：**目标存储形态** —— ``obscured`` = 以混淆形态落盘（conf 里是
+      rclone obscure 产物）/ ``plain`` = 以明文落盘；
+    - ``value_obscured``：提交的凭据**本身已是**混淆产物（不再混淆一次）；
+      与 ``store_form='plain'`` 矛盾（后端 422）；
+    - ``declare_form``：对**形态未知**的已存凭据一次性声明其现值形态（True=混淆值 /
+      False=明文 / None=不声明）——只写形态记录、**不改密码本身**（裁决 15 补充）。
     """
 
     type: str
     params: dict[str, str]
-    already_obscured: bool = False
+    store_form: Literal["obscured", "plain"] = "obscured"
+    value_obscured: bool = False
+    declare_form: bool | None = None
 
 
 class RcloneConfigWriteOut(_Base):

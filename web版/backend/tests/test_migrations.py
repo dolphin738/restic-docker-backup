@@ -8,10 +8,16 @@ greenfield（owner 2026-10-13 裁决）——**无物化断言**（不产生首�
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from app.db.database import Database
+
+# 期望的 schema 版本 = **迁移目录里最大的编号**（不再硬编码：加一个 000N_*.sql
+# 就要改三处断言，历史上已经因此漂移过一次）
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "app" / "db" / "migrations"
+EXPECTED_VERSION = max(int(path.name.split("_", 1)[0]) for path in _MIGRATIONS_DIR.glob("*.sql"))
 
 EXPECTED_TABLES = {
     "admin_account", "sessions", "config", "policies", "jobs", "audit_logs",
@@ -46,7 +52,7 @@ _TASK_INSERT = (
 async def test_migrate_advances_user_version(tmp_path):
     db = Database(tmp_path / "restic.db")
     await db.connect()
-    assert await db.user_version() == 7
+    assert await db.user_version() == EXPECTED_VERSION
     await db.close()
 
 
@@ -56,7 +62,7 @@ async def test_migrate_is_idempotent_when_run_twice(tmp_path):
     await db.connect()
     assert await db.migrate() == 0
     assert await db.migrate() == 0
-    assert await db.user_version() == 7
+    assert await db.user_version() == EXPECTED_VERSION
     await db.close()
 
 
@@ -69,7 +75,7 @@ async def test_reconnect_does_not_reapply(tmp_path):
 
     db2 = Database(path)
     await db2.connect()
-    assert await db2.user_version() == 7
+    assert await db2.user_version() == EXPECTED_VERSION
     assert await db2.migrate() == 0
     await db2.close()
 
@@ -295,4 +301,15 @@ async def test_audit_logs_append_only_columns(tmp_path):
     row = await db.fetch_one("SELECT id, result FROM audit_logs WHERE action = 'login.ok'")
     assert int(row["id"]) == 1
     assert str(row["result"]) == "ok"
+    await db.close()
+
+
+async def test_rclone_credential_forms_table_exists(tmp_path):
+    """0008_rclone_credential_forms.sql：形态记录表（只存形态 + conf 现值哈希）。"""
+    db = Database(tmp_path / "restic.db")
+    await db.connect()
+    columns = {row[1] for row in (await db.fetch_all("PRAGMA table_info(rclone_credential_forms)"))}
+    assert columns == {"remote", "field", "obscured", "value_sha256", "updated_at"}
+    # 表内**不得**出现任何凭据列（形态记录不存密码）
+    assert not (columns & {"password", "password2", "pass", "value", "secret"})
     await db.close()

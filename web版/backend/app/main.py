@@ -50,6 +50,7 @@ from app.db.database import Database, close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
+from app.db.repositories.rclone_form_repo import RcloneFormRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import AppError
@@ -81,6 +82,7 @@ from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.rclone import RcloneProbe
 from app.services.rclone_config import RcloneConfigService
+from app.services.rclone_forms import import_legacy_sidecar
 from app.services.repo_migration import migrate_legacy_repo_config
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
@@ -263,7 +265,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # A1 rclone 只读探测器（Q17：listremotes 探测；无状态，URL 校验与端点共用）
     rclone_probe = RcloneProbe(settings)
     # rclone conf 管理服务（配置生成工具：增删改查全走官方 CLI；写操作自带 Lock）
-    rclone_config_service = RcloneConfigService(settings)
+    # 凭据形态记录落 DB 表（裁决 16 迁库，随 DB 备份/迁移走）
+    rclone_form_repo = RcloneFormRepo(db)
+    rclone_config_service = RcloneConfigService(settings, forms=rclone_form_repo)
+    # 旧 sidecar 文件一次性导入 DB（导入后删除文件；重复启动不会重复导入）
+    imported_forms = await import_legacy_sidecar(rclone_form_repo, settings.data_dir)
+    if imported_forms:
+        logger.info("rclone 凭据形态记录已从旧 sidecar 导入数据库：%d 段", imported_forms)
     # P1：快照目录（一次快照列表 → 按 tag 分组计数；任务卡片 snapshot_count 数据源）
     snapshot_catalog = SnapshotCatalog()
 
