@@ -16,6 +16,7 @@ import { h, nextTick, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SourcesPicker from '@/components/task/SourcesPicker.vue'
+import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import VirtualTree from '@/components/VirtualTree.vue'
 import { i18n } from '@/i18n'
 import { lightThemeOverrides } from '@/theme/tokens'
@@ -223,6 +224,40 @@ describe('点名称统一切换备份成员资格（owner 2026-10-24）', () => 
     await nextTick()
     const rules = (state.spec?.rules ?? []) ?? []
     expect(rules).toHaveLength(1) // 仍是原来那条，没有新增
+    wrapper.unmount()
+  })
+})
+
+describe('地址栏跟随选中目录（owner 2026-10-29）', () => {
+  /** 缺陷：点目录名加入/取消备份源后，地址栏仍停在浏览根，看不出「我选了哪个」。
+   *  裁决：地址栏 = 关注路径（选中项），树根 = 浏览路径，两者分离。 */
+  it('点目录名 → 地址栏变成选中路径，且树**不下钻**', async () => {
+    const { wrapper, state } = await mountStateful([])
+    expect(wrapper.findComponent(PathBreadcrumb).props('path')).toBe('/')
+
+    clickName(wrapper, 'data')
+    await nextTick()
+    expect(state.sources).toEqual(['/data'])
+    expect(wrapper.findComponent(PathBreadcrumb).props('path')).toBe('/data')
+    // 树根不动：备份源是勾选型多选，选中即下钻会打断「连续选兄弟目录」
+    expect(wrapper.findComponent(VirtualTree).props('rootPath')).toBe('/')
+    wrapper.unmount()
+  })
+
+  it('取消源同样跟随；地址栏跳转后回到浏览根（不与树脱节）', async () => {
+    const { wrapper, state } = await mountStateful(['/data'])
+    clickName(wrapper, 'data')
+    await nextTick()
+    expect(state.sources).toEqual([])
+    expect(wrapper.findComponent(PathBreadcrumb).props('path')).toBe('/data')
+
+    // 点面包屑根段跳回 / → focusPath 清空，地址栏回到浏览根
+    const rootSeg = (wrapper.element as Element).querySelector<HTMLElement>('.pcrumb__seg')
+    expect(rootSeg?.textContent?.trim()).toBe('/')
+    rootSeg!.click()
+    await nextTick()
+    expect(wrapper.findComponent(VirtualTree).props('rootPath')).toBe('/')
+    expect(wrapper.findComponent(PathBreadcrumb).props('path')).toBe('/')
     wrapper.unmount()
   })
 })

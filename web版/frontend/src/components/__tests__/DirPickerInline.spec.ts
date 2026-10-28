@@ -4,7 +4,8 @@
  * 锁定语义：
  * - **挂载点独立预取**：E33 只在根请求回 `mounts`，组件必须自己发一次 `('/' , null, 1)`
  *   （否则地址栏三角恒不渲染——repo 页曾实拍此缺陷）；
- * - 点目录名 = 选中（emit update:path），**不改 browsePath**（导航归地址栏）；
+ * - 点目录名 = 选中（emit update:path）+ **地址栏跟随选中路径**，但**不改 browsePath**
+ *   （导航归地址栏；owner 2026-10-29：地址栏与树根自此分离，勿合并回单一状态）；
  * - 手输路径同样走 update:path（目录可尚不存在）；
  * - 外部赋值 → 树重定位到**父目录**；自己 emit 出去的值回流时**不重定位**（防树跳）；
  * - disabled → 树隐去、输入框禁用（env 覆盖时地址不可改）。
@@ -51,7 +52,8 @@ describe('DirPickerInline', () => {
   it('树起点 = 所填路径的父目录（停在目标目录里会摊开内部结构）', () => {
     const w = mountPicker('/repo/restic')
     expect(w.findComponent(VirtualTree).props('rootPath')).toBe('/repo')
-    expect(w.findComponent(PathBreadcrumb).props('path')).toBe('/repo')
+    // 地址栏显示**选中值本身**（owner 2026-10-29），不是树所在的父目录
+    expect(w.findComponent(PathBreadcrumb).props('path')).toBe('/repo/restic')
   })
 
   it('点目录名发出 update:path，且不改树位置', async () => {
@@ -61,6 +63,17 @@ describe('DirPickerInline', () => {
     await nextTick()
     expect(w.emitted('update:path')?.at(-1)).toEqual(['/srv'])
     // 树仍停在 /repo（导航交给地址栏）
+    expect(w.findComponent(VirtualTree).props('rootPath')).toBe('/repo')
+  })
+
+  it('点目录名 → 地址栏跟着变成选中路径（owner 2026-10-29，树不动）', async () => {
+    const w = mountPicker('/repo/restic')
+    await nextTick()
+    expect(w.findComponent(PathBreadcrumb).props('path')).toBe('/repo/restic')
+    w.findComponent(VirtualTree).vm.$emit('select', { key: '/srv', name: 'srv', type: 'dir', path: '/srv' })
+    await nextTick()
+    // 地址栏 = 选中项；树根仍是浏览位置（两者分离是本次裁决要点）
+    expect(w.findComponent(PathBreadcrumb).props('path')).toBe('/srv')
     expect(w.findComponent(VirtualTree).props('rootPath')).toBe('/repo')
   })
 
