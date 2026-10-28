@@ -10,8 +10,11 @@
  * 与既有实现一致的三条纪律（血泪教训，勿"优化"掉）：
  *   1. **挂载点独立预取**：E33 只在 `path="/"` 的请求里回 `mounts`，而树起点常是
  *      已填路径的父目录 → 靠树的响应顺带永远拿不到，必须自己发一次根请求；
- *   2. **点目录名 = 选中，不改 browsePath**：导航交给地址栏/三角形；VirtualTree 的
- *      selectDir 会自行展开该目录，视觉上仍有下钻反馈；
+ *   2. **点目录名 = 选中（emit + 地址栏跟随），不改 browsePath**：导航交给地址栏/三角形；
+ *      VirtualTree 的 selectDir 会自行展开该目录，视觉上仍有下钻反馈。
+ *      ⚠️ owner 2026-10-29 裁决：**地址栏须反映选中项**，故地址栏与树根自此**分离**——
+ *      地址栏 = `focusPath`（关注/选中），树根 = `browsePath`（浏览）。勿合并回单一状态
+ *      （合并会让「选中即下钻」打断连续选目录的流，或让「选中后地址栏不变」再次出现）；
  *   3. **外部赋值才重定位树**：自己 emit 出去的值回流时若也重定位，树会跳回父目录
  *      （按值来源判定，不 watch 派生布尔）。
  *
@@ -59,6 +62,9 @@ function parentOf(path: string): string {
 }
 
 const browsePath = ref(parentOf(props.path))
+/** 地址栏显示值 = **关注路径**（选中项 / 导航目标），与树根 `browsePath` 分离
+ *  （owner 2026-10-29：选中目录后地址栏须跟着变成选中路径，而树不动）。 */
+const focusPath = ref<string>(props.path || browsePath.value)
 const mountChips = ref<string[]>([])
 /** 最近一次由本组件 emit 出去的值：回流时不重定位树（防「选完树跳回父目录」）。 */
 let lastEmitted: string | null = null
@@ -93,17 +99,22 @@ function onTreeSelect(item: TreeItem): void {
   if (item.type !== 'dir') {
     return
   }
+  // 地址栏跟随选中（owner 2026-10-29）；树不动——浏览层只由地址栏负责
+  focusPath.value = item.path
   lastEmitted = item.path
   emit('update:path', item.path)
 }
 
 function jumpTo(path: string): void {
   browsePath.value = path
+  focusPath.value = path
 }
 
 watch(
   () => props.path,
   (value) => {
+    // 地址栏恒反映当前值（无论来自树选中回流还是外部赋值）
+    focusPath.value = value ?? ''
     if (value === lastEmitted) {
       // 自己发出去的：树已下钻，不回退
       lastEmitted = null
@@ -123,7 +134,7 @@ onMounted(() => {
        平分成左右各 50%（曾因此把树挤成半宽），故此处自带布局容器并显式声明比例与窄屏回落。 -->
   <div class="dir-picker" :class="{ 'dir-picker--disabled': disabled }">
     <div v-if="!disabled" class="dir-picker__tree">
-      <PathBreadcrumb :path="browsePath" :mounts="mountChips" @select="jumpTo" />
+      <PathBreadcrumb :path="focusPath || browsePath" :mounts="mountChips" @select="jumpTo" />
       <VirtualTree
         :root-path="browsePath"
         :load-children="fsLoader"

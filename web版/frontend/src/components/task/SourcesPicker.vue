@@ -66,6 +66,9 @@ onUnmounted(() => ui.setMessageApi(null))
 
 // ---------------------------------------------------------------- 左栏：目录树（E05）
 const currentPath = ref('/')
+/** 地址栏显示值 = **关注路径**（最近选中的目录），与树根 `currentPath` 分离
+ *  （owner 2026-10-29：选中目录后地址栏须跟着变成选中路径，而树不下钻）。 */
+const focusPath = ref<string | null>(null)
 /** 挂载点快跳（展示形态；仅根目录响应带）→ 收进地址栏（D 形态）的三角菜单，
  *  不再平铺成 chips（P19：13 个挂载点会顶满 7 行，且长路径换行难看）。 */
 const mountChips = ref<string[]>([])
@@ -93,9 +96,12 @@ function treeLoader(path: string, cursor?: string): Promise<TreePage> {
 }
 
 /** 地址栏跳转（面包屑段 / 挂载点菜单 / 手输路径）：**只改浏览层**——备份源成员资格仍由
- *  点目录名切换（语义不变，P19 只换快跳形态）。 */
+ *  点目录名切换（语义不变，P19 只换快跳形态）。
+ *  跳转后地址栏回到浏览根（清 focusPath），否则「跳到 A 又选中 B」时地址栏会停在 B，
+ *  与树当前所在目录脱节。 */
 function onJump(path: string): void {
   currentPath.value = path
+  focusPath.value = null
 }
 
 /** 名称点击 = 统一切换备份成员资格（owner 2026-10-24，Duplicati 无复选框/行末按钮，
@@ -108,6 +114,11 @@ function onJump(path: string): void {
  */
 function onTreeSelect(item: TreeItem): void {
   const path = item.path
+  // 地址栏跟随选中（owner 2026-10-29）：点谁地址栏显示谁，与是否加入/取消无关。
+  // 树根 `currentPath` **不动**——备份源是勾选型多选，选中即下钻会打断连续选兄弟目录。
+  if (item.type === 'dir') {
+    focusPath.value = path
+  }
 
   // ① 显式加入的源 → 取消：同步清掉**该源名下（含自身）的排除规则**——
   // 否则父源移除后，子目录的排除规则变成孤儿（父都没了，排除毫无意义）。
@@ -301,7 +312,7 @@ const highlightPaths = computed(() => new Set(props.sources))
       <n-text strong class="sources-picker__title">{{ t('wizard.sources') }}</n-text>
       <!-- 快捷路径统一 D 形态（P19）：面包屑分段跳转 + 挂载点收进三角菜单 + 就地地址栏，
            恒定 1 行；跳转只改浏览层，备份源仍由点目录名切换（语义不变）。 -->
-      <PathBreadcrumb :path="currentPath" :mounts="mountChips" @select="onJump" />
+      <PathBreadcrumb :path="focusPath ?? currentPath" :mounts="mountChips" @select="onJump" />
       <!-- 等高填充：左栏 flex 纵向，树 wrapper flex:1 随右栏内容拉伸，树内部滚动 -->
       <div class="sources-picker__tree-wrap">
         <VirtualTree
