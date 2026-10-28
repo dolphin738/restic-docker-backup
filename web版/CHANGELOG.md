@@ -5,6 +5,20 @@
 ## 未发布（2026-10-28）
 
 ### 变更
+- **rclone 凭据落盘形态收敛为「恒为混淆」+ 新增导出原密码**（裁决 17，owner 三问）
+  - 真机取证（WSL rclone v1.60.1）：明文密码写进 conf 对 **crypt 与 webdav 一律不可用**（`failed to decrypt password: input too short…`）；把混淆值再混淆一次则**不报错**、只是换一套加密命名空间（实测目录变空）。故「目标存储形态」这个概念本身被取消；
+  - 后端：删除 `store_form` / `declare_form` 请求字段与入参，落盘恒为混淆（`value_obscured` 只决定 `--obscure` / `--no-obscure`）；取消「混淆→明文」就地转换；保留并加固「明文→混淆」自愈（历史明文段不填密码即可修正，转换前 reveal 探测，解得开即 422 中止防二次混淆）；**不提供导出原密码**（owner 裁决：S3 凭据零回显不开口子）——面板只给「如何找回密码」弹窗，内容为宿主机自助命令示例（`rclone config dump` + `rclone reveal <混淆值>`），本工具不执行、不读 conf、不返回明文；
+  - 前端：`RcloneConfigPanel` 删「存储形态」开关 + 「我填入的已是混淆后凭证」副复选框 + 「存储形态声明」，改为单一「密码形态」下拉 + 落盘形态只读徽标 + 「修正为混淆」+ 「如何找回密码」（命令示例弹窗）；补齐面板缺失的 `repoint*` 文案键（此前一直显示原始 key）；
+  - 测试：后端相关两文件 **100 passed**（新增自愈 / 探测中止 / 误填拦截），面板 **22 passed**（含「找回密码只给命令示例」与复制断言）。
+- **仓库页 rclone 表单增强**（问题 3 落地）
+  - 远端名输入框**左侧**新增「选择远端 ▾」下拉，列出 conf 里探测到的段名，点一项回填到输入框（输入框仍可手输）；
+  - **删除 rclone 预设快捷卡**（OneDrive / Google Drive / S3 / 其它四张卡）及其文案；
+  - 「管理远端」按钮从远端名输入框右侧移到**编辑仓库卡右上角**；仓库 ID 从卡右上角移到**左上角标题「编辑仓库」右侧**；
+  - 地址提示精简为「地址形如 rclone:远端名:路径（如 rclone:myremote:mybucket/restic）」；
+  - 远端名 + 远端路径都填好后显示**实际落盘路径**：crypt 段按它的底层 `remote` 拼接（`remote = /home/222` + 路径 `restic` → `/home/222/restic`），非 crypt 段按 `remote:path` 示意；推导抽为纯函数 `utils/repoUrl.ts:resolveRcloneTarget`（7 例单测）；
+  - 同一远端已有仓库时提示，同路径额外警告「会互相覆盖」；
+  - 「远端路径」补必填星号 + 保存前校验（后端本就强制非空，此前只是把 422 推迟到保存时）；
+  - rclone 配置面板：编辑态 password / password2 下新增风险提示「修改后旧快照将永久无法解密」。
 - **恢复流程并入快照浏览页**（owner 决策：删「恢复向导」独立页面，三步流程全部复用）
   - 删除 `/restore` 恢复入口页与 `/restore/:id/{select-files,options,progress}` 三个向导路由，`frontend/src/pages/restore/` 整目录移除；
   - 三步流程组件（选文件 / 恢复选项 / 执行与结果）原样复用，迁入 `pages/snapshots/restore/`，容器改为快照页右侧宽抽屉（桌面 1080px / 移动端全屏）；

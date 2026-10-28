@@ -1,10 +1,12 @@
 # rclone 配置生成工具设计方案
 
-> 版本：v1.18（2026-10-27）
+> 版本：v1.20（2026-10-29）
 > 层级：方案层——rclone 远端配置管理（查询/生成/编辑/删除，Crypt / WebDAV）的唯一方案源
 > 关联：`app/services/rclone.py`（只读探测，Q17 档位）、架构设计文档 R-022（rclone 生命周期）、代码审查规范 §3.1（S6 危险操作清单）、部署指南（rclone.conf 挂载形态变更）
 
 > **修订记录**：
+> - v1.20（2026-10-29）：**仓库页 rclone 字段联动 + 交互收敛（owner 2026-10-28/29 指令）**。①**远端名**改为「输入框 + 左侧『选择远端 ▾』」：`n-dropdown` 菜单列出 `/api/rclone/remotes` 探测到的段名，点一项回填输入框，输入框保留手输（与目录树快捷路径「面板选→回填」同一心智）；**删除 rclone 预设快捷卡**（OneDrive / Google Drive / S3 / 其它）及其 12 个文案键（`repo.dest.rclone*`）。②**远端路径补必填**（`ReqLabel` 星标 + 保存前校验）——后端本就强制 `rclone:<段名>:<路径>` 非空，此前只是把 422 推迟到保存时。③**实际落盘路径提示**：远端名 + 路径都填好后显示推导结果（crypt 段按其底层 `remote` 拼接：`remote = /home/222` + 路径 `restic` → `/home/222/restic`；非 crypt 段按 `remote:path` 示意；未探测到标 unknown），推导抽为纯函数 `utils/repoUrl.ts:resolveRcloneTarget`（7 例单测）。④**同远端占用提示**：该远端已被其它仓库引用时提示，路径相同额外警告「会互相覆盖」。⑤**编辑仓库卡头重排**：仓库 ID 移到标题「编辑仓库」右侧，右上角改放「管理远端」按钮（仅 rclone 类型）。⑥设置页面板的形态收敛见 v1.19（单一「密码形态」+ 明文段自愈 + 不提供导出、只给找回命令示例）。测试：前端全量 **514 passed**（repoUrl +7 例 / 面板 22 例 / 两个整页 44 例），typecheck + build 绿，红线 19 项绿。
+> - v1.19（2026-10-28）：**落盘形态收敛为「恒为混淆」+ 取消明文存储（裁决 17，owner 三问）**。①**真机取证推翻了「存储形态」这个设计本身**（WSL rclone v1.60.1）：conf 里写明文密码对 **crypt 与 webdav 一律不可用**（`failed to decrypt password: input too short when revealing password - is it obscured?`）——明文落盘不是"安全性差一点"，是把该段写成坏配置；把已混淆值再混淆一次更糟：**不报错**，只是换了一套加密命名空间（实测同一目录列出为空，数据等于"消失"）。②**收敛**：删除「目标存储形态」概念与「明文存储」能力，`store_form` / `declare_form` 从请求体与 service 入参移除（旧客户端多传会被 pydantic 忽略，等价"按明文提交、落盘混淆"，不会写出坏配置）；唯一控件是**密码形态**（`value_obscured`：明文 / 已混淆串），两条分支落盘结果都是混淆，**形态记录因此恒为 True、不再可能失真**（v1.18 那条 503 死锁的根因）。③**明文段自愈**：历史明文段（早期版本或宿主机手写）在编辑态显示「明文（rclone 不可用）」徽标 + 「修正为混淆」按钮，**不填密码**即可就地 `--obscure`；转换前用 `rclone reveal` 做一致性探测，**解得开即中止**（422，防二次混淆）。④**不提供导出**（owner 裁决：S3「凭据零回显」不开口子）：面板只给一个「如何找回密码」入口，弹出**宿主机自助命令示例**（`rclone config dump` + `rclone reveal <混淆值>`）——纯静态文本、不含任何凭据，本工具**不执行命令、不读 conf、不返回明文**。原拟的 `POST …/reveal` 端点与 `rclone.reveal` 审计项**未落地**（删除）。⑤面板重构：删「存储形态」开关 + 副复选框 + 形态声明，改单一「密码形态」下拉 + 落盘形态只读徽标。测试：`test_rclone_config.py` + `test_api/test_rclone_config_api.py` 共 **100 例**全绿（新增：明文段自愈 / 探测中止 / 误填混淆值拦截），面板 **21 例**（含「找回密码只给命令示例、无导出调用」断言）；`rclone-switch-probe` 场景 B（形态声明）随机制删除退役。
 > - v1.18（2026-10-27）：**存储形态语义统一 + 形态记录迁 DB（裁决 16，owner 两问）**。①**owner 指出混淆开关语义反了**（实码取证：新建态开关=「提交值是否已混淆」→ 关闭走 `--obscure` 落盘混淆；编辑态同一个布尔被当成「已存形态」→ 打开=混淆，**同一件事在两种模式下对应相反的开关位**）。裁决 16：**开关 = 目标存储形态**（开=混淆 / 关=明文），新建与编辑**同一语义**；提交侧「我填入的已是 rclone obscure 产物」拆为**独立副复选框**（`value_obscured`，与明文目标形态互斥 → 矛盾组合后端 422）。后端请求体由 `already_obscured: bool` 改为 `store_form: 'obscured'|'plain'` + `value_obscured: bool`，flag 映射四象限：混淆+明文→`--obscure`、混淆+混淆产物→`--no-obscure`、明文+明文→`--no-obscure`、明文+混淆产物→**422**；转换路径改用 `_target_flag`（目标=混淆→`--obscure`，目标=明文→`--no-obscure`）。②**形态记录迁数据库**（owner 第二问）：新增迁移 `0008_rclone_credential_forms.sql`（表 `rclone_credential_forms`：remote / field / obscured / value_sha256 / updated_at，**只存形态与 conf 现值哈希，不存凭据**）+ 仓储 `RcloneFormRepo`；服务层改为依赖形态存储抽象 `FormStore`（生产=DB 仓储，旧 sidecar 文件实现降级为一次性导入源与单测后端）；**删除配置段 → 同事务清该段记录**，宿主机外部删段 → 孤儿记录由查询时惰性对齐清理；升级时旧 `<data_dir>/rclone_meta.json` **一次性导入 DB 后删除文件**（`import_legacy_sidecar`，重复启动不重复导入）。③新增「明文存储」能力（旧实现只能存混淆形态）。测试：后端 72 → **82 例**（flag 四象限 / 矛盾 422 / 明文存储与形态记录 / 目标明文转换 / DB 落表与清账 / 孤儿清理 / 旧文件导入），面板 13 → **16 例**（默认 store_form=混淆 / 开关关到明文 / 副复选框强制拉回混淆 / 编辑态初值=已存形态）；真机探针 `.e2e/rclone-switch-probe.cjs` 双场景 PASS（新请求体 `store_form/value_obscured/declare_form`）。
 > - v1.17（2026-10-27）：**形态声明机制（owner 实机反馈「点了编辑后开关无法点击」）**。①**根因**：sidecar 是新机制，**所有历史配置**（本功能上线前写入、或宿主机 `rclone config` 手工维护）都没有形态记录 → 形态判「未知」→ v1.16 的「未知则禁用开关」让功能对**全部既有配置失效**（v1.16 只覆盖了「本工具新建」这一条路径，是设计缺口）。②**补法**：编辑态形态未知时给出**「存储形态声明」**下拉（未声明 / 混淆值 / 明文），用户声明一次 → 后端**只写 sidecar 形态、绝不动 conf 里的密码** → 声明后开关即可做真正的就地转换；声明与转换**互斥**（同一请求不同时做）。③请求体新增 `declare_form: bool | None`（True=混淆值 / False=明文 / None=不声明），后端 `update()` 对「形态未知且未提交新值」的凭据键登记声明；形态已知的键**不受声明影响**（防误覆盖真实形态）。④真机探针 `.e2e/rclone-switch-probe.cjs` 双场景验收：形态已知 → 开关可点且点击翻转；形态未知 → 开关禁用 + 出现声明下拉，选「混淆值」提交体为 `declare_form=true` 且**不含任何凭据值**（零回显）。⑤顺带修 `settings/index.vue` 的 `configItem` 对畸形 `/api/config` 响应的容错（`items?.find`，此前 `items` 缺失会抛 `undefined.find` pageerror）。测试：后端 72 → **75 例**，面板 13 → **15 例**。
 > - v1.16（2026-10-27）：**凭据形态记录与就地转换（B10，owner 两轮裁决收敛为方案 A）**。①**裁决 15**：编辑态「已混淆」开关对**留空的凭据**也能生效——后端按 sidecar 记录的已存形态就地转换（形态与开关不一致时，先 `rclone reveal` 解明文，再以显式 flag 按开关目标形态重存）；**不做明文回填**（owner 明确否决，S3 零回显口径不变）。②**为什么靠记录不靠事后检测**：真机实证 rclone v1.60.1 的 `reveal` **无认证校验**——对任意足够长的 base64 可解码串都「解出」一串垃圾且 exit 0（样本矩阵：22/24/32 位明文全部 exit 0），事后从 conf 值反推形态不可靠；本服务每次写入都显式传 `--obscure`/`--no-obscure`，**写入那一刻形态即真值**，落 `<data_dir>/rclone_meta.json` sidecar（每键记 `obscured` 布尔 + conf 值 sha256；哈希对不上 = conf 被外部改过 → 形态未知 → 跳过转换，宁缺勿错）。③`GET /api/rclone/configs` 每段新增 `credential_obscured: {键: bool|null}`（布尔出站，仍零回显）；前端编辑态开关初始值 = 已存形态（保存无副作用，刻意拨动才转换），形态未知 → 禁用并提示。④真机还抓出**转换命令 flag 方向缺陷**（测试先行抓到）：`_obscure_flag` 语义是「提交值已混淆」，与转换的「目标形态」语义相反，必须取反——存明文 = `--no-obscure`，存混淆 = `--obscure`。⑤就地转换走**独立命令**（flag 是命令级的，与主更新提交的凭据语义可能相反，不能混命令）。测试：后端 65 → **72 例**（sidecar 记录/外部改动判未知/转换命令与 flag 方向/一致零命令/删除清理 sidecar）；前端面板 10 → **13 例**（开关初始值=已存形态/形态未知禁用/拨动开关提交 false）。
@@ -51,6 +53,8 @@
 | 15 | 编辑态混淆开关作用于已存凭据（v1.16/v1.17，B10；owner 两轮裁决收敛为**方案 A**） | **就地转换，不回填**。凭据留空提交时：开关与已存形态一致 = 保持不变；不一致且形态已知 = 后端就地转换（`reveal` 解明文 → 按开关目标形态以显式 flag 重存，明文不出后端）；形态未知（conf 被外部改过）= 跳过。形态**写入时记录**（每次写都显式传 flag，那一刻即真值）落 sidecar `<data_dir>/rclone_meta.json`（每键 `obscured` 布尔 + conf 值 sha256，读取时哈希校验外部改动）——**不做事后检测**：真机实证 `reveal` 无认证校验，任意 base64 串都能「解出」垃圾，事后反推不可靠。查询新增 `credential_obscured` 布尔出站；前端编辑态开关初始值 = 已存形态。**v1.17 补形态声明**（owner 实机反馈「编辑后开关点不动」：sidecar 是新机制，历史配置全无记录 → 形态未知 → 开关被禁用，功能对既有配置失效）：形态未知时给出「存储形态声明」下拉，声明一次只写 sidecar、**不动密码**，声明后即可就地转换。owner 曾要求「混淆密码 reveal 后回填表单」，随后明确收回（只采用 A 不回填），S3 零回显口径不变 |
 
 | 16 | 存储形态语义统一 + 形态记录落库（v1.18，owner 两问裁决） | **①开关 = 目标存储形态**（开=混淆 / 关=明文，新建与编辑同一语义；旧实现两模式语义相反——同一件事对应相反开关位，owner 实测指出）。提交侧「我填入的已是混淆产物」拆为独立副复选框 `value_obscured`（与明文目标形态互斥 → 422）。请求体：`store_form` + `value_obscured`（取代 `already_obscured`）。**②形态记录落 DB**：表 `rclone_credential_forms`（形态 + conf 值 sha256，**无凭据**），随 DB 备份/迁移走；删段同事务清账，外部删段的孤儿记录查询时惰性清理；旧 sidecar 文件一次性导入后删除 |
+| 18 | 仓库页 rclone 字段联动（v1.20，owner 2026-10-28/29 指令） | 远端名 = 输入框 + 左侧「选择远端 ▾」下拉（选项来自 `listremotes` 探测，选中回填，手输仍在）；**删除预设快捷卡**；远端路径必填；填好后显示**实际落盘路径**（crypt 段按其底层 `remote` 拼接，抽为纯函数 + 单测）；同远端占用/同路径冲突提示；编辑卡头 = 标题 + 仓库 ID（左）+ 管理远端（右） |
+| 17 | 落盘形态收敛为「恒为混淆」（v1.19，owner 三问：能否改两个密码 / 副复选框是否有意义 / 明文与混淆互转） | **conf 里的凭据恒为混淆**（真机实测明文对 crypt/webdav 一律不可用，且已混淆串再混淆一次会静默变空仓库）。删除「目标存储形态」与明文落盘能力；用户唯一输入是**提交值形态**（`value_obscured`）。取消「混淆→明文」就地转换（`reveal` 无认证校验，方向判错即双重混淆）；保留「明文→混淆」自愈（不填密码即可，转换前 reveal 探测，解得开即 422 中止）。「取回原密码」**不提供**——面板只弹宿主机自助命令示例（`rclone reveal`），**凭据零回显口径不变**（S3 不开口子）。形态记录机制保留（仅用于识别历史明文段），新写入恒为 True |
 
 ### 1.2 背景：对 Q17 档位的主动放宽
 
@@ -124,7 +128,7 @@ GENERATORS: dict[str, ConfigGenerator] = {
 |---|---|---|
 | `remote_name` | ✅ | 生成的配置段名（remote 名），限 `[A-Za-z0-9_-]+`；新增时与既有段重名 → 409（dump 预检 + rclone 自身也报错） |
 | `remote` | ✅ | 底层目标，**三态**（v1.12，官方文档 §Specifying the remote）：① `远端名:路径`（如 `mywebdav:backup/restic`）→ 远端名须在现有 remotes 清单中；② 本地绝对路径 `/repo/encrypted`、`C:/x`、`C:\x`、`\\srv\share` → 放行（本地路径不做存在性校验：rclone 会自动创建）；③ 无冒号相对路径 → 422 拒绝（rclone 视为进程 cwd 下子目录，容器内不可控）。**UI 两模式**（裁决 12）：远端 = 下拉+路径；本地 = 目录树选择（`DirPickerInline`，容器视角） |
-| `password` | ✅ | 目标存储形态默认「混淆」：明文提交由 rclone 混淆一次后落盘（`--obscure`）；勾选副框「值已是混淆产物」则原样落盘（`--no-obscure`）；目标形态切到「明文」则原样落盘明文（裁决 16） |
+| `password` | ✅ | **落盘恒为混淆**（裁决 17）：提交明文 → `--obscure`（rclone 混淆一次）；提交的已是混淆串 → `--no-obscure`（原样落盘，**绝不**二次混淆）。明文落盘已取消——实测 rclone 对明文 conf 直接报 `failed to decrypt password`，该段不可用 |
 | `password2` | 可选 | 文件名加密 salt，规则同上 |
 | `filename_encryption` | 默认 `standard` | 白名单 `standard / obfuscate / off` |
 | `directory_name_encryption` | 默认 `true` | 布尔 |
@@ -203,11 +207,11 @@ filename_encoding = base64
 
 - 请求体与创建相同；**type 必须与现有段一致**（dump 预检，不一致 → 422）；**语义为全量更新**；
 - **密码留空 = 保持不变**（该键不出现在 `rclone config update` 参数中，conf 既有值不动）；
-- **就地转换（v1.16，裁决 15）**：凭据留空但开关与已存形态**不一致**且形态已知（sidecar 哈希校验通过）时，走**独立命令**转换——先 `rclone reveal` 解出明文（不回填、不出后端，解出值即登记脱敏表），再按开关目标形态重存：目标明文 = `--no-obscure` 原样落盘，目标混淆 = `--obscure` 混淆落盘。⚠️ flag 方向与 `_obscure_flag` 的「提交值已混淆」语义**相反**（实现里必须取反，测试抓出过此缺陷）；每个凭据键单独一条命令（flag 是命令级的）。形态未知 → 跳过转换，保持原值（宁缺勿错）；
-- **形态声明（v1.17，`declare_form`）**：**形态未知**的凭据（sidecar 无记录——历史配置由宿主机手工维护、或本功能上线前写入）无法自动判定是明文还是混淆值（`rclone reveal` 无认证校验，事后检测不可靠，§12.5 实证）。此时编辑态给出「存储形态声明」下拉，用户声明一次 → **只写 sidecar、绝不动 conf 里的密码** → 声明后即可用开关做真正的就地转换。声明与转换**互斥**（同一次请求不同时做）；形态已知的键**不受声明影响**（防误覆盖真实形态）。请求体 `declare_form: bool | None`（True=混淆值 / False=明文 / None=不声明）。
+- **明文段自愈（v1.19，裁决 17）**：凭据留空且形态记录为 `plain`（历史段：早期版本写入，或宿主机手写的明文 conf）时，按 conf 现值就地 `--obscure` 重写——**不填密码也能修好**（每个凭据键一条独立命令，flag 是命令级的）。转换前先 `rclone reveal` 探测现值：**解得开即中止**（422「为免二次混淆已中止，本次未做任何修改」）——记录失真、或值恰好是合法 base64 长明文时宁可不动，让用户填密码重存。形态未知（无记录 / conf 被外部改过）→ 跳过，保持原值（宁缺勿错）；
+- **不再支持「混淆→明文」就地转换**（v1.19 移除）：`reveal` 无认证校验（§12.5），方向判错就是把混淆值再混淆一次（静默变空仓库）；而且明文落盘让该段直接不可用。要取回原密码请用导出端点（§6），它只回一次明文、**不改 conf**。
 - **底层在册校验与 create 同口径**（v1.12，裁决 11）：此前 `update()` 漏了这步，编辑把 crypt 的 remote 改成不在册远端也能保存成功、用时报错；现在同样过 `_check_underlying`（local 形态按裁决 10 跳过）；
-- 实现：Lock 内 dump 预检（在册 + managed + type 一致 + **底层在册**）→ [就地转换命令（如有）] → `rclone config update <name> key=value... [--obscure|--no-obscure]` → 写后 dump 复核 → sidecar 形态记录落盘；
-- 审计：`rclone.config_edit`（detail：remote 名、type、是否改了凭据布尔，不含值）。
+- 实现：Lock 内 dump 预检（在册 + managed + type 一致 + **底层在册**）→ [明文段修正命令（如有）] → `rclone config update <name> key=value... [--obscure|--no-obscure]` → 写后 dump 复核 → 形态记录落盘；
+- 审计：`rclone.config_edit`（detail：remote 名、type、是否改了凭据布尔、提交值形态布尔，不含值）。
 
 ### 5.4 删除：`DELETE /api/rclone/config/{remote_name}`
 
@@ -238,11 +242,9 @@ filename_encoding = base64
   "type": "crypt",            // "crypt" | "webdav"（白名单，未注册类型 422）
   "params": {
     "remote": "gdrive:backup/restic",
-    "password": "…",
-    "store_form": "obscured",
-    "value_obscured": false,
-    "declare_form": null
-  }
+    "password": "…"          // 明文或已混淆串，由顶层 value_obscured 声明
+  },
+  "value_obscured": false    // false = 明文（服务端 --obscure 后落盘）；true = 已混淆串（--no-obscure 原样落盘）
 }
 ```
 
@@ -272,7 +274,7 @@ filename_encoding = base64
 - **入口**：设置页新增分区 `rclone`（标题「rclone 远端配置」），插入 `SECTIONS` 的 `credential` 之后；沿用「顶部分段 Tab + 单面板 v-if + `#sec-rclone` 深链」既有形态；
 - **面板结构**（`RcloneConfigPanel.vue`），上下两区：
   1. **已有配置列表**：`GET /api/rclone/configs` 渲染（managed 段展示非凭据参数 + `has_*` 徽标；非 managed 段灰显参数区，只露名字与 type）；每行操作：**编辑**（仅 managed 段显示）/ **删除**（全部段显示，n-popconfirm 确认；OAuth 段文案加重「删除后需重新授权」）；
-  2. **生成/编辑表单**：类型 Select（Crypt/WebDAV）→ 按 v-if 切换字段组（与后端 §3 一致）；密码输入框旁「生成」按钮（§4）+ 明文切换；编辑模式复用同一表单（进入编辑 = 预填非凭据字段、密码框空 + placeholder「留空保持不变」、`remote_name` 只读）；**存储形态开关**（裁决 16：开关 = 目标存储形态，开=混淆 / 关=明文，新建与编辑同一语义）+ 副复选框「我填入的已是 rclone obscure 产物」（勾选 → `value_obscured=true`，与明文目标形态互斥）+ 编辑态形态未知时的「存储形态声明」下拉（`declare_form`，只写记录不改密码）；提交后刷新列表并 `message.success`；409/422/503 错误 reason 直出；
+  2. **生成/编辑表单**：类型 Select（Crypt/WebDAV）→ 按 v-if 切换字段组（与后端 §3 一致）；密码输入框旁「生成」按钮（§4）+ 明文切换；编辑模式复用同一表单（进入编辑 = 预填非凭据字段、密码框空 + placeholder「留空保持不变」、`remote_name` 只读）；**「密码形态」单选**（裁决 17：唯一控件——`明文密码` / `rclone 混淆串`，落盘恒为混淆，不再有目标形态开关与副复选框）+ 编辑态只读徽标「当前落盘形态：混淆（可用）/ 明文（rclone 不可用）/ 未知」+ 明文段的「修正为混淆」按钮（不填密码即可修）+ 混淆段的「导出 {key} 原密码」（一次性弹窗）；提交后刷新列表并 `message.success`；409/422/503 错误 reason 直出；
      - **Crypt 底层目标（v1.12/1.13，裁决 12）**：先选**底层类型**（NRadioGroup 两模式）——
        **① 远端**：「**NSelect 选在册远端**（候选 = 列表快照里的全部段，排除正在编辑的段自身，避免自引用成环）+ 路径输入框（留空 = 远端根）」，提交时拼回 `name:path`；未选远端时前端拦截不发请求；
        **② 本地目录**：容器视角目录树选择（`DirPickerInline.vue`：`PathBreadcrumb` + `VirtualTree`(E33) + 路径值输入框），提交时整串作为 `remote`（绝对路径）；
@@ -317,6 +319,20 @@ filename_encoding = base64
 | 重建默认仓库结果 | 后端返回的一次性新密码 | 同上（仅展示态） |
 | rclone crypt/webdav 密码 ×3 | 前端 `generatePassword()` | 面板内 `NModal` + `SecretReveal` |
 | 配置迁移导出口令 | 前端 `generatePassword()` | 同上（确认后填入输入框） |
+
+### 7.1 仓库页（新建/编辑仓库）的 rclone 字段联动（v1.20）
+
+设置页面板管的是 **conf 段本身**；仓库页管的是 **conf 里某个段怎么被仓库引用**。两者共用同一探测数据，交互刻意区分：
+
+| 字段 | 交互 | 数据来源 |
+|---|---|---|
+| 远端名称 `remote` | 输入框（可手输）+ 左侧「选择远端 ▾」下拉；点一项回填 | `GET /api/rclone/remotes`（`rclone listremotes`，60s 缓存） |
+| 远端路径 `path` | **必填**（`ReqLabel` 星标 + 保存前校验；后端要求 `rclone:<段名>:<路径>` 非空） | 用户输入 |
+
+- **实际落盘路径**（`resolveRcloneTarget`，纯函数 7 例单测）：crypt 段取其底层 `remote` 拼——`/home/222` + `restic` → `/home/222/restic`；底层是网盘则保留方言 `onedrive:backup/restic`；非 crypt 段只能示意 `gdrive:backup/restic`（段内路径不对外暴露）；未探测到该段 → `unknown`（标注"仅供核对"）。
+- **占用提示**：同一远端已有仓库时提示仓库名与路径；路径也相同时升级为警告（两个仓库会互相覆盖）。编辑态排除自身。
+- **已删除**：rclone 预设快捷卡（OneDrive/Google Drive/S3/其它）——它只往远端名里塞一个固定串，与真实 conf 段名经常对不上，是误填源头；候选统一以探测结果为准。
+- **地址提示**只保留一句：`地址形如 rclone:远端名:路径（如 rclone:myremote:mybucket/restic）`。
 
 ## 8. 可扩展类型路线（注册表即插即用；编辑能力随注册表扩展，裁决 9）
 
@@ -375,7 +391,7 @@ filename_encoding = base64
 
 ## 11. 测试与护栏清单
 
-- 生成器单测：两类型 `build_args` 渲染（含 `filename_encoding`）、白名单校验、缺字段 422、**存储形态两轴 flag 映射**（混淆+明文→`--obscure` / 混淆+混淆产物→`--no-obscure` / 明文+明文→`--no-obscure` / 明文+混淆产物→422）、**crypt 底层目标三态分类**（`classify_crypt_remote` 参数化 10 例：远端指针 / 本地绝对路径 Linux·盘符·UNC / 相对路径拒绝）；
+- 生成器单测：两类型 `build_args` 渲染（含 `filename_encoding`）、白名单校验、缺字段 422、**提交值形态 flag 映射**（明文→`--obscure` / 已混淆串→`--no-obscure`；明文落盘已取消）+ 误填混淆值拦截（reveal 解不开 → 422）+ 明文段自愈（就地 `--obscure`、探测解得开则中止）、**crypt 底层目标三态分类**（`classify_crypt_remote` 参数化 10 例：远端指针 / 本地绝对路径 Linux·盘符·UNC / 相对路径拒绝）；
 - 编排层单测：dump JSON 解析与 managed 过滤、凭据键替换 `has_*`、非 managed 段零参数回显、CLI 非零退出/超时/缺二进制降级（**含 host 档「未装 rclone」路径**）、Lock 串行断言、**create 与 update 双路径的底层在册校验**（local 形态跳过）、编辑改不在册远端时零 CLI 调用；
 - 端点测试：鉴权 + Origin + 审计埋点 ×3 断言 + 能力边界双向断言（OAuth 段编辑 422 / 删除可用且审计含 type）+ 响应/异常/日志零凭据泄漏；
 - 前端：面板组件测（列表 / 编辑预填拆两段 / 未选底层远端时拦截不发请求 / `remote` 拼成 `name:path` / **本地模式提交绝对路径 + 非绝对路径拦截**）+ `DirPickerInline` 组件测 7 例（挂载点独立预取 / 树起点=父目录 / 点目录名选中且不移动树 / 文件不选中 / 手输 / 外部赋值重定位 vs 自 emit 不重定位 / disabled）+ 随机密码生成器单测 + i18n parity；
@@ -436,6 +452,17 @@ filename_encoding = base64
 | `rclone reveal -`（stdin） | 不支持（`-` 被当字面值） | 值只能经 argv 传（容器内单用途进程，风险可接受） |
 
 ⇒ 形态只能**写入时记录**（sidecar），读取时以 conf 值哈希校验外部改动；这也是旧版「已混淆开关失效」的根因注脚——rclone 自行猜测（`automatically obscure if not already`）与事后检测同源不可靠。
+
+### 12.6 明文落盘与二次混淆的不可行实证（v1.19，裁决 17 的依据；2026-10-28 WSL rclone v1.60.1）
+
+| 实验 | 结果 | 结论 |
+|---|---|---|
+| crypt 段 `password = abc123`（明文落盘） | `failed to decrypt password: input too short when revealing password - is it obscured?` | **明文 conf 对 crypt 不可用**——不是"安全性差"，是坏配置 |
+| webdav 段 `pass = abc123`（明文落盘） | `couldn't decrypt password: input too short …` | 同上，所有 password 类字段一致 |
+| `rclone config create … --no-obscure` 写明文 | conf 里就是明文，读时立刻报解密失败 | 「明文存储」这个能力本身没有合法用途 |
+| 把已混淆串再混淆一次（双重混淆）后读原目录 | **不报错**，列出为空（换了加密命名空间） | 误判/误操作不会报错，只会让仓库"看起来消失"——故转换前必须探测、且方向必须收敛 |
+
+⇒ 落盘形态收敛为**恒为混淆**；「取回密码」改为一次性导出，不提供明文落盘。
 
 ## 13. 已登记风险与取舍
 
