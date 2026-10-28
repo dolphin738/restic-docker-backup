@@ -4,6 +4,15 @@
 > 页面：① Set up a backup in the UI ② Running a backup ③ Restoring files。
 > 用途：评估其「配置 → 运行 → 恢复」三段式流程能否作为本项目 Web 版界面操作流程的对齐模板。
 > 配套方案文档：《对齐Duplicati的改造方案.md》（已归档 `docs/archive/`，2026-10-15；结论见 Web版PRD.md v1.4 与架构设计文档 §13）。
+>
+> 📦 **本文已归档（2026-10-29）**：本文为**外部资料取证底稿**，非本项目决策源。结论已上位化至《Web版PRD.md》v1.4（§3 旅程 I/H + 需求池 R-013/015/016/018/026/027）与《架构设计文档.md》§13 演进位；配套方案亦已归档。**本文移入 `docs/archive/` 仅供追溯，不再作为设计依据。**
+>
+> ⚠️ **偏差注记（2026-10-29 代码复核）**：§五「三处不能照搬的安全语义」已有 **3 条被后续实现推翻/放宽**，照本文理解现状会误判：
+> 1. **仓库密码「永不进表单/API」**——放宽为「**永不回显**」：现有 `POST /api/repos/{repo_id}/password`（`repos.py:1361`，表单输入或后端生成并一次性回显）与 `POST /api/repos/rotate-key`（`ops.py:731/743-772`）。红线 S3 现行定义见《代码审查规范》§3.1：凭据不得出现在 API **响应**/日志/事件/审计，只回 `has_value` + `source`。
+> 2. **「P1 仅时间戳子目录，原位恢复留待 P2（R-015）」**——**R-015 已落地**：`RestoreRequest.overwrite_mode`（`api_schemas.py:814`，仅 `never`/`always`）、E20 覆盖预览（`api_schemas.py:827+`）、前端 `i18n/locales/zh-CN.ts:1134-1162`、`ConfirmGate.vue` A7 单次确认、`api/__tests__/restore.spec.ts:111` 用例。
+> 3. **「本项目为单仓库单备份集」**——**多仓库已落地**：迁移 `0002_multi_backup_tasks` / `0003_multi_repos` / `0006_task_mirror_repos`，架构 §13 演进位已兑现。
+> 4. 另：本项目**已无独立 Restore 页**（恢复并入快照浏览页，`frontend/src/router/index.ts` 无 `/restore`），§二阶段 3 的 UI 入口描述**仅适用于 Duplicati 原产品**，不适用于本项目现状。
+> 未推翻部分：§一 ~ §四为 Duplicati 官方文档事实摘录（2026-10-12 抓取），仍有效。
 
 ---
 

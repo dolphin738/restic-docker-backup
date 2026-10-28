@@ -1,10 +1,20 @@
 # Duplicati 功能对齐分析与改造计划
 
-> **状态：参考层分析 + 方案草案（2026-10-17），待 owner 裁决吸收**。结论吸收进《Web版改造方案.md》/《架构设计文档.md》前，本文不作为技术决策权威。
+> 📦 **已归档（2026-10-29）**：批次 A–E 全部交付，本件 `git mv` 入 `docs/archive/`，**仅供追溯、不再是技术决策权威**。权威已迁出——A0 运行形态见《架构设计文档.md》v1.6-A0 与《Web版PRD.md》需求池 R-022 行；S1/S7 红线判定见《代码审查规范.md》§3.1；rclone 配置面见《rclone配置生成工具设计方案.md》v1.20。**读正文前必看文首「偏差注记」（2026-10-29 代码复核）：4 处记载已被后续代码推翻。**
+>
+> **状态：参考层分析 + 方案草案（2026-10-17）**（归档时状态行保留原貌；实际上批次已于 2026-10-18 全交付，批次 E 于 2026-10-22 落地）。结论已分头吸收进《Web版改造方案.md》/《架构设计文档.md》/《Web版PRD.md》。
 >
 > **裁决记录（2026-10-17 owner，五轮）**：① C2 只增加邮件通知（Telegram 不做）；② **C4 做**（copy + key），并升级为**任务级多目的地**（对齐 Duplicati「+ Add another destination」）；③ D1/D2/D3/D5 均**不做**；④ D4 配置导入/导出**放多仓库落地后做**；⑤ **目的地类型选择卡**并入批次 A（RepoForm 卡片化），**源侧远端目录**（手动输入挂载路径 + rclone mount 挂 S3/B2 等的部署指引）并入批次 A4；⑥ **调度双模式**（A6，简单模式生成 cron + 高级模式直编，双向解析，后端零改动）——cron 保持唯一事实源，门槛降到 Duplicati 级；⑦ **A0 运行模式收敛**（去掉 host 模式，只留 sources；**开发期无存量数据，不做任何兼容**——配置/DB/快照均可重建；实施时**文档全量清扫含 docs/archive/ 已归档件**）+ **A7 原位恢复 Duplicati 化**（原位置默认 + overwrite 布尔勾选，S7 放松裁决见批次 A）。批次 D 全部裁决完毕。⑧ **批次重排**（owner 2026-10-17 07:31「排吧」）：原批次 A（8 项，后又增 A8 共 9 项）拆为 **A（安全收敛+引擎扩展，后端：A0→A7→A1→A2→A3）** 与 **B（前端体验对齐：A4/A5/A6，纯前端）**；原 B/C 顺延为 **C（自愈）/D（运维通知）**；D4 升为 **批次 E（多仓库落地后）**；D1/D2/D3/D5 = 不做清单。项编号 A0–A7 沿用立项时序不变。
 > 依据：`D:/agent/duplicati-master`（Duplicati 3.x 源码，`Duplicati/Library` 引擎 + `Duplicati/WebserverCore` 服务端）；本项目代码现状经 codebase-memory 代码图谱核实（backend/app 全部 20 组路由 + 19 个服务 + 枚举/白名单）。
 > 边界：**不参考** docs 下既有 Duplicati 三篇历史文档（按 owner 2026-10-17 指令）；引擎选型结论独立得出，如与历史文档撞车属殊途同归。
+>
+> ⚠️ **偏差注记（2026-10-29 代码复核；正文未改写，凡与本节冲突以本节为准）**：除 C1（已下架）外**批次 A–E 均已交付**，但下列四处已被后续代码推翻，照正文施工会出错：
+> 1. **A1 细则②「rclone 只读托管，UI 不生成/不编辑/不展示凭据」已作废**——Q17 档位后有边界放宽：现 `RcloneConfigService.create/update/delete`（`services/rclone_config.py:448/501/602`）+ 端点 `POST /rclone/configs`、`/rclone/config/{remote_name}`（`routers/repos.py:916/1198`）+ 前端 `components/settings/RcloneConfigPanel.vue`（架构 **E48–E51**）。权威见《rclone配置生成工具设计方案.md》v1.20。
+> 2. **迁移编号整体偏移一位**——本文记「repos 表 = 0004」「retry_count = 0006」「mirror_repo_ids = 0007」；实际为 `0003_multi_repos.sql`、`0005_task_retry.sql`、`0006_task_mirror_repos.sql`（`backend/app/db/migrations/`）。
+> 3. **§5 规范影响所列 `hook.run` 已不存在**——随 C1 下架整体摘除（`AUDIT_HOOK` / `before_hook` / `after_hook` 全仓零命中）；现行审计清单见《代码审查规范.md》§3.1 S6（23 项）。
+> 4. **批次 E（D4 配置导入/导出）已落地**（2026-10-22）——`config.export` / `config.import` 已在 S6 危险清单；使用者说明见《配置迁移导入导出说明-2026-10-22.md》。
+>
+> **复核属实项**（2026-10-29 grep 实证，供快速取信）：A0 已删（`RunMode`/`HostMountMode`/`host_root` 零命中）、A2 `keep_within*` + `keep_tags`（`schemas/api_schemas.py:428-434`）、A3 `POST /snapshots/tag`（`routers/snapshots.py:310`）、A8 `GET /repos/_new_id`（`routers/repos.py:440`）、C4 `/repos/rotate-key`（`routers/ops.py:731`）与 `/copy`（`routers/ops.py:838`）、A5 类型选择卡与 A6 调度双模式（`utils/cronConverter.ts`）均在。
 
 ---
 
