@@ -50,7 +50,6 @@ describe('rclone 配置写入 API 的请求体', () => {
     await createRcloneConfig('mycrypt', {
       type: 'crypt',
       params: { remote: 'mywebdav:bucket', password: 'p' },
-      store_form: 'obscured',
       value_obscured: false,
     })
 
@@ -59,7 +58,6 @@ describe('rclone 配置写入 API 的请求体', () => {
     expect(body).toEqual({
       type: 'crypt',
       params: { remote: 'mywebdav:bucket', password: 'p' },
-      store_form: 'obscured',
       value_obscured: false,
     })
     expect(lastMethod()).toBe('POST')
@@ -69,14 +67,14 @@ describe('rclone 配置写入 API 的请求体', () => {
     await updateRcloneConfig('mycrypt', {
       type: 'crypt',
       params: { filename_encoding: 'base64' },
-      store_form: 'plain',
       value_obscured: true,
     })
 
     const body = lastBody()
     expect(typeof body).toBe('object')
-    expect((body as Record<string, unknown>)['store_form']).toBe('plain')
     expect((body as Record<string, unknown>)['value_obscured']).toBe(true)
+    // 目标形态字段已删除（裁决 17）：落盘恒为混淆
+    expect((body as Record<string, unknown>)['store_form']).toBeUndefined()
     expect(lastMethod()).toBe('PUT')
   })
 

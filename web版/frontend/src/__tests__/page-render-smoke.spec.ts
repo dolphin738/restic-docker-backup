@@ -13,7 +13,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query'
-import { NConfigProvider, NMessageProvider, NAutoComplete, NSelect } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NAutoComplete, NDropdown, NSelect } from 'naive-ui'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { h, type Component } from 'vue'
@@ -25,6 +25,7 @@ import TaskRowCard from '@/components/dashboard/TaskRowCard.vue'
 import TaskActionsMenu from '@/components/dashboard/TaskActionsMenu.vue'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import { i18n } from '@/i18n'
+import zhCN from '@/i18n/locales/zh-CN'
 import { lightThemeOverrides } from '@/theme/tokens'
 import { useUiStore } from '@/stores/ui'
 
@@ -36,13 +37,25 @@ const mocks = vi.hoisted(() => ({
   backupTasks: [] as Array<Record<string, unknown>>,
   /** A7：true = 任务列表查询挂起（首载未完成），用于加载态断言。 */
   tasksPending: false as boolean,
+  /** rclone 只读探测结果（远端名建议来源）。 */
+  rcloneRemotes: [] as string[],
 }))
 
 vi.mock('@/api/repo', () => ({
   listRepos: vi.fn(async () => mocks.repos),
   getRepo: vi.fn(async (id: string) => mocks.repos.find((r) => r.id === id) ?? mocks.repos[0] ?? null),
   getRepoStatus: vi.fn(async (id: string) => mocks.statuses[id] ?? mocks.repoStatus),
-  listRcloneRemotes: vi.fn(async () => ({ conf_present: false, remotes: [] })),
+  listRcloneRemotes: vi.fn(async () => ({
+    conf_present: mocks.rcloneRemotes.length > 0,
+    remotes: mocks.rcloneRemotes,
+  })),
+  listRcloneConfigs: vi.fn(async () => ({
+    conf_path: "/etc/rclone/rclone.conf",
+    conf_present: false,
+    configs: [],
+    available: true,
+    reason: null,
+  })),
   createRepo: vi.fn(async () => ({ id: 'repo-new' })),
   deleteRepo: vi.fn(async () => ({ ok: true })),
   updateRepo: vi.fn(async () => ({ ok: true })),
@@ -299,6 +312,8 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     await manageBtn!.trigger('click')
     await flushPromises()
     expect(w.find('.repo__id-chip').text()).toContain('仓库 ID：#repo-2')
+    // ID 在左上角标题行内（紧跟「编辑仓库」文案右侧）
+    expect(w.find('.repo__edit-title').text()).toContain(zhCN.repo.editRepoTitle)
     // ui store 是模块级单例：本例把当前仓库切到了 repo-2，须还原（否则泄漏到下例）
     useUiStore().setCurrentRepoId('default')
     w.unmount()
@@ -644,7 +659,8 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     w.unmount()
   })
 
-  it('新建态选 rclone：预设快捷卡恢复（改版前弹窗填入项），点击填入远端名', async () => {
+  it('新建态选 rclone：远端名旁「选择远端」下拉列出段名，选中回填输入框；卡头右上角是「管理远端」', async () => {
+    mocks.rcloneRemotes = ['mycrypt', 'gdrive']
     const w = mountPage(RepoPage)
     await flushPromises()
 
@@ -653,14 +669,23 @@ describe('仓库页「目标位置」列表（对齐 Duplicati）', () => {
     await w.findComponent(NSelect).vm.$emit('update:value', 'rclone')
     await flushPromises()
 
-    // 四张预设卡（OneDrive / Google Drive / S3 兼容 / 其它）
-    expect(w.text()).toContain('OneDrive')
-    expect(w.text()).toContain('Google Drive')
-    expect(w.text()).toContain('S3 兼容远端')
-    await w.findAll('.repo__dest-card').find((c) => c.text() === 'OneDrive')!.trigger('click')
-    // 点卡 = 填入远端名字段（URL 仍由字段组译）
-    const remoteInput = w.findAll('input').find((i) => (i.element as HTMLInputElement).value === 'onedrive')
-    expect(remoteInput).toBeTruthy()
+    // 预设快捷卡已按 owner 要求删除
+    expect(w.text()).not.toContain('OneDrive')
+    // 编辑卡头右上角 = 管理远端（原在远端名输入框右侧）
+    expect(w.find('.repo__manage-remote-head').text()).toBe(zhCN.repo.rcloneManageBtn)
+
+    // 「选择远端 ▾」的选项 = conf 里探测到的段名
+    const menu = w
+      .findAllComponents(NDropdown)
+      .find((d) => (d.props('options') as Array<{ key: string }>).some((o) => o.key === 'mycrypt'))
+    expect(menu).toBeTruthy()
+
+    // 选中一项 → 回填到输入框（与目录树快捷路径同一交互）
+    menu!.vm.$emit('select', 'gdrive')
+    await flushPromises()
+    expect(w.findAll('input').some((i) => (i.element as HTMLInputElement).value === 'gdrive')).toBe(true)
+
+    mocks.rcloneRemotes = []
     w.unmount()
   })
 

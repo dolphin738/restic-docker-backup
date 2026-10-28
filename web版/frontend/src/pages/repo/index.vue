@@ -8,6 +8,7 @@ import {
   NCheckbox,
   NDrawer,
   NDrawerContent,
+  NDropdown,
   NForm,
   NFormItem,
   NGrid,
@@ -38,6 +39,7 @@ import {
   getRepoStatus,
   getRepoUsage,
   listRepos,
+  listRcloneConfigs,
   listRcloneRemotes,
   manualCopy,
   rebuildRepo,
@@ -51,6 +53,7 @@ import { hasCode, isAppError } from '@/api/http'
 import type {
   ConfigItem,
   JobDonePayload,
+  RcloneConfigsOut,
   RcloneRemotesOut,
   RepoOut,
   RepoPasswordRequest,
@@ -275,7 +278,14 @@ async function onSaveAndTest(): Promise<void> {
 //   b2    b2:<bucket>:/<path>（冒号）        gcs  gs:<bucket>:/<path>（冒号）   azure azure:<container>:/<path>（冒号）
 //   sftp  sftp:<user>@<host>:/<path>（冒号）  rest rest:<url>（原样）           rclone rclone:<remote>:<path>（冒号）
 // URL 组译/解析纯函数在 utils/repoUrl.ts（审查🟡抽出 + 方言表单测），本组件只持字段模型与交互。
-import { composeRepoUrl, isS3Endpoint, parseRepoUrl, parseS3Url, type RepoTypeKey } from '@/utils/repoUrl'
+import {
+  composeRepoUrl,
+  isS3Endpoint,
+  parseRepoUrl,
+  parseS3Url,
+  resolveRcloneTarget,
+  type RepoTypeKey,
+} from '@/utils/repoUrl'
 
 /** 类型下拉选项（用户裁决：本项目无后端类型列表端点，用下拉替代 Duplicati 类型选择器列表）。 */
 const REPO_TYPES = computed<Array<{ key: RepoTypeKey; label: string }>>(() => [
@@ -410,30 +420,14 @@ function repoFormMissing(): string | null {
     case 'rest':
       return repoForm.url.trim() ? null : t('repo.fieldRestUrlRequired')
     case 'rclone':
-      return repoForm.remote.trim() ? null : t('repo.fieldRemoteRequired')
+      if (!repoForm.remote.trim()) {
+        return t('repo.fieldRemoteRequired')
+      }
+      // 后端强制 rclone:<远端>:<路径> 非空（path 为空 = 422），前端提前拦
+      return repoForm.path.trim() ? null : t('repo.fieldRemotePathRequired')
     default:
       return t('repo.formTypeRequired')
   }
-}
-
-/** rclone 预设快捷卡（改版前弹窗的填入项，用户裁决恢复；URL 仍走字段组译——
- *  点卡只填「远端名」字段，路径留空由用户补）。 */
-const RCLONE_PRESETS = computed(() => [
-  { key: 'onedrive', label: t('repo.dest.rcloneOnedrive'), remote: 'onedrive', note: t('repo.dest.rcloneOnedriveNote') },
-  { key: 'googledrive', label: t('repo.dest.rcloneGoogledrive'), remote: 'googledrive', note: t('repo.dest.rcloneGoogledriveNote') },
-  { key: 's3compat', label: t('repo.dest.rcloneS3'), remote: 's3compat', note: t('repo.dest.rcloneS3Note') },
-  { key: 'other', label: t('repo.dest.rcloneOther'), remote: 'remote', note: t('repo.dest.rcloneOtherNote') },
-])
-
-const rclonePresetKey = ref('')
-
-function selectRclonePreset(key: string): void {
-  const preset = RCLONE_PRESETS.value.find((p) => p.key === key)
-  if (!preset) {
-    return
-  }
-  rclonePresetKey.value = key
-  repoForm.remote = preset.remote
 }
 
 /** 类型切换（对齐 Duplicati setDestination：选中新类型 → 地址字段按新类型重建，凭据保留——
@@ -452,7 +446,6 @@ function onTypeChange(value: string | null): void {
   repoForm.url = ''
   repoForm.remote = ''
   repoForm.raw = ''
-  rclonePresetKey.value = ''
 }
 
 /** A8：向服务端要一个候选仓库标识（r<YYMMDD>-xxxxxx）预填；失败不阻断（用户可手填/留空）。 */
@@ -796,6 +789,61 @@ const rcloneRemotesQuery = useQuery({
 })
 const rcloneRemotes = computed<RcloneRemotesOut | null>(() => rcloneRemotesQuery.data.value ?? null)
 
+/** rclone conf 段清单（含 type 与 crypt 段的底层 `remote`）——只用于「实际落盘路径」推断。
+ *  与 remotes 探测分两个查询：configs 要 dump 整份 conf，比 listremotes 重。 */
+const rcloneConfigsQuery = useQuery({
+  queryKey: ['rclone', 'configs'],
+  queryFn: listRcloneConfigs,
+  enabled: computed(() => formType.value === 'rclone'),
+  staleTime: 60_000,
+})
+const rcloneConfigs = computed<RcloneConfigsOut['configs']>(
+  () => rcloneConfigsQuery.data.value?.configs ?? [],
+)
+
+/** 远端名候选（探测到的段名）——点输入框旁的下拉按钮展开，选中即回填。 */
+const rcloneRemoteMenu = computed(() =>
+  (rcloneRemotes.value?.remotes ?? []).map((name) => ({ label: name, key: name })),
+)
+
+/** 当前输入的远端在 conf 里的段（推断落点用；未探测到 → null）。 */
+const selectedRemoteItem = computed(
+  () => rcloneConfigs.value.find((c) => c.remote === repoForm.remote.trim()) ?? null,
+)
+
+/** 「实际落盘路径」：crypt 段按其**底层 remote** 拼（`/home/222` + `restic`），
+ *  其它段只能按 `remote:path` 示意（OAuth 网盘的内部路径不对外暴露）。 */
+const rcloneResolved = computed(() =>
+  resolveRcloneTarget(repoForm.remote, repoForm.path, selectedRemoteItem.value),
+)
+
+/** 同一远端下已有的仓库（路径相同时会互相覆盖，必须提前说清）。 */
+const rcloneRemoteUsers = computed(() => {
+  const remote = repoForm.remote.trim()
+  if (!remote) {
+    return []
+  }
+  const path = repoForm.path.trim().replace(/^\/+/, '')
+  const selfId = repo.value?.id
+  const out: Array<{ id: string; name: string; path: string; samePath: boolean }> = []
+  for (const r of repos.value) {
+    if (r.type !== 'rclone' || !r.url || r.id === selfId) {
+      continue
+    }
+    const parsed = parseRepoUrl('rclone', r.url)
+    if (!parsed || parsed.remote !== remote) {
+      continue
+    }
+    out.push({
+      id: r.id,
+      name: r.name,
+      path: parsed.path ?? '',
+      samePath: (parsed.path ?? '') === path,
+    })
+  }
+  return out
+})
+
 // A 方案：rclone 远端配置改为抽屉浮层（不占主页纵向、按需浮出；列表头与建仓表单两处入口）。
 // 抽屉关闭时让背后表单的 rcloneRemotes 探测重新拉取，使在抽屉里新建的远端即时在表单状态提示中可见。
 const rcloneDrawerOpen = ref(false)
@@ -803,7 +851,10 @@ function openRcloneDrawer() {
   rcloneDrawerOpen.value = true
 }
 watch(rcloneDrawerOpen, (open) => {
-  if (!open) rcloneRemotesQuery.refetch()
+  if (!open) {
+    rcloneRemotesQuery.refetch()
+    rcloneConfigsQuery.refetch()
+  }
 })
 
 /** 已存仓库 → 表单（对齐 Duplicati mapper.from 的装载路径：URL 解析回字段）。 */
@@ -1701,12 +1752,25 @@ function formatBytes(value: number): string {
       <div class="repo__edit-header">
         <n-button quaternary size="small" @click="cancelEdit">{{ t('repo.backToList') }}</n-button>
       </div>
-      <n-card :title="creatingNew ? t('repo.newRepoTitle') : t('repo.editRepoTitle')" size="small">
-        <!-- 对齐 Duplicati 单项配置卡头：标明当前配置的目标位置（id 即列表行卡的选中项） -->
+      <n-card size="small">
+        <!-- 卡头：左侧标题 + 仓库 ID（紧跟标题）；右侧放本卡的动作入口（rclone 远端管理） -->
+        <template #header>
+          <div class="repo__edit-title">
+            <span>{{ creatingNew ? t('repo.newRepoTitle') : t('repo.editRepoTitle') }}</span>
+            <n-text v-if="!creatingNew" depth="3" class="repo__id-chip">
+              {{ t('repo.colId') }}：#{{ currentRepoId }}
+            </n-text>
+          </div>
+        </template>
         <template #header-extra>
-          <n-text v-if="!creatingNew" depth="3" class="repo__id-chip">
-            {{ t('repo.colId') }}：#{{ currentRepoId }}
-          </n-text>
+          <n-button
+            v-if="formType === 'rclone'"
+            size="small"
+            class="repo__manage-remote-head"
+            @click="openRcloneDrawer"
+          >
+            {{ t('repo.rcloneManageBtn') }}
+          </n-button>
         </template>
         <!-- 编辑卡体用普通 flex 容器而非 n-space：naive Space 对「v-if 注释 + HTML 注释」相邻子节点
              存在 vnode 克隆缺陷（页脚会被挂载两次，且每轮列表/编辑切换泄漏一份，2026-10-19 实证），
@@ -1887,21 +1951,33 @@ function formatBytes(value: number): string {
                     <template #label>
                       <ReqLabel :label="t('repo.fieldRemote')" />
                     </template>
-                    <div style="display: flex; align-items: center; gap: 8px; width: 100%">
+                    <!-- 与目录树快捷路径同一套路：输入框可手输，旁边「选择远端」展开已探测的段名，
+                         点一项回填到输入框；段不在列表里就先去右上角「管理远端」新建 -->
+                    <div class="repo__pick-row">
+                      <n-dropdown
+                        trigger="click"
+                        :options="rcloneRemoteMenu"
+                        :disabled="envLocked || !rcloneRemoteMenu.length"
+                        @select="(key: string) => (repoForm.remote = key)"
+                      >
+                        <n-button size="small" :disabled="envLocked || !rcloneRemoteMenu.length">
+                          {{ t('repo.rcloneRemotePick') }}
+                        </n-button>
+                      </n-dropdown>
                       <n-input
                         v-model:value="repoForm.remote"
                         :placeholder="t('repo.fieldRemotePlaceholder')"
                         :disabled="envLocked"
-                        style="flex: 1"
+                        class="repo__pick-input"
                       />
-                      <n-button size="small" @click="openRcloneDrawer">
-                        {{ t('repo.rcloneManageBtn') }}
-                      </n-button>
                     </div>
                   </n-form-item>
                 </n-gi>
                 <n-gi>
-                  <n-form-item :label="t('repo.fieldRemotePath')">
+                  <n-form-item>
+                    <template #label>
+                      <ReqLabel :label="t('repo.fieldRemotePath')" />
+                    </template>
                     <n-input
                       v-model:value="repoForm.path"
                       :placeholder="t('repo.fieldRemotePathPlaceholder')"
@@ -1909,42 +1985,55 @@ function formatBytes(value: number): string {
                     />
                   </n-form-item>
                 </n-gi>
-                <n-gi>
-                  <n-alert
-                    v-if="rcloneRemotes"
-                    :type="rcloneRemotes.conf_present ? 'success' : 'warning'"
-                    :show-icon="false"
-                  >
-                    {{
-                      rcloneRemotes.conf_present
-                        ? t('repo.rcloneConfOk', { list: rcloneRemotes.remotes.join('、') || '—' })
-                        : t('repo.rcloneConfMissing')
-                    }}
-                  </n-alert>
-                  <n-alert v-else-if="rcloneRemotesQuery.error.value" type="error" :show-icon="false">
-                    {{ t('repo.rcloneProbeFailed', { reason: String(rcloneRemotesQuery.error.value) }) }}
-                  </n-alert>
-                </n-gi>
               </n-grid>
-              <n-text v-if="repoForm.type === 'rclone'" depth="3" class="repo__note">{{ t('repo.urlHintRclone') }}</n-text>
-
-              <!-- rclone 预设快捷卡（改版前弹窗填入项的恢复；点卡只填「远端名」，路径用户自补）。
-                   样式复用原类型卡的 dest-grid/dest-card（类名沿用原弹窗类型卡样式，仍在使用）。 -->
-              <n-form-item v-if="repoForm.type === 'rclone'" :label="t('repo.dest.rclonePresetLabel')">
-                <div class="repo__dest-grid">
-                  <button
-                    v-for="preset in RCLONE_PRESETS"
-                    :key="preset.key"
-                    type="button"
-                    class="repo__dest-card"
-                    :class="{ 'repo__dest-card--active': rclonePresetKey === preset.key }"
-                    :title="preset.note"
-                    @click="selectRclonePreset(preset.key)"
-                  >
-                    {{ preset.label }}
-                  </button>
+              <!-- conf 异常/空列表提示：正常时不渲染（候选已由远端下拉表达） -->
+              <n-alert v-if="rcloneRemotes && !rcloneRemotes.conf_present" type="warning" :show-icon="false">
+                {{ t('repo.rcloneConfMissing') }}
+              </n-alert>
+              <n-alert
+                v-else-if="rcloneRemotes && rcloneRemotes.conf_present && !rcloneRemotes.remotes.length"
+                type="warning"
+                :show-icon="false"
+              >
+                {{ t('repo.rcloneConfEmpty') }}
+              </n-alert>
+              <n-alert v-else-if="rcloneRemotesQuery.error.value" type="error" :show-icon="false">
+                {{ t('repo.rcloneProbeFailed', { reason: String(rcloneRemotesQuery.error.value) }) }}
+              </n-alert>
+              <!-- 实际落盘路径：远端名 + 路径都填好后显示（crypt 段按其底层目标拼）。
+                   放在 n-grid 之外：n-gi 上的 v-if 会留下注释节点，n-grid 展平子节点时会炸。 -->
+              <div v-if="rcloneResolved" class="repo__note">
+                <div>
+                  <n-text depth="2">
+                    {{
+                      rcloneResolved.kind === 'crypt'
+                        ? t('repo.rcloneResolvedCrypt', {
+                            target: rcloneResolved.target,
+                            remote: repoForm.remote.trim(),
+                          })
+                        : rcloneResolved.kind === 'remote'
+                          ? t('repo.rcloneResolvedRemote', { target: rcloneResolved.target })
+                          : t('repo.rcloneResolvedUnknown', { target: rcloneResolved.target })
+                    }}
+                  </n-text>
                 </div>
-              </n-form-item>
+                <div v-if="rcloneRemoteUsers.length > 0">
+                  <n-text type="warning">
+                    {{
+                      rcloneRemoteUsers[0].samePath
+                        ? t('repo.rcloneRemotePathTaken', {
+                            name: rcloneRemoteUsers[0].name,
+                            path: rcloneRemoteUsers[0].path || '—',
+                          })
+                        : t('repo.rcloneRemoteUsed', {
+                            name: rcloneRemoteUsers[0].name,
+                            path: rcloneRemoteUsers[0].path || '—',
+                          })
+                    }}
+                  </n-text>
+                </div>
+              </div>
+              <n-text v-if="repoForm.type === 'rclone'" depth="3" class="repo__note">{{ t('repo.urlHintRclone') }}</n-text>
 
               <!-- 已存地址解析失败：原文回退编辑 -->
               <n-form-item v-if="repoForm.raw" :label="t('repo.url')">
@@ -2495,45 +2584,6 @@ function formatBytes(value: number): string {
   opacity: 0.85;
 }
 
-/* A5 目的地类型卡片网格（对齐 Duplicati 选择器：图标 + 名称竖排） */
-.repo__dest-search {
-  margin-bottom: 8px;
-}
-
-.repo__dest-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 8px;
-  width: 100%;
-}
-
-.repo__dest-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 8px;
-  border: 1px solid var(--n-border-color, #e0e0e6);
-  border-radius: 5px;
-  background: transparent;
-  color: inherit;
-  font-size: 13px;
-  line-height: 1.2;
-  text-align: center;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.repo__dest-card:hover {
-  border-color: var(--n-color-target, #2080f0);
-}
-
-.repo__dest-card--active {
-  border-color: var(--n-color-target, #2080f0);
-  background: var(--n-color-target-transparent, rgba(32, 128, 240, 0.12));
-  font-weight: 600;
-}
-
 /* ---------------------------------------------------------------- 目标位置列表（对齐 Duplicati） */
 
 /* 仓库状态行内元素：容量文案（挨着锁标签）+ 最右「设置仓库密码」入口 */
@@ -2687,6 +2737,23 @@ function formatBytes(value: number): string {
 
 
 /* 编辑态（对齐 Duplicati destinations 编辑态）：顶部返回行 + 底部动作栏 */
+.repo__pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.repo__pick-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.repo__edit-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .repo__edit-header {
   display: flex;
 }

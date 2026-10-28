@@ -366,17 +366,13 @@ export interface RcloneConfigWriteRequest {
   type: string
   params: Record<string, string>
   /**
-   * **目标存储形态**（裁决 16：开关 = 存储形态，新建与编辑同一语义）：
-   * `obscured` = 以混淆形态落盘（conf 里是 rclone obscure 产物）/ `plain` = 以明文落盘。
+   * 提交的凭据**本身已是** rclone 混淆产物（从别处复制来的串）→ 原样落盘（`--no-obscure`）。
+   * 默认 false = 按明文提交，服务端混淆一次后落盘（`--obscure`）。
+   *
+   * 落盘形态**恒为混淆**（裁决 17）：明文写进 conf 对 crypt/webdav 一律不可用
+   * （rclone 实测 `failed to decrypt password`），故不再提供「明文存储」选项。
    */
-  store_form?: 'obscured' | 'plain'
-  /** 提交的凭据**本身已是**混淆产物（不再混淆一次）；与 `store_form='plain'` 矛盾。 */
   value_obscured?: boolean
-  /**
-   * 对**形态未知**的已存凭据一次性声明其现值形态（true=混淆值 / false=明文）。
-   * 只写形态记录、**不改密码本身**；声明后「存储形态」开关即可做真正的就地转换。
-   */
-  declare_form?: boolean | null
 }
 
 /** 写操作结果（凭据零回显）。 */

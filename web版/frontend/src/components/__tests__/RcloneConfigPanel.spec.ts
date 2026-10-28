@@ -13,11 +13,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { NCheckbox, NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect, NSwitch } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect } from 'naive-ui'
 import { createPinia, setActivePinia } from 'pinia'
 import { h, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 
+import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
 import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 import type { RcloneConfigsOut } from '@/api/types'
@@ -59,6 +60,14 @@ const SNAPSHOT: RcloneConfigsOut = {
 const SNAPSHOT_UNKNOWN_FORM: RcloneConfigsOut = {
   ...SNAPSHOT,
   configs: SNAPSHOT.configs.map((c) => (c.remote === 'mycrypt' ? { ...c, credential_obscured: { password: null, password2: null } } : c)),
+}
+
+/** 明文形态快照（历史段：conf 里是明文，rclone 实际不可用）。 */
+const SNAPSHOT_PLAIN_FORM: RcloneConfigsOut = {
+  ...SNAPSHOT,
+  configs: SNAPSHOT.configs.map((c) =>
+    c.remote === 'mycrypt' ? { ...c, credential_obscured: { password: false, password2: null } } : c,
+  ),
 }
 
 function mountPanel() {
@@ -243,7 +252,7 @@ describe('RcloneConfigPanel', () => {
     expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
   })
 
-  it('新增提交调用 createRcloneConfig（remote 拼成 name:path）', async () => {
+  it('新增提交调用 createRcloneConfig（remote 拼成 name:path；默认按明文提交）', async () => {
     const w = mountPanel()
     await nextTick()
 
@@ -263,23 +272,27 @@ describe('RcloneConfigPanel', () => {
     expect(payload.type).toBe('crypt')
     expect(payload.params.remote).toBe('gdrive:backup/restic')
     expect(payload.params.filename_encoding).toBe('base64')
-    // 裁决 16：默认目标存储形态 = 混淆（后端据此加 --obscure，rclone 混淆一次后落盘）
-    expect(payload.store_form).toBe('obscured')
+    // 裁决 17：落盘形态不再是选项（恒为混淆），只声明提交值形态；默认明文 → 后端 --obscure
+    expect('store_form' in payload).toBe(false)
     expect(payload.value_obscured).toBe(false)
   })
 
-  it('存储形态开关决定提交体的 store_form（关到明文 = 原样落盘）', async () => {
+  it('新增：填密码 + 选「混淆串」→ value_obscured=true（原样落盘，不二次混淆）', async () => {
     const w = mountPanel()
     await nextTick()
 
-    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'plainone')
+    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'obscuredone')
     pickCryptRemote(w, 'gdrive')
+    // 新增态密码框 placeholder 为空串（只有编辑态才有「留空保持不变」）→ 直接驱动组件
+    w.findAllComponents(PasswordInput).at(0)!.vm.$emit('update:modelValue', 'OBSCURED-TOKEN')
     await nextTick()
 
-    // 表单里有两个 NSwitch：目录名加密（crypt 字段）+ 表单末尾的「存储形态」
-    const switches = w.findAllComponents(NSwitch)
-    expect(switches.length).toBeGreaterThanOrEqual(2)
-    switches[switches.length - 1]!.vm.$emit('update:value', false)
+    const select = w
+      .findAllComponents(NSelect)
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
+    expect(select).toBeTruthy()
+    expect(select!.props('disabled')).toBe(false)
+    select!.vm.$emit('update:value', 'obscured')
     await nextTick()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
@@ -288,32 +301,8 @@ describe('RcloneConfigPanel', () => {
 
     expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
-    expect(payload.store_form).toBe('plain')
-  })
-
-  it('副复选框「值已是混淆产物」：勾选 → value_obscured=true 且强制目标形态=混淆', async () => {
-    const w = mountPanel()
-    await nextTick()
-
-    fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'obscuredone')
-    pickCryptRemote(w, 'gdrive')
-    // 先把目标形态拨到明文，再勾副框 → 勾选应把目标形态拉回混淆（两轴不矛盾）
-    const switches = w.findAllComponents(NSwitch)
-    switches[switches.length - 1]!.vm.$emit('update:value', false)
-    await nextTick()
-
-    const check = w.findAllComponents(NCheckbox)
-    expect(check.length).toBeGreaterThan(0)
-    check[0]!.vm.$emit('update:checked', true)
-    await nextTick()
-
-    clickSubmit(w, zhCN.settings.rclone.submitNew)
-    await nextTick()
-    await nextTick()
-
-    const [, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
     expect(payload.value_obscured).toBe(true)
-    expect(payload.store_form).toBe('obscured')
+    expect(payload.params.password).toBe('OBSCURED-TOKEN')
   })
 
   it('本地目录模式：提交 remote = 绝对路径（crypt 可包裹本地目录）', async () => {
@@ -356,7 +345,7 @@ describe('RcloneConfigPanel', () => {
     expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
   })
 
-  // ---------------- 方案 A：sidecar 形态记录 + 编辑态就地转换 ----------------
+  // ---------------- 落盘形态（裁决 17）：恒为混淆 + 明文段修正 + 导出原密码 ----------------
 
   function clickEdit(w: ReturnType<typeof mountPanel>): void {
     const editBtn = [...w.element.querySelectorAll('button')].find(
@@ -366,7 +355,7 @@ describe('RcloneConfigPanel', () => {
     editBtn!.dispatchEvent(new Event('click'))
   }
 
-  it('编辑态：开关初始值 = 已存形态（混淆 → 开），不动开关保存 = 保持不变', async () => {
+  it('编辑态：徽标显示已存形态（混淆 = 可用），不动密码保存 = value_obscured false', async () => {
     const w = mountPanel()
     await nextTick()
     await nextTick()
@@ -375,9 +364,9 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
     await nextTick()
 
-    const sw = w.findAllComponents(NSwitch).at(-1)!
-    expect(sw.props('value')).toBe(true) // 已存形态为混淆 → 初始开（保存无副作用）
-    expect(sw.props('disabled')).toBe(false) // 形态已知 → 编辑态可用
+    expect(textOf(w)).toContain(
+      zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedObscured),
+    )
 
     clickSubmit(w, zhCN.settings.rclone.submitEdit)
     await nextTick()
@@ -385,10 +374,58 @@ describe('RcloneConfigPanel', () => {
 
     expect(repoApi.updateRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
-    expect(payload.store_form).toBe('obscured')
+    // 目标形态字段已删除：落盘恒为混淆，请求体只声明「提交值形态」
+    expect('store_form' in payload).toBe(false)
+    expect(payload.value_obscured).toBe(false)
   })
 
-  it('编辑态：已存形态未知 → 开关禁用（就地转换无从谈起，提示外部维护）', async () => {
+  it('编辑态：密码形态下拉在未填新值前禁用（没有作用对象）', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const select = w
+      .findAllComponents(NSelect)
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'plain'))
+    expect(select).toBeTruthy()
+    expect(select!.props('disabled')).toBe(true)
+    expect(textOf(w)).toContain(zhCN.settings.rclone.passwordFormDisabled)
+  })
+
+  it('填新密码 + 选「混淆串」→ 提交 value_obscured=true（原样落盘，不二次混淆）', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    fillInput(w, zhCN.settings.rclone.passwordKeepHint, 'OBS-t0ken-from-other-conf')
+    await nextTick()
+
+    const select = w
+      .findAllComponents(NSelect)
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
+    expect(select).toBeTruthy()
+    expect(select!.props('disabled')).toBe(false)
+    select!.vm.$emit('update:value', 'obscured')
+    await nextTick()
+
+    clickSubmit(w, zhCN.settings.rclone.submitEdit)
+    await nextTick()
+    await nextTick()
+
+    const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
+    expect(payload.value_obscured).toBe(true)
+    expect(payload.params.password).toBe('OBS-t0ken-from-other-conf')
+  })
+
+  it('编辑态：形态未知 → 徽标「未知」+ 提示填密码重建记录', async () => {
     vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_UNKNOWN_FORM)
     const w = mountPanel()
     await nextTick()
@@ -398,14 +435,14 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
     await nextTick()
 
-    const sw = w.findAllComponents(NSwitch).at(-1)!
-    // 形态未知 → 默认取安全的「混淆」目标形态，但开关禁用（无可作用对象，需先声明）
-    expect(sw.props('value')).toBe(true)
-    expect(sw.props('disabled')).toBe(true)
-    expect(textOf(w)).toContain(zhCN.settings.rclone.obscureSwitchDisabled)
+    expect(textOf(w)).toContain(
+      zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedUnknown),
+    )
+    expect(textOf(w)).toContain(zhCN.settings.rclone.formUnknownHint)
   })
 
-  it('编辑态：拨下开关（与已存形态不一致）→ 提交 store_form=plain，后端就地转换', async () => {
+  it('明文段：出现「修正为混淆」，点击 → update 不带凭据（后端就地 --obscure）', async () => {
+    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_PLAIN_FORM)
     const w = mountPanel()
     await nextTick()
     await nextTick()
@@ -414,20 +451,24 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
     await nextTick()
 
-    const sw = w.findAllComponents(NSwitch).at(-1)!
-    sw.vm.$emit('update:value', false)
+    expect(textOf(w)).toContain(
+      zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedPlain),
+    )
+    const btn = [...w.element.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.plainRepairBtn,
+    )
+    expect(btn).toBeTruthy()
+    btn!.dispatchEvent(new Event('click'))
+    await nextTick()
     await nextTick()
 
-    clickSubmit(w, zhCN.settings.rclone.submitEdit)
-    await nextTick()
-    await nextTick()
-
+    expect(repoApi.updateRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
-    expect(payload.store_form).toBe('plain')
+    expect(payload.value_obscured).toBe(false)
+    expect(payload.params.password).toBeUndefined() // 不填密码也能修
   })
 
-  it('编辑态：形态未知 → 出现形态声明下拉，选中后提交 declare_form（不改密码）', async () => {
-    vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_UNKNOWN_FORM)
+  it('已混淆段：不出现「修正为混淆」按钮', async () => {
     const w = mountPanel()
     await nextTick()
     await nextTick()
@@ -436,25 +477,13 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
     await nextTick()
 
-    // 声明下拉（选项含 obscured / plain）出现在表单里
-    const declareSelect = w
-      .findAllComponents(NSelect)
-      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
-    expect(declareSelect).toBeTruthy()
-    declareSelect!.vm.$emit('update:value', 'obscured')
-    await nextTick()
-
-    clickSubmit(w, zhCN.settings.rclone.submitEdit)
-    await nextTick()
-    await nextTick()
-
-    const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
-    expect(payload.declare_form).toBe(true)
-    // 声明不提交任何凭据值（密码保持留空 = 不改密码本身）
-    expect(payload.params.password).toBeUndefined()
+    const btn = [...w.element.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.plainRepairBtn,
+    )
+    expect(btn).toBeUndefined()
   })
 
-  it('编辑态：形态已知时不出现声明下拉（避免多余声明覆盖真实形态）', async () => {
+  it('「如何找回密码」：编辑态只有一个入口，弹窗只给命令示例、不含任何凭据值', async () => {
     const w = mountPanel()
     await nextTick()
     await nextTick()
@@ -463,10 +492,79 @@ describe('RcloneConfigPanel', () => {
     await nextTick()
     await nextTick()
 
-    const declareSelect = w
-      .findAllComponents(NSelect)
-      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'obscured'))
-    expect(declareSelect).toBeUndefined()
+    const btns = [...w.element.querySelectorAll('button')].filter(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
+    )
+    // 两个密码字段（password / password2）共用一个入口——不再有按 key 分的两个导出按钮
+    expect(btns).toHaveLength(1)
+    btns[0]!.dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+
+    // 弹窗内容 teleport 到 body：读文本（不是查元素），断言只给命令示例
+    const modalText = document.body.textContent ?? ''
+    expect(modalText).toContain('rclone reveal')
+    expect(modalText).toContain('config dump')
+    // 凭据零回显：弹窗不含任何密码值，前端也不再存在导出调用
+    expect(modalText).not.toContain('plain-secret')
+    expect(repoApi).not.toHaveProperty('revealRcloneCredential')
+
+    w.unmount()
+  })
+
+  it('「如何找回密码」：两条命令各带复制按钮，点击复制对应命令原文', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    clickEdit(w)
+    await nextTick()
+    await nextTick()
+
+    const open = [...w.element.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
+    )
+    open!.dispatchEvent(new Event('click'))
+    await nextTick()
+    await nextTick()
+
+    // 弹窗 teleport 到 body → 按弹窗容器定位「复制」按钮（两个），避免其它弹窗残留干扰
+    const box = document.body.querySelector('.rclone-panel__recover')
+    expect(box).toBeTruthy()
+    const copyBtns = [...box!.querySelectorAll('button')].filter(
+      (b) => b.textContent?.trim() === zhCN.common.copy,
+    )
+    expect(copyBtns).toHaveLength(2)
+
+    copyBtns[0]!.dispatchEvent(new Event('click'))
+    await nextTick()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const first = String(writeText.mock.calls[0]![0])
+    expect(first).toContain('config dump')
+    expect(first).toContain(zhCN.settings.rclone.recoverConfPlaceholder)
+
+    copyBtns[1]!.dispatchEvent(new Event('click'))
+    await nextTick()
+    const second = String(writeText.mock.calls[1]![0])
+    expect(second).toContain('rclone reveal')
+    expect(second).toContain(zhCN.settings.rclone.recoverValuePlaceholder)
+
+    vi.unstubAllGlobals()
+    w.unmount()
+  })
+
+  it('「如何找回密码」：新增态不出现（无已存凭据）', async () => {
+    const w = mountPanel()
+    await nextTick()
+    await nextTick()
+
+    const btn = [...w.element.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
+    )
+    expect(btn).toBeUndefined()
   })
 })
 

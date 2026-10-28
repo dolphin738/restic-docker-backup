@@ -162,3 +162,29 @@ export function parseRepoUrl(type: RepoTypeKey, url: string): ParsedRepoUrl | nu
       return null
   }
 }
+
+/** rclone 段的「实际落盘路径」推导（新建仓库表单的落点提示）。
+ *
+ * - **crypt 段**：数据写在它的底层目标（conf 里的 `remote` 参数）之下 → `<底层>/<仓库路径>`；
+ *   底层可能是本地绝对路径（`/home/222`），也可能是别的远端（`onedrive:backup`）。
+ * - **其它段**（网盘 / WebDAV 等）：段内路径不对外暴露 → 只能按 `<remote>:<path>` 示意。
+ * - **未探测到该段**：`kind = unknown`，仅回显用户输入供核对。
+ *
+ * 返回 `null` = 远端名为空（调用方不渲染提示）。
+ */
+export function resolveRcloneTarget(
+  remote: string,
+  path: string,
+  section: { type?: string; params?: Record<string, string> } | null,
+): { kind: 'crypt' | 'remote' | 'unknown'; target: string } | null {
+  const name = (remote || '').trim()
+  if (!name) {
+    return null
+  }
+  const rel = (path || '').trim().replace(/^\/+/, '')
+  const base = section?.type === 'crypt' ? (section.params?.remote ?? '').trim() : ''
+  if (base) {
+    return { kind: 'crypt', target: rel ? `${base.replace(/\/+$/, '')}/${rel}` : base }
+  }
+  return { kind: section ? 'remote' : 'unknown', target: rel ? `${name}:${rel}` : name }
+}

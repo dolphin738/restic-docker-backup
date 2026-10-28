@@ -62,6 +62,13 @@ vi.mock('@/api/repo', () => ({
   getRepoStatus: vi.fn(async () => mocks.rowStatus),
   getRepoUsage: vi.fn(async () => mocks.usage),
   listRcloneRemotes: vi.fn(async () => ({ conf_present: false, remotes: [] })),
+  listRcloneConfigs: vi.fn(async () => ({
+    conf_path: "/etc/rclone/rclone.conf",
+    conf_present: false,
+    configs: [],
+    available: true,
+    reason: null,
+  })),
   createRepo: vi.fn(async () => ({ id: 'repo-new' })),
   deleteRepo: vi.fn(async () => ({ ok: true })),
   updateRepo: vi.fn(async () => ({ ok: true })),

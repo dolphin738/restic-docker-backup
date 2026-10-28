@@ -16,6 +16,7 @@ import {
   isS3Endpoint,
   parseRepoUrl,
   parseS3Url,
+  resolveRcloneTarget,
   type RepoTypeKey,
   type RepoUrlFields,
 } from '@/utils/repoUrl'
@@ -140,5 +141,59 @@ describe('isS3Endpoint', () => {
   it('拒绝旧方言残串与带路径的串', () => {
     expect(isS3Endpoint('cn-north-1:mybucket:')).toBe(false)
     expect(isS3Endpoint('host/path')).toBe(false)
+  })
+})
+
+describe('resolveRcloneTarget（rclone 实际落盘路径）', () => {
+  const cryptLocal = { type: 'crypt', params: { remote: '/home/222' } }
+  const cryptRemote = { type: 'crypt', params: { remote: 'onedrive:backup' } }
+
+  it('crypt 段 + 本地底层：底层绝对路径 + 段内子目录', () => {
+    expect(resolveRcloneTarget('mycrypt', 'restic', cryptLocal)).toEqual({
+      kind: 'crypt',
+      target: '/home/222/restic',
+    })
+  })
+
+  it('crypt 段 + 网盘底层：保留底层冒号方言', () => {
+    expect(resolveRcloneTarget('mycrypt', 'restic', cryptRemote)).toEqual({
+      kind: 'crypt',
+      target: 'onedrive:backup/restic',
+    })
+  })
+
+  it('crypt 段 + 路径为空：落点就是底层目标本身', () => {
+    expect(resolveRcloneTarget('mycrypt', '', cryptLocal)).toEqual({
+      kind: 'crypt',
+      target: '/home/222',
+    })
+  })
+
+  it('非 crypt 段：只能按 remote:path 示意（段内路径不暴露）', () => {
+    expect(resolveRcloneTarget('gdrive', 'backup/restic', { type: 'drive' })).toEqual({
+      kind: 'remote',
+      target: 'gdrive:backup/restic',
+    })
+  })
+
+  it('未探测到该段 → unknown（仅回显输入）', () => {
+    expect(resolveRcloneTarget('ghost', 'restic', null)).toEqual({
+      kind: 'unknown',
+      target: 'ghost:restic',
+    })
+  })
+
+  it('前导斜杠剥除；远端名为空 → null', () => {
+    expect(resolveRcloneTarget('mycrypt', '/restic', cryptLocal)).toEqual({
+      kind: 'crypt',
+      target: '/home/222/restic',
+    })
+    expect(resolveRcloneTarget('  ', 'restic', cryptLocal)).toBeNull()
+  })
+
+  it('底层路径带尾斜杠时不产生双斜杠', () => {
+    expect(
+      resolveRcloneTarget('mycrypt', 'restic', { type: 'crypt', params: { remote: '/home/222/' } }),
+    ).toEqual({ kind: 'crypt', target: '/home/222/restic' })
   })
 })
