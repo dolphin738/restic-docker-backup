@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.39（2026-10-28 三十九修订：**恢复流程并入快照浏览页**——原 `/restore` 入口页与 `/restore/:id/*` 三条向导路由删除（owner 裁决：只删页面、三步流程全部复用），`pages/restore/` 目录迁至 `pages/snapshots/restore/`（`flow/index.vue` → `panel.vue`），容器改快照页右侧宽抽屉；入口 = 列表行内「恢复」/ 文件树「恢复此快照」/ 深链 `?restore=<id>`；导航「数据」组撤「恢复向导」（8→7 项）。§4.8.5/§4.8.6 的历史路径记录保留但已失效，以本节为准。）（2026-10-26 三十八修订：**P20 缺陷回归——地址栏三角恒不出现**；根因是挂载点原靠树根响应顺带填，而后端 E33 只在 `container == "/"` 的请求回 `mounts`，本页树起点是已填路径的父目录 → 一次也拿不到 → 三角 `v-if` 恒假，须手动点回 `/` 才出现。改为 `ensureMounts()` 与树位置**解耦**独立取（复用 `RestoreTargetPicker` 同款写法），三处接线 + 三角补 `Esc` 收起。详见 §4.9.10 末尾。本文件全部历史修订（v1.0–v1.38）合并记载于文末「修订记录」节，版本头不再重复内联。
+> 版本：v1.40（2026-10-29 四十修订：**地址栏与树根分离**——owner 实拍「选中目录后快捷路径栏没有跟着变成选中的路径」。原口径地址栏 = 树根（浏览层），点目录名只改选中 → 勾选型多选场景（备份源 `SourcesPicker`、仓库/rclone 本地目录 `DirPickerInline`）下「选了看不出选了谁」。新口径：地址栏 = 关注路径（选中项/导航目标），树根 = 浏览路径；点目录名 → 地址栏跟随、**树不下钻**；地址栏跳转 → 树跟随且地址栏回浏览根。`RestoreTargetPicker` 单选下钻语义不变。详见 §4.9.9 末尾。）（2026-10-28 三十九修订：**恢复流程并入快照浏览页**——原 `/restore` 入口页与 `/restore/:id/*` 三条向导路由删除（owner 裁决：只删页面、三步流程全部复用），`pages/restore/` 目录迁至 `pages/snapshots/restore/`（`flow/index.vue` → `panel.vue`），容器改快照页右侧宽抽屉；入口 = 列表行内「恢复」/ 文件树「恢复此快照」/ 深链 `?restore=<id>`；导航「数据」组撤「恢复向导」（8→7 项）。§4.8.5/§4.8.6 的历史路径记录保留但已失效，以本节为准。）（2026-10-26 三十八修订：**P20 缺陷回归——地址栏三角恒不出现**；根因是挂载点原靠树根响应顺带填，而后端 E33 只在 `container == "/"` 的请求回 `mounts`，本页树起点是已填路径的父目录 → 一次也拿不到 → 三角 `v-if` 恒假，须手动点回 `/` 才出现。改为 `ensureMounts()` 与树位置**解耦**独立取（复用 `RestoreTargetPicker` 同款写法），三处接线 + 三角补 `Esc` 收起。详见 §4.9.10 末尾。本文件全部历史修订（v1.0–v1.38）合并记载于文末「修订记录」节，版本头不再重复内联。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：`Duplicati-ngclient-UIUX分析报告.md`（模版 ngclient 0.0.243，实测评分 7.9/10）+ `D:/agent/UI-UX分析-Duplicati-ngclient/ngclient-src` 源码（本轮细读 8 组组件）。
 > 改造范围：**仅 `frontend/src` 的视图与交互层**。API 契约、后端语义、安全红线（S1–S9/A1–A6/C8）一律不动；红线判定以 `代码审查规范.md` §3.1 为准。
@@ -656,7 +656,7 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 |---|---|---|
 | 组件 | `components/PathBreadcrumb.vue` | **原地升级**为 D 形态地址栏（S-4：不新增第二个面包屑组件）。新增可选 props `root`（根段/树根，默认 `/`）/ `mounts`（三角菜单项，空则不渲染三角）/ `validate`（业务校验注入）/ `editable`（false 退化纯面包屑）；新增 emit `invalid`（失焦非法时上报，组件不劫持焦点、不弹消息）；老调用方只给 `path` + `@select` 行为不变 |
 | 恢复 | `components/restore/RestoreTargetPicker.vue` | 移除 `SegmentedTabs`「浏览树 / 手动输入」二分段与 mount chips → 地址栏同时承担手输（**导航即目标**：地址栏提交既跟浏览层也 emit 目标，等价 Duplicati「Manually type path」语义）；越界/deny 改为 `validate` 注入，脏值仍不 emit |
-| 备份源 | `components/task/SourcesPicker.vue` | mount chips → 地址栏；跳转**只改浏览层**（备份源成员资格仍由点目录名切换，语义不变） |
+| 备份源 | `components/task/SourcesPicker.vue` | mount chips → 地址栏；跳转**只改浏览层**（备份源成员资格仍由点目录名切换，语义不变）。**2026-10-29 裁决**：地址栏与树根分离，点目录名 → 地址栏跟随选中路径（见本节末「地址栏与树根分离」，原「地址栏 = 树根」口径作废） |
 | 仓库 | `pages/repo/index.vue`（浏览弹窗） | 挂载点 `n-tag` 群 → 地址栏（复用既有 `jumpTo`）；删 `NTag` 死 import、删 `.repo__mounts` 死 CSS |
 | i18n | zh-CN / en-US | 新增 `pathBar.*` 6 键（组件级文案归组件）；清死键 `repo.mountRoot` / `repo.browseHint`（标签群与提示已删，后者本就是死键）与 `picker.{browse,manual,modeAria,pathLabel,manualHint,errEmpty,errAbsolute,errTraversal}`（二分段与手输块已删，基础形态校验改由地址栏 `pathBar.*` 承担） |
 
@@ -665,6 +665,17 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 **过程实证（如实记录）**：首跑抓一处 `//mnt` 双斜杠——`root='/'` 时面包屑累加自 `base` 起拼成 `//mnt`，与后端 `PathMapper._is_under`（`//` 前缀判定）是**同款坑**，已在 `crumbs` 里按「根为 `/` 则累加自空串起」修正并写进注释。
 
 **明确不做（防回潮）**：地址栏不做「新建目录」（后端无 mkdir 端点）、不做路径自动补全与历史记录（无数据源，做了即假开关）、不把挂载点菜单改成 teleport 下拉（就地展开即可查可测，且暗色继承不依赖 portal）。
+
+**后续裁决（2026-10-29 owner 实拍「选中目录后快捷路径栏没有跟着变成选中的路径」→ 地址栏与树根分离）**：
+
+- **原口径（作废）**：地址栏 = 树根（浏览层），点目录名只切换选中/成员资格、不动地址栏。该语义在 `RestoreTargetPicker`（单选目标）里表现为「选中即下钻」故无感，但在**勾选型多选**的 `SourcesPicker`（备份源）与 `DirPickerInline`（仓库/rclone 本地目录）里就是「选了半天看不出选了谁」。
+- **新口径（生效）**：**地址栏 = 关注路径（最近选中项 / 导航目标），树根 = 浏览路径，两者分离**：
+  - 点目录名 → 地址栏变为该目录路径，**树不动**（多选流不被下钻打断；`DirPickerInline` 纪律 2「不改 browsePath」保留）；
+  - 地址栏跳转（面包屑段 / 挂载点菜单 / 手输）→ 树跳过去，**地址栏回到浏览根**（清空 focusPath，避免「跳到 A 又选中 B」时地址栏与树脱节）；
+  - 外部赋值 / 选中值回流 → 地址栏恒显示该值（DirPickerInline 的 `watch(props.path)` 已同步）。
+- **落地**：`SourcesPicker.vue` 新增 `focusPath`（`:path="focusPath ?? currentPath"`），`DirPickerInline.vue` 新增 `focusPath`（`:path="focusPath || browsePath"`）；`RestoreTargetPicker.vue` 单选下钻语义不变，**不改动**。
+- **护栏**：`sourcesPickerJump.spec.ts` 新增 2 例（点名称 → 地址栏 = 选中路径且 `rootPath` 仍为 `/`；取消源同样跟随 + 面包屑跳转后回到浏览根）；`DirPickerInline.spec.ts` 新增 1 例并**同步改写**原「树起点」例的地址栏断言（`/repo` → `/repo/restic`，即选中值本身而非父目录）。
+- **连带**：本节 :703 记录的「点 `srv` …地址栏保持 `/`」为**当时旧口径**，已被本裁决推翻——探针 `.e2e/p20-repo-path-picker.cjs` 只采集 `addr` 不做该断言，无需改脚本。
 
 ### 4.9.10 P20：步骤条暗色对比度修复 + 全站向导步骤条统一（2026-10-26）
 
