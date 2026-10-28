@@ -1197,21 +1197,24 @@ class RcloneConfigWriteRequest(_Base):
 
     ``params`` 只接受注册表内已知键（未知键 422，不开自由改键口）。
 
-    存储形态两轴（裁决 16，**开关 = 目标存储形态**，新建与编辑同一语义）：
+    落盘形态（裁决 17，2026-10-28 收敛）：**conf 里的凭据恒为 rclone 混淆产物**。
+    真机取证发现「明文落盘」对 crypt/webdav 一律不可用（``failed to decrypt
+    password: input too short…``），故不再提供目标形态选项；用户唯一需要声明的是
+    **提交值本身的形态**：
 
-    - ``store_form``：**目标存储形态** —— ``obscured`` = 以混淆形态落盘（conf 里是
-      rclone obscure 产物）/ ``plain`` = 以明文落盘；
-    - ``value_obscured``：提交的凭据**本身已是**混淆产物（不再混淆一次）；
-      与 ``store_form='plain'`` 矛盾（后端 422）；
-    - ``declare_form``：对**形态未知**的已存凭据一次性声明其现值形态（True=混淆值 /
-      False=明文 / None=不声明）——只写形态记录、**不改密码本身**（裁决 15 补充）。
+    - ``value_obscured=False``（默认）：提交的是明文密码，服务端 ``--obscure``
+      混淆一次后落盘；
+    - ``value_obscured=True``：提交的**已是** rclone 混淆产物（从别处复制的串），
+      原样落盘（``--no-obscure``），不二次混淆——二次混淆会让 rclone 换一套加密
+      命名空间（不报错，但仓库看起来是空的）。
+
+    ``store_form`` / ``declare_form`` 已删除（旧客户端多传会被 pydantic 忽略，
+    行为等价「按明文提交、落盘混淆」，不会写出坏配置）。
     """
 
     type: str
     params: dict[str, str]
-    store_form: Literal["obscured", "plain"] = "obscured"
     value_obscured: bool = False
-    declare_form: bool | None = None
 
 
 class RcloneConfigWriteOut(_Base):

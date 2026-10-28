@@ -64,10 +64,16 @@ _REMOTE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 # 记录落 ``rclone_credential_forms`` 表（裁决 16，迁 DB 随备份走）；旧 sidecar 文件仅作
 # 一次性导入源（services/rclone_forms.py）。
 
-# 存储形态（裁决 16：**开关 = 目标存储形态**，新建与编辑同一语义）
-STORE_FORM_OBSCURED = "obscured"
-STORE_FORM_PLAIN = "plain"
-STORE_FORMS: tuple[str, ...] = (STORE_FORM_OBSCURED, STORE_FORM_PLAIN)
+# 落盘形态（裁决 17，2026-10-28）：**conf 里的凭据恒为 rclone 混淆产物**。
+#
+# 原文「存储形态」两轴（目标形态 + 值是否已混淆）在真机取证后收敛为一条：
+# 明文落盘对 crypt/webdav **一律不可用**——rclone v1.60.1 实测
+# ``failed to decrypt password: input too short when revealing password - is it obscured?``，
+# 即「把 conf 写成明文」不是"安全性差一点"，而是把该段直接写成坏配置。
+# 所以目标形态不再是用户可选项，唯一保留的用户输入是**提交值的形态**：
+# ``value_obscured=False`` → ``--obscure``（明文混淆一次后落盘）；
+# ``value_obscured=True`` → ``--no-obscure``（粘贴的混淆值原样落盘，不二次混淆——
+# 二次混淆会让 rclone 换一套加密命名空间，**不报错但变成空仓库**，实测确认）。
 
 
 def classify_crypt_remote(value: str) -> tuple[str, str | None]:
@@ -445,7 +451,6 @@ class RcloneConfigService:
         type_name: str,
         params: Mapping[str, Any],
         *,
-        store_form: str = STORE_FORM_OBSCURED,
         value_obscured: bool = False,
         available_remotes: Sequence[str] | None = None,
     ) -> RcloneWriteResult:
@@ -455,9 +460,9 @@ class RcloneConfigService:
             remote_name: 段名（远端名，白名单校验）。
             type_name: 注册表内类型（crypt / webdav）。
             params: 字段值（未知键 422）。
-            store_form: **目标存储形态**（裁决 16）：``obscured`` = 以混淆形态落盘
-                （conf 里是 rclone obscure 产物）/ ``plain`` = 以明文落盘。
-            value_obscured: 提交的凭据**本身已是**混淆产物（不再混淆一次）。
+            value_obscured: 提交的凭据**本身已是**混淆产物 → 原样落盘（``--no-obscure``，
+                不再混淆一次）；False → 按明文提交，rclone 混淆一次后落盘（``--obscure``）。
+                **落盘形态恒为混淆**（裁决 17：明文落盘对 crypt/webdav 是坏配置）。
             available_remotes: 现有远端名清单（校验 crypt 底层远端存在性）；
                 None 时以 conf 内既有段名作为清单。
         """
@@ -472,16 +477,17 @@ class RcloneConfigService:
                     f"rclone 远端「{remote_name}」已存在（已有：{', '.join(sorted(sections)) or '无'}）"
                 )
             self._check_underlying(args, sections, available_remotes)
+            if value_obscured:
+                await self._assert_looks_obscured(gen, params)
             argv = [*self._rclone(), "config", "create", remote_name, gen.type_name, *args]
-            await self._run([*argv, *self._store_flag(store_form, value_obscured)])
+            await self._run([*argv, *self._value_flag(value_obscured)])
             # 写后校验：单文件 bind mount 下 rclone 退出码为 0 但写入**静默丢失**
             # （真机 spike A/B 实证）——必须以 dump 复核落值，否则 UI 会误报成功。
             final_sections = await self._dump_sections()
             self._verify_write("新增", remote_name, args, final_sections, gen, wait_type=gen.type_name)
-            # 形态记录（方案 A）：提交的凭据落盘形态 = 目标存储形态
-            target_obscured = store_form == STORE_FORM_OBSCURED
+            # 形态记录（方案 A）：落盘形态恒为混淆（两条 flag 分支结果相同）
             intended = {
-                a.split("=", 1)[0]: target_obscured for a in args if a.split("=", 1)[0] in gen.credential_keys
+                a.split("=", 1)[0]: True for a in args if a.split("=", 1)[0] in gen.credential_keys
             }
             await self._record_forms(remote_name, final_sections[remote_name], gen, intended)
         return RcloneWriteResult(
@@ -498,25 +504,23 @@ class RcloneConfigService:
         type_name: str,
         params: Mapping[str, Any],
         *,
-        store_form: str = STORE_FORM_OBSCURED,
         value_obscured: bool = False,
-        declare_form: bool | None = None,
     ) -> RcloneWriteResult:
         """编辑配置段（**全量更新**；凭据留空 = 保持不变）。
 
-        存储形态（裁决 16）：``store_form`` 是**目标存储形态**（``obscured`` / ``plain``），
-        新建与编辑同一语义——开关位置不再因模式而反转（此前编辑态把开关当「已存形态」、
-        新建态当「提交值形态」，同一件事对应相反的开关位）。
+        落盘形态恒为混淆（裁决 17）：提交新凭据时 ``value_obscured`` 只决定 flag
+        （``--no-obscure`` 原样落盘 / ``--obscure`` 混淆一次），两条路径的 conf 结果
+        都是 rclone 可用形态。
 
-        就地转换（方案 A）：凭据留空但**目标形态与已存形态不一致**且形态已知时，按目标
-        形态就地重写该凭据（先 ``reveal`` 解明文，再以显式 flag 重存）——不回填、明文
-        不出后端。
+        凭据留空时另做**历史明文段自愈**：形态记录为 plain（早期版本或宿主机手写的
+        明文 conf——rclone 实测无法使用）且未提交新值时，按现值就地 ``--obscure``
+        重写，**不必重新输入密码**。形态未知（无记录/conf 被外部改过）一律不动作
+        （宁缺勿错），由用户填密码重存来重建记录。
 
-        形态声明（``declare_form``）：**形态未知**的凭据（记录缺失——历史配置由宿主机
-        手工维护、或本功能上线前写入）无法自动判定是明文还是混淆值（``rclone reveal``
-        无认证校验，事后检测不可靠，§12.5 实证）。此时允许用户**一次性声明**该凭据的
-        现值形态：声明只写形态记录、**不动 conf 里的密码**，声明后即可用开关做真正的
-        就地转换。声明与转换**互斥**（同一次请求不同时做）。
+        安全阀：修明文段前先用 ``rclone reveal`` 探测现值——解得开说明现值其实已是
+        混淆值（或恰好是合法 base64 的长明文），此时**拒绝自动转换**（422）：硬转会
+        二次混淆，而二次混淆在 rclone 里不报错、只是换一套加密命名空间（实测目录变空，
+        数据等于"消失"）。
         """
         _check_remote_name(remote_name)
         gen = self._generator(type_name)
@@ -535,34 +539,34 @@ class RcloneConfigService:
             # 与 create 同口径：编辑把底层远端改成不在册的也能存进去（保存成功、用时报错），
             # 故编辑同样过在册校验（local 形态在 _check_underlying 内跳过）
             self._check_underlying(args, sections, None)
+            if value_obscured:
+                await self._assert_looks_obscured(gen, params)
             snapshot = await self._load_forms()
-            target_obscured = store_form == STORE_FORM_OBSCURED
             intended: dict[str, bool] = {}
             submitted = {a.split("=", 1)[0] for a in args if "=" in a}
-            transforms: list[tuple[str, str, bool]] = []
+            repairs: list[tuple[str, str]] = []
             for key in gen.credential_keys:
                 if key in submitted:
-                    # 提交了新值 → 落盘形态 = 目标存储形态
-                    intended[key] = target_obscured
+                    # 提交了新值 → 落盘形态恒为混淆（flag 由 value_obscured 决定）
+                    intended[key] = True
                     continue
                 stored = str(existing.get(key) or "").strip()
                 if not stored:
                     continue
                 form = self._credential_form(remote_name, key, stored, snapshot)
-                if form is None:
-                    # 形态未知：只有用户明确声明才登记（否则保持原样、形态仍未知）
-                    if declare_form is not None:
-                        intended[key] = declare_form
+                if form is not False:
+                    # 已是混淆（True）→ 无需动作；形态未知（None）→ 不猜，保持原样
                     continue
-                if declare_form is not None or form == target_obscured:
-                    continue  # 声明请求不做转换；目标形态与已存形态一致则无需转换
-                plain = await self._reveal(stored) if form else stored
-                transforms.append((key, plain, target_obscured))
-                intended[key] = target_obscured
-            # 就地转换走**独立命令**：--obscure/--no-obscure 是命令级 flag，与主更新
-            # 提交的凭据语义可能相反，不能混在一条命令里。
-            # 目标=混淆 → --obscure（明文混淆后落盘）；目标=明文 → --no-obscure（原样落盘）。
-            for key, plain, target in transforms:
+                if await self._looks_obscured(stored):
+                    # 安全阀：记录说明文、现值却能 reveal 出内容 → 拒绝自动转换
+                    raise RcloneConfigInvalid(
+                        f"「{key}」记录的形态是明文，但现值能被 rclone reveal 解开（很可能已是混淆值）——"
+                        "为免二次混淆已中止，本次未做任何修改。请在密码栏填入明文密码后保存"
+                    )
+                repairs.append((key, stored))
+                intended[key] = True
+            # 修明文段走**独立命令**（flag 是命令级的，与主更新提交的凭据语义可能相反）
+            for key, plain in repairs:
                 await self._run(
                     [
                         *self._rclone(),
@@ -570,7 +574,7 @@ class RcloneConfigService:
                         "update",
                         remote_name,
                         f"{key}={plain}",
-                        *self._target_flag(target),
+                        "--obscure",
                     ]
                 )
             if args:
@@ -581,7 +585,7 @@ class RcloneConfigService:
                         "update",
                         remote_name,
                         *args,
-                        *self._store_flag(store_form, value_obscured),
+                        *self._value_flag(value_obscured),
                     ]
                 )
             final_sections = await self._dump_sections()
@@ -731,24 +735,6 @@ class RcloneConfigService:
         except Exception:  # noqa: BLE001 - 形态记录写失败不得让已完成的写操作报错
             return
 
-    async def _reveal(self, value: str) -> str:
-        """``rclone reveal``：把混淆形态的凭据解回明文（就地转换用）。
-
-        **只对 sidecar 记录为混淆形态的值调用**——reveal 无认证校验，喂任意串会
-        「解出」垃圾且 exit 0（真机实证），形态必须来自写入时记录而非事后检测。
-        解出的明文登记进脱敏表（S3：错误信息不得回显）。
-        """
-        self._redactions.append(value)
-        try:
-            out = await self._run([*self._rclone(), "reveal", value])
-        except RcloneConfigInvalid as exc:
-            raise RcloneConfigUnavailable(f"凭据混淆值解析失败（rclone reveal）：{exc}") from exc
-        plain = (out or "").strip()
-        if not plain:
-            raise RcloneConfigUnavailable("凭据混淆值解析失败（rclone reveal 无输出）")
-        self._redactions.append(plain)
-        return plain
-
     def _generator(self, type_name: str) -> ConfigGenerator:
         gen = GENERATORS.get((type_name or "").strip())
         if gen is None:
@@ -860,37 +846,44 @@ class RcloneConfigService:
         ]
 
     @staticmethod
-    def _store_flag(store_form: str, value_obscured: bool) -> tuple[str, ...]:
-        """按「目标存储形态 + 提交值形态」产出 rclone flag（裁决 16，两轴正交）。
+    def _value_flag(value_obscured: bool) -> tuple[str, ...]:
+        """提交值形态 → rclone flag（裁决 17：落盘形态恒为混淆）。
 
-        | 目标存储形态 | 提交的值 | flag | 落盘形态 |
-        |---|---|---|---|
-        | 混淆（obscured） | 明文 | ``--obscure`` | 混淆（rclone 混淆一次） |
-        | 混淆（obscured） | 混淆产物 | ``--no-obscure`` | 混淆（原样落盘） |
-        | 明文（plain） | 明文 | ``--no-obscure`` | 明文（原样落盘） |
-        | 明文（plain） | 混淆产物 | —— | **矛盾** → 422 |
+        | 提交的值 | flag | conf 落盘 |
+        |---|---|---|
+        | 明文 | ``--obscure`` | 混淆（rclone 混淆一次） |
+        | 已是混淆产物 | ``--no-obscure`` | 混淆（原样，不再混淆一次） |
 
         ⚠️ 两个 flag 必须显式传，不能靠「不加 flag」表达——rclone 默认行为是**自行判断**
         （``automatically obscure them if they aren't already obscured``），对多数看似
         已混淆的值会照原样写入，于是「不加 flag」与「加 ``--obscure``」在 conf 里产出
-        完全一样，界面开关等于失效（2026-10-27 真机实拍：开关开/关生成的 conf 逐字节相同）。
+        完全一样，界面选择等于失效（2026-10-27 真机实拍：开/关生成的 conf 逐字节相同）。
         """
-        if store_form not in STORE_FORMS:
-            raise RcloneConfigInvalid(f"存储形态非法：{store_form or '空'}（可选：{', '.join(STORE_FORMS)}）")
-        if store_form == STORE_FORM_PLAIN and value_obscured:
-            raise RcloneConfigInvalid("存储形态为明文，但提交的值是已混淆产物——两者矛盾，请改存储形态或改填明文")
-        if store_form == STORE_FORM_OBSCURED:
-            return ("--no-obscure",) if value_obscured else ("--obscure",)
-        return ("--no-obscure",)
+        return ("--no-obscure",) if value_obscured else ("--obscure",)
 
-    @staticmethod
-    def _target_flag(target_obscured: bool) -> tuple[str, ...]:
-        """就地转换的目标形态 → flag（转换时我们提交的**一定是明文**）。
+    async def _looks_obscured(self, value: str) -> bool:
+        """弱探测：该值能否被 ``rclone reveal`` 解开。
 
-        目标=混淆 → ``--obscure``（rclone 混淆一次后落盘）；目标=明文 → ``--no-obscure``
-        （原样落盘明文）。
+        **不是认证**（§12.5 实证：任意足够长的 base64 串都能解出垃圾且 exit 0），
+        只用于两道安全阀：①提交时 ``value_obscured=True`` 的明显误填拦截；
+        ②修明文段前的一致性检查（解不开 = 确实是明文，转换安全）。
         """
-        return ("--obscure",) if target_obscured else ("--no-obscure",)
+        self._redactions.append(value)
+        try:
+            out = await self._run([*self._rclone(), "reveal", value])
+        except RcloneConfigError:
+            return False
+        return bool((out or "").strip())
+
+    async def _assert_looks_obscured(self, gen: ConfigGenerator, params: Mapping[str, Any]) -> None:
+        """``value_obscured=True`` 时拦截明显误填（明文 / 非 base64）。"""
+        for key in gen.credential_keys:
+            raw = str(params.get(key) or "").strip()
+            if raw and not await self._looks_obscured(raw):
+                raise RcloneConfigInvalid(
+                    f"「{key}」被标记为已是 rclone 混淆值（原样落盘），但它无法被 rclone 解开"
+                    "——混淆值形如 45 位以上 URL-safe base64；请改按明文提交"
+                )
 
     async def _run(self, argv: Sequence[str]) -> str:
         """执行一条 rclone 命令；失败统一成带状态码的异常（凭据脱敏）。

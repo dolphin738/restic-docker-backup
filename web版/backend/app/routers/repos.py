@@ -1221,7 +1221,6 @@ async def create_rclone_config(
             remote_name,
             payload.type,
             payload.params,
-            store_form=payload.store_form,
             value_obscured=payload.value_obscured,
             available_remotes=remotes.remotes if remotes.available else None,
         )
@@ -1230,8 +1229,8 @@ async def create_rclone_config(
     await request.app.state.audit.record(
         AUDIT_RCLONE_CONFIG_APPEND,
         target=remote_name,
-        # 只记名字、类型与目标存储形态，不含凭据（S3）
-        detail={"type": result.type, "store_form": payload.store_form},
+        # 只记名字、类型与「提交值形态」，不含凭据（S3）
+        detail={"type": result.type, "value_obscured": payload.value_obscured},
     )
     return RcloneConfigWriteOut(
         remote=result.remote,
@@ -1246,8 +1245,8 @@ async def create_rclone_config(
     "/rclone/config/{remote_name}",
     response_model=RcloneConfigWriteOut,
     summary=(
-        "编辑 rclone conf 段（全量更新；凭据留空 = 保持不变，开关与已存形态不一致且"
-        "形态已知时按开关就地转换；非注册表类型 422）"
+        "编辑 rclone conf 段（全量更新；凭据留空 = 保持不变，历史明文段自动修正为混淆；"
+        "非注册表类型 422）"
     ),
     dependencies=_PROTECTED,
     tags=["rclone"],
@@ -1260,8 +1259,9 @@ async def update_rclone_config(
 ) -> RcloneConfigWriteOut:
     """编辑配置段（写 rclone ``config`` 的 update 子命令；审计 ``rclone.config_edit``）。
 
-    就地转换（方案 A）：凭据留空但开关与 sidecar 记录的已存形态不一致且形态已知时，
-    后端 reveal 解明文后按开关目标形态重存——明文不出后端、不回填。
+    落盘形态恒为混淆（裁决 17）；凭据留空时若记录为**明文**（早期版本/宿主机手写），
+    后端按现值就地 ``--obscure`` 修正，不必重填密码。明文→混淆转换前会做一次 reveal
+    一致性检查：解得开即中止（防二次混淆把仓库变成"空"）。
     """
     del session
     service = _rclone_config_service(request)
@@ -1270,21 +1270,18 @@ async def update_rclone_config(
             remote_name,
             payload.type,
             payload.params,
-            store_form=payload.store_form,
             value_obscured=payload.value_obscured,
-            declare_form=payload.declare_form,
         )
     except RcloneConfigError as exc:
         _raise_rclone_error(exc)
     await request.app.state.audit.record(
         AUDIT_RCLONE_CONFIG_EDIT,
         target=remote_name,
-        # credentials_changed 只记布尔，不记值（S3）；形态字段只记形态/布尔，不含凭据
+        # credentials_changed 只记布尔，不记值（S3）；形态字段只记布尔，不含凭据
         detail={
             "type": result.type,
             "credentials_changed": bool(payload.params),
-            "store_form": payload.store_form,
-            "declared_form": payload.declare_form,
+            "value_obscured": payload.value_obscured,
         },
     )
     return RcloneConfigWriteOut(
