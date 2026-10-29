@@ -1045,13 +1045,19 @@ export interface ManualCopyRequest {
   tags?: string[]
 }
 
-/** C4 手动 copy 响应（exit_code -1 = 超时中断，增量可续传）。 */
+/** C4 手动 copy 响应（exit_code -1 = 超时中断，增量可续传）。
+ *
+ * `ok` 只代表 restic 退出码为 0，**不代表真的复制了东西**（同仓 / 快照已全部存在 /
+ * `--tag` 无匹配时 restic 也返回 0）。真实增量看 `copied`：
+ * `>0` 新增条数；`0` 目标已包含全部（界面须提示「未新增」）；`null` 后置复核不可用。 */
 export interface ManualCopyResponse {
   ok: boolean
   source_repo_id: string
   target_repo_id: string
   exit_code: number
   message: string
+  copied?: number | null
+  target_total?: number | null
 }
 
 

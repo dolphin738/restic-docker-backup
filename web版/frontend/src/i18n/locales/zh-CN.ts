@@ -989,7 +989,10 @@ export default {
     copyTargetPlaceholder: '选择目标仓库（须已配置地址与密码）',
     copyRun: '开始复制',
     copyOk: '复制完成',
+    copyOkN: '复制完成，新增 {n} 个快照',
+    copyNoNew: '未新增快照——目标仓库已包含全部待复制快照（无需重复操作）',
     copyDone: '复制完成。',
+    copyDoneN: '复制完成，新增 {n} 个快照（目标仓库现有 {total} 个）。',
     copyFailed: '复制失败（退出码 {code}）：{message}。增量复制可重跑补齐，无需手工处理。',
   },
   jobs: {

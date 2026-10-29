@@ -1351,13 +1351,23 @@ class ManualCopyRequest(_Base):
 
 
 class ManualCopyResponse(_Base):
-    """C4 手动 copy 结果。"""
+    """C4 手动 copy 结果。
+
+    ``ok`` 只代表 restic 进程退出码为 0，**不代表真的复制了东西**（源/目标同仓、
+    快照已全部存在、``--tag`` 无匹配时 restic 同样返回 0）。真实增量在 ``copied``：
+
+    - ``copied > 0``：本次新增的快照条数（界面显示「已复制 N 个」）；
+    - ``copied == 0``：目标仓已包含全部待复制快照（界面必须说「未新增」，不说「复制完成」）；
+    - ``copied is None``：复制成功但后置复核读不到目标仓列表（降级，不臆造数量）。
+    """
 
     ok: bool
     source_repo_id: str
     target_repo_id: str
     exit_code: int
     message: str = ""
+    copied: int | None = None
+    target_total: int | None = None
 
 
 class ConfigExportRequest(_Base):

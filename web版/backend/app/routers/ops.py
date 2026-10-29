@@ -52,6 +52,7 @@ from app.constants import (
     MANUAL_COPY_TIMEOUT_SECONDS,
     PASSFILE_STATUS_CONFIGURED,
     PRUNE_PREVIEW_TIMEOUT_SECONDS,
+    SNAPSHOT_LIST_TIMEOUT_SECONDS,
 )
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
@@ -66,6 +67,7 @@ from app.errors import (
     ResticFailedError,
     ValidationError,
 )
+from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import (
     AuditArchiveItem,
     AuditOut,
@@ -134,6 +136,7 @@ from app.services.notifier import (
     _parse_meow_plan,
     _parse_threshold,
 )
+from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.restic import (
     ResticCmd,
@@ -727,6 +730,53 @@ async def _run_restic_copy(
             os.unlink(log_path)
 
 
+async def _copy_snapshot_ids(
+    restic: ResticCmd,
+    parser: OutputParser,
+    *,
+    repo_url: str,
+    repo_id: str,
+    config_repo: ConfigRepo,
+    tags: tuple[str, ...] = (),
+) -> tuple[frozenset[str], str | None]:
+    """读一个仓库的快照 id 集合（copy 前置预检与后置复核共用）。
+
+    ``restic copy`` 的退出码只表示「进程没报错」：源/目标同仓、源无快照、快照已全部
+    存在、``--tag`` 无匹配四种情况都会返回 0 且**零输出**（restic 0.19.1 真机实测）。
+    故成功语义必须由快照集合核算补齐——本函数是那一层的唯一读取点。
+
+    ``tags`` 非空时按「包含任一标签」过滤：与本层 argv 拼装同口径（每个标签一条
+    ``--tag``，restic 端多次出现取并集），保证预检「有没有可复制的快照」与 copy
+    实际过滤条件一致。
+
+    Args:
+        restic: restic 命令构造器（S2 白名单唯一拼装点）。
+        parser: 输出解析器（快照列表解析的唯一实现）。
+        repo_url: 仓库地址。
+        repo_id: 仓库 id（口令文件按此派生）。
+        config_repo: 凭据来源（与 copy 链路同一份注入）。
+        tags: 快照标签过滤（OR 语义）；空 = 不过滤。
+
+    Returns:
+        ``(ids, None)`` = 读取成功；``(空集, 原因)`` = 仓库不可读（地址/口令/未初始化）。
+        调用方必须区分「仓库里确实没有快照」与「读不出来」——前者 422 提示，后者
+        属部署/凭据问题，不能混报成「没有可复制的快照」。
+    """
+    argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
+    env = restic.build_env(
+        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    )
+    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
+    if probe.exit_code != 0:
+        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
+        return frozenset(), reason
+    records = await asyncio.to_thread(parser.parse_snapshot_list, "\n".join(probe.lines))
+    wanted = [record for record in records if record.snapshot_id]
+    if tags:
+        wanted = [record for record in wanted if any(tag in record.tags for tag in tags)]
+    return frozenset(record.snapshot_id for record in wanted), None
+
+
 @router.post(
     "/repos/rotate-key",
     response_model=KeyRotateResponse,
@@ -849,9 +899,20 @@ async def manual_copy(
 
     源=源仓库(env)，目的=目标仓库(secondary_repo_env)；两仓地址与密码须已配置，
     否则 422。copy 无 JSON 输出，逐行消费；中断安全（restic copy 增量可续传）。
+
+    **成功语义（本次加固）**：``restic copy`` 的退出码只代表「进程没报错」——源/目标
+    同仓、源无快照、快照已全部存在、``--tag`` 无匹配这四种情况都返回 0 且**零输出**
+    （restic 0.19.1 真机实测；后者是「提示复制完成但目标仓看不到」的直接成因）。故：
+
+    ① 复制前读两侧快照 id 集合，把「注定零复制」的场景前移成 422（同仓 / 源空 /
+       目标不可读），不再让用户等一次静默成功；
+    ② 复制后复核目标仓，返回 ``copied``（新增条数）与 ``target_total``——``copied=0``
+       时界面必须说「未新增」而不是「复制完成」；
+    ③ 结束失效 E30 状态缓存与快照目录缓存，否则仓库页数字在 TTL 内仍是旧值。
     """
     del session
     restic: ResticCmd = request.app.state.restic
+    parser: OutputParser = request.app.state.parser
     config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     audit = request.app.state.audit
@@ -865,18 +926,83 @@ async def manual_copy(
         if repo is None or not (repo.url or "").strip():
             raise ValidationError("仓库不存在或未配置地址", data={"repo_id": rid})
 
+    tags = tuple(str(t).strip() for t in payload.tags if str(t).strip())
+
+    # ---- 前置预检（D1）：把三类「零复制也报成功」的场景在 copy 之前拦掉 ----------
+    src_ids, src_err = await _copy_snapshot_ids(
+        restic,
+        parser,
+        repo_url=src.url,
+        repo_id=payload.source_repo_id,
+        config_repo=config_repo,
+        tags=tags,
+    )
+    if src_err is not None:
+        # 读不出来 ≠ 没有快照：这是部署/凭据问题，按 500 报，不与 422 混报
+        raise ResticFailedError(f"源仓库快照列表读取失败：{src_err}")
+    if not src_ids:
+        raise ValidationError(
+            "源仓库没有可复制的快照（若已设标签过滤，请确认该标签下确有快照）",
+            data={"source_repo_id": payload.source_repo_id, "tags": list(tags)},
+        )
+    dst_ids, dst_err = await _copy_snapshot_ids(
+        restic,
+        parser,
+        repo_url=dst.url,
+        repo_id=payload.target_repo_id,
+        config_repo=config_repo,
+    )
+    if dst_err is not None:
+        raise ValidationError(
+            f"目标仓库不可用：{dst_err}（请确认地址、密码与是否已初始化）",
+            data={"target_repo_id": payload.target_repo_id},
+        )
+    # 快照 ID 有交集 ⇒ 两个记录指向同一仓库：跨仓 copy 必然重新加密生成新 ID
+    # （restic 0.19.1 实测 3c3714c7 → 7418c432），ID 完全相同只可能是同一存储。
+    overlap = src_ids & dst_ids
+    if overlap:
+        raise ValidationError(
+            "源仓库与目标仓库指向同一仓库（快照 ID 重叠），复制不会产生新副本；"
+            "请检查两个仓库记录的地址是否指向同一存储",
+            data={
+                "source_repo_id": payload.source_repo_id,
+                "target_repo_id": payload.target_repo_id,
+                "overlap": len(overlap),
+            },
+        )
+
     exit_code, last_line = await _run_restic_copy(
         restic,
         source_url=src.url,
         source_repo_id=payload.source_repo_id,
         target_url=dst.url,
         target_passfile=passfile_path(request.app.state.settings, payload.target_repo_id),
-        tags=tuple(str(t).strip() for t in payload.tags if str(t).strip()),
+        tags=tags,
         config_repo=config_repo,
         timeout_seconds=MANUAL_COPY_TIMEOUT_SECONDS,
     )
 
     ok = exit_code == 0
+    # ---- 后置复核（D2）：exit 0 ≠ 复制了东西 -----------------------------------
+    copied: int | None = None
+    target_total: int | None = None
+    if ok:
+        after_ids, after_err = await _copy_snapshot_ids(
+            restic,
+            parser,
+            repo_url=dst.url,
+            repo_id=payload.target_repo_id,
+            config_repo=config_repo,
+        )
+        if after_err is None:
+            target_total = len(after_ids)
+            copied = len(after_ids - dst_ids)
+        # 复核失败只降级字段（copied=None），不改判 ok——命令本身确实成功了
+
+    # 目标仓内容已变（哪怕 exit 0 未新增，也可能补齐了索引）；两个缓存一律失效，
+    # 否则仓库页「快照数 / 容量」在 30s TTL 内仍是旧值，用户会以为没复制。
+    invalidate_repo_status_cache()
+
     await audit.record(
         AUDIT_COPY_RUN,
         target=payload.source_repo_id,
@@ -886,16 +1012,25 @@ async def manual_copy(
             "target_repo": payload.target_repo_id,
             "status": "ok" if ok else "failed",
             "exit_code": exit_code,
+            "copied": copied,
+            "target_total": target_total,
         },
         result="ok" if ok else "failed",
     )
-    message = "" if ok else failure_reason(exit_code, [last_line])
+    if not ok:
+        message = failure_reason(exit_code, [last_line])
+    elif copied == 0:
+        message = "未新增快照（目标仓库已包含全部待复制快照）"
+    else:
+        message = ""
     return ManualCopyResponse(
         ok=ok,
         source_repo_id=payload.source_repo_id,
         target_repo_id=payload.target_repo_id,
         exit_code=exit_code,
         message=message,
+        copied=copied,
+        target_total=target_total,
     )
 
 

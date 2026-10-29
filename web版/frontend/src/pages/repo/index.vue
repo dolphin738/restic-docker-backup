@@ -1026,7 +1026,13 @@ const rotateGenerated = ref<string | null>(null)
 const copyShow = ref(false)
 const copying = ref(false)
 const copyTarget = ref<string | null>(null)
-const copyResult = ref<{ ok: boolean; exit_code: number; message: string } | null>(null)
+const copyResult = ref<{
+  ok: boolean
+  exit_code: number
+  message: string
+  copied: number | null
+  target_total: number | null
+} | null>(null)
 
 function openRotate(): void {
   rotateGenerated.value = null
@@ -1084,9 +1090,23 @@ async function onCopy(): Promise<void> {
   copyResult.value = null
   try {
     const resp = await manualCopy({ source_repo_id: currentRepoId.value, target_repo_id: copyTarget.value })
-    copyResult.value = { ok: resp.ok, exit_code: resp.exit_code, message: resp.message }
+    const copied = resp.copied ?? null
+    copyResult.value = {
+      ok: resp.ok,
+      exit_code: resp.exit_code,
+      message: resp.message,
+      copied,
+      target_total: resp.target_total ?? null,
+    }
     if (resp.ok) {
-      message.success(t('repo.copyOk'))
+      // exit 0 ≠ 复制了东西：copied=0 说明目标已包含全部快照，必须提示「未新增」而不是「完成」
+      if (copied === 0) {
+        message.warning(t('repo.copyNoNew'))
+      } else if (copied !== null && copied > 0) {
+        message.success(t('repo.copyOkN', { n: copied }))
+      } else {
+        message.success(t('repo.copyOk'))
+      }
     }
   } catch {
     // AppError 已有全局提示
@@ -2433,10 +2453,21 @@ function formatBytes(value: number): string {
           </n-button>
         </n-space>
         <template v-if="copyResult">
-          <n-alert v-if="copyResult.ok" type="success" :show-icon="false">{{ t('repo.copyDone') }}</n-alert>
-          <n-alert v-else type="error" :show-icon="false">
+          <n-alert v-if="!copyResult.ok" type="error" :show-icon="false">
             {{ t('repo.copyFailed', { code: copyResult.exit_code, message: copyResult.message }) }}
           </n-alert>
+          <n-alert v-else-if="copyResult.copied === 0" type="warning" :show-icon="false">
+            {{ t('repo.copyNoNew') }}
+          </n-alert>
+          <n-alert v-else-if="copyResult.copied" type="success" :show-icon="false">
+            {{
+              t('repo.copyDoneN', {
+                n: copyResult.copied,
+                total: copyResult.target_total ?? copyResult.copied,
+              })
+            }}
+          </n-alert>
+          <n-alert v-else type="success" :show-icon="false">{{ t('repo.copyDone') }}</n-alert>
         </template>
       </n-space>
     </n-modal>
