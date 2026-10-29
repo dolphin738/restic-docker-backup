@@ -26,6 +26,7 @@ import {
   NSpace,
   NTag,
   NText,
+  NTooltip,
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
@@ -172,6 +173,13 @@ async function onRelease(): Promise<void> {
   })
 }
 
+/** 能否销毁数据：**仅本地 FS**（与仓库页删除门的勾选框同一判据）。
+ *  远端后端（rclone/s3/b2…）没有本地目录可清，`purge_disk=1` 会被后端 422 拒绝
+ *  （「远程后端无法自动清空」）——此前本页无条件发 purgeDisk，远端仓库点了必然报错。 */
+function canDestroy(row: ArchivedRepoOut): boolean {
+  return row.type === 'local'
+}
+
 function openDestroy(row: ArchivedRepoOut): void {
   destroyTarget.value = row
   destroyShow.value = true
@@ -260,6 +268,32 @@ async function onDeleteRcloneArchive(row: RcloneArchiveItemOut): Promise<void> {
 
 // ---------------------------------------------------------------- 列定义
 
+/** 操作列「销毁数据」：远端后端禁用 + 原因气泡——`purge_disk=1` 对 rclone/s3/b2…
+ *  一律 422（后端「远程后端无法自动清空」），无条件发请求就是一枚必然报错的死键。 */
+function renderDestroyButton(row: ArchivedRepoOut) {
+  const destroyable = canDestroy(row)
+  const button = () =>
+    h(
+      NButton,
+      {
+        size: 'tiny',
+        secondary: true,
+        type: 'error',
+        disabled: busy.value || !destroyable,
+        onClick: () => openDestroy(row),
+      },
+      { default: () => t('archive.destroyData') },
+    )
+  if (destroyable) {
+    return button()
+  }
+  return h(
+    NTooltip,
+    { trigger: 'hover' },
+    { trigger: button, default: () => t('archive.destroyRemoteHint') },
+  )
+}
+
 const repoColumns = computed<DataTableColumns<ArchivedRepoOut>>(() => [
   {
     title: t('archive.colName'),
@@ -317,17 +351,7 @@ const repoColumns = computed<DataTableColumns<ArchivedRepoOut>>(() => [
           },
           { default: () => t('archive.releaseId') },
         ),
-        h(
-          NButton,
-          {
-            size: 'tiny',
-            secondary: true,
-            type: 'error',
-            disabled: busy.value,
-            onClick: () => openDestroy(row),
-          },
-          { default: () => t('archive.destroyData') },
-        ),
+        renderDestroyButton(row),
       ]),
   },
 ])

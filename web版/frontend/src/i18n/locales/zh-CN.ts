@@ -96,6 +96,9 @@ export default {
     destroyDesc:
       '将清空仓库目录内容并删除密码文件，不可归档、不可恢复：即使数据在磁盘上仍有残留，密码已删除也无法打开。请先确认这些快照不再需要。',
     destroyPreview: '将销毁「{name}」的数据：请输入该仓库 ID 以确认。',
+    // 远端后端（rclone/s3/b2…）无法由本应用清空：purge_disk 会被 422 拒绝，
+    // 故销毁入口直接禁用并说明原因（对齐仓库页「仅本地 FS 显示销毁勾选」）。
+    destroyRemoteHint: '远程后端无法由本应用清空：请在后端自行清理后再做其它操作。',
     deleteRecord: '删除记录',
     deleteRecordConfirm: '删除这条归档记录？只删记录，不会删除任何数据。',
     rcloneTitle: 'rclone 配置归档',

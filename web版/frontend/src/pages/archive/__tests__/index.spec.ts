@@ -30,6 +30,17 @@ const mocks = vi.hoisted(() => ({
   destroyImpl: (async () => undefined) as () => Promise<void>,
   rcloneRestoreImpl: (async () => undefined) as () => Promise<void>,
   logQueries: [] as Array<string[]>,
+  /** 归档仓库行（可改：远端/本地的销毁门禁用例要换数据）。 */
+  repos: [
+    {
+      repo_id: 'r-1',
+      name: '我的仓库',
+      type: 'local',
+      url: '/repo/r-1',
+      archived_at: '2026-10-20T08:00:00Z',
+      passfile_status: 'ok',
+    },
+  ] as Array<Record<string, unknown>>,
 }))
 
 vi.mock('@/api/config', () => ({
@@ -55,16 +66,7 @@ vi.mock('@/api/audit', () => ({
 
 vi.mock('@/api/repo', () => ({
   getArchiveList: vi.fn(async () => ({
-    repos: [
-      {
-        repo_id: 'r-1',
-        name: '我的仓库',
-        type: 'local',
-        url: '/repo/r-1',
-        archived_at: '2026-10-20T08:00:00Z',
-        passfile_status: 'ok',
-      },
-    ],
+    repos: mocks.repos,
     tombstones: [],
   })),
   listRcloneArchives: vi.fn(async () => ({
@@ -165,6 +167,16 @@ beforeEach(() => {
   mocks.destroyImpl = async () => undefined
   mocks.rcloneRestoreImpl = async () => undefined
   mocks.logQueries = []
+  mocks.repos = [
+    {
+      repo_id: 'r-1',
+      name: '我的仓库',
+      type: 'local',
+      url: '/repo/r-1',
+      archived_at: '2026-10-20T08:00:00Z',
+      passfile_status: 'ok',
+    },
+  ]
   document.body.innerHTML = ''
   // SegmentedTabs 带 hash-prefix：分区会写进 URL hash，而 jsdom 的 location 在同一
   // 文件内跨用例共享——不清掉的话上一个用例切到的分区会渗进下一个用例的初始状态
@@ -242,6 +254,43 @@ describe('归档页：释放 ID / 销毁数据的执行反馈', () => {
 
     expect(modalText()).toContain('已销毁')
     w.unmount()
+  })
+
+  it('远端仓库禁用「销毁数据」（purge_disk 必然 422，不能给死键），本地仓库可点', async () => {
+    mocks.repos = [
+      {
+        repo_id: 'r-2',
+        name: '远端仓库',
+        type: 'rclone',
+        url: 'rclone:wdav:backup',
+        archived_at: '2026-10-20T08:00:00Z',
+        passfile_status: 'ok',
+      },
+    ]
+    const remote = await mountAndSettle()
+    const remoteBtn = [...remote.element.querySelectorAll('button')].find(
+      (el) => (el.textContent ?? '').trim() === '销毁数据',
+    ) as HTMLButtonElement | undefined
+    expect(remoteBtn, '远端行也要渲染销毁按钮（禁用而非隐藏，位置不跳）').toBeTruthy()
+    expect(remoteBtn!.disabled).toBe(true)
+    remote.unmount()
+
+    mocks.repos = [
+      {
+        repo_id: 'r-1',
+        name: '我的仓库',
+        type: 'local',
+        url: '/repo/r-1',
+        archived_at: '2026-10-20T08:00:00Z',
+        passfile_status: 'ok',
+      },
+    ]
+    const local = await mountAndSettle()
+    const localBtn = [...local.element.querySelectorAll('button')].find(
+      (el) => (el.textContent ?? '').trim() === '销毁数据',
+    ) as HTMLButtonElement | undefined
+    expect(localBtn!.disabled).toBe(false)
+    local.unmount()
   })
 })
 

@@ -99,6 +99,10 @@ export default {
     destroyDesc:
       'This wipes the repository directory contents and deletes the password file. It cannot be archived or restored: even if some data survives on disk, the missing password makes it unreadable. Make sure these snapshots are no longer needed.',
     destroyPreview: 'Destroying data of "{name}": type the repository ID to confirm.',
+    // Remote backends (rclone/s3/b2…) cannot be wiped by this app: purge_disk is
+    // rejected with 422, so the destroy entry is disabled with this reason
+    // (aligned with the repo page, which only shows the purge checkbox for local FS).
+    destroyRemoteHint: 'Remote backends cannot be wiped by this app: clear them on the backend first.',
     deleteRecord: 'Delete record',
     deleteRecordConfirm: 'Delete this archive record? Only the record goes — no data is deleted.',
     rcloneTitle: 'rclone config archive',
