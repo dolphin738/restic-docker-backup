@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -46,6 +47,7 @@ from app.constants import (
     AUDIT_NOTIFY_TEST,
     AUDIT_NOTIFY_UPDATE,
     AUDIT_PRUNE_PREVIEW,
+    COPY_LOG_KEEP,
     FORGET_PREVIEW_TIMEOUT_SECONDS,
     HISTORY_QUERY_MAX_LIMIT,
     KEY_OPERATION_TIMEOUT_SECONDS,
@@ -60,6 +62,9 @@ from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.db.repositories.task_repo import TaskRepo
 from app.dependencies import current_repo_id
 from app.errors import (
+    CopyNoSnapshotError,
+    CopySameRepoError,
+    CopyTargetUnusableError,
     CredentialDecryptError,
     EnvOverriddenError,
     JobConflictError,
@@ -145,7 +150,7 @@ from app.services.restic import (
     failure_reason,
     secondary_repo_env,
 )
-from app.utils.time import parse_utc_bound, utc_iso
+from app.utils.time import now_utc, parse_utc_bound, utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -695,16 +700,22 @@ async def _run_restic_copy(
     source_url: str,
     source_repo_id: str,
     target_url: str,
+    target_repo_id: str,
     target_passfile: Path,
     tags: tuple[str, ...],
     config_repo: ConfigRepo,
     timeout_seconds: float,
-) -> tuple[int, str]:
-    """执行一次 restic copy（源→目标），返回 (退出码, 最后一条输出)。
+    log_dir: Path,
+) -> tuple[int, str, str | None]:
+    """执行一次 restic copy（源→目标）：``(退出码, 最后一条输出, 留存日志文件名)``。
 
-    copy 无 JSON 输出，逐行消费落临时日志 + 取末行作失败线索；超时按中断处理
-    （restic copy 增量可续传，下次运行补齐，无需手工补）。目的仓的 url 与口令文件
-    **绝不进 argv**——与源仓同口径走 env（见 :func:`secondary_repo_env`）。
+    copy 无 JSON 输出，逐行落临时文件 + 取末行作失败线索；超时按中断处理（restic
+    copy 增量可续传，下次运行补齐，无需手工补）。目的仓的 url 与口令文件**绝不进
+    argv**——与源仓同口径走 env（见 :func:`secondary_repo_env`）。
+
+    输出**不再用完即删**：copy 是唯一没有 job 日志的长操作，事后判断「复制了几条 /
+    卡在哪」只能靠原文，故整体移入 ``log_dir``（只回文件名，容器路径不出 API）。
+    留存失败绝不影响 copy 结论——只降级为 ``log_name=None``。
     """
     env_extras = await load_credentials(config_repo, source_repo_id)
     env_extras.update(secondary_repo_env(target_url, target_passfile))
@@ -713,9 +724,11 @@ async def _run_restic_copy(
     env = restic.build_env(repo_url=source_url, repo_id=source_repo_id, env_extras=env_extras)
     fd, log_path = tempfile.mkstemp(prefix="restic-copy-", suffix=".log")
     os.close(fd)
+    tmp = Path(log_path)
+    exit_code = -1
+    last_line = ""
     try:
-        proc = await restic.spawn(argv, log_path, env=env)
-        last_line = ""
+        proc = await restic.spawn(argv, tmp, env=env)
         async for line in proc.lines():
             last_line = line
         try:
@@ -723,11 +736,42 @@ async def _run_restic_copy(
         except TimeoutError:
             proc.kill()
             await proc.wait()
-            return -1, last_line or "copy 超时"
-        return exit_code, last_line
+            exit_code = -1
+            last_line = last_line or "copy 超时"
     finally:
+        log_name = _retain_copy_log(
+            tmp, log_dir, source_repo_id=source_repo_id, target_repo_id=target_repo_id
+        )
+    return exit_code, last_line, log_name
+
+
+def _retain_copy_log(
+    tmp: Path, log_dir: Path, *, source_repo_id: str, target_repo_id: str
+) -> str | None:
+    """把临时输出移入留存目录并返回文件名；任何失败都降级为 ``None``（不影响结论）。"""
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # UTC 文件名：与容器时区无关，跨时区排障可直接排序比对
+        name = f"copy-{source_repo_id}-to-{target_repo_id}-{now_utc():%Y%m%dT%H%M%SZ}.log"
+        shutil.move(str(tmp), log_dir / name)
+    except OSError:
+        logger.warning("copy 输出留存失败（不影响 copy 结论）：%s", tmp, exc_info=True)
         with contextlib.suppress(OSError):
-            os.unlink(log_path)
+            tmp.unlink()
+        return None
+    _prune_copy_logs(log_dir)
+    return name
+
+
+def _prune_copy_logs(log_dir: Path) -> None:
+    """只保留最近 :data:`COPY_LOG_KEEP` 个留存文件（按 mtime 倒序；清理失败静默）。"""
+    try:
+        files = sorted(log_dir.glob("copy-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in files[COPY_LOG_KEEP:]:
+        with contextlib.suppress(OSError):
+            stale.unlink()
 
 
 async def _copy_snapshot_ids(
@@ -941,10 +985,7 @@ async def manual_copy(
         # 读不出来 ≠ 没有快照：这是部署/凭据问题，按 500 报，不与 422 混报
         raise ResticFailedError(f"源仓库快照列表读取失败：{src_err}")
     if not src_ids:
-        raise ValidationError(
-            "源仓库没有可复制的快照（若已设标签过滤，请确认该标签下确有快照）",
-            data={"source_repo_id": payload.source_repo_id, "tags": list(tags)},
-        )
+        raise CopyNoSnapshotError(data={"source_repo_id": payload.source_repo_id, "tags": list(tags)})
     dst_ids, dst_err = await _copy_snapshot_ids(
         restic,
         parser,
@@ -953,17 +994,12 @@ async def manual_copy(
         config_repo=config_repo,
     )
     if dst_err is not None:
-        raise ValidationError(
-            f"目标仓库不可用：{dst_err}（请确认地址、密码与是否已初始化）",
-            data={"target_repo_id": payload.target_repo_id},
-        )
+        raise CopyTargetUnusableError(target_repo_id=payload.target_repo_id, reason=dst_err)
     # 快照 ID 有交集 ⇒ 两个记录指向同一仓库：跨仓 copy 必然重新加密生成新 ID
     # （restic 0.19.1 实测 3c3714c7 → 7418c432），ID 完全相同只可能是同一存储。
     overlap = src_ids & dst_ids
     if overlap:
-        raise ValidationError(
-            "源仓库与目标仓库指向同一仓库（快照 ID 重叠），复制不会产生新副本；"
-            "请检查两个仓库记录的地址是否指向同一存储",
+        raise CopySameRepoError(
             data={
                 "source_repo_id": payload.source_repo_id,
                 "target_repo_id": payload.target_repo_id,
@@ -971,15 +1007,17 @@ async def manual_copy(
             },
         )
 
-    exit_code, last_line = await _run_restic_copy(
+    exit_code, last_line, log_name = await _run_restic_copy(
         restic,
         source_url=src.url,
         source_repo_id=payload.source_repo_id,
         target_url=dst.url,
+        target_repo_id=payload.target_repo_id,
         target_passfile=passfile_path(request.app.state.settings, payload.target_repo_id),
         tags=tags,
         config_repo=config_repo,
         timeout_seconds=MANUAL_COPY_TIMEOUT_SECONDS,
+        log_dir=request.app.state.settings.copy_log_dir,
     )
 
     ok = exit_code == 0
@@ -1014,6 +1052,8 @@ async def manual_copy(
             "exit_code": exit_code,
             "copied": copied,
             "target_total": target_total,
+            # 只记文件名（容器形态路径不出 API/审计展示面）；定位靠 data_dir/logs/copy
+            "log_name": log_name,
         },
         result="ok" if ok else "failed",
     )
@@ -1031,6 +1071,7 @@ async def manual_copy(
         message=message,
         copied=copied,
         target_total=target_total,
+        log_name=log_name,
     )
 
 

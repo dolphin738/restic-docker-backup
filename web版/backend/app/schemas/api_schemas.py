@@ -1359,6 +1359,9 @@ class ManualCopyResponse(_Base):
     - ``copied > 0``：本次新增的快照条数（界面显示「已复制 N 个」）；
     - ``copied == 0``：目标仓已包含全部待复制快照（界面必须说「未新增」，不说「复制完成」）；
     - ``copied is None``：复制成功但后置复核读不到目标仓列表（降级，不臆造数量）。
+
+    ``log_name`` 是 restic 原始输出的留存**文件名**（所在目录 ``<data_dir>/logs/copy``
+    属部署事实，按 S1 不经 API 暴露）；留存失败为 ``None``，不影响结论。
     """
 
     ok: bool
@@ -1368,6 +1371,7 @@ class ManualCopyResponse(_Base):
     message: str = ""
     copied: int | None = None
     target_total: int | None = None
+    log_name: str | None = None
 
 
 class ConfigExportRequest(_Base):

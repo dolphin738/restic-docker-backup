@@ -117,6 +117,12 @@ CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密
 RCLONE_UNAVAILABLE = "RCLONE_UNAVAILABLE"
 # 409 删除 rclone 段时仍有仓库 URL 引用该 remote，或有 crypt 段以它为底层（删除保护方案 P0）
 RCLONE_REMOTE_IN_USE = "RCLONE_REMOTE_IN_USE"
+# 422 C4 手动 copy 的三类预检拒绝（2026-10-29）：**必须独立成码**——沿用
+# VALIDATION_ERROR 会被前端按词条统一显示成「参数校验失败」，把下面的可操作原因全吞掉
+# （用户实测：「点复制提示参数校验失败」，无从得知是源空、同仓还是目标不可用）。
+COPY_SAME_REPO = "COPY_SAME_REPO"                  # 源/目标快照 ID 重叠 ⇒ 同一物理仓库
+COPY_NO_SNAPSHOT = "COPY_NO_SNAPSHOT"              # 源仓库没有（匹配 tag 的）快照
+COPY_TARGET_UNUSABLE = "COPY_TARGET_UNUSABLE"      # 目标仓库不可读：地址/口令/未初始化
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
 ERROR_STATUS: dict[str, int] = {
@@ -146,6 +152,9 @@ ERROR_STATUS: dict[str, int] = {
     CREDENTIAL_DECRYPT_FAILED: 500,
     RCLONE_UNAVAILABLE: 503,
     RCLONE_REMOTE_IN_USE: 409,
+    COPY_SAME_REPO: 422,
+    COPY_NO_SNAPSHOT: 422,
+    COPY_TARGET_UNUSABLE: 422,
 }
 
 # ---------------------------------------------------------------- 审计动作（§4.6 / §7.6）
@@ -515,3 +524,6 @@ PASSFILE_STATUS_MISSING = "missing"
 KEY_OPERATION_TIMEOUT_SECONDS = 60
 # 手动 copy（搬家场景）超时：全量首传可能很慢，给足余量；中断安全（restic copy 增量可续传）
 MANUAL_COPY_TIMEOUT_SECONDS = 3600
+# 手动 copy 的 restic 原始输出留存（2026-10-29）：每次一个文件，只保留最近 N 个。
+# copy 是手动低频操作，30 个足够回溯数周；按「个数」而非「时间」清理，避免再造一套保留语义。
+COPY_LOG_KEEP = 30

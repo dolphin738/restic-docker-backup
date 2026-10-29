@@ -841,6 +841,7 @@ export default {
     copyNoNew: 'No snapshots added — the target repository already contains all snapshots to copy',
     copyDone: 'Copy completed.',
     copyDoneN: 'Copy completed: {n} snapshot(s) added (target now holds {total}).',
+    copyLogRetained: 'restic output retained: {name}',
     copyFailed: 'Copy failed (exit code {code}): {message}. Incremental copy can be re-run to catch up; no manual fix needed.',
     passfileStatus: 'Password file mount status',
     passfileConfigured: 'Mounted',
@@ -1751,6 +1752,12 @@ export default {
     TASK_RUNNING: 'The task is running or pending — cancel it first',
     REPO_NOT_FOUND: 'Repository not found',
     REPO_NOT_EMPTY: 'This repository still has backup tasks or running jobs; resolve them before deleting',
+    COPY_SAME_REPO:
+      'Source and target are the same repository (snapshot IDs overlap), so no new copy can be produced. Check whether both repository records point to the same storage.',
+    COPY_NO_SNAPSHOT:
+      'This repository has no snapshots to copy (if a tag filter is set, confirm that tag has snapshots)',
+    COPY_TARGET_UNUSABLE:
+      'The target repository is unavailable — check its address, password and whether it has been initialized',
     ACCOUNT_LOCKED: 'Account temporarily locked, please retry later',
     RATE_LIMITED: 'Too many requests, please retry later',
     INTERNAL: 'Internal server error',

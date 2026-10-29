@@ -993,6 +993,7 @@ export default {
     copyNoNew: '未新增快照——目标仓库已包含全部待复制快照（无需重复操作）',
     copyDone: '复制完成。',
     copyDoneN: '复制完成，新增 {n} 个快照（目标仓库现有 {total} 个）。',
+    copyLogRetained: 'restic 原始输出已留存：{name}',
     copyFailed: '复制失败（退出码 {code}）：{message}。增量复制可重跑补齐，无需手工处理。',
   },
   jobs: {
@@ -1728,6 +1729,10 @@ export default {
     TASK_RUNNING: '任务正在运行或等待中，请先取消',
     REPO_NOT_FOUND: '仓库不存在',
     REPO_NOT_EMPTY: '仓库下仍有备份任务或运行中的作业，请先处理后再删除',
+    COPY_SAME_REPO:
+      '源仓库与目标仓库是同一个仓库（快照 ID 重叠），复制不会产生新副本。请检查两个仓库记录的地址是否指向同一存储。',
+    COPY_NO_SNAPSHOT: '该仓库没有可复制的快照（若设了标签过滤，请确认该标签下确有快照）',
+    COPY_TARGET_UNUSABLE: '目标仓库不可用，请检查地址、密码以及是否已完成初始化',
     ACCOUNT_LOCKED: '账号已被临时锁定，请稍后重试',
     RATE_LIMITED: '请求过于频繁，请稍后重试',
     INTERNAL: '服务器内部错误',

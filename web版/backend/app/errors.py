@@ -15,6 +15,9 @@ from app.constants import (
     ACCOUNT_LOCKED,
     BOOTSTRAP_REQUIRED,
     BOOTSTRAP_SHOWN,
+    COPY_NO_SNAPSHOT,
+    COPY_SAME_REPO,
+    COPY_TARGET_UNUSABLE,
     CREDENTIAL_DECRYPT_FAILED,
     CSRF_ORIGIN,
     ENV_OVERRIDDEN,
@@ -170,6 +173,51 @@ class ReadonlyKeyError(AppError):
     code = READONLY_KEY
     status = ERROR_STATUS[READONLY_KEY]
     message = "该配置项为只读派生键，由服务端自动维护，不可直接修改"
+
+
+class CopySameRepoError(ValidationError):
+    """422 手动 copy：源与目标指向同一物理仓库（快照 ID 重叠）。
+
+    独立错误码的原因：沿用 ``VALIDATION_ERROR`` 时前端只显示通用词条
+    「参数校验失败」，用户无法得知是哪种拒绝。同仓是「提示复制完成但目标仓看不到」
+    最隐蔽的成因，必须让它自己说出来。
+    """
+
+    code = COPY_SAME_REPO
+    status = ERROR_STATUS[COPY_SAME_REPO]
+    message = (
+        "源仓库与目标仓库指向同一仓库（快照 ID 重叠），复制不会产生新副本；"
+        "请检查两个仓库记录的地址是否指向同一存储"
+    )
+
+
+class CopyNoSnapshotError(ValidationError):
+    """422 手动 copy：源仓库没有（匹配标签的）快照可复制。"""
+
+    code = COPY_NO_SNAPSHOT
+    status = ERROR_STATUS[COPY_NO_SNAPSHOT]
+    message = "源仓库没有可复制的快照（若已设标签过滤，请确认该标签下确有快照）"
+
+
+class CopyTargetUnusableError(ValidationError):
+    """422 手动 copy：目标仓库读不出来（地址错误 / 口令不符 / 未初始化）。
+
+    restic 的具体原因（退出码语义 + Fatal 行）放 ``data.reason``，不进 message——
+    message 面向用户给可操作指引，细节留给排障与前端展开。
+    """
+
+    code = COPY_TARGET_UNUSABLE
+    status = ERROR_STATUS[COPY_TARGET_UNUSABLE]
+    message = "目标仓库不可用（请确认地址、密码与是否已初始化）"
+
+    def __init__(self, *, target_repo_id: str, reason: str = "") -> None:
+        """构造目标仓库不可用错误。
+
+        Args:
+            target_repo_id: 目标仓库 id（回显供定位）。
+            reason: restic 侧失败原因（已脱敏；可选）。
+        """
+        super().__init__(data={"target_repo_id": target_repo_id, "reason": reason or None})
 
 
 class CredentialKeyUnavailableError(ValidationError):

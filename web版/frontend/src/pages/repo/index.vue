@@ -1032,6 +1032,7 @@ const copyResult = ref<{
   message: string
   copied: number | null
   target_total: number | null
+  log_name: string | null
 } | null>(null)
 
 function openRotate(): void {
@@ -1097,6 +1098,7 @@ async function onCopy(): Promise<void> {
       message: resp.message,
       copied,
       target_total: resp.target_total ?? null,
+      log_name: resp.log_name ?? null,
     }
     if (resp.ok) {
       // exit 0 ≠ 复制了东西：copied=0 说明目标已包含全部快照，必须提示「未新增」而不是「完成」
@@ -2468,6 +2470,9 @@ function formatBytes(value: number): string {
             }}
           </n-alert>
           <n-alert v-else type="success" :show-icon="false">{{ t('repo.copyDone') }}</n-alert>
+          <n-text v-if="copyResult.log_name" depth="3" class="repo__note">
+            {{ t('repo.copyLogRetained', { name: copyResult.log_name }) }}
+          </n-text>
         </template>
       </n-space>
     </n-modal>

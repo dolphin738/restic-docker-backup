@@ -1058,6 +1058,8 @@ export interface ManualCopyResponse {
   message: string
   copied?: number | null
   target_total?: number | null
+  /** restic 原始输出的留存文件名（目录属部署事实，不经 API 暴露）；留存失败为 null。 */
+  log_name?: string | null
 }
 
 

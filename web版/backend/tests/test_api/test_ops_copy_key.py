@@ -219,6 +219,11 @@ async def test_manual_copy_success_audits(app_client):
     detail = json.loads(str(rows[0].detail))
     assert detail.get("copied") == 1
     assert detail.get("target_total") == 1
+    # 原始输出留存：文件名回给前端，文件真实落在 copy_log_dir（copy 无 job 日志，只能靠它）
+    assert body["log_name"], "成功路径应留存 restic 原始输出"
+    log_file = ns.app.state.settings.copy_log_dir / body["log_name"]
+    assert log_file.is_file(), f"留存文件不存在：{log_file}"
+    assert detail.get("log_name") == body["log_name"]
 
 
 async def test_copy_rejects_same_store(app_client):
@@ -244,6 +249,8 @@ async def test_copy_rejects_same_store(app_client):
     )
     assert resp.status_code == 422, resp.text
     assert "同一仓库" in resp.text
+    # 独立错误码：沿用 VALIDATION_ERROR 会被前端词条统一显示成「参数校验失败」
+    assert resp.json()["code"] == "COPY_SAME_REPO"
 
 
 async def test_copy_rejects_empty_source(app_client):
@@ -270,6 +277,7 @@ async def test_copy_rejects_empty_source(app_client):
     )
     assert resp.status_code == 422, resp.text
     assert "没有可复制的快照" in resp.text
+    assert resp.json()["code"] == "COPY_NO_SNAPSHOT"
     assert ran == []  # 预检拦下后绝不 spawn
 
 
@@ -292,6 +300,7 @@ async def test_copy_rejects_unavailable_target(app_client):
     )
     assert resp.status_code == 422, resp.text
     assert "目标仓库不可用" in resp.text
+    assert resp.json()["code"] == "COPY_TARGET_UNUSABLE"
 
 
 async def test_manual_copy_reports_zero_copied(app_client):

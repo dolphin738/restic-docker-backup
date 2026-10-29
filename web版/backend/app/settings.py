@@ -100,6 +100,16 @@ class Settings(BaseSettings):
         return Path(self.data_dir) / "jobs"
 
     @property
+    def copy_log_dir(self) -> Path:
+        """手动 copy 的 restic 原始输出留存目录（/data/logs/copy/<name>.log）。
+
+        copy 没有 JSON 输出、也没有 job 日志（手动操作不经 JobRunner），原文只在
+        这里留档：失败后要判断「到底复制了几条 / 卡在哪」只能靠它。S1：路径字面量
+        唯一出处；API 只回文件名，不回本路径（容器形态路径不出 API）。
+        """
+        return Path(self.data_dir) / "logs" / "copy"
+
+    @property
     def dump_dir(self) -> Path:
         """数据库 dump 产物目录（/data/dump，R-019；S1：路径字面量唯一出处）。"""
         return Path(self.data_dir) / "dump"
