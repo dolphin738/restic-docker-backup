@@ -8,9 +8,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 
 from app.constants import (
     ACTIVE_JOB_STATUSES,

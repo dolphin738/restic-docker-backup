@@ -638,7 +638,7 @@ class JobRunner:
         except Exception:  # noqa: BLE001 - 回调只做辅助通知，失败不能影响任务链路
             logger.exception("JobRunner on_finish 回调执行失败")
 
-    async def _finalize(self, job_id: str, status: str, **kwargs: object) -> "Job | None":
+    async def _finalize(self, job_id: str, status: str, **kwargs: object) -> Job | None:
         """终态落库（E30 状态缓存**先于**终态失效）。
 
         init/unlock 等任务会改变仓库可连性——不失效缓存的话，用户跑完 init 再看
