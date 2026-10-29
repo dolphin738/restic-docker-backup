@@ -833,6 +833,7 @@ export default {
     rotateOk: 'Key rotated; password file updated to the new password',
     copyBtn: 'Copy snapshots to…',
     copyDesc: 'Incrementally copy snapshots from the current repository to a target repository (only new snapshots, resumable). For migration or offsite copies.',
+    copySource: 'Source (current)',
     copyTarget: 'Target repository',
     copyTargetPlaceholder: 'Select target repository (address and password configured)',
     copyRun: 'Start copy',
@@ -1755,7 +1756,7 @@ export default {
     COPY_SAME_REPO:
       'Source and target are the same repository (snapshot IDs overlap), so no new copy can be produced. Check whether both repository records point to the same storage.',
     COPY_NO_SNAPSHOT:
-      'This repository has no snapshots to copy (if a tag filter is set, confirm that tag has snapshots)',
+      'The source repository (the one you are currently viewing) has no snapshots to copy; to copy in the other direction, switch repositories first (if a tag filter is set, confirm that tag has snapshots)',
     COPY_TARGET_UNUSABLE:
       'The target repository is unavailable — check its address, password and whether it has been initialized',
     ACCOUNT_LOCKED: 'Account temporarily locked, please retry later',

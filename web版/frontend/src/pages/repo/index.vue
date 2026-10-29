@@ -1072,6 +1072,12 @@ const cacheQuery = useQuery({
 const cacheShow = ref(false)
 const cacheClearing = ref(false)
 
+/** copy 源仓固定为「当前查看的仓库」，弹窗显式标出——否则极易把复制方向看反。 */
+const copySourceLabel = computed(() => {
+  const hit = (reposQuery.data.value ?? []).find((repo) => repo.id === currentRepoId.value)
+  return hit ? `${hit.name} (${hit.id})` : (currentRepoId.value ?? '—')
+})
+
 /** copy 目标候选：其它仓库中已配地址与密码的（否则后端 422）。 */
 const copyOptions = computed(() =>
   (reposQuery.data.value ?? [])
@@ -2435,6 +2441,9 @@ function formatBytes(value: number): string {
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('repo.copyDesc') }}</n-text>
         <n-form label-placement="left" label-width="120" size="small">
+          <n-form-item :label="t('repo.copySource')">
+            <n-input :value="copySourceLabel" readonly />
+          </n-form-item>
           <n-form-item :label="t('repo.copyTarget')">
             <n-select
               v-model:value="copyTarget"

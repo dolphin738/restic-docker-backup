@@ -985,6 +985,7 @@ export default {
     rotateOk: '密钥已轮换，口令文件已同步为新密码',
     copyBtn: '复制快照到…',
     copyDesc: '把当前仓库的快照原样增量复制到目标仓库（只传新快照，可中断续传）。用于搬家或建异地副本。',
+    copySource: '源仓库（当前）',
     copyTarget: '目标仓库',
     copyTargetPlaceholder: '选择目标仓库（须已配置地址与密码）',
     copyRun: '开始复制',
@@ -1731,7 +1732,8 @@ export default {
     REPO_NOT_EMPTY: '仓库下仍有备份任务或运行中的作业，请先处理后再删除',
     COPY_SAME_REPO:
       '源仓库与目标仓库是同一个仓库（快照 ID 重叠），复制不会产生新副本。请检查两个仓库记录的地址是否指向同一存储。',
-    COPY_NO_SNAPSHOT: '该仓库没有可复制的快照（若设了标签过滤，请确认该标签下确有快照）',
+    COPY_NO_SNAPSHOT:
+      '源仓库（即当前查看的仓库）没有可复制的快照；若要反向复制，请先切换到另一个仓库再操作（若设了标签过滤，请确认该标签下确有快照）',
     COPY_TARGET_UNUSABLE: '目标仓库不可用，请检查地址、密码以及是否已完成初始化',
     ACCOUNT_LOCKED: '账号已被临时锁定，请稍后重试',
     RATE_LIMITED: '请求过于频繁，请稍后重试',
