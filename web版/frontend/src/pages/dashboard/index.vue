@@ -22,6 +22,7 @@ import {
   NSkeleton,
   NSpace,
   NText,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import PasswordInput from '@/components/PasswordInput.vue'
@@ -51,6 +52,7 @@ import {
   IconEdit,
   IconFile,
   IconFolderOpen,
+  IconPlay,
   IconPlusCircle,
   IconRestore,
   IconShieldCheck,
@@ -255,7 +257,8 @@ const detailColumns = computed(() => [
   {
     title: t('task.actions'),
     key: 'actions',
-    width: 100,
+    // 三枚控件（开始 / 编辑 / 三点菜单）+ 8px 间距：100 会挤出横向滚动条
+    width: 140,
     render: (row: TaskCardModel) => renderRowActions(row),
   },
 ])
@@ -301,9 +304,30 @@ function onRowMenuSelect(key: string, row: TaskCardModel): void {
 }
 
 /** details 表格操作区（D8：接入 TaskActionsMenu，与 list 视图行卡同三组菜单）；
- *  编辑画笔与 list 视图对齐（常用操作不藏进菜单），故与菜单并排渲染。 */
+ *  编辑画笔与 list 视图对齐（常用操作不藏进菜单），故与菜单并排渲染。
+ *
+ *  「开始」（D8 补齐，与 list 视图行卡同门禁）：形态与「编辑」逐项一致——size=small、
+ *  有边框 default 档、`#icon` 插槽纯图标无文案、靠 `aria-label` 给可访问名
+ *  （a11y-baseline 硬约束）；仅多一层运行门禁：running/pending 不再渲染（后端必然
+ *  409 JOB_CONFLICT），dry-run 未过（R-026-08）置灰并给原因气泡，与行卡同一提示文案。 */
 function renderRowActions(row: TaskCardModel) {
+  const isActive = row.status === 'running' || row.status === 'pending'
+  const startButton = () =>
+    h(
+      NButton,
+      {
+        size: 'small',
+        'aria-label': t('task.start'),
+        disabled: row.dry_run_pending,
+        onClick: () => onStart(row.id),
+      },
+      { icon: () => h(NIcon, { component: IconPlay }) },
+    )
+  const startNode = row.dry_run_pending
+    ? h(NTooltip, { trigger: 'hover' }, { trigger: startButton, default: () => t('wizard.rescan_required') })
+    : startButton()
   return h('div', { class: 'dashboard__row-actions' }, [
+    ...(isActive ? [] : [startNode]),
     h(
       NButton,
       {
