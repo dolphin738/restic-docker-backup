@@ -78,8 +78,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     ...rest,
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      ...(headers as Record<string, string> | undefined),
+      // R-023：默认注入当前仓库路由头（驱动后端 current_repo_id 依赖）。
+      // 必须置于 ...headers 之前：调用方（如快照页「查看归档仓快照」）可在 headers 里
+      // 显式传 X-Repo-Id 覆盖当前仓——此前该行写在展开之后，归档仓 id 被当前仓 id 覆盖，
+      // 导致快照页跳归档仓只回显当前仓数据（缺陷 issue 1）。
       'X-Repo-Id': repoId,
+      ...(headers as Record<string, string> | undefined),
     },
   }
   if (body !== undefined) {

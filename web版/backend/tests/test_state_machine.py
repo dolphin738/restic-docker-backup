@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 from app.constants import (
     ACTIVE_JOB_STATUSES,
@@ -914,3 +915,27 @@ async def test_forget_with_keep_rule_and_prune_passes_flags(tmp_path):
     assert args.dry_run is False  # 执行路径绝不带 --dry-run
     assert args.tags == ("task-1",)
     await db.close()
+
+async def test_finalize_invalidates_status_cache_before_terminal():
+    """E30 时序护栏（初始化后列表状态不同步的回归锁）：
+
+    ``_finalize`` 必须先触发 ``on_finish``（清 E30 进程内状态缓存）再写终态入库
+    （``jobs.finalize``）。若顺序颠倒，SSE 流轮询到 DB 终态后会先于清缓存向客户端
+    发 ``done`` 事件，前端据此重取会命中终态前写入的脏缓存 = 表现为「初始化完了
+    按钮还在 / 不可达仍在」，需刷新页面才消失。把清缓存提前到终态入库之前，``done``
+    发出时缓存已空，前端重取必得新鲜值。
+    """
+    order: list[str] = []
+    runner = JobRunner.__new__(JobRunner)  # 绕过 __init__ 的 DB/settings 依赖，仅测调用时序
+    runner._on_finish = lambda: order.append("on_finish")
+
+    async def fake_finalize(job_id, status, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        order.append("finalize")
+        return None
+
+    runner._jobs = MagicMock()
+    runner._jobs.finalize = fake_finalize
+
+    await runner._finalize("job-x", "success")
+
+    assert order == ["on_finish", "finalize"]

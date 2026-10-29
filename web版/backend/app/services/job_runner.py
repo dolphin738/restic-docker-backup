@@ -455,7 +455,7 @@ class JobRunner:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-        await self._jobs.finalize(
+        await self._finalize(
             job_id, "cancelled", exit_code=-1, summary="用户强制中止（Abort）" if force else "用户取消"
         )
         await self._audit.record(
@@ -537,7 +537,7 @@ class JobRunner:
                             job, mirror_ids, log_path=Path(job.log_path), start_line_no=line_no
                         )
                         mirror_note = _mirror_note(mirrors)
-                await self._jobs.finalize(
+                await self._finalize(
                     job.id,
                     status,
                     exit_code=exit_code,
@@ -599,7 +599,7 @@ class JobRunner:
                 raise
             except Exception as exc:  # noqa: BLE001 - 所有异常收敛为 failed
                 logger.exception("任务 %s 执行失败", job.id)
-                await self._jobs.finalize(
+                await self._finalize(
                     job.id,
                     "failed",
                     exit_code=-1,
@@ -637,6 +637,26 @@ class JobRunner:
             self._on_finish()
         except Exception:  # noqa: BLE001 - 回调只做辅助通知，失败不能影响任务链路
             logger.exception("JobRunner on_finish 回调执行失败")
+
+    async def _finalize(self, job_id: str, status: str, **kwargs: object) -> "Job | None":
+        """终态落库（E30 状态缓存**先于**终态失效）。
+
+        init/unlock 等任务会改变仓库可连性——不失效缓存的话，用户跑完 init 再看
+        状态卡/列表行状态，最多 30s 内拿到的还是"未连接"的旧值（表现为「初始化完了
+        按钮还在 / 不可达仍在」，需刷新页面才消失）。
+
+        关键时序修复：先清 E30 进程内缓存，再写终态入库。SSE 流轮询 DB 终态后才会
+        向客户端发 ``done`` 事件；若清缓存发生在终态入库之后（原 ``_notify_finish``
+        在 ``finally`` 里、``finalize`` 之后），``done`` 事件可能抢在清缓存之前发出，
+        前端据此重取会命中终态前写入的脏缓存 = 竞态。把清缓存提前到终态入库之前，
+        ``done`` 发出时缓存已空，前端重取必得新鲜值。
+        """
+        if self._on_finish is not None:
+            try:
+                self._on_finish()
+            except Exception:  # noqa: BLE001 - 缓存失效失败不能影响任务终态链路
+                logger.exception("JobRunner on_finish 回调执行失败")
+        return await self._jobs.finalize(job_id, status, **kwargs)
 
     async def _safe_notify_start(self, job: Job) -> None:
         """任务进入 running 的通知点（R-018 on_start）。异常就地吞掉——通知绝不影响任务链路，
@@ -973,7 +993,7 @@ class JobRunner:
 
     async def _fail_in_phase(self, job: Job, summary: str, *, phase: str) -> None:
         """阶段失败收敛：failed 终态 + 审计 + 告警（与 _run 异常路径同口径，不 5xx）。"""
-        await self._jobs.finalize(
+        await self._finalize(
             job.id, "failed", exit_code=-1, summary=summary, last_event_id=0
         )
         await self._audit.record(
@@ -987,7 +1007,7 @@ class JobRunner:
 
     async def _finish_dump_only(self, job: Job) -> None:
         """独立 type=dump 任务的终态收尾（dump 即终态，无 restic 阶段）。"""
-        await self._jobs.finalize(
+        await self._finalize(
             job.id, "success", exit_code=0, summary="dump 阶段完成", last_event_id=0
         )
         await self._audit.record(

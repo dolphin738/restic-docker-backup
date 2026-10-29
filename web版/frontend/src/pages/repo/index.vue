@@ -614,6 +614,11 @@ async function confirmDelete(): Promise<void> {
     if (ui.currentRepoId === id) {
       onSetCurrent('default')
     }
+    // 归档（删除保护方案 D13）：本仓从「仓库列表」移入「归档」页。列表已 refetch，但归档页
+    // 数据是独立查询（['archive','repos']）——不失效的话，归档页若在本会话已访问过会命中
+    // 缓存（全局 staleTime 10s + 组件 remount 才重取），表现为「归档后归档页不出现新条目，
+    // 需手动刷新」。此处主动失效，跳转即见（缺陷 issue 3）。
+    await queryClient.invalidateQueries({ queryKey: ['archive', 'repos'] })
     await reposQuery.refetch()
   } catch (error) {
     if (!isAppError(error)) {
