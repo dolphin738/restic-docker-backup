@@ -84,12 +84,18 @@ export default {
     releaseId: 'Release ID',
     released: 'ID of "{name}" released',
     releaseTitle: 'Release archived repository ID',
+    releaseRunning: 'Releasing the ID of "{name}"…',
+    releaseDone:
+      'Released the ID of "{name}": the repository row and its credential keys are gone, leaving one tombstone record (the data itself is still on disk).',
     releaseDesc:
       'After release the ID can be reused by a new repository, and you give up recovering the old snapshots through this app. Disk data is never deleted.',
     releasePreview: 'Releasing "{name}": type the repository ID to confirm.',
     destroyData: 'Destroy data',
     destroyed: 'Data of "{name}" destroyed',
     destroyTitle: 'Destroy repository data',
+    destroyRunning: 'Destroying the data of "{name}"…',
+    destroyDone:
+      'Destroyed the data of "{name}": directory contents wiped and the password file deleted (irreversible).',
     destroyDesc:
       'This wipes the repository directory contents and deletes the password file. It cannot be archived or restored: even if some data survives on disk, the missing password makes it unreadable. Make sure these snapshots are no longer needed.',
     destroyPreview: 'Destroying data of "{name}": type the repository ID to confirm.',
@@ -101,6 +107,12 @@ export default {
     rcloneEmpty: 'No rclone config archives.',
     rcloneRestore: 'Write back',
     rcloneRestored: 'Config of remote "{name}" written back',
+    rcloneRestoreTitle: 'Write config back',
+    rcloneRestoreDesc:
+      'Write-back re-enables the archived config of this remote so it can be referenced by repositories again. The action is repeatable and never alters any backed-up data.',
+    rcloneRestoreRunning: 'Writing the config of remote "{name}" back…',
+    rcloneRestoreDone:
+      'Wrote the config of remote "{name}" back: that remote can be referenced by repositories again.',
     rcloneDelete: 'Discard archive',
     rcloneDeleteConfirm: 'Discard this archive? You will no longer be able to write that section back in one click.',
     rcloneDeleted: 'Archive discarded',
@@ -642,6 +654,7 @@ export default {
     confirmBtn: 'Confirm and run',
     keywordHint: 'Type {keyword} exactly to continue',
     finalHint: 'This is the final confirmation. It takes effect immediately and is audited.',
+    running: 'Running…',
   },
   tree: {
     loadMore: 'Load more',
