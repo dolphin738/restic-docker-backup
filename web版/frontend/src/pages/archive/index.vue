@@ -19,8 +19,11 @@ import {
   NButton,
   NCard,
   NDataTable,
+  NForm,
+  NFormItem,
   NInputNumber,
   NPopconfirm,
+  NSpace,
   NTag,
   NText,
   useMessage,
@@ -43,11 +46,17 @@ import {
 import type { ArchivedRepoOut, RepoTombstoneOut, RcloneArchiveItemOut } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
+import OpLogDrawer from '@/pages/archive/op-log-drawer.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const { t } = useI18n()
 const message = useMessage()
 const router = useRouter()
+
+/** 本页三个动作在审计日志里的动作名（后端 constants.py AUDIT_* 字面值）。
+ *  它们不共享单一前缀，故服务端按逗号分隔取并集（ops._split_action_prefixes）。 */
+const REPO_OP_ACTIONS = ['repo.archive', 'repo.restore', 'repo.purge', 'repo.id_release']
+const RCLONE_OP_ACTIONS = ['rclone.config_restore']
 
 // ---------------------------------------------------------------- 分区
 
@@ -81,13 +90,58 @@ function tombState(row: RepoTombstoneOut): { label: string; type: 'error' | 'war
 
 // ---------------------------------------------------------------- 动作：仓库
 
-const releasing = ref(false)
+/** 执行阶段（三个动作互斥，共用一个状态：同一时刻只会有一个在跑）。 */
+type OpPhase = 'idle' | 'running' | 'done' | 'failed'
+
+const opPhase = ref<OpPhase>('idle')
+const opProgress = ref('')
+const opResult = ref('')
+
+/** 有动作在跑 → 行内按钮一律禁用（防双击，也防「点了没反应再来一次」）。 */
+const busy = computed(() => opPhase.value === 'running')
+
 const releaseTarget = ref<ArchivedRepoOut | null>(null)
 const releaseShow = ref(false)
 
-const destroying = ref(false)
 const destroyTarget = ref<ArchivedRepoOut | null>(null)
 const destroyShow = ref(false)
+
+/** 恢复写回：非破坏性动作，**不进危险关键词门**，但反馈与释放/销毁**同款**
+ *  （同一个 ConfirmGate + awaitResult：预览 → 确认 → 转圈 → 结果）。 */
+const rcloneTarget = ref<RcloneArchiveItemOut | null>(null)
+const rcloneShow = ref(false)
+
+/** 操作日志抽屉（数据源 = 审计日志，不另造流水）。 */
+const repoLogShow = ref(false)
+const rcloneLogShow = ref(false)
+
+/** 错误文案取自 AppError（http 层已把它转成 Error）；非 Error 兜底转字符串。 */
+function errText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** 统一的阶段推进（三个动作共用）：跑 → 成功/失败。
+ *  成功正文由调用方给（含处置摘要）；失败正文走同一把 `archive.opFailed` 文案，
+ *  把 AppError 的中文原因带出来——三个动作的错误呈现因此完全一致。 */
+async function runOp(progressText: string, execute: () => Promise<string>): Promise<void> {
+  opProgress.value = progressText
+  opPhase.value = 'running'
+  let ok = false
+  try {
+    opResult.value = await execute()
+    ok = true
+  } catch (error) {
+    opResult.value = t('archive.opFailed', { reason: errText(error) })
+  }
+  opPhase.value = ok ? 'done' : 'failed'
+}
+
+/** 关掉结果弹窗时清空阶段态（下次打开是干净的第 3 步，不是上次的结果）。 */
+function resetOp(): void {
+  opPhase.value = 'idle'
+  opProgress.value = ''
+  opResult.value = ''
+}
 
 async function onRestore(row: ArchivedRepoOut): Promise<void> {
   try {
@@ -109,18 +163,13 @@ async function onRelease(): Promise<void> {
   if (!target) {
     return
   }
-  releasing.value = true
-  try {
+  await runOp(t('archive.releaseRunning', { name: target.name }), async () => {
     await releaseArchivedRepo(target.repo_id, target.repo_id)
-    message.success(t('archive.released', { name: target.name }))
     await archiveQuery.refetch()
-  } catch {
-    // 同上
-  } finally {
-    releasing.value = false
-    releaseShow.value = false
+    // 释放后该行从「归档仓库」移到墓碑区，目标随之失效
     releaseTarget.value = null
-  }
+    return t('archive.releaseDone', { name: target.name })
+  })
 }
 
 function openDestroy(row: ArchivedRepoOut): void {
@@ -133,19 +182,27 @@ async function onDestroy(): Promise<void> {
   if (!target) {
     return
   }
-  destroying.value = true
-  try {
+  await runOp(t('archive.destroyRunning', { name: target.name }), async () => {
     await deleteRepo(target.repo_id, { purgeDisk: true })
-    message.success(t('archive.destroyed', { name: target.name }))
     await archiveQuery.refetch()
-  } catch {
-    // 同上
-  } finally {
-    destroying.value = false
-    destroyShow.value = false
     destroyTarget.value = null
-  }
+    return t('archive.destroyDone', { name: target.name })
+  })
 }
+
+watch(releaseShow, (visible) => {
+  if (!visible) {
+    releaseTarget.value = null
+    resetOp()
+  }
+})
+
+watch(destroyShow, (visible) => {
+  if (!visible) {
+    destroyTarget.value = null
+    resetOp()
+  }
+})
 
 async function onDeleteTombstone(row: RepoTombstoneOut): Promise<void> {
   try {
@@ -164,15 +221,32 @@ function openSnapshots(row: ArchivedRepoOut): void {
 
 // ---------------------------------------------------------------- 动作：rclone 归档
 
-async function onRestoreRclone(row: RcloneArchiveItemOut): Promise<void> {
-  try {
-    await restoreRcloneArchive(row.remote)
-    message.success(t('archive.rcloneRestored', { name: row.remote }))
-    await rcloneQuery.refetch()
-  } catch {
-    // 同上
-  }
+/** 点「恢复写回」只打开确认门（预览/确认两步），**不立即执行**——
+ *  与释放 ID/销毁数据完全一致的入口，执行交给 @confirm 后的 onRestoreRclone。 */
+function openRcloneRestore(row: RcloneArchiveItemOut): void {
+  rcloneTarget.value = row
+  rcloneShow.value = true
 }
+
+/** 确认门点「确认」后触发：跑 → 转圈 → 成功/失败，结果留在同一个弹窗内（awaitResult）。 */
+async function onRestoreRclone(): Promise<void> {
+  const target = rcloneTarget.value
+  if (!target) {
+    return
+  }
+  await runOp(t('archive.rcloneRestoreRunning', { name: target.remote }), async () => {
+    await restoreRcloneArchive(target.remote)
+    await rcloneQuery.refetch()
+    return t('archive.rcloneRestoreDone', { name: target.remote })
+  })
+}
+
+watch(rcloneShow, (visible) => {
+  if (!visible) {
+    rcloneTarget.value = null
+    resetOp()
+  }
+})
 
 async function onDeleteRcloneArchive(row: RcloneArchiveItemOut): Promise<void> {
   try {
@@ -218,22 +292,40 @@ const repoColumns = computed<DataTableColumns<ArchivedRepoOut>>(() => [
       h('div', { class: 'archive__actions' }, [
         h(
           NButton,
-          { size: 'tiny', secondary: true, onClick: () => openSnapshots(row) },
+          { size: 'tiny', secondary: true, disabled: busy.value, onClick: () => openSnapshots(row) },
           { default: () => t('archive.viewSnapshots') },
         ),
         h(
           NButton,
-          { size: 'tiny', secondary: true, type: 'primary', onClick: () => void onRestore(row) },
+          {
+            size: 'tiny',
+            secondary: true,
+            type: 'primary',
+            disabled: busy.value,
+            onClick: () => void onRestore(row),
+          },
           { default: () => t('archive.restore') },
         ),
         h(
           NButton,
-          { size: 'tiny', secondary: true, type: 'warning', onClick: () => openRelease(row) },
+          {
+            size: 'tiny',
+            secondary: true,
+            type: 'warning',
+            disabled: busy.value,
+            onClick: () => openRelease(row),
+          },
           { default: () => t('archive.releaseId') },
         ),
         h(
           NButton,
-          { size: 'tiny', secondary: true, type: 'error', onClick: () => openDestroy(row) },
+          {
+            size: 'tiny',
+            secondary: true,
+            type: 'error',
+            disabled: busy.value,
+            onClick: () => openDestroy(row),
+          },
           { default: () => t('archive.destroyData') },
         ),
       ]),
@@ -329,7 +421,13 @@ const rcloneColumns = computed<DataTableColumns<RcloneArchiveItemOut>>(() => [
       h('div', { class: 'archive__actions' }, [
         h(
           NButton,
-          { size: 'tiny', secondary: true, type: 'primary', onClick: () => void onRestoreRclone(row) },
+          {
+            size: 'tiny',
+            secondary: true,
+            type: 'primary',
+            disabled: busy.value,
+            onClick: () => openRcloneRestore(row),
+          },
           { default: () => t('archive.rcloneRestore') },
         ),
         h(
@@ -430,7 +528,12 @@ async function onSaveRetention(): Promise<void> {
     <!-- ① 仓库归档 -->
     <n-card v-if="tab === 'repos'" :title="t('archive.reposTitle')" size="small">
       <div class="archive__stack">
-        <n-text depth="3">{{ t('archive.reposHint') }}</n-text>
+        <div class="archive__toolbar">
+          <n-text depth="3">{{ t('archive.reposHint') }}</n-text>
+          <n-button size="tiny" secondary @click="repoLogShow = true">
+            {{ t('archive.opLog.open') }}
+          </n-button>
+        </div>
 
         <n-data-table
           v-if="(archiveQuery.data.value?.repos.length ?? 0) > 0"
@@ -462,7 +565,14 @@ async function onSaveRetention(): Promise<void> {
     <!-- ② rclone 配置归档 -->
     <n-card v-else-if="tab === 'rclone'" :title="t('archive.rcloneTitle')" size="small">
       <div class="archive__stack">
-        <n-alert type="info" :show-icon="false">{{ t('archive.rcloneHint') }}</n-alert>
+        <div class="archive__toolbar">
+          <n-alert type="info" :show-icon="false" class="archive__toolbar-alert">
+            {{ t('archive.rcloneHint') }}
+          </n-alert>
+          <n-button size="tiny" secondary @click="rcloneLogShow = true">
+            {{ t('archive.opLog.open') }}
+          </n-button>
+        </div>
         <n-data-table
           v-if="(rcloneQuery.data.value?.items.length ?? 0) > 0"
           :columns="rcloneColumns"
@@ -476,32 +586,52 @@ async function onSaveRetention(): Promise<void> {
       </div>
     </n-card>
 
-    <!-- ③ 保留策略 -->
+    <!-- ③ 保留策略（与审计页第二分区**同款布局**：标签置顶 + 数字框 + 框下提示） -->
     <n-card v-else :title="t('archive.retentionTitle')" size="small">
       <div class="archive__stack">
         <n-text depth="3">{{ t('archive.retentionHint') }}</n-text>
-        <div class="archive__field">
-          <div class="archive__field-text">
-            <n-text strong>{{ t('archive.retentionRepoArchive') }}</n-text>
-            <n-text depth="3">{{ t('archive.retentionRepoArchiveHint') }}</n-text>
-          </div>
-          <n-input-number v-model:value="repoArchiveDays" :min="0" :max="3650" style="width: 140px" />
-        </div>
-        <div class="archive__field">
-          <div class="archive__field-text">
-            <n-text strong>{{ t('archive.retentionRepoTombstone') }}</n-text>
-            <n-text depth="3">{{ t('archive.retentionRepoTombstoneHint') }}</n-text>
-          </div>
-          <n-input-number v-model:value="repoTombstoneDays" :min="0" :max="3650" style="width: 140px" />
-        </div>
-        <div class="archive__field">
-          <div class="archive__field-text">
-            <n-text strong>{{ t('archive.retentionRcloneArchive') }}</n-text>
-            <n-text depth="3">{{ t('archive.retentionRcloneArchiveHint') }}</n-text>
-          </div>
-          <n-input-number v-model:value="rcloneArchiveDays" :min="0" :max="3650" style="width: 140px" />
-        </div>
-        <n-alert type="warning" :show-icon="false">{{ t('archive.retentionZeroHint') }}</n-alert>
+        <n-form label-placement="top" class="archive__form">
+          <n-form-item :label="t('archive.retentionRepoArchive')">
+            <n-space vertical :size="4">
+              <n-input-number
+                v-model:value="repoArchiveDays"
+                :min="0"
+                :show-button="false"
+                class="archive__number"
+              />
+              <n-text depth="3" class="archive__hint">
+                {{ t('archive.retentionRepoArchiveHint') }}
+              </n-text>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('archive.retentionRepoTombstone')">
+            <n-space vertical :size="4">
+              <n-input-number
+                v-model:value="repoTombstoneDays"
+                :min="0"
+                :show-button="false"
+                class="archive__number"
+              />
+              <n-text depth="3" class="archive__hint">
+                {{ t('archive.retentionRepoTombstoneHint') }}
+              </n-text>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('archive.retentionRcloneArchive')">
+            <n-space vertical :size="4">
+              <n-input-number
+                v-model:value="rcloneArchiveDays"
+                :min="0"
+                :show-button="false"
+                class="archive__number"
+              />
+              <n-text depth="3" class="archive__hint">
+                {{ t('archive.retentionRcloneArchiveHint') }}
+              </n-text>
+            </n-space>
+          </n-form-item>
+        </n-form>
+        <n-alert type="warning" :show-icon="false" class="archive__warn">{{ t('archive.retentionZeroHint') }}</n-alert>
         <div class="archive__actions">
           <n-button
             type="primary"
@@ -516,14 +646,17 @@ async function onSaveRetention(): Promise<void> {
       </div>
     </n-card>
 
-    <!-- 释放 ID（重门：关键词 = 仓库 id） -->
+    <!-- 释放 ID（重门：关键词 = 仓库 id；awaitResult = 执行中/结果留在弹窗内） -->
     <ConfirmGate
       v-model:show="releaseShow"
       :title="t('archive.releaseTitle')"
       :keyword="releaseTarget?.repo_id ?? ''"
       :description="t('archive.releaseDesc')"
-      :loading="releasing"
       :confirm-label="t('archive.releaseId')"
+      await-result
+      :phase="opPhase === 'idle' ? null : opPhase"
+      :progress-label="opProgress"
+      :result-text="opResult"
       @confirm="onRelease"
     >
       <template #preview>
@@ -539,8 +672,11 @@ async function onSaveRetention(): Promise<void> {
       :title="t('archive.destroyTitle')"
       :keyword="destroyTarget?.repo_id ?? ''"
       :description="t('archive.destroyDesc')"
-      :loading="destroying"
       :confirm-label="t('archive.destroyData')"
+      await-result
+      :phase="opPhase === 'idle' ? null : opPhase"
+      :progress-label="opProgress"
+      :result-text="opResult"
       @confirm="onDestroy"
     >
       <template #preview>
@@ -549,6 +685,32 @@ async function onSaveRetention(): Promise<void> {
         </n-text>
       </template>
     </ConfirmGate>
+
+    <!-- 恢复写回：非破坏性 → 不进危险关键词门，但反馈与释放/销毁**同款**（同一个 ConfirmGate + awaitResult）。 -->
+    <ConfirmGate
+      v-model:show="rcloneShow"
+      :title="t('archive.rcloneRestoreTitle')"
+      :description="t('archive.rcloneRestoreDesc')"
+      :confirm-label="t('archive.rcloneRestore')"
+      confirm-type="primary"
+      await-result
+      :phase="opPhase === 'idle' ? null : opPhase"
+      :progress-label="opProgress"
+      :result-text="opResult"
+      @confirm="onRestoreRclone"
+    />
+
+    <!-- 操作日志（数据源 = 审计日志，append-only，只增不改） -->
+    <OpLogDrawer
+      v-model:show="repoLogShow"
+      :title="t('archive.opLog.reposTitle')"
+      :actions="REPO_OP_ACTIONS"
+    />
+    <OpLogDrawer
+      v-model:show="rcloneLogShow"
+      :title="t('archive.opLog.rcloneTitle')"
+      :actions="RCLONE_OP_ACTIONS"
+    />
   </div>
 </template>
 
@@ -596,23 +758,42 @@ async function onSaveRetention(): Promise<void> {
   align-items: center;
 }
 
-.archive__field {
+/* 分区顶部工具行：提示文字居左撑开，操作入口贴右（窄屏可换行，不挤压提示） */
+.archive__toolbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 0;
-  border-top: 1px solid var(--n-divider-color, rgba(128, 128, 140, 0.16));
-}
-
-.archive__field:first-of-type {
-  border-top: none;
-}
-
-.archive__field-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 8px;
   min-width: 0;
+}
+
+.archive__toolbar > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.archive__toolbar > .n-button {
+  flex: none;
+}
+
+.archive__toolbar-alert {
+  width: 100%;
+}
+
+/* 保留策略：与审计页第二分区同款几何（表单收窄到 640 / 数字框 200 / 提示 12px） */
+.archive__form {
+  max-width: 640px;
+}
+
+/* 底部告警条与上方设置表单同宽（不再铺满整张卡），避免「黄色长条」观感 */
+.archive__warn {
+  max-width: 640px;
+}
+
+.archive__number {
+  width: 200px;
+}
+
+.archive__hint {
+  font-size: 12px;
 }
 </style>

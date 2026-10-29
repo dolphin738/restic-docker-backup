@@ -40,7 +40,7 @@ export default {
     repo: '仓库配置',
     jobs: '任务历史',
     reports: '报表',
-    snapshots: '快照浏览',
+    snapshots: '快照管理',
     archive: '归档',
     notifications: '通知设置',
     settings: '系统设置',
@@ -124,6 +124,17 @@ export default {
     retentionZeroHint: '填 0 表示不启用自动清理（永久保留）。',
     retentionSaved: '保留策略已保存',
     readOnlyRestore: '归档仓库视图只读：请先在该仓库的归档页点「恢复」，再还原快照。',
+    // 三个动作共用的失败文案（同一把钥匙，保证三处错误呈现完全一致）
+    opFailed: '执行失败：{reason}',
+    // 操作日志（数据源 = 审计日志）
+    opLog: {
+      open: '操作日志',
+      reposTitle: '仓库操作日志',
+      rcloneTitle: 'rclone 操作日志',
+      hint: '这些动作在发生时已写入审计日志（只增不改）。这里只是它们的查询结果，按时间倒序。',
+      empty: '暂无相关操作记录。',
+      target: '对象',
+    },
   },
   notify: {
     noChannel: '尚未配置任何通知渠道：至少填写 healthchecks / webhook / MeoW 之一，否则任务失败不会有任何提醒。',
@@ -1605,7 +1616,17 @@ export default {
       },
       cache: { clear: '清空缓存' },
       sources: { dry_run: '备份源试运行' },
-      repo: { test: '测试仓库连接', password_set: '设置仓库密码', delete: '删除仓库' },
+      repo: {
+        test: '测试仓库连接',
+        password_set: '设置仓库密码',
+        delete: '删除仓库',
+        // 归档页「操作日志」展示的四个仓库动作（删除保护方案 P2）
+        archive: '归档仓库',
+        restore: '恢复归档仓库',
+        purge: '销毁仓库数据',
+        id_release: '释放归档仓库 ID',
+      },
+      rclone: { config_restore: '写回归档配置' },
       notify: { update: '更新通知配置', test: '发送测试通知' },
       task: { create: '新建备份任务', update: '修改备份任务', delete: '删除备份任务' },
       retention: { cleanup: '历史清理（保留策略）' },
@@ -1675,6 +1696,9 @@ export default {
       exit_code: '退出码',
       removed_logs: '清理日志数',
       cleared_credentials: '清理凭据数',
+      // 归档页「操作日志」用到的两个键（repo.purge / repo.archive）
+      purged_disk: '已销毁数据',
+      url: '地址',
     },
     value: { yes: '是', no: '否' },
     empty: '没有符合条件的审计记录',

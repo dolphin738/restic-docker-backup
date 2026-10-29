@@ -67,6 +67,66 @@ async def test_e26_action_prefix_match(app_client):
     assert body["items"][0]["action"] == "restore.run"
 
 
+async def test_e26_action_multi_prefix_union(app_client):
+    """逗号分隔多前缀取**并集**（归档页「操作日志」按动作清单查；单个前缀覆盖不全）。
+
+    ``repo.id_release`` 与 ``rclone.config_restore`` 不共享任何单一前缀，逐个查要发
+    N 个请求且翻页失效 → 服务端取并集。断言用**增量**口径（bootstrap 有 repo.* 行）。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    audit = ns.app.state.audit
+
+    counts = {}
+    for action in ("repo.purge", "repo.id_release", "rclone.config_restore"):
+        counts[action] = (await audit.query(action_prefix=action, limit=1))[1]
+    # 并集基线：三个前缀各自总数之和（动作名互斥，无重叠）
+    union_before = sum(counts.values())
+
+    await audit.record("repo.purge", target="r1", result=OK)
+    await audit.record("repo.id_release", target="r2", result=OK)
+    await audit.record("rclone.config_restore", target="remote-a", result=OK)
+    # 噪声行：前缀清单之外的动作，不得被并集结果收进来
+    await audit.record("cache.clear", target="noise", result=OK)
+
+    multi = "repo.purge,repo.id_release,rclone.config_restore"
+    resp = await ns.client.get("/api/audit", params={"action": multi, "limit": 500})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == union_before + 3
+
+    actions = [item["action"] for item in body["items"]]
+    assert {"repo.purge", "repo.id_release", "rclone.config_restore"} <= set(actions)
+    assert "cache.clear" not in actions
+
+
+async def test_e26_action_multi_prefix_still_escapes_wildcards(app_client):
+    """多前缀不松转义对抗：含 ``%`` 的分片仍按字面匹配，不越权。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed(ns)
+
+    resp = await ns.client.get("/api/audit", params={"action": "log%in,restore."})
+    assert resp.status_code == 200
+    body = resp.json()
+    # restore. 前缀命中；log%in 被转义为字面，不命中 login.ok
+    assert {item["action"] for item in body["items"]} == {"restore.run"}
+
+
+async def test_e26_action_multi_prefix_ignores_empty_segments(app_client):
+    """空分片（``,,`` / 尾随逗号）被丢弃，不退化成「无过滤全量返回」。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    await _seed(ns)
+
+    resp = await ns.client.get(
+        "/api/audit", params={"action": ",,restore.,", "limit": 500}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {item["action"] for item in body["items"]} == {"restore.run"}
+
+
 async def test_e26_action_prefix_escapes_wildcards(app_client):
     """转义对抗（验收要点）：输入含 ``%`` 不越权——未转义时 ``log%in`` 会命中 ``login.ok``。"""
     ns = app_client

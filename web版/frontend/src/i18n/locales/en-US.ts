@@ -40,7 +40,7 @@ export default {
     repo: 'Repository',
     jobs: 'Jobs',
     reports: 'Reports',
-    snapshots: 'Snapshots',
+    snapshots: 'Snapshot management',
     archive: 'Archive',
     notifications: 'Notifications',
     settings: 'Settings',
@@ -130,6 +130,18 @@ export default {
     retentionRcloneArchiveHint: 'How long a deleted rclone config section can still be written back.',
     retentionZeroHint: 'Use 0 to disable automatic cleanup (keep forever).',
     retentionSaved: 'Retention saved',
+    // One shared failure wording for all three actions, so all three look identical
+    opFailed: 'Failed: {reason}',
+    // Operation log (its data source is the audit log)
+    opLog: {
+      open: 'Operation log',
+      reposTitle: 'Repository operation log',
+      rcloneTitle: 'rclone operation log',
+      hint:
+        'These actions were written to the audit log as they happened (append-only). This is just a query view of them, newest first.',
+      empty: 'No matching operations yet.',
+      target: 'Target',
+    },
     readOnlyRestore:
       'Archived repository view is read-only: restore the repository on the Archive page first, then restore snapshots.',
   },
@@ -1627,7 +1639,17 @@ export default {
       },
       cache: { clear: 'Cache cleared' },
       sources: { dry_run: 'Sources dry run' },
-      repo: { test: 'Repository test', password_set: 'Repository password set', delete: 'Repository deleted' },
+      repo: {
+        test: 'Repository test',
+        password_set: 'Repository password set',
+        delete: 'Repository deleted',
+        // The four repository actions shown in the archive page operation log
+        archive: 'Repository archived',
+        restore: 'Archived repository restored',
+        purge: 'Repository data destroyed',
+        id_release: 'Archived repository ID released',
+      },
+      rclone: { config_restore: 'Archived config written back' },
       notify: { update: 'Notification config updated', test: 'Test notification sent' },
       task: { create: 'Backup task created', update: 'Backup task updated', delete: 'Backup task deleted' },
       retention: { cleanup: 'Retention cleanup' },
@@ -1697,6 +1719,9 @@ export default {
       exit_code: 'Exit code',
       removed_logs: 'Logs removed',
       cleared_credentials: 'Credentials cleared',
+      // Used by the archive page operation log (repo.purge / repo.archive)
+      purged_disk: 'Data destroyed',
+      url: 'URL',
     },
     value: { yes: 'Yes', no: 'No' },
     empty: 'No audit records match the filters',

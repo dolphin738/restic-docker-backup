@@ -1054,7 +1054,10 @@ async def test_notify(
 )
 async def query_audit(
     request: Request,
-    action: str | None = Query(default=None, description="动作名前缀匹配（如 restore.；通配符自动转义）"),
+    action: str | None = Query(
+        default=None,
+        description="动作名前缀匹配（如 restore.）；逗号分隔多个前缀取并集（如 repo.purge,repo.id_release）",
+    ),
     result: str | None = Query(default=None, description="结果过滤：ok/denied/failed"),
     since: str | None = Query(default=None, description="ts 下界（ISO 8601，含时区归一 UTC）"),
     until: str | None = Query(default=None, description="ts 上界（ISO 8601，含时区归一 UTC）"),
@@ -1064,10 +1067,14 @@ async def query_audit(
 ) -> AuditPageResponse:
     """审计日志分页查询（S6：只读端点，无 PUT/DELETE；查询本身不留痕）。
 
-    ``action`` 为**前缀**匹配：用户输入中的 ``%``/``_``/``\\`` 先转义再拼 LIKE
-    （防通配注入越权），右锚定命中 ``idx_audit_action`` 索引；``since``/``until``
-    经 :func:`parse_utc_bound` 归一 UTC（C8）；``result`` 走 AuditResult 白名单。
-    响应附 ``actions``（去重动作名枚举，repo 层 DISTINCT 查询，前端筛选下拉数据源）。
+    ``action`` 为**前缀**匹配，可传**逗号分隔的多个前缀**（取并集，供归档页「操作日志」
+    按动作清单查询——几个归档动作名不共享单一前缀）；用户输入中的 ``%``/``_``/``\\``
+    先转义再拼 LIKE（防通配注入越权），右锚定命中 ``idx_audit_action`` 索引；
+    ``since``/``until`` 经 :func:`parse_utc_bound` 归一 UTC（C8）；``result``
+    走 AuditResult 白名单。响应附 ``actions``（去重动作名枚举，repo 层 DISTINCT
+    查询，前端筛选下拉数据源）。
+
+    注：导出端点 :func:`export_audit` 仍只接受单个前缀（流式遍历口径未改）。
     """
     del session
     resolved_result: str | None = None
@@ -1089,7 +1096,7 @@ async def query_audit(
 
     repo: AuditRepo = request.app.state.audit
     rows, total = await repo.query(
-        action_prefix=action.strip() if action else None,
+        action_prefix=_split_action_prefixes(action),
         result=resolved_result,
         since=since_bound,
         until=until_bound,
@@ -1114,6 +1121,20 @@ async def query_audit(
         offset=offset,
         actions=await repo.distinct_actions(),
     )
+
+
+def _split_action_prefixes(action: str | None) -> list[str] | None:
+    """把逗号分隔的动作前缀串切成列表（空串项丢弃）；空 → ``None``（不过滤）。
+
+    多前缀供**归档页「操作日志」**按动作清单查询：释放 ID（``repo.id_release``）、
+    销毁数据（``repo.purge``）、恢复写回（``rclone.config_restore``）这几个动作名
+    不共享任何单一前缀，逐个查要发 N 个请求且翻页失效，故在服务端取并集。
+    单值仍按原口径透传（向后兼容，既有筛选下拉与手输不受影响）。
+    """
+    if not action:
+        return None
+    items = [item.strip() for item in action.split(",") if item.strip()]
+    return items or None
 
 
 def _resolve_audit_result(result: str | None) -> str | None:

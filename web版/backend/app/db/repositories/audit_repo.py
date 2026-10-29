@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,7 +76,7 @@ class AuditRepo:
         self,
         *,
         action: str | None = None,
-        action_prefix: str | None = None,
+        action_prefix: str | Sequence[str] | None = None,
         result: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -87,9 +87,10 @@ class AuditRepo:
 
         Args:
             action: 按**精确**动作名过滤；None 表示不过滤。
-            action_prefix: 按动作名**前缀**过滤（如 ``restore.``）；用户输入中的
-                ``%``/``_``/``\\`` 会先转义再拼 LIKE（防通配注入），右锚定可命中
-                ``idx_audit_action`` 索引（F3）。
+            action_prefix: 按动作名**前缀**过滤（如 ``restore.``）；可传**字符串序列**
+                表示多个前缀取**并集**（归档页「操作日志」按动作清单查，几个动作名
+                不共享单一前缀）。用户输入中的 ``%``/``_``/``\\`` 会先转义再拼 LIKE
+                （防通配注入），右锚定可命中 ``idx_audit_action`` 索引（F3）。
             result: 结果过滤（``ok``/``denied``/``failed``；白名单由路由层校验）。
             since: ``ts >= `` 下界（UTC ISO 文本，与时间列同构）；None 不设界。
             until: ``ts <= `` 上界；None 不设界。
@@ -107,8 +108,14 @@ class AuditRepo:
             clauses.append("action = ?")
             params.append(action)
         if action_prefix:
-            clauses.append("action LIKE ? ESCAPE '\\'")
-            params.append(f"{_escape_like(action_prefix)}%")
+            prefixes = [action_prefix] if isinstance(action_prefix, str) else list(action_prefix)
+            prefixes = [item for item in prefixes if item]
+            if prefixes:
+                # 多前缀取并集：整组外加括号，避免与外部 AND 条件咬合错优先级
+                clauses.append(
+                    "(" + " OR ".join(["action LIKE ? ESCAPE '\\'"] * len(prefixes)) + ")"
+                )
+                params.extend(f"{_escape_like(item)}%" for item in prefixes)
         if result:
             clauses.append("result = ?")
             params.append(result)
