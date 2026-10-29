@@ -25,8 +25,11 @@ function currentRepoId(): string {
 
 /** E26 查询参数；时间边界为 ISO 8601（服务端归一 UTC 后比较，C8）。 */
 export interface AuditQuery {
-  /** 动作名前缀；undefined = 不过滤。 */
+  /** 动作名前缀；undefined = 不过滤。与 `actions` 互斥，同时给以 `actions` 为准。 */
   action?: string
+  /** 动作名前缀**列表**（服务端取并集）：归档页「操作日志」按动作清单查询
+   *  （repo.purge / repo.id_release / rclone.config_restore 不共享单一前缀）。 */
+  actions?: string[]
   /** 结果过滤：ok/denied/failed；undefined = 不过滤。 */
   result?: AuditResult
   /** ts 下界（ISO 8601）。 */
@@ -42,7 +45,7 @@ export interface AuditQuery {
 export function queryAudit(params: AuditQuery = {}): Promise<AuditPageResponse> {
   return request<AuditPageResponse>('/api/audit', {
     query: {
-      action: params.action,
+      action: params.actions?.length ? params.actions.join(',') : params.action,
       result: params.result,
       since: params.since,
       until: params.until,

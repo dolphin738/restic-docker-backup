@@ -40,6 +40,12 @@ import type { AuditOut, AuditResult } from '@/api/types'
 import { IconCheckCircle, IconDownload, IconFilter, IconX } from '@/components/icons/icons'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import {
+  auditActionLabel,
+  auditDetailKeyLabel,
+  auditDetailValue,
+  parseAuditDetail,
+} from '@/utils/audit'
 import { formatDateTime } from '@/utils/datetime'
 
 const PAGE_SIZE = 50
@@ -198,54 +204,15 @@ function resultTagType(result: AuditResult): 'success' | 'warning' | 'error' {
   }
 }
 
-/** detail 为 JSON 文本原文（契约不保证恒为 JSON）：解析成对象才走中文化键值列表，否则原样透传。 */
-function parseDetail(detail: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(detail) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null
-  } catch {
-    return null
-  }
-}
-
-/** 动作名 → 中文（键与后端 constants.py AUDIT_* 字面值对齐）。
- *  未收录的动作（后端新增）回落原文：宁可显示英文，也不显示空标签。 */
+/** 三大展示格式化收口到 utils/audit（与归档页「操作日志」共用一份）；
+ *  未收录的动作名/键名一律回落原文：宁可显示英文，也不显示空标签。 */
 function actionLabel(action: string): string {
-  const key = `audit.action.${action}`
-  return te(key) ? t(key) : action
-}
-
-/** detail 键名 → 中文（未收录回落原键名）。 */
-function detailKeyLabel(key: string): string {
-  const i18nKey = `audit.detailKey.${key}`
-  return te(i18nKey) ? t(i18nKey) : key
-}
-
-/** detail 值 → 中文可读文本：布尔走 是/否、耗时补单位、数组顿号连接、对象回落 JSON。 */
-function formatDetailValue(key: string, value: unknown): string {
-  if (value === null || value === undefined) {
-    return '—'
-  }
-  if (typeof value === 'boolean') {
-    return value ? t('audit.value.yes') : t('audit.value.no')
-  }
-  if (key === 'latency_ms' && typeof value === 'number') {
-    return `${value} ms`
-  }
-  if (Array.isArray(value)) {
-    return value.length ? value.map((item) => String(item)).join('、') : '—'
-  }
-  if (typeof value === 'object') {
-    return JSON.stringify(value)
-  }
-  return String(value)
+  return auditActionLabel(action, t, te)
 }
 
 /** 展开区：中文键名的键值列表（不再是裸 JSON——审计是给人看的，键名全是英文时读不动）。 */
 function renderDetail(detail: string) {
-  const parsed = parseDetail(detail)
+  const parsed = parseAuditDetail(detail)
   if (!parsed) {
     return h('pre', { class: 'audit__detail' }, detail || t('common.none'))
   }
@@ -258,8 +225,8 @@ function renderDetail(detail: string) {
     { class: 'audit__detail-list' },
     entries.map(([key, value]) =>
       h('div', { class: 'audit__detail-row' }, [
-        h('span', { class: 'audit__detail-key' }, detailKeyLabel(key)),
-        h('span', { class: 'audit__detail-val' }, formatDetailValue(key, value)),
+        h('span', { class: 'audit__detail-key' }, auditDetailKeyLabel(key, t, te)),
+        h('span', { class: 'audit__detail-val' }, auditDetailValue(key, value, t)),
       ]),
     ),
   )
