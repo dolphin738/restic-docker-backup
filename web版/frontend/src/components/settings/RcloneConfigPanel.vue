@@ -129,7 +129,7 @@ const editingRemote = ref<string | null>(null)
 /** 一次性明文弹窗：生成密码后**只显示一次**（可复制），确认才写进表单。
  *  收敛口径与仓库设置密码一致（SecretReveal 唯一实现）——crypt 密码丢失 = 数据无法解密，
  *  直接把明文塞进掩码框（旧实现）用户既看不到也复制不了。 */
-const generatedField = ref<'password' | 'password2' | 'pass' | 'bearerToken' | null>(null)
+const generatedField = ref<'password' | 'password2' | 'pass' | null>(null)
 const generatedValue = ref('')
 const generatedShow = computed({
   get: () => generatedField.value !== null,
@@ -479,7 +479,7 @@ function cancelEdit(): void {
 }
 
 /** 点「生成」：本地 CSPRNG 生成 32 位密码 → 弹窗一次性展示（确认后才写入表单）。 */
-function requestGenerate(field: 'password' | 'password2' | 'pass' | 'bearerToken'): void {
+function requestGenerate(field: 'password' | 'password2' | 'pass'): void {
   generatedField.value = field
   generatedValue.value = generatePassword()
 }
@@ -762,8 +762,6 @@ defineExpose({ refresh })
               v-model="form.bearerToken"
               width="400px"
               :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : t('settings.rclone.bearerTokenPlaceholder')"
-              :generate-label="t('common.generatePassword')"
-              @generate="requestGenerate('bearerToken')"
             />
             <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
           </NFormItem>
