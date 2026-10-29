@@ -20,6 +20,7 @@ import { NAlert, NSpace, NText, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { listBackupTasks } from '@/api/backupTasks'
 import { listSnapshots } from '@/api/snapshots'
 import {
   INPLACE_TARGET_ROOT,
@@ -35,6 +36,7 @@ import Progress from '@/pages/snapshots/restore/progress.vue'
 import SelectFiles from '@/pages/snapshots/restore/select-files.vue'
 import { DATETIME_FALLBACK, formatDateTimeOr } from '@/utils/datetime'
 import { formatBytesOr } from '@/utils/format'
+import { taskNameFromTags } from '@/utils/taskFormat'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useUiStore } from '@/stores/ui'
 
@@ -125,12 +127,29 @@ const snapshotItems = computed(() =>
   [...(snapshotsQuery.data.value?.items ?? [])].sort((a, b) => (b.time ?? '').localeCompare(a.time ?? '')),
 )
 
+/** 任务列表（只为把快照的 `task-<id>` 标签翻成任务名）：与快照页同一 queryKey，
+ *  抽屉打开时直接命中缓存，不再多发一次请求。 */
+const tasksQuery = useQuery({
+  queryKey: ['backup-tasks', 'tag-options'],
+  queryFn: () => listBackupTasks(50),
+})
+const taskItems = computed(() => tasksQuery.data.value?.items ?? [])
+
 const snapshotOptions = computed(() =>
   snapshotItems.value.map((snapshot) => ({
+    // 四段式：任务名 · 时间 · size · paths。
+    // 任务名（本次新增）：快照接口本身不带任务字段，靠 tags 里的 `task-<id>` 反查任务列表，
+    //   与快照页「任务」列同口径（utils/taskFormat.taskNameFromTags）；手工提交的快照
+    //   无该标签 → 占位「—」，任务已删除 → 退回原始 tag。
     // 缺陷 C：选择项时间收口为本地可读形式；无 time 时回落「无」。
     // P10（R5）：补 size（对标 Duplicati 版本下拉的 SourceSizeString），
     // 与仪表盘共用 `@/utils/format` 的口径，缺值回落「无」。
-    label: `${formatDateTimeOr(snapshot.time, t('common.none'))} · ${formatBytesOr(snapshot.size, t('common.none'))} · ${snapshot.paths.join(', ') || snapshot.id.slice(0, 8)}`,
+    label: [
+      taskNameFromTags(snapshot.tags, taskItems.value, '—'),
+      formatDateTimeOr(snapshot.time, t('common.none')),
+      formatBytesOr(snapshot.size, t('common.none')),
+      snapshot.paths.join(', ') || snapshot.id.slice(0, 8),
+    ].join(' · '),
     value: snapshot.id,
   })),
 )

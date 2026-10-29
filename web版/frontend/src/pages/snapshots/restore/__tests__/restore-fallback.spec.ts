@@ -36,6 +36,12 @@ vi.mock('@/api/snapshots', () => ({
   searchSnapshotFiles: vi.fn(async () => ({ items: [], total: 0, next_cursor: null })),
 }))
 
+// 快照下拉新增「任务名」段，靠任务列表把 `task-<id>` 标签翻成任务名；
+// 本规格不断言任务名，这里只为保持 hermetic（不真发请求）。
+vi.mock('@/api/backupTasks', () => ({
+  listBackupTasks: vi.fn(async () => ({ items: [], total: 0 })),
+}))
+
 // 原位流进步骤 2 会触发 loadPreview（E20 预览）；mock 掉保持 hermetic，
 // 本规格只关心模式回落，不断言预览内容。
 vi.mock('@/api/restore', () => ({

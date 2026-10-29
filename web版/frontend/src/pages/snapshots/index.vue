@@ -46,6 +46,7 @@ import VirtualTree, { type TreePage } from '@/components/VirtualTree.vue'
 import RestorePanel from '@/pages/snapshots/restore/panel.vue'
 import { formatDateTimeOr } from '@/utils/datetime'
 import { formatBytes, formatBytesOr } from '@/utils/format'
+import { taskNameFromTags } from '@/utils/taskFormat'
 
 const PAGE_SIZE = 20
 const { t } = useI18n()
@@ -82,6 +83,8 @@ const tasksQuery = useQuery({
   queryKey: ['backup-tasks', 'tag-options'],
   queryFn: () => listBackupTasks(50),
 })
+/** 任务列表快照（任务名反查的唯一数据源；快照接口不带任务字段）。 */
+const taskItems = computed(() => tasksQuery.data.value?.items ?? [])
 
 /** 归档仓库只读视图（删除保护方案 D13）：`?repo=<id>` 覆盖全局 X-Repo-Id。
  *  归档仓库不在切换器里、也不在 /api/repos 列表里，只能用这个 query 参数定位；
@@ -124,7 +127,7 @@ watch(
 
 const tagOptions = computed(() => {
   const options = [{ label: t('snapshot.allTags'), value: '' }]
-  for (const task of tasksQuery.data.value?.items ?? []) {
+  for (const task of taskItems.value) {
     options.push({ label: `${task.name}（${task.tag}）`, value: task.tag })
   }
   // 历史遗留 tag（无对应任务）：来自累积集合（筛选后不缩水），去重
@@ -168,7 +171,7 @@ const groupHeaderText = computed(() => {
   if (!tagFilter.value) {
     return ''
   }
-  const task = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === tagFilter.value)
+  const task = taskItems.value.find((item) => item.tag === tagFilter.value)
   const name = task?.name ?? t('snapshot.unknownTag')
   const latest = formatDateTimeOr(snapshots.value[0]?.time ?? null, t('common.none'))
   return t('snapshot.groupHeader', { name, n: total.value, time: latest })
@@ -305,12 +308,10 @@ function fileMeta(size: number | null, mtime: string | null): string | undefined
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
-/** 从快照 tags 中取 task-<id> 反查任务名（任务已删除时回退显示原始 tag，无任务标签显示 —）。 */
+/** 从快照 tags 中取 task-<id> 反查任务名（任务已删除时回退显示原始 tag，无任务标签显示 —）。
+ *  实现收口在 `@/utils/taskFormat.taskNameFromTags`（恢复向导下拉与本列共用同一口径）。 */
 function taskNameForRow(row: SnapshotOut): string {
-  const taskTag = row.tags.find((tag) => /^task-\d+$/.test(tag))
-  if (!taskTag) return '—'
-  const task = (tasksQuery.data.value?.items ?? []).find((item) => item.tag === taskTag)
-  return task?.name ?? taskTag
+  return taskNameFromTags(row.tags, taskItems.value, '—')
 }
 
 const columns = computed<DataTableColumns<SnapshotOut>>(() => [

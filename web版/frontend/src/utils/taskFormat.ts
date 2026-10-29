@@ -60,6 +60,33 @@ export function formatDurationMs(ms: number): string {
 /** 翻译函数最小签名（与 vue-i18n `t` 兼容；避免在本文件依赖 i18n 实例）。 */
 export type TranslateFn = (key: string, named?: Record<string, unknown>) => string
 
+/** 任务 tag 形态 `task-<id>`：服务端 `task_repo` 单一生成点，备份时打进快照 tags。 */
+const TASK_TAG_RE = /^task-\d+$/
+
+/**
+ * 快照 tags → 任务名。
+ *
+ * 快照本身不带任务字段（restic 快照只有 id/time/host/tags/paths），任务名只能由
+ * `task-<id>` 标签反查任务列表得到。口径：
+ *   - 无任务标签（手工提交的 backup）→ fallback；
+ *   - 任务已被删除 → 退回原始 tag（不显示空白，用户还能按 tag 追查）。
+ *
+ * @param tags 快照 tags。
+ * @param tasks 任务列表（只需 name/tag 两个字段）。
+ * @param fallback 无任务标签时的占位（如「—」）。
+ */
+export function taskNameFromTags(
+  tags: string[],
+  tasks: Array<{ name: string; tag: string }>,
+  fallback: string,
+): string {
+  const taskTag = tags.find((tag) => TASK_TAG_RE.test(tag))
+  if (!taskTag) {
+    return fallback
+  }
+  return tasks.find((task) => task.tag === taskTag)?.name ?? taskTag
+}
+
 /**
  * 时间展示收口（P7 D4）：absolute=绝对时间；relative=相对时间，超 30 天回落绝对、无效值回落 fallback。
  *

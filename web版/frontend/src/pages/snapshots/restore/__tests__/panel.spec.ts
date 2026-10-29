@@ -48,6 +48,12 @@ vi.mock('@/api/snapshots', () => ({
   })),
 }))
 
+// 快照下拉新增「任务名」段，靠任务列表把 `task-<id>` 标签翻成任务名；
+// 本规格不断言任务名，这里只为保持 hermetic（不真发请求）。
+vi.mock('@/api/backupTasks', () => ({
+  listBackupTasks: vi.fn(async () => ({ items: [], total: 0 })),
+}))
+
 vi.mock('@/api/restore', () => ({
   INPLACE_TARGET_ROOT: '/sources',
   RESTORE_TARGET_ROOT: '/restore',
