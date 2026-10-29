@@ -139,7 +139,10 @@ export function restoreArchivedRepo(id: string): Promise<OkResponse> {
 export function releaseArchivedRepo(id: string, confirmId: string): Promise<OkResponse> {
   return request<OkResponse>(`/api/archive/repos/${encodeURIComponent(id)}/release`, {
     method: 'POST',
-    body: JSON.stringify({ confirm_id: confirmId }),
+    // body 传**对象**（http.request 内部统一 JSON.stringify）——曾在此处手写
+    // JSON.stringify，被 http 层再包一层 → 服务端收到的是 JSON 字符串而非对象，
+    // Pydantic 直接 422，「释放 ID」点了永远失败（文件末尾的约定注释即此纪律）。
+    body: { confirm_id: confirmId },
   })
 }
 
