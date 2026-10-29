@@ -28,7 +28,6 @@ utils/time）、S1（文件只触碰 ``settings.jobs_dir`` 与 ``audit_archive_d
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import gzip
 import json
 import logging
@@ -53,6 +52,8 @@ from app.constants import (
     RETENTION_RCLONE_ARCHIVE_DAYS_KEY,
     RETENTION_REPO_ARCHIVE_DAYS_DEFAULT,
     RETENTION_REPO_ARCHIVE_DAYS_KEY,
+    RETENTION_REPO_PASSFILE_DAYS_DEFAULT,
+    RETENTION_REPO_PASSFILE_DAYS_KEY,
     RETENTION_REPO_TOMBSTONE_DAYS_DEFAULT,
     RETENTION_REPO_TOMBSTONE_DAYS_KEY,
 )
@@ -62,6 +63,7 @@ from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.rclone_archive_repo import RcloneArchiveRepo
 from app.db.repositories.repo_repo import ReposRepo
 from app.settings import Settings, get_settings
+from app.utils.passfile import reap_orphan_passfiles, remove_passfile
 from app.utils.time import now_utc, utc_iso
 
 logger = logging.getLogger(__name__)
@@ -99,16 +101,19 @@ class AuditArchiveReport:
 
 @dataclass
 class ArchiveCleanupReport:
-    """一次归档生命周期清理的结果（删除保护方案 §5 三档）。
+    """一次归档生命周期清理的结果（删除保护方案 §5 四档）。
 
     只记「记录」层面的变化：``repos_expired`` = 归档期到期转墓碑的仓库 id；
-    ``tombstones_deleted`` = 墓碑到期删除；``rclone_archives_expired`` = 配置归档到期删除。
+    ``tombstones_deleted`` = 墓碑到期删除；``rclone_archives_expired`` = 配置归档到期删除；
+    ``passfiles_reaped`` = 无主且超龄的**密码文件**被回收的 repo_id（第四档，
+    兜住 hard 删除 / 释放 ID / 上一轮清理失败留下的孤儿）。
     **一个字节的备份数据都不会出现在这里**——数据永不自动删。
     """
 
     repos_expired: list[str] = field(default_factory=list)
     tombstones_deleted: list[str] = field(default_factory=list)
     rclone_archives_expired: list[str] = field(default_factory=list)
+    passfiles_reaped: list[str] = field(default_factory=list)
 
 
 class RetentionService:
@@ -338,16 +343,22 @@ class RetentionService:
     # ------------------------------------------------------------------ 归档生命周期（删除保护方案 §5）
 
     async def cleanup_archives(self, *, now: datetime | None = None) -> ArchiveCleanupReport:
-        """按三个保留期键推进归档生命周期（每日维护的一部分）。
+        """按四个保留期键推进归档生命周期（每日维护的一部分）。
 
-        三档（与《删除依赖与快照可用性保护方案》§5 一一对应）：
+        四档（与《删除依赖与快照可用性保护方案》§5 一一对应，第四档为其补充）：
 
         1. ``retention.repo_archive_days``（缺省 30）到期 → 清**凭据 + 密码文件**、
            仓库行转墓碑。**不碰磁盘数据**（数据自始至终不归应用删）。
         2. ``retention.repo_tombstone_days``（缺省 365）到期 → 删墓碑记录。
         3. ``retention.rclone_archive_days``（缺省 365）到期 → 删 rclone 配置归档。
+        4. ``retention.repo_passfile_days``（缺省 30）→ 回收**无主且超龄**的密码文件：
+           ``?hard=1`` 删除、归档页「释放 ID」、上一轮 unlink 失败都会留下
+           ``<passfile_root>/<repo_id>/password`` 孤儿；判定「无主」= repo_id 不在
+           在用仓库 / 归档仓库 / 墓碑三者之中，「超龄」= mtime 早于冷却期
+           （避开刚建仓、行还没落库的中间态）。
+           ``RESTIC_PASSWORD_FILE`` 全局共用密码文件时整段跳过（删它会毁掉全部仓库）。
 
-        三者 ``<=0`` 一律不启用（永久保留），与 ``retention.audit_days`` 同语义。
+        四者 ``<=0`` 一律不启用（永久保留），与 ``retention.audit_days`` 同语义。
 
         Returns:
             :class:`ArchiveCleanupReport`（零删除也返回，便于调用方记录一条审计）。
@@ -373,7 +384,7 @@ class RetentionService:
                             and row.value
                         ):
                             await self._config.delete(row.key)
-                    await asyncio.to_thread(_unlink_passfile_sync, self._settings, repo.id)
+                    await asyncio.to_thread(remove_passfile, self._settings, repo.id)
                     await self._repos.hard_delete(repo.id, data_destroyed=False)
                     report.repos_expired.append(repo.id)
 
@@ -387,6 +398,21 @@ class RetentionService:
                         await self._repos.delete_tombstone(str(row["repo_id"]))
                         report.tombstones_deleted.append(str(row["repo_id"]))
 
+            # 第四档：孤儿密码文件回收（无主 + 超龄）。放在墓碑清理之后——墓碑期内
+            # 该 id 仍算「有主」，墓碑到期后才进入可回收集合，顺序即天然的宽限。
+            passfile_days = await self._resolve_days(
+                RETENTION_REPO_PASSFILE_DAYS_KEY, RETENTION_REPO_PASSFILE_DAYS_DEFAULT
+            )
+            if passfile_days > 0:
+                cutoff_ts = (moment - timedelta(days=passfile_days)).timestamp()
+                known: set[str] = set()
+                known.update(repo.id for repo in await self._repos.list_all())
+                known.update(repo.id for repo in await self._repos.list_archived())
+                known.update(str(row["repo_id"]) for row in await self._repos.list_tombstones())
+                report.passfiles_reaped = await asyncio.to_thread(
+                    reap_orphan_passfiles, self._settings, known, cutoff_ts=cutoff_ts
+                )
+
         if self._rclone_archives is not None:
             rclone_days = await self._resolve_days(
                 RETENTION_RCLONE_ARCHIVE_DAYS_KEY, RETENTION_RCLONE_ARCHIVE_DAYS_DEFAULT
@@ -395,7 +421,12 @@ class RetentionService:
                 cutoff = utc_iso(moment - timedelta(days=rclone_days))
                 report.rclone_archives_expired = await self._rclone_archives.purge_older_than(cutoff)
 
-        if report.repos_expired or report.tombstones_deleted or report.rclone_archives_expired:
+        if (
+            report.repos_expired
+            or report.tombstones_deleted
+            or report.rclone_archives_expired
+            or report.passfiles_reaped
+        ):
             await self._audit.record(
                 AUDIT_RETENTION_CLEANUP,
                 target="archive",
@@ -403,14 +434,16 @@ class RetentionService:
                     "repos_expired": len(report.repos_expired),
                     "tombstones_deleted": len(report.tombstones_deleted),
                     "rclone_archives_expired": len(report.rclone_archives_expired),
+                    "passfiles_reaped": len(report.passfiles_reaped),
                 },
                 result="ok",
             )
             logger.info(
-                "归档生命周期清理：归档到期 %s / 墓碑删除 %s / rclone 归档到期 %s",
+                "归档生命周期清理：归档到期 %s / 墓碑删除 %s / rclone 归档到期 %s / 孤儿密码文件 %s",
                 len(report.repos_expired),
                 len(report.tombstones_deleted),
                 len(report.rclone_archives_expired),
+                len(report.passfiles_reaped),
             )
         return report
 
@@ -539,29 +572,6 @@ def _list_archives_sync(archive_dir: Path) -> list[dict]:
         except OSError:
             continue
     return items
-
-
-def _unlink_passfile_sync(settings: Settings, repo_id: str) -> bool:
-    """删除某仓库的密码文件（归档期到期 = 放弃一键恢复能力），返回是否真的删掉。
-
-    **只删** ``<passfile_root>/<repo_id>/password``；目录仅在空时回收
-    （目录里若有用户手放的文件，不属应用管控范围——与 purge 同口径）。
-    失败静默（下一轮维护重试，幂等）。
-    """
-    try:
-        passfile = settings.passfile_path(repo_id)
-    except Exception:  # noqa: BLE001 - 路径派生失败不该拖垮维护任务
-        return False
-    removed = False
-    try:
-        passfile.unlink()
-        removed = True
-    except OSError:
-        pass  # 文件本不存在 / 无权限：保持原状
-    # 仅空目录 rmdir 成功；非空自然失败（目录里若有用户手放的文件，不属应用管控范围）
-    with contextlib.suppress(OSError):
-        passfile.parent.rmdir()
-    return removed
 
 
 def _unlink_paths_sync(paths: list[str]) -> int:

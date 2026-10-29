@@ -152,6 +152,18 @@ class Settings(BaseSettings):
                 return str(uid)
         return str(uid)
 
+    @property
+    def passfile_override(self) -> Path | None:
+        """``RESTIC_PASSWORD_FILE`` 显式覆盖的**全局共用**密码文件；None = 走 per-repo 布局。
+
+        存在理由：密码文件的**清理**逻辑必须先知道「此刻是否所有仓库共用同一个文件」——
+        共用时删某个仓库的密码文件等于删掉**全部仓库**的钥匙（其余仓库立刻不可读），
+        故清理出口一律在读到非 None 时整体跳过（见 ``app/utils/passfile.py``）。
+        每次调用都读环境（不缓存）：运维逃生舱应在改 env 后立即生效。
+        """
+        override = os.environ.get("RESTIC_PASSWORD_FILE", "").strip()
+        return Path(override) if override else None
+
     def passfile_path(self, repo_id: str = "default") -> Path:
         """仓库密码文件路径（E5 per-repo 布局的唯一实现点）。
 
@@ -161,9 +173,9 @@ class Settings(BaseSettings):
         Args:
             repo_id: 仓库标识；R-023 多仓库落地后由调用方按仓库传入。
         """
-        override = os.environ.get("RESTIC_PASSWORD_FILE", "").strip()
-        if override:
-            return Path(override)
+        override = self.passfile_override
+        if override is not None:
+            return override
         return Path(self.passfile_root) / repo_id / "password"
 
 

@@ -418,13 +418,20 @@ AUDIT_ARCHIVE_FILE_GLOB = "audit-*.jsonl.gz"
 # - retention.repo_archive_days：活跃归档期，可一键原样恢复（缺省 30）
 # - retention.repo_tombstone_days：墓碑期，仅留元数据（缺省 365）
 # - retention.rclone_archive_days：rclone 段配置归档保留期（缺省 365）
-# 三者一律 ``<=0`` = 不启用自动清理（永久保留）
+# - retention.repo_passfile_days：孤儿密码文件回收冷却期（缺省 30，见下方）
+# 四者一律 ``<=0`` = 不启用自动清理（永久保留）
 RETENTION_REPO_ARCHIVE_DAYS_KEY = "retention.repo_archive_days"
 RETENTION_REPO_ARCHIVE_DAYS_DEFAULT = 30
 RETENTION_REPO_TOMBSTONE_DAYS_KEY = "retention.repo_tombstone_days"
 RETENTION_REPO_TOMBSTONE_DAYS_DEFAULT = 365
 RETENTION_RCLONE_ARCHIVE_DAYS_KEY = "retention.rclone_archive_days"
 RETENTION_RCLONE_ARCHIVE_DAYS_DEFAULT = 365
+# 孤儿密码文件回收（删除保护补充）：hard 删除 / 释放 ID / 清理失败都会留下
+# ``<passfile_root>/<repo_id>/password`` 无主文件；无主且超龄才回收（缺省 30，
+# 与 repo_archive_days 同一「后悔窗口」口径），``<=0`` = 不回收。
+# **RESTIC_PASSWORD_FILE 全局共用时整段跳过**（删它会毁掉全部仓库的可读性）。
+RETENTION_REPO_PASSFILE_DAYS_KEY = "retention.repo_passfile_days"
+RETENTION_REPO_PASSFILE_DAYS_DEFAULT = 30
 
 # 缓存占用统计（E25，Q14 基线）：du 超时 + 30s 进程内结果缓存（援 E30 REPO_STATUS_CACHE_SECONDS 先例）
 CACHE_USAGE_TIMEOUT_SECONDS = 30.0

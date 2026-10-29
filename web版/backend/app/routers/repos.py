@@ -108,6 +108,7 @@ from app.services.rclone_config import (
 from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
 from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
+from app.utils.passfile import remove_passfile
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -756,20 +757,10 @@ async def _purge_repo_disk(request: Request, repo_id: str, url: str) -> bool:
             raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
         await _clear_dir_contents(local_path)
         removed = True
-    # 密码文件随数据一并清除（purge 语义 = 该地址可干净重用）；失败只记日志——
-    # 密码文件在应用管控目录内，删不掉不影响仓库删除本身
-    passfile = passfile_path(request.app.state.settings, repo_id)
-    try:
-        passfile.unlink()
-    except FileNotFoundError:
-        pass  # 本就未配置密码文件（目录回收仍继续）
-    except OSError:
-        logger.warning("仓库 %s 密码文件删除失败（不影响仓库删除）", repo_id)
-    # 回收 <passfile_root>/<repo_id>/ 空目录（2026-10-22 owner 反馈：只删 password
-    # 不删目录，长期会堆积一堆以仓库 id 命名的孤儿空文件夹）。rmdir 仅空目录
-    # 成功——用户若在该目录手动放过别的文件，不误删。
-    with contextlib.suppress(OSError):
-        passfile.parent.rmdir()
+    # 密码文件随数据一并清除（purge 语义 = 该地址可干净重用）：删除动作收口在
+    # `utils/passfile.remove_passfile`（唯一出口）——`RESTIC_PASSWORD_FILE` 全局共用
+    # 密码文件时会拒绝删除，否则删一个仓库的密码文件等于毁掉全部仓库的可读性。
+    remove_passfile(request.app.state.settings, repo_id)
     return removed
 
 
