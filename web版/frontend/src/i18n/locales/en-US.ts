@@ -674,6 +674,18 @@ export default {
     exclude: 'Exclude this',
     unexclude: 'Remove exclusion',
   },
+  // E33 container filesystem: create a folder straight from the tree (single level)
+  fs: {
+    newFolder: 'New folder',
+    newFolderTitle: 'New folder',
+    newFolderIn: 'Create under {path}',
+    newFolderNamePlaceholder: 'Folder name',
+    newFolderCreate: 'Create',
+    created: 'Created and selected "{name}"',
+    alreadyExists: '"{name}" already exists — selected it',
+    nameRequired: 'Enter a folder name',
+    nameNoSlash: 'Name cannot contain / (single-level create; the parent must already exist)',
+  },
   // Path address bar (D variant: breadcrumb + mount caret menu + inline editing, unified in P19)
   pathBar: {
     editHint: 'Click empty area or the last segment to edit the full path',

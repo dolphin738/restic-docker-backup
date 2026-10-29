@@ -22,8 +22,13 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import SOURCE_BROWSE_DEFAULT_LIMIT, SOURCE_BROWSE_MAX_LIMIT
-from app.errors import ValidationError
-from app.schemas.api_schemas import FsBrowseResponse, FsItem
+from app.errors import ForbiddenError, InternalError, ValidationError
+from app.schemas.api_schemas import (
+    FsBrowseResponse,
+    FsItem,
+    FsMkdirRequest,
+    FsMkdirResponse,
+)
 from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
 
 logger = logging.getLogger(__name__)
@@ -44,6 +49,33 @@ _PSEUDO_FS_TYPES = frozenset(
 # /data 自 E5（2026-10-16）起存放仓库密码文件（/data/repos/<repo_id>/password），
 # 虽只列目录名不回内容，仍不为其提供快跳入口（owner 裁决）。
 _MOUNT_PREFIX_DENY = ("/proc", "/sys", "/dev", "/run", "/data")
+
+# 创建目录（写操作）额外挡掉的 FHS 系统目录：E33 浏览是**只读**（看一眼无副作用），
+# mkdir 是**写**，故口径比浏览严一档——仓库永远不该落在这些位置，挡掉不影响
+# 合法用途（仓库默认在 ``settings.repo_root``，用户自挂卷在 ``/mnt/...``）。
+_WRITE_PREFIX_DENY = (
+    "/proc", "/sys", "/dev", "/run", "/etc", "/bin", "/sbin", "/usr", "/lib", "/lib64",
+    "/boot", "/var", "/root",
+)
+# 单级目录名长度上限（ext4/overlayfs/XFS 通用 255 字节；按 UTF-8 字节计，中文名 3 字节/字）
+_MAX_NAME_BYTES = 255
+
+
+def _reject_write_root(container: str) -> None:
+    """拒绝在**系统目录**内创建目录（写操作专用口径，比浏览严一档）。
+
+    Args:
+        container: 已规范化的容器内绝对路径。
+
+    Raises:
+        ValidationError: 路径落在系统目录内（422；不做部分放行，避免口径碎片）。
+    """
+    for prefix in _WRITE_PREFIX_DENY:
+        if container == prefix or container.startswith(prefix + "/"):
+            raise ValidationError(
+                f"不能在系统目录内创建文件夹：{container}",
+                data={"path": container, "denied_root": prefix},
+            )
 
 
 @router.get(
@@ -91,6 +123,87 @@ async def browse_fs(
         mounts=sorted(mounts) if container == "/" else [],
         next_cursor=next_cursor,
     )
+
+
+@router.post(
+    "/fs/mkdir",
+    response_model=FsMkdirResponse,
+    summary="E33 创建目录（仓库路径选择：容器视角单级创建）",
+    dependencies=_PROTECTED,
+)
+async def mkdir_fs(
+    payload: FsMkdirRequest,
+    request: Request,
+    session: SessionContext = Depends(require_session),
+) -> FsMkdirResponse:
+    """创建容器视角的单级目录（供仓库/crypt 本地目录的目录树直接建文件夹）。
+
+    **单级**语义（不做 ``mkdir -p``）：父目录必须已存在，缺父级即报错——递归创建
+    会让手输错路径的用户在不知情的情况下建出一串目录树，事后难以清理。
+
+    口径比 :func:`browse_fs` **严一档**：浏览只读（看一眼无副作用），本端点是写，
+    故在浏览的两条拒绝（应用数据目录 / 密码文件目录）之外，再挡系统目录前缀与根。
+    这三组拒绝都跟随 settings（唯一出处），不在本文件散落路径字面量。
+
+    已存在**目录** → 幂等返回 ``created=false``（不报错，前端据此提示「已存在」）；
+    同名**文件**存在 → 422（不能拿文件当目录）。
+
+    错误：422（相对路径 / 根目录 / 系统目录 / 应用数据目录 / 密码目录 / 名称过长 /
+    父目录不存在 / 同名文件已存在）/ 403（无权限）/ 500（其他 OSError）。
+    """
+    del session
+    container = _normalize(payload.path)
+    if container == "/":
+        raise ValidationError("不能在文件系统根目录上创建文件夹", data={"path": container})
+    _reject_write_root(container)
+    _reject_app_data_root(container, request.app.state.settings.data_dir)
+    _reject_passfile_root(container, request.app.state.settings.passfile_root)
+    name = container.rsplit("/", 1)[-1]
+    if not name or len(name.encode("utf-8")) > _MAX_NAME_BYTES:
+        raise ValidationError(
+            f"文件夹名称不可为空且不得超过 {_MAX_NAME_BYTES} 字节：{name}",
+            data={"path": container, "name": name},
+        )
+    created = await asyncio.to_thread(_mkdir_sync, container)
+    return FsMkdirResponse(path=container, created=created)
+
+
+def _mkdir_sync(container: str) -> bool:
+    """同步创建单级目录（经 ``asyncio.to_thread`` 调用，不阻塞事件循环）。
+
+    Returns:
+        True = 本次真的创建了；False = 目标已是目录（幂等）。
+
+    Raises:
+        ValidationError: 父目录不存在 / 同名文件已存在。
+        ForbiddenError: 无权限。
+        InternalError: 其他 OSError（名称非法、只读文件系统等）。
+    """
+    parent = str(PurePosixPath(container).parent) or "/"
+    if not Path(parent).is_dir():
+        raise ValidationError(
+            f"父目录不存在，无法创建：{parent}",
+            data={"path": container, "parent": parent},
+        )
+    target = Path(container)
+    if target.exists():
+        if target.is_dir():
+            return False
+        raise ValidationError(
+            f"同名文件已存在，无法创建文件夹：{container}", data={"path": container}
+        )
+    try:
+        target.mkdir(mode=0o755)
+    except FileExistsError:
+        # 并发创建同一路径：谁先到谁说话，后到的视为「已存在」
+        return False
+    except PermissionError as exc:
+        raise ForbiddenError(f"无权限创建文件夹：{container}", data={"path": container}) from exc
+    except OSError as exc:
+        raise InternalError(
+            f"创建文件夹失败：{container}（{exc.strerror or exc}）", data={"path": container}
+        ) from exc
+    return True
 
 
 def _reject_app_data_root(container: str, data_dir: str | Path) -> None:

@@ -433,6 +433,12 @@ export interface FsBrowseResponse {
   next_cursor: string | null
 }
 
+/** E33 创建目录响应；created=false = 目标目录已存在（幂等成功，不是错误）。 */
+export interface FsMkdirResponse {
+  path: string
+  created: boolean
+}
+
 /** E32 内置排除集（只读）。items/core 为容器前缀形态（wire 兼容保留）；
  * display_items/display_core 是剥好前缀的展示形态，前端只用这俩。 */
 export interface ExclusionsResponse {

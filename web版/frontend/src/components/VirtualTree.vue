@@ -308,9 +308,52 @@ function resetAll(): void {
   void loadDir(props.rootPath)
 }
 
+function expandPath(path: string): void {
+  const next = new Set(expanded.value)
+  next.add(path)
+  expanded.value = next
+}
+
+/** 自顶向下逐层加载 + 展开 `target` 的祖先链。
+ *  祖先通常在用户点下来时就已经加载过，`loadDir` 有缓存命中短路 → 零多余请求；
+ *  手输路径（祖先从未展开）时才真的补几层。不这么做，新条目加载了也渲染不出来
+ *  （`rows` 只递归 `expanded` 集合）。 */
+async function revealAncestors(target: string): Promise<void> {
+  const chain: string[] = []
+  let cursor = target
+  while (cursor !== props.rootPath && cursor !== '/') {
+    const idx = cursor.lastIndexOf('/')
+    if (idx <= 0) {
+      break
+    }
+    cursor = cursor.slice(0, idx) || '/'
+    chain.unshift(cursor)
+  }
+  for (const level of chain) {
+    if (level === props.rootPath) {
+      continue
+    }
+    expandPath(level)
+    await loadDir(level)
+  }
+}
+
+/** 重新加载**指定那一层**的子项（丢弃该层缓存），并把该层连同祖先链展开。
+ *  供调用方「创建文件夹后即时刷新展示」——刻意不用 `resetAll`：后者会清空展开态
+ *  并把滚动位置归零，用户的实际观感是「树跳回去了」，刚建的文件夹又看不见。 */
+async function refreshDir(path?: string): Promise<void> {
+  const target = path ?? props.rootPath
+  await revealAncestors(target)
+  dirStates.delete(target)
+  expandPath(target)
+  await loadDir(target)
+}
+
 onMounted(() => {
   void loadDir(props.rootPath)
 })
+
+defineExpose({ refreshDir })
 
 watch(
   () => props.rootPath,

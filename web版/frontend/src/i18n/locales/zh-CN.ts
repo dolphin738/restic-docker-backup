@@ -667,6 +667,18 @@ export default {
     exclude: '排除此项',
     unexclude: '取消排除',
   },
+  // E33 容器文件系统：目录树内直接创建文件夹（单级，父目录必须已存在）
+  fs: {
+    newFolder: '新建文件夹',
+    newFolderTitle: '新建文件夹',
+    newFolderIn: '在 {path} 下创建',
+    newFolderNamePlaceholder: '文件夹名称',
+    newFolderCreate: '创建',
+    created: '已创建「{name}」并选中',
+    alreadyExists: '「{name}」已存在，已直接选中',
+    nameRequired: '请输入文件夹名称',
+    nameNoSlash: '名称不可包含 /（只建单级目录，父目录必须已存在）',
+  },
   // 路径地址栏（D 形态：面包屑 + 挂载点三角菜单 + 就地编辑，P19 全项目统一）
   pathBar: {
     editHint: '点击空白处或末段可编辑完整路径',

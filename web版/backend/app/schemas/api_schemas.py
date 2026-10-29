@@ -365,6 +365,23 @@ class FsBrowseResponse(_Base):
     next_cursor: str | None = None
 
 
+class FsMkdirRequest(_Base):
+    """E33 创建目录请求（容器视角，单级）。"""
+
+    path: str = Field(description="待创建的容器内绝对路径（父目录必须已存在）")
+
+
+class FsMkdirResponse(_Base):
+    """E33 创建目录响应。
+
+    ``created=false`` 表示目标目录**已存在**（幂等，不算错误）——前端据此提示
+    「目录已存在，已直接选中」，而不是报红。
+    """
+
+    path: str = Field(description="已存在的容器内绝对路径（规范化后）")
+    created: bool = Field(description="本次是否真的创建了新目录")
+
+
 class DryRunResponse(_Base):
     """E31 预览响应（不强制拦截，warnings 仅提示）。"""
 

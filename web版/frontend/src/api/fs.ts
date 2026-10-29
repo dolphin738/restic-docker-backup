@@ -6,7 +6,7 @@
  */
 
 import { passCursor, request } from './http'
-import type { FsBrowseResponse } from './types'
+import type { FsBrowseResponse, FsMkdirResponse } from './types'
 
 export function browseFs(
   path = '/',
@@ -16,4 +16,10 @@ export function browseFs(
   return request<FsBrowseResponse>('/api/fs/browse', {
     query: { path, cursor: passCursor(cursor), limit },
   })
+}
+
+/** E33 创建目录（容器视角单级）：父目录必须已存在，目录已存在则幂等返回 created=false。
+ *  失败（相对路径 / 系统目录 / 父目录缺失 / 同名文件）统一由 http 层转成 AppError 提示。 */
+export function mkdirFs(path: string): Promise<FsMkdirResponse> {
+  return request<FsMkdirResponse>('/api/fs/mkdir', { method: 'POST', body: { path } })
 }

@@ -21,11 +21,15 @@
  * 手输保留：目录可能尚不存在（rclone 会自建、仓库可新建目录），纯树选无法表达
  * 「尚未创建的目录」，故输入框是唯一可表达入口。
  */
-import { NInput, NText } from 'naive-ui'
-import { onMounted, ref, watch } from 'vue'
-import { browseFs } from '@/api/fs'
+import { NButton, NInput, NModal, NSpace, NText, useMessage } from 'naive-ui'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { browseFs, mkdirFs } from '@/api/fs'
 import PathBreadcrumb from '@/components/PathBreadcrumb.vue'
 import VirtualTree, { type TreeItem, type TreePage } from '@/components/VirtualTree.vue'
+
+const { t } = useI18n()
+const message = useMessage()
 
 const props = withDefaults(
   defineProps<{
@@ -68,6 +72,67 @@ const focusPath = ref<string>(props.path || browsePath.value)
 const mountChips = ref<string[]>([])
 /** 最近一次由本组件 emit 出去的值：回流时不重定位树（防「选完树跳回父目录」）。 */
 let lastEmitted: string | null = null
+
+const treeRef = ref<InstanceType<typeof VirtualTree> | null>(null)
+
+// ---------------------------------------------------------------- 新建文件夹
+
+const createOpen = ref(false)
+const creating = ref(false)
+const newFolderName = ref('')
+/** 仅承载**客户端校验**文案（名称为空 / 含 /）。API 失败走 http 层统一提示，
+ *  不在这里二次弹提示（全站一个提示出口，避免同源错误弹两遍）。 */
+const createError = ref('')
+
+/** 建在谁的下面：地址栏当前路径（选中项）；空则退回树根。 */
+const createParent = computed(() => (focusPath.value || browsePath.value || ROOT).replace(/\/+$/, '') || ROOT)
+
+function openCreate(): void {
+  newFolderName.value = ''
+  createError.value = ''
+  createOpen.value = true
+}
+
+/** 拼接绝对目标路径（`parent` 为根时不再补一个前导斜杠）。 */
+function joinPath(parent: string, name: string): string {
+  return parent === ROOT ? `${ROOT}${name}` : `${parent}/${name}`
+}
+
+async function onCreateFolder(): Promise<void> {
+  const name = newFolderName.value.trim()
+  if (!name) {
+    createError.value = t('fs.nameRequired')
+    return
+  }
+  // 单级语义：父目录必须已存在，故名称里不许再带层级（否则等于要求递归创建）
+  if (name.includes('/')) {
+    createError.value = t('fs.nameNoSlash')
+    return
+  }
+  const parent = createParent.value
+  creating.value = true
+  createError.value = ''
+  try {
+    const result = await mkdirFs(joinPath(parent, name))
+    // 建完直接选中它：用户建文件夹的目的就是用它（否则还要回树里再点一次）。
+    // 先置 lastEmitted 再 emit —— 回流时不重定位树，树不会跳回父目录。
+    lastEmitted = result.path
+    focusPath.value = result.path
+    emit('update:path', result.path)
+    createOpen.value = false
+    // 刷新父层 + 展开祖先链：新条目立刻出现在树里（「即时刷新展示」）
+    await treeRef.value?.refreshDir(parent)
+    message.success(
+      result.created
+        ? t('fs.created', { name })
+        : t('fs.alreadyExists', { name }),
+    )
+  } catch {
+    // API 错误由 http 层统一提示；弹窗保持打开，用户可直接改名重试
+  } finally {
+    creating.value = false
+  }
+}
 
 async function ensureMounts(): Promise<void> {
   if (mountChips.value.length > 0) {
@@ -134,8 +199,13 @@ onMounted(() => {
        平分成左右各 50%（曾因此把树挤成半宽），故此处自带布局容器并显式声明比例与窄屏回落。 -->
   <div class="dir-picker" :class="{ 'dir-picker--disabled': disabled }">
     <div v-if="!disabled" class="dir-picker__tree">
-      <PathBreadcrumb :path="focusPath || browsePath" :mounts="mountChips" @select="jumpTo" />
+      <div class="dir-picker__toolbar">
+        <PathBreadcrumb :path="focusPath || browsePath" :mounts="mountChips" @select="jumpTo" />
+        <!-- tiny 档按 P15 口径保持纯文字（不配图标），与同栏按钮视觉齐平 -->
+        <NButton size="tiny" secondary @click="openCreate">{{ t('fs.newFolder') }}</NButton>
+      </div>
       <VirtualTree
+        ref="treeRef"
         :root-path="browsePath"
         :load-children="fsLoader"
         :height="height"
@@ -157,6 +227,32 @@ onMounted(() => {
       <NText v-if="valueHint" depth="3" class="dir-picker__hint">{{ valueHint }}</NText>
     </div>
   </div>
+
+  <!-- 新建文件夹（容器视角单级创建：父目录必须已存在，不递归） -->
+  <NModal
+    v-model:show="createOpen"
+    preset="card"
+    :title="t('fs.newFolderTitle')"
+    style="width: min(480px, calc(100vw - 32px))"
+  >
+    <div class="dir-picker__create">
+      <NText depth="3" class="dir-picker__hint">{{ t('fs.newFolderIn', { path: createParent }) }}</NText>
+      <NInput
+        v-model:value="newFolderName"
+        :placeholder="t('fs.newFolderNamePlaceholder')"
+        @keydown.enter="onCreateFolder"
+      />
+      <NText v-if="createError" type="error" class="dir-picker__hint">{{ createError }}</NText>
+    </div>
+    <template #footer>
+      <NSpace justify="end">
+        <NButton size="small" @click="createOpen = false">{{ t('common.cancel') }}</NButton>
+        <NButton size="small" type="primary" :loading="creating" @click="onCreateFolder">
+          {{ t('fs.newFolderCreate') }}
+        </NButton>
+      </NSpace>
+    </template>
+  </NModal>
 </template>
 
 <style scoped>
@@ -176,6 +272,29 @@ onMounted(() => {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+/* 地址栏 + 新建按钮同一行：按钮不参与换行（地址栏可挤压），窄屏由外层回落单栏 */
+.dir-picker__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dir-picker__toolbar > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dir-picker__toolbar > .n-button {
+  flex: none;
+}
+
+.dir-picker__create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .dir-picker__value {
