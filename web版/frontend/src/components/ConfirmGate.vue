@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NInput, NModal, NSpace, NText } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { NAlert, NButton, NCard, NInput, NModal, NSpace, NText, useMessage } from 'naive-ui'
+import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { IconCopy } from '@/components/icons/icons'
 import OpResultBody from '@/components/OpResultBody.vue'
 import WizardStepper from '@/components/WizardStepper.vue'
 
@@ -47,6 +48,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const message = useMessage()
 
 /** 1=预览 2=输入确认文本（有关键词时） 3=二次确认 */
 const step = ref(1)
@@ -90,6 +92,18 @@ function onConfirm(): void {
     close()
   }
 }
+
+/** 复制第 2 步需要原样输入的确认文本（keyword），便于用户直接粘贴而非手抄。
+ *  与 SecretReveal / RcloneConfigPanel 同一口径：clipboard API + 成败 toast。 */
+async function copyKeyword(): Promise<void> {
+  if (!props.keyword) return
+  try {
+    await navigator.clipboard.writeText(props.keyword)
+    message.success(t('common.copied'))
+  } catch {
+    message.warning(t('common.copyFailed'))
+  }
+}
 </script>
 
 <template>
@@ -127,7 +141,17 @@ function onConfirm(): void {
 
         <!-- 第 2 步：输入确认文本（仅有关键词时） -->
         <template v-else-if="step === 2 && hasKeyword">
-          <n-text depth="3">{{ t('confirm.keywordHint', { keyword }) }}</n-text>
+          <n-space align="center" :wrap="false" style="gap: 8px">
+            <n-text depth="3">{{ t('confirm.keywordHint', { keyword }) }}</n-text>
+            <n-button
+              size="small"
+              tertiary
+              :render-icon="() => h(IconCopy)"
+              @click="copyKeyword"
+            >
+              {{ t('common.copy') }}
+            </n-button>
+          </n-space>
           <n-input v-model:value="typed" :placeholder="keyword" />
           <n-space justify="end">
             <n-button @click="step = 1">{{ t('confirm.back') }}</n-button>
