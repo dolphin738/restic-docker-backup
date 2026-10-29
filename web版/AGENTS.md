@@ -132,3 +132,20 @@ node e2e/p13-wizard-probe.cjs       # 退出码 0 = PASS；产物落 web版/.e2e
 ## 工作流
 
 三段式：**engineer 实现 → QA 独立验证（核对 git diff 与测试真实性 + 需求符合度——文档声称项逐条对照代码现实，trust but verify）→ owner 审查合并**。**文档超前 / 实现偏离一律提交 owner 裁决，不自行修正，裁决前不合并**（规范 §4.3 步骤 3，v1.6）。审查按 `docs/代码审查规范.md` 执行：🔴 Blocker（安全/红线/数据丢失）必须修复，🟡 Suggestion 应修复或记 issue，💭 Nit 不阻塞；**🔴 须在同一会话内闭环，跨会话遗留的未处置 🔴 视为阻塞项**。commit 描述须含：改了什么、为什么、如何验证、影响面。
+
+## Agent skills
+
+> 以下三行是技能套件（`/triage`、`/to-tickets`、`/wayfinder`、`/domain-modeling` 等）读取的入口；细节都在 `docs/agents/*.md`，改配置改那三份文件即可。
+
+### Issue tracker
+
+GitHub Issues on `dolphin738/restic-docker-backup`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five triage roles, each label string equal to its role name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+single-context — one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
