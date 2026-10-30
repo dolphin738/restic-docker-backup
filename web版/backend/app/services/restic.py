@@ -99,6 +99,26 @@ class ProbeResult:
     lines: list[str] = field(default_factory=list)
     truncated: bool = False
 
+    def kind(self) -> str:
+        """把本次结果翻译成结构化失败分类（``FAILURE_KIND_*``）。
+
+        与 :func:`failure_kind` 等价，但省掉调用方每次重复传 ``(exit_code, lines)``
+        ——Q3 裁决 A 的「翻译辅助」：模块只回结果，**翻译成 kind/reason 由这里提供**，
+        抛不抛仍由调用方按各自端点契约决定。
+        """
+        return failure_kind(self.exit_code, self.lines)
+
+    def reason(self, timeout_seconds: float | None = None) -> str:
+        """把本次结果翻译成可直接展示的原因文案。
+
+        Args:
+            timeout_seconds: 本次调用的超时秒数（退出码 -1 时用于生成超时文案）。
+
+        Returns:
+            中文原因文案（锁残留 / 凭据缺失 / 仓库未初始化 / 网络不可达 / 退出码 + 首条错误）。
+        """
+        return failure_reason(self.exit_code, self.lines, timeout_seconds)
+
 
 @dataclass(frozen=True)
 class ConsumeResult:

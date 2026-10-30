@@ -26,7 +26,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -310,7 +309,7 @@ async def preview_forget(
         timeout_seconds=FORGET_PREVIEW_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, FORGET_PREVIEW_TIMEOUT_SECONDS)
+        reason = probe.reason(FORGET_PREVIEW_TIMEOUT_SECONDS)
         logger.warning("forget 预览探测失败：%s", reason)
         raise ResticFailedError(reason, exit_code=probe.exit_code)
 
@@ -462,7 +461,7 @@ async def preview_prune(
         timeout_seconds=PRUNE_PREVIEW_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, PRUNE_PREVIEW_TIMEOUT_SECONDS)
+        reason = probe.reason(PRUNE_PREVIEW_TIMEOUT_SECONDS)
         logger.warning("prune 预览探测失败：%s", reason)
         raise ResticFailedError(reason, exit_code=probe.exit_code)
 
@@ -722,45 +721,48 @@ async def _run_restic_copy(
     args = WhitelistArgs(json_output=False, tags=tags)
     argv = restic.build("copy", args=args, env_extras=env_extras)
     env = restic.build_env(repo_url=source_url, repo_id=source_repo_id, env_extras=env_extras)
-    fd, log_path = tempfile.mkstemp(prefix="restic-copy-", suffix=".log")
-    os.close(fd)
-    tmp = Path(log_path)
-    exit_code = -1
-    last_line = ""
-    try:
-        proc = await restic.spawn(argv, tmp, env=env)
-        async for line in proc.lines():
-            last_line = line
-        try:
-            exit_code = await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            exit_code = -1
-            last_line = last_line or "copy 超时"
-    finally:
-        log_name = _retain_copy_log(
-            tmp, log_dir, source_repo_id=source_repo_id, target_repo_id=target_repo_id
-        )
+
+    # copy 是唯一没有 job 日志的长操作 → 输出**留存**（策略：只保留最近 COPY_LOG_KEEP 个）。
+    # 留存目录不可写时降级为临时日志（不影响 copy 结论）。
+    retained = _planned_copy_log(log_dir, source_repo_id=source_repo_id, target_repo_id=target_repo_id)
+    captured: list[str] = []
+
+    def _on_line(line: str) -> None:
+        captured.append(line)
+
+    result = await restic.consume(
+        argv,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        on_line=_on_line,
+        log_prefix="restic-copy",
+        retain_log=retained,
+    )
+    exit_code = result.exit_code
+    last_line = captured[-1] if captured else ""
+    if result.timed_out:
+        last_line = last_line or "copy 超时"
+    log_name = None
+    if retained is not None:
+        _prune_copy_logs(log_dir)
+        log_name = retained.name
     return exit_code, last_line, log_name
 
 
-def _retain_copy_log(
-    tmp: Path, log_dir: Path, *, source_repo_id: str, target_repo_id: str
-) -> str | None:
-    """把临时输出移入留存目录并返回文件名；任何失败都降级为 ``None``（不影响结论）。"""
+def _planned_copy_log(
+    log_dir: Path, *, source_repo_id: str, target_repo_id: str
+) -> Path | None:
+    """算出本次 copy 的**留存路径**并确保目录可写；不可写则返回 ``None``（降级为临时日志）。
+
+    命名用 UTC（与容器时区无关，跨时区排障可直接排序比对）。
+    """
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        # UTC 文件名：与容器时区无关，跨时区排障可直接排序比对
         name = f"copy-{source_repo_id}-to-{target_repo_id}-{now_utc():%Y%m%dT%H%M%SZ}.log"
-        shutil.move(str(tmp), log_dir / name)
+        return log_dir / name
     except OSError:
-        logger.warning("copy 输出留存失败（不影响 copy 结论）：%s", tmp, exc_info=True)
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        logger.warning("copy 输出留存目录不可用，降级为临时日志：%s", log_dir, exc_info=True)
         return None
-    _prune_copy_logs(log_dir)
-    return name
 
 
 def _prune_copy_logs(log_dir: Path) -> None:
@@ -814,7 +816,7 @@ async def _copy_snapshot_ids(
         timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
+        reason = probe.reason(SNAPSHOT_LIST_TIMEOUT_SECONDS)
         return frozenset(), reason
     records = await asyncio.to_thread(parser.parse_snapshot_list, "\n".join(probe.lines))
     wanted = [record for record in records if record.snapshot_id]
@@ -857,29 +859,35 @@ async def rotate_repo_key(
     fd, pw_path = tempfile.mkstemp(prefix="restic-keypass-", suffix=".tmp")
     os.write(fd, payload.new_password.encode("utf-8"))
     os.close(fd)
-    _, log_path = tempfile.mkstemp(prefix="restic-keyrun-", suffix=".log")
-    os.close(_)
+    exit_code = -1
+    last_line = ""
+    timed_out = False
     try:
         env = await restic.env_for(repo_url=repo.url, repo_id=payload.repo_id)
         args = WhitelistArgs(json_output=False, key_target="passwd", new_password_file=pw_path)
         argv = restic.build("key", args=args, env_extras={})
-        proc = await restic.spawn(argv, log_path, env=env)
-        last_line = ""
-        async for line in proc.lines():
-            last_line = line
-        try:
-            exit_code = await asyncio.wait_for(proc.wait(), timeout=KEY_OPERATION_TIMEOUT_SECONDS)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            exit_code = -1
+        captured: list[str] = []
+
+        def _on_line(line: str) -> None:
+            captured.append(line)
+
+        # 日志生命周期归 consume()（Q4 裁决 A）；口令临时文件仍由本处收尾
+        result = await restic.consume(
+            argv,
+            env=env,
+            timeout_seconds=KEY_OPERATION_TIMEOUT_SECONDS,
+            on_line=_on_line,
+            log_prefix="restic-keyrun",
+        )
+        exit_code = result.exit_code
+        last_line = captured[-1] if captured else ""
+        timed_out = result.timed_out
     finally:
-        for path in (pw_path, log_path):
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+        with contextlib.suppress(OSError):
+            os.unlink(pw_path)
 
     if exit_code != 0:
-        reason = failure_reason(exit_code, [last_line]) if exit_code != -1 else "密钥轮换超时"
+        reason = "密钥轮换超时" if timed_out else failure_reason(exit_code, [last_line])
         logger.warning("仓库 %s 密钥轮换失败：%s", payload.repo_id, reason)
         raise ResticFailedError(f"密钥轮换失败：{reason}", exit_code=exit_code)
 

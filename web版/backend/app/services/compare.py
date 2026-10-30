@@ -35,7 +35,7 @@ from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.errors import ResticFailedError
 from app.services.parser import FileRecord, OutputParser
-from app.services.restic import ProbeResult, ResticCmd, WhitelistArgs, failure_reason
+from app.services.restic import ProbeResult, ResticCmd, WhitelistArgs
 from app.utils.time import parse_iso, utc_iso
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ class CompareService:
             timeout_seconds=timeout_seconds,
         )
         if probe.exit_code != 0:
-            reason = failure_reason(probe.exit_code, probe.lines, timeout_seconds)
+            reason = probe.reason(timeout_seconds)
             logger.warning("覆盖比对探测失败（verb=%s）：%s", verb, reason)
             raise ResticFailedError(reason, exit_code=probe.exit_code)
         return probe

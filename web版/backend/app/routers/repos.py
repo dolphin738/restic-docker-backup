@@ -19,7 +19,6 @@ import os
 import re
 import secrets
 import shutil
-import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -106,7 +105,7 @@ from app.services.rclone_config import (
     RcloneConfigUnavailable,
 )
 from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
-from app.services.restic import ResticCmd, WhitelistArgs, failure_kind, failure_reason
+from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.utils.passfile import remove_passfile
 from app.utils.time import now_utc
@@ -839,8 +838,8 @@ async def test_repo(
     latency_ms = int((time.monotonic() - started) * 1000)
 
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS)
-        kind = failure_kind(probe.exit_code, probe.lines)
+        reason = probe.reason(REPO_PROBE_TIMEOUT_SECONDS)
+        kind = probe.kind()
         await request.app.state.audit.record(
             AUDIT_REPO_TEST, target=repo_id, detail={"ok": False, "reason": reason}, result="denied"
         )
@@ -1502,27 +1501,25 @@ async def rebuild_repo(
         ) from exc
 
     # 3) restic init（用新密码文件）
-    fd, log_path = tempfile.mkstemp(prefix="restic-init-", suffix=".log")
-    os.close(fd)
-    exit_code = -1
-    last_line = ""
-    try:
-        env = await restic.env_for(repo_url=repo.url, repo_id=repo_id)
-        argv = restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
-        proc = await restic.spawn(argv, log_path, env=env)
-        async for line in proc.lines():
-            last_line = line
-        try:
-            exit_code = await asyncio.wait_for(proc.wait(), timeout=REPO_INIT_TIMEOUT_SECONDS)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            exit_code = -1
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(log_path)
+    env = await restic.env_for(repo_url=repo.url, repo_id=repo_id)
+    argv = restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
+    captured: list[str] = []
+
+    def _on_line(line: str) -> None:
+        captured.append(line)
+
+    # 一次调用走 consume() 接缝：超时 / kill / 日志生命周期全在实现里（Q4 裁决 A）
+    result = await restic.consume(
+        argv,
+        env=env,
+        timeout_seconds=REPO_INIT_TIMEOUT_SECONDS,
+        on_line=_on_line,
+        log_prefix="restic-init",
+    )
+    exit_code = result.exit_code
+    last_line = captured[-1] if captured else ""
     if exit_code != 0:
-        reason = failure_reason(exit_code, [last_line]) if exit_code != -1 else "初始化超时"
+        reason = "初始化超时" if result.timed_out else failure_reason(exit_code, [last_line])
         logger.warning("仓库 %s 重建初始化失败：%s", repo_id, reason)
         raise ResticFailedError(f"重建初始化失败：{reason}", exit_code=exit_code)
 
@@ -1671,7 +1668,7 @@ async def repo_keys(
     if probe.exit_code != 0:
         return RepoKeysOut(
             repo_id=repo_id,
-            probe_error=failure_reason(probe.exit_code, probe.lines, KEY_OPERATION_TIMEOUT_SECONDS),
+            probe_error=probe.reason(KEY_OPERATION_TIMEOUT_SECONDS),
         )
 
     # restic 的 created 是按子进程 TZ 渲染的无时区字符串（build_env 注入 restic.tz
@@ -1728,8 +1725,8 @@ async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusRespon
         return RepoStatusResponse(
             connected=False,
             locked=_looks_locked(probe.lines),
-            last_error=failure_reason(probe.exit_code, probe.lines, REPO_PROBE_TIMEOUT_SECONDS),
-            failure_kind=failure_kind(probe.exit_code, probe.lines),
+            last_error=probe.reason(REPO_PROBE_TIMEOUT_SECONDS),
+            failure_kind=probe.kind(),
         )
 
     return RepoStatusResponse(

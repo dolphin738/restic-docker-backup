@@ -53,7 +53,7 @@ from app.schemas.api_schemas import (
 )
 from app.services.parser import FileRecord, OutputParser, SnapshotRecord
 from app.services.path_mapper import PathMapper
-from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.services.restic import ResticCmd, WhitelistArgs
 from app.utils.cursor import decode_cursor, encode_cursor
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,7 @@ async def list_snapshots(
         timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
+        reason = probe.reason(SNAPSHOT_LIST_TIMEOUT_SECONDS)
         logger.warning("快照列表探测失败：%s", reason)
         raise ResticFailedError(reason, exit_code=probe.exit_code)
 
@@ -210,7 +210,7 @@ async def list_snapshot_files(
         timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
+        reason = probe.reason(SNAPSHOT_FILES_TIMEOUT_SECONDS)
         logger.warning("快照文件树探测失败（snapshot=%s path=%s）：%s", snapshot_id, container_path, reason)
         raise ResticFailedError(reason, exit_code=probe.exit_code)
 
@@ -282,7 +282,7 @@ async def search_snapshot_files(
             timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS,
         )
         if probe.exit_code != 0:
-            reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
+            reason = probe.reason(SNAPSHOT_FILES_TIMEOUT_SECONDS)
             logger.warning("快照文件搜索探测失败（snapshot=%s）：%s", snapshot_id, reason)
             raise ResticFailedError(reason, exit_code=probe.exit_code)
 
@@ -366,7 +366,7 @@ async def tag_snapshots(
         timeout_seconds=TAG_OPERATION_TIMEOUT_SECONDS,
     )
     if probe.exit_code != 0:
-        reason = failure_reason(probe.exit_code, probe.lines, TAG_OPERATION_TIMEOUT_SECONDS)
+        reason = probe.reason(TAG_OPERATION_TIMEOUT_SECONDS)
         logger.warning("快照打/去标签失败：%s", reason)
         raise ResticFailedError(reason, exit_code=probe.exit_code)
 

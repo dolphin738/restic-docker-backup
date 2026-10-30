@@ -20,6 +20,12 @@ from app.services.restic import ProbeResult
 class _FakeProc:
     def __init__(self, log_path: Path, exit_code: int = 0) -> None:
         self._exit_code = exit_code
+        # 复刻真实 ResticCmd.spawn 的契约：父目录建好、文件先 touch。
+        # 日志生命周期已收进 ResticCmd.consume()，路由不再自己 mkstemp 预建文件，
+        # 故桩必须自己建——否则「留存文件存在」这类断言会因为桩偷懒而失真。
+        self.log_path = log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(exist_ok=True)
 
     async def lines(self):  # noqa: ANN202
         return
