@@ -49,7 +49,6 @@ from app.schemas.api_schemas import (
     TaskUpsertRequest,
 )
 from app.services.config_transfer import PACK_KIND_TASK, build_export_pack
-from app.services.env_sync import load_credentials
 from app.services.exclude_spec import (
     assemble_excludes,
     flatten_exclude_spec,
@@ -427,7 +426,6 @@ async def dry_run_task(
     mapper: PathMapper = request.app.state.path_mapper
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
-    config_repo: ConfigRepo = request.app.state.config_repo
     task_repo: TaskRepo = request.app.state.task_repo
 
     task = await task_repo.get(task_id)
@@ -475,9 +473,7 @@ async def dry_run_task(
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     repo_url = (repo.url if repo is not None else None) or ""
-    env_extras = await load_credentials(config_repo, repo_id)
-    argv = restic.build("backup", args=args, env_extras=env_extras)
-    env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
+    argv = restic.build("backup", args=args, env_extras=await restic.credential_extras(repo_id))
 
     items: list[DryRunItem] = []
     warnings: list[DryRunWarning] = []
@@ -507,7 +503,8 @@ async def dry_run_task(
 
     result = await restic.consume(
         argv,
-        env=env,
+        repo_url=repo_url,
+        repo_id=repo_id,
         timeout_seconds=DRY_RUN_TIMEOUT_SECONDS,
         on_line=_on_line,
         log_prefix="dryrun-task",
@@ -617,7 +614,6 @@ async def _snapshot_counts_by_tag(request: Request, repo_id: str) -> dict[str, i
     if catalog is None:
         return None
     repos_repo: ReposRepo = request.app.state.repos_repo
-    config_repo: ConfigRepo = request.app.state.config_repo
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
 
@@ -625,9 +621,7 @@ async def _snapshot_counts_by_tag(request: Request, repo_id: str) -> dict[str, i
     repo_url = (repo.url if repo is not None else None) or ""
     if not repo_url.strip():
         return None
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
+    env = await restic.env_for(repo_url=repo_url, repo_id=repo_id)
     return await catalog.counts_by_tag(
         restic=restic, parser=parser, repo_id=repo_id, repo_url=repo_url, env=env
     )

@@ -96,7 +96,7 @@ from app.schemas.api_schemas import (
     RepoUsageMirrorRef,
     RepoUsageOut,
 )
-from app.services.env_sync import load_credentials, passfile_path, passfile_status
+from app.services.env_sync import passfile_path, passfile_status
 from app.services.rclone import RcloneProbe
 from app.services.rclone_config import (
     RcloneConfigConflict,
@@ -1007,10 +1007,8 @@ async def repo_usage(
     catalog = getattr(request.app.state, "snapshot_catalog", None)
     total: int | None = None
     if catalog is not None and (existing.url or "").strip():
-        env = request.app.state.restic.build_env(
-            repo_url=(existing.url or "").strip(),
-            repo_id=repo_id,
-            env_extras=await load_credentials(request.app.state.config_repo, repo_id),
+        env = await request.app.state.restic.env_for(
+            repo_url=(existing.url or "").strip(), repo_id=repo_id
         )
         tally = await catalog.snapshot_tally(
             restic=request.app.state.restic,
@@ -1509,11 +1507,7 @@ async def rebuild_repo(
     exit_code = -1
     last_line = ""
     try:
-        env = restic.build_env(
-            repo_url=repo.url,
-            repo_id=repo_id,
-            env_extras=await load_credentials(config_repo, repo_id),
-        )
+        env = await restic.env_for(repo_url=repo.url, repo_id=repo_id)
         argv = restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
         proc = await restic.spawn(argv, log_path, env=env)
         async for line in proc.lines():
@@ -1712,7 +1706,6 @@ async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusRespon
     """执行一次仓库探测（E30 的未缓存实现）。"""
     restic: ResticCmd = request.app.state.restic
     parser = request.app.state.parser
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
 
     repo = await repos_repo.get(repo_id)
@@ -1723,11 +1716,13 @@ async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusRespon
             configured=False, connected=False, locked=False, last_error="仓库地址未配置（请先填写仓库地址）"
         )
 
-    env = restic.build_env(
-        repo_url=repo.url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    probe = await restic.probe(
+        "cat",
+        repo_url=repo.url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=False, extra_positionals=("config",)),
+        timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS,
     )
-    argv = restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS)
 
     if probe.exit_code != 0:
         return RepoStatusResponse(
@@ -1737,13 +1732,24 @@ async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusRespon
             failure_kind=failure_kind(probe.exit_code, probe.lines),
         )
 
-    return RepoStatusResponse(connected=True, locked=False, capacity=await _read_capacity(restic, parser, env))
+    return RepoStatusResponse(
+        connected=True,
+        locked=False,
+        capacity=await _read_capacity(restic, parser, repo_url=repo.url, repo_id=repo_id),
+    )
 
 
-async def _read_capacity(restic: ResticCmd, parser: Any, env: dict[str, str]) -> RepoCapacity:
+async def _read_capacity(
+    restic: ResticCmd, parser: Any, *, repo_url: str, repo_id: str
+) -> RepoCapacity:
     """``restic stats --mode raw-data --json`` 读取仓库容量（失败返回空容量，不影响 connected）。"""
-    argv = restic.build("stats", args=WhitelistArgs(json_output=True, stats_mode="raw-data"))
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_STATS_TIMEOUT_SECONDS)
+    probe = await restic.probe(
+        "stats",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=True, stats_mode="raw-data"),
+        timeout_seconds=REPO_STATS_TIMEOUT_SECONDS,
+    )
     if probe.exit_code != 0:
         return RepoCapacity()
     blob = parser.parse_json_blob("\n".join(probe.lines))

@@ -106,7 +106,7 @@ from app.services.config_transfer import (
     parse_export_pack,
     task_values_from_pack,
 )
-from app.services.env_sync import load_credentials, passfile_path, passfile_status
+from app.services.env_sync import passfile_path, passfile_status
 from app.services.notifier import (
     DEFAULT_MAIL_REDACT,
     DEFAULT_MEOW_REDACT,
@@ -717,7 +717,7 @@ async def _run_restic_copy(
     卡在哪」只能靠原文，故整体移入 ``log_dir``（只回文件名，容器路径不出 API）。
     留存失败绝不影响 copy 结论——只降级为 ``log_name=None``。
     """
-    env_extras = await load_credentials(config_repo, source_repo_id)
+    env_extras = await restic.credential_extras(source_repo_id)
     env_extras.update(secondary_repo_env(target_url, target_passfile))
     args = WhitelistArgs(json_output=False, tags=tags)
     argv = restic.build("copy", args=args, env_extras=env_extras)
@@ -860,11 +860,7 @@ async def rotate_repo_key(
     _, log_path = tempfile.mkstemp(prefix="restic-keyrun-", suffix=".log")
     os.close(_)
     try:
-        env = restic.build_env(
-            repo_url=repo.url,
-            repo_id=payload.repo_id,
-            env_extras=await load_credentials(config_repo, payload.repo_id),
-        )
+        env = await restic.env_for(repo_url=repo.url, repo_id=payload.repo_id)
         args = WhitelistArgs(json_output=False, key_target="passwd", new_password_file=pw_path)
         argv = restic.build("key", args=args, env_extras={})
         proc = await restic.spawn(argv, log_path, env=env)

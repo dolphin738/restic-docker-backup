@@ -29,7 +29,6 @@ from app.constants import (
     SOURCE_BROWSE_DEFAULT_LIMIT,
     SOURCE_BROWSE_MAX_LIMIT,
 )
-from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import ReposRepo
 from app.dependencies import current_repo_id
 from app.errors import PathOutOfPrefixError
@@ -46,7 +45,6 @@ from app.schemas.api_schemas import (
 )
 from app.services.deploy_mode import host_deny_prefixes
 from app.services.dir_scan import cursor_index, encode_cursor, scan_dir_async
-from app.services.env_sync import load_credentials
 from app.services.exclude_spec import (
     assemble_excludes,
     flatten_exclude_spec,
@@ -200,7 +198,6 @@ async def dry_run(
     mapper: PathMapper = request.app.state.path_mapper
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
-    config_repo: ConfigRepo = request.app.state.config_repo
 
     sources = tuple(
         _to_container_path(mapper, item, allowed_prefixes=source_allowed_prefixes(settings))
@@ -238,9 +235,7 @@ async def dry_run(
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     repo_url = (repo.url if repo is not None else None) or ""
-    env_extras = await load_credentials(config_repo, repo_id)
-    argv = restic.build("backup", args=args, env_extras=env_extras)
-    env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
+    argv = restic.build("backup", args=args, env_extras=await restic.credential_extras(repo_id))
 
     items: list[DryRunItem] = []
     warnings: list[DryRunWarning] = []
@@ -270,7 +265,8 @@ async def dry_run(
 
     result = await restic.consume(
         argv,
-        env=env,
+        repo_url=repo_url,
+        repo_id=repo_id,
         timeout_seconds=DRY_RUN_TIMEOUT_SECONDS,
         on_line=_on_line,
         log_prefix="dryrun",

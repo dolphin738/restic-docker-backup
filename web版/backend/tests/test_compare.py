@@ -135,6 +135,14 @@ class _FakeRestic:
         """最小化环境（不含任何凭据，S3）。"""
         return {"RESTIC_REPOSITORY": repo_url}
 
+    async def probe(
+        self, verb: str, *, repo_url: str, repo_id: str = "default", args=None, timeout_seconds: float
+    ) -> ProbeResult:  # noqa: ANN001
+        """探测接缝的替身：与 ResticCmd.probe 同形（build → env → run_json）。"""
+        argv = self.build(verb, args=args)
+        env = self.build_env(repo_url=repo_url, repo_id=repo_id)
+        return await self.run_json(argv, env=env, timeout_seconds=timeout_seconds)
+
     async def run_json(self, argv, *, env, timeout_seconds, max_lines=200_000) -> ProbeResult:  # noqa: ANN001
         """回放输出（verb 取自 argv[2]）。"""
         self.argv_log.append(list(argv))

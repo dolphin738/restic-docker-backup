@@ -407,6 +407,49 @@ class ResticCmd:
             raise ResticFailedError(SUBPROCESS_LOOP_HINT) from exc
         return ResticProcess(proc, path)
 
+    async def credential_extras(self, repo_id: str) -> dict[str, str]:
+        """取指定仓库的附加环境变量（凭据，经注入的适配器）。
+
+        单独暴露是为了让「一次取凭据、多次调用」的编排（init 后跑 key 操作、
+        同一仓库连跑 cat config + stats）不必每步都重读配置表——它是
+        :meth:`env_for` / :meth:`probe` / :meth:`consume` 的共同前缀。
+
+        Args:
+            repo_id: 仓库标识（凭据命名空间）。
+
+        Returns:
+            待注入的环境变量字典（键已落在各后端官方前缀内）。
+
+        Raises:
+            RuntimeError: 未注入凭据适配器（装配错误，禁止静默降级为"无凭据"）。
+        """
+        if self._credentials is None:
+            raise RuntimeError(
+                "ResticCmd 未注入凭据来源适配器，无法读取凭据；"
+                "请在装配处传入 credentials=（见 main.lifespan）"
+            )
+        return await self._credentials(repo_id)
+
+    async def env_for(self, *, repo_url: str, repo_id: str) -> dict[str, str]:
+        """组装一次调用的子进程环境（凭据 + 仓库地址 + 密码文件 + TZ）。
+
+        这是「env 复用型」调用的接缝：调用方随后可以自己 :meth:`spawn` 长任务、
+        或把 env 交给需要多次调用同一仓库的服务（快照目录计数、密钥轮换），
+        而不必各自重复 ``await load_credentials(...)`` + ``build_env(...)`` 两行。
+
+        Args:
+            repo_url: 仓库地址（``repos.url``）。
+            repo_id: 仓库标识（凭据命名空间与密码文件路径都用它）。
+
+        Returns:
+            可直接传给 ``create_subprocess_exec`` 的环境字典。
+
+        Raises:
+            RuntimeError: 未注入凭据适配器。
+        """
+        env_extras = await self.credential_extras(repo_id)
+        return self.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
+
     async def probe(
         self,
         verb: str,
@@ -441,12 +484,7 @@ class ResticCmd:
             RuntimeError: 未注入凭据适配器（装配错误，禁止静默降级为"无凭据"）。
             ValidationError: verb 或参数未过白名单（由 :meth:`build` 抛出）。
         """
-        if self._credentials is None:
-            raise RuntimeError(
-                "ResticCmd 未注入凭据来源适配器，无法执行 probe()；"
-                "请在装配处传入 credentials=（见 main.lifespan）"
-            )
-        env_extras = await self._credentials(repo_id)
+        env_extras = await self.credential_extras(repo_id)
         argv = self.build(verb, args=args if args is not None else WhitelistArgs(), env_extras=env_extras)
         env = self.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
         return await self.run_json(argv, env=env, timeout_seconds=timeout_seconds)
@@ -509,6 +547,8 @@ class ResticCmd:
         argv: list[str],
         *,
         env: dict[str, str] | None = None,
+        repo_url: str | None = None,
+        repo_id: str | None = None,
         timeout_seconds: float,
         on_line: Callable[[str], bool | None | Awaitable[bool | None]],
         log_prefix: str = "call",
@@ -529,7 +569,10 @@ class ResticCmd:
 
         Args:
             argv: :meth:`build` 产出的参数列表。
-            env: 子进程环境（缺省继承当前进程环境）。
+            env: 子进程环境。给定则直接使用；不给则由本方法按 ``repo_url``/``repo_id``
+                经 :meth:`env_for` 组装（凭据 + 仓库地址 + 密码文件 + TZ）。
+            repo_url: 仓库地址（``env`` 未给出时必需）。
+            repo_id: 仓库标识（``env`` 未给出时必需）。
             timeout_seconds: 超时秒数；超时即 SIGKILL 并置 ``timed_out``。
             on_line: 每读到一行调用一次；**返回真值表示"够了"**，本方法停止读取并
                 kill 子进程（返回 None/False 表示继续）。
@@ -544,7 +587,13 @@ class ResticCmd:
 
         Raises:
             OSError: restic 二进制缺失或不可执行（由 :meth:`spawn` 透传；临时日志已清理）。
+            ValueError: 既未给 ``env`` 又未给 ``repo_url``/``repo_id``。
+            RuntimeError: 需要自建 env 但未注入凭据适配器。
         """
+        if env is None:
+            if repo_url is None or repo_id is None:
+                raise ValueError("consume() 需要 env，或 repo_url + repo_id 以便自行组装环境")
+            env = await self.env_for(repo_url=repo_url, repo_id=repo_id)
         if retain_log is not None:
             path = Path(retain_log)
         else:

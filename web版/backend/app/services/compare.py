@@ -34,7 +34,6 @@ from app.constants import (
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.errors import ResticFailedError
-from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser
 from app.services.restic import ProbeResult, ResticCmd, WhitelistArgs, failure_reason
 from app.utils.time import parse_iso, utc_iso
@@ -232,11 +231,15 @@ class CompareService:
         repo_url = await self._resolve_repo_url(repo_id)
         if not repo_url:
             raise ResticFailedError("仓库地址未配置（请先在仓库配置页填写仓库 url）")
-        argv = self._restic.build(verb, args=args)
-        env = self._restic.build_env(
-            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(self._config_repo, repo_id)
+        # 一次性探测走 ResticCmd.probe()（凭据经注入的适配器取得）——本服务因此
+        # 不依赖凭据存储层，只关心「比对」这件事（Q2 裁决 A 的分层收益）
+        probe = await self._restic.probe(
+            verb,
+            repo_url=repo_url,
+            repo_id=repo_id,
+            args=args,
+            timeout_seconds=timeout_seconds,
         )
-        probe = await self._restic.run_json(argv, env=env, timeout_seconds=timeout_seconds)
         if probe.exit_code != 0:
             reason = failure_reason(probe.exit_code, probe.lines, timeout_seconds)
             logger.warning("覆盖比对探测失败（verb=%s）：%s", verb, reason)
