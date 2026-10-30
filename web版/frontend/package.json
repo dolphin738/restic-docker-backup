@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "gen:api": "pnpm dlx openapi-typescript@7 src/api/openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
     "@tanstack/vue-query": "^5.62.7",
