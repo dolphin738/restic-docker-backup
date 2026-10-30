@@ -607,8 +607,7 @@ async def _snapshot_counts_by_tag(request: Request, repo_id: str) -> dict[str, i
     """取一次快照列表并按 tag 分组计数（P1：卡片 ``snapshot_count`` 数据源）。
 
     未配置仓库地址 / ``snapshot_catalog`` 未装配 / 探测失败 → ``None``（卡片字段降级
-    null）。凭据经 ``load_credentials`` + ``build_env`` 组装后**整体传入**服务，本路由
-    不接触明文（S3）。
+    null）。环境经 ``ResticCmd.env_for()`` 组装后**整体传入**服务，本路由不接触明文（S3）。
     """
     catalog: SnapshotCatalog | None = getattr(request.app.state, "snapshot_catalog", None)
     if catalog is None:
