@@ -287,3 +287,112 @@ class RepoLifecycleService:
             except Exception as exc:
                 await self._failed(op, repo_id, exc)
                 raise
+    async def release(self, repo_id: str, *, snapshot_count: int | None = None) -> DeleteReport:
+        """释放归档仓库 ID：清凭据 → 删行（最后）→ 清日志文件 → 收尾审计。
+
+        **不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，
+        只是本应用不再持有入口。释放后该 id 立即可被新仓库复用。
+
+        顺序同 :meth:`hard_delete`（行最后删），只是没有磁盘步骤。
+
+        Args:
+            repo_id: 仓库 id。
+            snapshot_count: 归档时快照数（墓碑展示用）。
+        Raises:
+            RepoNotFoundError: 仓库不存在。
+            JobConflictError: 仍有活跃作业。
+        """
+        async with self._lock(repo_id):
+            op = "release"
+            try:
+                repo = await self._require_repo(repo_id)
+                if await self._jobs.list_active(repo_id):
+                    raise JobConflictError(data={"repo_id": repo_id})
+                await self._begin(op, repo)
+
+                log_paths = await self._jobs.terminal_log_paths(repo_id)
+                cleared = await self._clear_credentials(repo_id)
+
+                now = utc_iso()
+                async with self._db.transaction() as tx:
+                    await self._repos.insert_tombstone(
+                        tx=tx,
+                        repo_id=repo.id,
+                        name=repo.name,
+                        repo_type=repo.type,
+                        url_display=repo.url,
+                        archived_at=repo.deleted_at or now,
+                        snapshot_count=snapshot_count,
+                        data_destroyed=False,
+                        released_at=now,
+                    )
+                    await self._repos.drop_row(repo.id, tx=tx)
+
+                if log_paths:
+                    await asyncio.to_thread(_unlink_logs_sync, log_paths)
+                report = DeleteReport(
+                    removed_logs=len(log_paths),
+                    cleared_credentials=cleared,
+                )
+                from app.constants import AUDIT_REPO_ID_RELEASE
+
+                await self._finish(AUDIT_REPO_ID_RELEASE, repo, report)
+                return report
+            except Exception as exc:
+                await self._failed(op, repo_id, exc)
+                raise
+
+    async def expire_archived(self, repo_id: str) -> DeleteReport:
+        """归档期到期：清凭据 + 删密码文件 → 删行（最后）→ 清日志文件（retention 专用）。
+
+        由 ``retention.cleanup_archives`` 调用——retention 只决定**何时**，
+        本方法决定**怎么删**（单一实现点，避免两份顺序）。
+
+        与 :meth:`release` 的差别：额外删密码文件（恢复能力到期回收），且不置
+        ``released_at``（墓碑仍会在 ``repo_tombstone_days`` 到期后自行清理）。
+
+        Args:
+            repo_id: 仓库 id。
+        Raises:
+            RepoNotFoundError: 仓库不存在（retention 循环里已先取到，正常不触发）。
+            JobConflictError: 仍有活跃作业。
+        """
+        async with self._lock(repo_id):
+            op = "expire"
+            try:
+                repo = await self._require_repo(repo_id)
+                if await self._jobs.list_active(repo_id):
+                    raise JobConflictError(data={"repo_id": repo_id})
+                await self._begin(op, repo)
+
+                log_paths = await self._jobs.terminal_log_paths(repo_id)
+                cleared = await self._clear_credentials(repo_id)
+                # 恢复能力到此为止：密码文件一并回收（全局共用时会自行拒绝）
+                await asyncio.to_thread(remove_passfile, self._settings, repo_id)
+
+                now = utc_iso()
+                async with self._db.transaction() as tx:
+                    await self._repos.insert_tombstone(
+                        tx=tx,
+                        repo_id=repo.id,
+                        name=repo.name,
+                        repo_type=repo.type,
+                        url_display=repo.url,
+                        archived_at=repo.deleted_at or now,
+                        snapshot_count=None,
+                        data_destroyed=False,
+                    )
+                    await self._repos.drop_row(repo.id, tx=tx)
+
+                if log_paths:
+                    await asyncio.to_thread(_unlink_logs_sync, log_paths)
+                report = DeleteReport(
+                    removed_logs=len(log_paths),
+                    cleared_credentials=cleared,
+                )
+                self._invalidate_status()
+                self._invalidate_catalog()
+                return report
+            except Exception as exc:
+                await self._failed(op, repo_id, exc)
+                raise

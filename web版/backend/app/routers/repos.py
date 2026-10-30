@@ -35,7 +35,6 @@ from app.constants import (
     AUDIT_RCLONE_CONFIG_EDIT,
     AUDIT_RCLONE_CONFIG_RESTORE,
     AUDIT_REPO_ARCHIVE,
-    AUDIT_REPO_ID_RELEASE,
     AUDIT_REPO_PASSWORD_SET,
     AUDIT_REPO_REBUILD,
     AUDIT_REPO_REPOINT,
@@ -662,7 +661,6 @@ async def release_archived_repo(
     """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
-    config_repo: ConfigRepo = request.app.state.config_repo
     repo = await repos_repo.get(repo_id)
     if repo is None:
         raise RepoNotFoundError(repo_id)
@@ -670,21 +668,8 @@ async def release_archived_repo(
         raise ValidationError(
             "请输入仓库 id 以确认释放", data={"repo_id": repo_id}
         )
-    removed_logs = await repos_repo.release_id(repo_id)
-    if removed_logs:
-        await asyncio.to_thread(_unlink_logs_sync, removed_logs)
-    cleared = 0
-    for row in await config_repo.list_all_raw():
-        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
-            continue
-        await config_repo.delete(row.key)
-        cleared += 1
-    await request.app.state.audit.record(
-        AUDIT_REPO_ID_RELEASE,
-        target=repo_id,
-        detail={"name": repo.name, "removed_logs": len(removed_logs), "cleared_credentials": cleared},
-        result="ok",
-    )
+    # 跨介质序列交给编排器（候选 1）：顺序契约、并发互斥、事务与审计都在里面
+    await request.app.state.repo_lifecycle.release(repo_id)
     invalidate_repo_status_cache()
     invalidate_snapshot_catalog()
     return OkResponse()

@@ -301,6 +301,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audit=audit,
         settings=settings,
     )
+    # 回填给 retention：归档到期的删除步骤改走编排器（单一实现点）。
+    # retention 构造更早（挂调度器需要它），故此处回填而非构造参数。
+    retention._lifecycle = repo_lifecycle
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(

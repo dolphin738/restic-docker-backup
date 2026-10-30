@@ -128,6 +128,7 @@ class RetentionService:
         *,
         repos: ReposRepo | None = None,
         rclone_archives: RcloneArchiveRepo | None = None,
+        lifecycle=None,
     ) -> None:
         """构造保留服务。
 
@@ -136,6 +137,9 @@ class RetentionService:
             config: 配置仓储（``retention.*`` 键族）。
             audit: 审计仓储（``retention.cleanup`` / ``audit.archive`` / ``audit.cleanup`` 埋点，S6）。
             settings: 运行期配置（jobs_dir / audit_archive_dir 白名单来源）；缺省取进程单例。
+            repos: 仓库仓储（归档生命周期；不注入则整段跳过）。
+            rclone_archives: rclone 配置归档仓储。
+            lifecycle: 仓库生命周期编排器（候选 1）——不注入时归档到期退回仓储直调。
         """
         self._jobs = jobs
         self._config = config
@@ -145,6 +149,7 @@ class RetentionService:
         # 行为差异仅「不做归档到期清理」，既有 jobs/审计清理口径完全不变。
         self._repos = repos
         self._rclone_archives = rclone_archives
+        self._lifecycle = lifecycle
 
     async def cleanup_once(self, *, now: datetime | None = None) -> RetentionReport:
         """执行一次**完整**每日维护：jobs 清理 + 审计归档/清理 + 旧归档清理。
@@ -375,17 +380,23 @@ class RetentionService:
                 for repo in await self._repos.list_archived():
                     if not repo.deleted_at or repo.deleted_at >= cutoff:
                         continue
-                    # 先清恢复能力（凭据 + 口令文件），再把行转墓碑——顺序不能反：
-                    # 中途失败时行还在，下一轮还会重试（幂等）。
-                    for row in await self._config.list_all_raw():
-                        if (
-                            row.key.startswith(f"cred.{repo.id}.")
-                            and row.source != "env"
-                            and row.value
-                        ):
-                            await self._config.delete(row.key)
-                    await asyncio.to_thread(remove_passfile, self._settings, repo.id)
-                    await self._repos.hard_delete(repo.id, data_destroyed=False)
+                    # 候选 1：删除步骤交给 RepoLifecycleService.expire_archived()——
+                    # 清凭据 → 删密码文件 → 删行（**最后**）→ 删日志文件。
+                    # retention 只决定**何时**到期。原顺序本就正确（先清恢复能力再
+                    # 转墓碑），搬过去是为了消灭「同一件事的第二份实现」。
+                    if self._lifecycle is not None:
+                        await self._lifecycle.expire_archived(repo.id)
+                    else:
+                        # 测试基座未注入编排器：退回仓储直调（旧但可用的顺序）
+                        for row in await self._config.list_all_raw():
+                            if (
+                                row.key.startswith(f"cred.{repo.id}.")
+                                and row.source != "env"
+                                and row.value
+                            ):
+                                await self._config.delete(row.key)
+                        await asyncio.to_thread(remove_passfile, self._settings, repo.id)
+                        await self._repos.hard_delete(repo.id, data_destroyed=False)
                     report.repos_expired.append(repo.id)
 
             tomb_days = await self._resolve_days(
