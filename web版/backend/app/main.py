@@ -75,7 +75,7 @@ from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
 from app.services.compare import CompareService
 from app.services.crypto import CredentialCrypto, EncryptionState
-from app.services.env_sync import sync_env_overrides, sync_env_repo_overrides
+from app.services.env_sync import load_credentials, sync_env_overrides, sync_env_repo_overrides
 from app.services.job_runner import JobRunner
 from app.services.log_control import apply_log_level
 from app.services.notifier import Notifier
@@ -238,7 +238,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # restic 执行链路（§7.1/§7.2/§7.3）
     job_repo = JobRepo(db)
     path_mapper = PathMapper(settings)
-    restic_cmd = ResticCmd(settings, path_mapper)
+    # 凭据来源以适配器注入（Q2 裁决 A）：ResticCmd 不 import 配置仓储/凭据服务，
+    # 由装配处把 load_credentials 绑定进来；probe() 因此能一键完成「凭据 → 环境 → argv」。
+    restic_cmd = ResticCmd(
+        settings,
+        path_mapper,
+        credentials=lambda repo_id: load_credentials(config_repo, repo_id),
+    )
     parser = OutputParser()
     sse_channel = SseChannel(parser, job_repo, heartbeat_seconds=settings.sse_heartbeat_seconds)
     # R-018：真实 Notifier（healthchecks/webhook/MeoW；全渠道未配置时零网络调用）。

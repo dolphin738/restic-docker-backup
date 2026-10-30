@@ -37,7 +37,6 @@ from app.constants import (
     SNAPSHOT_SEARCH_CACHE_SECONDS,
     TAG_OPERATION_TIMEOUT_SECONDS,
 )
-from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import ReposRepo
 from app.dependencies import current_repo_id
 from app.errors import ResticFailedError, ValidationError
@@ -52,7 +51,6 @@ from app.schemas.api_schemas import (
     TagSnapshotsRequest,
     TagSnapshotsResponse,
 )
-from app.services.env_sync import load_credentials
 from app.services.parser import FileRecord, OutputParser, SnapshotRecord
 from app.services.path_mapper import PathMapper
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
@@ -142,18 +140,19 @@ async def list_snapshots(
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     repo_url = (repo.url if repo is not None else None) or ""
     if not repo_url:
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
-    argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    probe = await restic.probe(
+        "snapshots",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=True),
+        timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS,
     )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
         logger.warning("快照列表探测失败：%s", reason)
@@ -191,7 +190,6 @@ async def list_snapshot_files(
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     repo_url = (repo.url if repo is not None else None) or ""
@@ -199,19 +197,18 @@ async def list_snapshot_files(
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
     container_path = mapper.to_snapshot(path or "/")
-    argv = restic.build(
+    probe = await restic.probe(
         "ls",
+        repo_url=repo_url,
+        repo_id=repo_id,
         args=WhitelistArgs(
             snapshot_id=snapshot_id,
             # 子树走 extra_positionals：它是**快照内**路径，不能过 PathMapper 的容器前缀校验
             extra_positionals=(container_path,),
             json_output=True,
         ),
+        timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS,
     )
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
         logger.warning("快照文件树探测失败（snapshot=%s path=%s）：%s", snapshot_id, container_path, reason)
@@ -265,7 +262,6 @@ async def search_snapshot_files(
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     repo = await repos_repo.get(repo_id)
     repo_url = (repo.url if repo is not None else None) or ""
@@ -278,11 +274,13 @@ async def search_snapshot_files(
         matches, truncated = cached
     else:
         # 不带子树 positional：搜索覆盖整棵快照树
-        argv = restic.build("ls", args=WhitelistArgs(snapshot_id=snapshot_id, json_output=True))
-        env = restic.build_env(
-            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+        probe = await restic.probe(
+            "ls",
+            repo_url=repo_url,
+            repo_id=repo_id,
+            args=WhitelistArgs(snapshot_id=snapshot_id, json_output=True),
+            timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS,
         )
-        probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_FILES_TIMEOUT_SECONDS)
         if probe.exit_code != 0:
             reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_FILES_TIMEOUT_SECONDS)
             logger.warning("快照文件搜索探测失败（snapshot=%s）：%s", snapshot_id, reason)
@@ -347,7 +345,6 @@ async def tag_snapshots(
             raise ValidationError("快照 id 非法（须为 8~64 位小写十六进制）", data={"snapshot_id": sid})
 
     restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     audit = request.app.state.audit
     repo = await repos_repo.get(repo_id)
@@ -355,18 +352,19 @@ async def tag_snapshots(
     if not repo_url:
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
-    args = WhitelistArgs(
-        tags=tuple(payload.tag_filter or []),
-        host=payload.host,
-        tag_add=tuple(add),
-        tag_remove=tuple(remove),
-        extra_positionals=tuple(snapshot_ids),
+    probe = await restic.probe(
+        "tag",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(
+            tags=tuple(payload.tag_filter or []),
+            host=payload.host,
+            tag_add=tuple(add),
+            tag_remove=tuple(remove),
+            extra_positionals=tuple(snapshot_ids),
+        ),
+        timeout_seconds=TAG_OPERATION_TIMEOUT_SECONDS,
     )
-    argv = restic.build("tag", args=args)
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=TAG_OPERATION_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, TAG_OPERATION_TIMEOUT_SECONDS)
         logger.warning("快照打/去标签失败：%s", reason)

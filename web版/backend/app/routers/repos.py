@@ -816,7 +816,6 @@ async def test_repo(
     """
     del session
     restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
 
     repo = await repos_repo.get(repo_id)
@@ -829,13 +828,14 @@ async def test_repo(
         )
         return RepoTestResponse(ok=False, latency_ms=0, reason="仓库地址未配置（请先填写仓库地址）")
 
-    argv = restic.build("cat", args=WhitelistArgs(json_output=False, extra_positionals=("config",)))
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
-
     started = time.monotonic()
-    probe = await restic.run_json(argv, env=env, timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS)
+    probe = await restic.probe(
+        "cat",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=False, extra_positionals=("config",)),
+        timeout_seconds=REPO_PROBE_TIMEOUT_SECONDS,
+    )
     latency_ms = int((time.monotonic() - started) * 1000)
 
     if probe.exit_code != 0:
@@ -1667,12 +1667,13 @@ async def repo_keys(
         return RepoKeysOut(repo_id=repo_id, probe_error="仓库地址未配置（请先填写仓库地址）")
 
     restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
-    env = restic.build_env(
-        repo_url=repo.url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    probe = await restic.probe(
+        "key",
+        repo_url=repo.url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=True, key_target="list"),
+        timeout_seconds=KEY_OPERATION_TIMEOUT_SECONDS,
     )
-    argv = restic.build("key", args=WhitelistArgs(json_output=True, key_target="list"))
-    probe = await restic.run_json(argv, env=env, timeout_seconds=KEY_OPERATION_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         return RepoKeysOut(
             repo_id=repo_id,

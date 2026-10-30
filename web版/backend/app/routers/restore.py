@@ -54,7 +54,6 @@ from app.schemas.api_schemas import (
     RestoreResponse,
 )
 from app.services.compare import CompareService, OverwriteItem, in_snapshot_paths
-from app.services.env_sync import load_credentials
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser, SnapshotRecord
 from app.services.path_mapper import (
@@ -514,7 +513,6 @@ async def _resolve_stem(request: Request, snapshot_id: str, repo_id: str) -> str
     restic: ResticCmd = request.app.state.restic
     parser: OutputParser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
-    config_repo: ConfigRepo = request.app.state.config_repo
 
     try:
         repos_repo: ReposRepo = request.app.state.repos_repo
@@ -522,12 +520,14 @@ async def _resolve_stem(request: Request, snapshot_id: str, repo_id: str) -> str
         repo_url = (repo.url if repo is not None else None) or ""
         if not repo_url:
             return fallback
-        argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
-        env = restic.build_env(
-            repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-        )
         started = time.monotonic()
-        probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
+        probe = await restic.probe(
+            "snapshots",
+            repo_url=repo_url,
+            repo_id=repo_id,
+            args=WhitelistArgs(json_output=True),
+            timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS,
+        )
         if probe.exit_code != 0:
             logger.warning(
                 "恢复子目录命名：快照查询失败（exit=%s），回退为快照 id 前缀", probe.exit_code

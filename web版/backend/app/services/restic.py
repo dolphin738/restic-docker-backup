@@ -273,18 +273,35 @@ class ResticProcess:
             self._proc.kill()
 
 
+# 凭据来源适配器：给定 ``repo_id``，返回待注入子进程的环境变量（键须落在各后端官方
+# 前缀内，最终仍由 :meth:`ResticCmd.build_env` 的白名单二次把关）。
+# 由装配方注入（``main.lifespan`` 绑定 ``app.services.env_sync.load_credentials``），
+# 使本模块**不 import** 配置仓储与凭据服务——Q2 裁决 A：注入适配器，不用函数 import。
+CredentialSource = Callable[[str], Awaitable[dict[str, str]]]
+
+
 class ResticCmd:
     """restic 命令拼装（白名单）与 spawn（tee 日志）。"""
 
-    def __init__(self, settings: Settings | None = None, path_mapper: PathMapper | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        path_mapper: PathMapper | None = None,
+        *,
+        credentials: CredentialSource | None = None,
+    ) -> None:
         """构造命令器。
 
         Args:
             settings: 运行期配置（二进制路径、缓存目录、密码文件路径）。
             path_mapper: 路径映射器（校验所有进入命令的路径）。
+            credentials: 凭据来源适配器（见 :data:`CredentialSource`）。只由
+                :meth:`probe` 使用；未注入时调用 :meth:`probe` 会**显式报错**——
+                宁可炸在装配错误上，也不让凭据静默缺席后表现为「仓库未初始化」。
         """
         self._settings = settings or get_settings()
         self._path_mapper = path_mapper or PathMapper(self._settings)
+        self._credentials = credentials
         # restic 子进程 TZ（E39 统一口径：config.timezone 为单一事实源，
         # settings.tz 仅作启动回退）——运行期经 set_timezone 刷新，
         # 否则用户改 UI 时区后子进程仍按旧 TZ 渲染文本输出。
@@ -389,6 +406,50 @@ class ResticCmd:
             # ResticFailedError（原因明示，禁止静默）而非裸 NotImplementedError 500。
             raise ResticFailedError(SUBPROCESS_LOOP_HINT) from exc
         return ResticProcess(proc, path)
+
+    async def probe(
+        self,
+        verb: str,
+        *,
+        repo_url: str,
+        repo_id: str,
+        args: WhitelistArgs | None = None,
+        timeout_seconds: float,
+    ) -> ProbeResult:
+        """执行一次只读探测调用：凭据 → 环境 → argv → 收完输出。
+
+        这是「探测型调用」的机制接缝（Q1 裁决 B 的探测档）：把此前在路由里逐字重复的
+        三行——``build_env(... load_credentials ...)``、``build(...)``、``run_json(...)``
+        ——收成一次调用。凭据经注入的 :data:`CredentialSource` 取得，本模块因此不必
+        import 配置仓储与凭据服务（Q2 裁决 A）。
+
+        **只返回结果、不抛业务异常**（Q3 裁决 A）：失败该映射成结构化 ``failure_reason``
+        还是抛 :class:`ResticFailedError`，由调用方按各自端点契约决定——探测端点
+        （E29/E30）必须 200 + 结构化原因，长操作必须抛。
+
+        Args:
+            verb: restic 子命令（须在 :data:`VERBS` 内）。
+            repo_url: 仓库地址（``repos.url``）。
+            repo_id: 仓库标识（凭据命名空间与密码文件路径都用它）。
+            args: 具名参数白名单；缺省 :class:`WhitelistArgs`（``json_output=True``）。
+            timeout_seconds: 超时秒数；超时 SIGKILL 并返回 ``exit_code=-1``。
+
+        Returns:
+            :class:`ProbeResult`（退出码 / 输出行 / 是否截断）。
+
+        Raises:
+            RuntimeError: 未注入凭据适配器（装配错误，禁止静默降级为"无凭据"）。
+            ValidationError: verb 或参数未过白名单（由 :meth:`build` 抛出）。
+        """
+        if self._credentials is None:
+            raise RuntimeError(
+                "ResticCmd 未注入凭据来源适配器，无法执行 probe()；"
+                "请在装配处传入 credentials=（见 main.lifespan）"
+            )
+        env_extras = await self._credentials(repo_id)
+        argv = self.build(verb, args=args if args is not None else WhitelistArgs(), env_extras=env_extras)
+        env = self.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
+        return await self.run_json(argv, env=env, timeout_seconds=timeout_seconds)
 
     async def run_json(
         self,

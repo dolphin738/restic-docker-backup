@@ -288,7 +288,6 @@ async def preview_forget(
     restic: ResticCmd = request.app.state.restic
     parser = request.app.state.parser
     mapper: PathMapper = request.app.state.path_mapper
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     audit = request.app.state.audit
 
@@ -297,18 +296,19 @@ async def preview_forget(
     if not repo_url:
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
-    args = build_forget_args(
-        tag=payload.tag,
-        group_by=payload.group_by,
-        keep=keep_all,
-        dry_run=True,  # 预览恒只读（模块 docstring 约定①），调用方无法经本端点传 False
-        prune=False,  # dry-run 与 --prune 并存无意义，prune 只属于确认后的执行
+    probe = await restic.probe(
+        "forget",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=build_forget_args(
+            tag=payload.tag,
+            group_by=payload.group_by,
+            keep=keep_all,
+            dry_run=True,  # 预览恒只读（模块 docstring 约定①），调用方无法经本端点传 False
+            prune=False,  # dry-run 与 --prune 并存无意义，prune 只属于确认后的执行
+        ),
+        timeout_seconds=FORGET_PREVIEW_TIMEOUT_SECONDS,
     )
-    argv = restic.build("forget", args=args)
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
-    )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=FORGET_PREVIEW_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, FORGET_PREVIEW_TIMEOUT_SECONDS)
         logger.warning("forget 预览探测失败：%s", reason)
@@ -446,7 +446,6 @@ async def preview_prune(
     """
     del session
     restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
     audit = request.app.state.audit
 
@@ -455,12 +454,13 @@ async def preview_prune(
     if not repo_url:
         raise ResticFailedError("仓库地址未配置（请先在仓库管理页填写仓库地址）")
 
-    args = WhitelistArgs(dry_run=True)  # 仅只读探测，prune 本期不带其它可调参数
-    argv = restic.build("prune", args=args)
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    probe = await restic.probe(
+        "prune",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(dry_run=True),  # 仅只读探测，prune 本期不带其它可调参数
+        timeout_seconds=PRUNE_PREVIEW_TIMEOUT_SECONDS,
     )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=PRUNE_PREVIEW_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, PRUNE_PREVIEW_TIMEOUT_SECONDS)
         logger.warning("prune 预览探测失败：%s", reason)
@@ -806,11 +806,13 @@ async def _copy_snapshot_ids(
         调用方必须区分「仓库里确实没有快照」与「读不出来」——前者 422 提示，后者
         属部署/凭据问题，不能混报成「没有可复制的快照」。
     """
-    argv = restic.build("snapshots", args=WhitelistArgs(json_output=True))
-    env = restic.build_env(
-        repo_url=repo_url, repo_id=repo_id, env_extras=await load_credentials(config_repo, repo_id)
+    probe = await restic.probe(
+        "snapshots",
+        repo_url=repo_url,
+        repo_id=repo_id,
+        args=WhitelistArgs(json_output=True),
+        timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS,
     )
-    probe = await restic.run_json(argv, env=env, timeout_seconds=SNAPSHOT_LIST_TIMEOUT_SECONDS)
     if probe.exit_code != 0:
         reason = failure_reason(probe.exit_code, probe.lines, SNAPSHOT_LIST_TIMEOUT_SECONDS)
         return frozenset(), reason
