@@ -52,6 +52,8 @@ export interface JobOut {
   status: JobStatus
   trigger: string
   policy_id: number | null
+  /** R-023：该 job 归属的仓库（后端缺省 `default`，恒存在）。 */
+  repo_id: string
   /** R-026：该 job 由哪个备份任务产生（legacy job 为 null；删除任务后置 null）。 */
   task_id: number | null
   snapshot_id: string | null
@@ -680,6 +682,8 @@ export interface SnapshotFileSearchResponse {
   items: SnapshotFileOut[]
   total: number
   next_cursor: string | null
+  /** restic 输出被截断时为真（此时 total/items 只是已收流部分的结论）。 */
+  truncated: boolean
 }
 
 /** E18 文件树条目（display_path 为原路径语义）。 */
