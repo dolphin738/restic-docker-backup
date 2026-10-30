@@ -321,8 +321,10 @@ section 'C8 时间语义唯一实现点'
 # 业务与测试一律走 resolve_timezone()/now_utc()/parse_iso()——直连 ZoneInfo 在
 # tzdata 异常的容器里 utcoffset 非零（CI 复盘 cnb-opa-1k4qp8tdh、cnb-dgc-1k4qqhg77）。
 # -I 跳过二进制，避免 __pycache__ 漂移误报。
+# 另排除 test_redline_assertions.py：它是本门禁的 pytest 版，源码里含该正则的**字面量**，
+# grep -l 必然自匹配（纯自命中，与真实的 zoneinfo 直连无关）。
 out=$(grep -rIln 'from zoneinfo import\|^import zoneinfo' backend/app backend/tests --include=*.py 2>/dev/null \
-      | grep -v 'utils/time.py')
+      | grep -v 'utils/time.py' | grep -v 'test_redline_assertions.py')
 if [ -n "$out" ]; then
   violation 'C8 zoneinfo 直连出现在 utils/time.py 之外（应走 resolve_timezone）'
   detail "$out"
