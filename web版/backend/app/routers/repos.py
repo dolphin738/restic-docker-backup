@@ -12,16 +12,11 @@ E30 探测成本三招（沿用既有设计）：TTL 缓存（per-repo）/ 锁�
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
-import os
 import re
 import secrets
-import shutil
 import time
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
@@ -36,19 +31,15 @@ from app.constants import (
     AUDIT_RCLONE_CONFIG_RESTORE,
     AUDIT_REPO_ARCHIVE,
     AUDIT_REPO_PASSWORD_SET,
-    AUDIT_REPO_REBUILD,
     AUDIT_REPO_REPOINT,
     AUDIT_REPO_RESTORE,
     AUDIT_REPO_TEST,
     KEY_OPERATION_TIMEOUT_SECONDS,
     REPO_ID_MAX_LENGTH,
     REPO_ID_PATTERN,
-    REPO_INIT_TIMEOUT_SECONDS,
-    REPO_PASSWORD_LENGTH,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
 )
-from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
 from app.errors import (
     EnvOverriddenError,
@@ -57,7 +48,6 @@ from app.errors import (
     RcloneRemoteInUseError,
     RcloneUnavailableError,
     RepoNotFoundError,
-    ResticFailedError,
     ValidationError,
 )
 from app.schemas.api_schemas import (
@@ -100,7 +90,7 @@ from app.services.rclone_config import (
     RcloneConfigService,
     RcloneConfigUnavailable,
 )
-from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
+from app.services.repo_keys import classify_keys, parse_key_list
 from app.services.repo_status_cache import (
     invalidate_repo_status_cache,
     read_cached,
@@ -109,8 +99,9 @@ from app.services.repo_status_cache import (
 from app.services.repo_status_cache import (
     status_lock as _status_lock,
 )
-from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
+from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
+from app.utils.passfile import generate_repo_password, write_passfile
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -140,35 +131,13 @@ def _validate_repo_id(repo_id: str) -> str:
     return repo_id
 
 
-def _repo_local_path(url: str) -> Path | None:
-    """解析 restic 仓库 URL 的本地文件系统路径；非本地后端返回 ``None``。
-
-    接受：``/abs/path``、``local:/abs/path``、Windows ``C:\\...``；
-    拒绝一切远程 scheme（``s3:`` / ``rest:`` / ``sftp:`` / ``rclone:`` … 及 ``://`` 形式）。
-    重建仅支持本地文件系统后端（远端无法在此安全清空，提示手动处理）。
-    """
-    u = (url or "").strip()
-    if not u:
-        return None
-    if u.startswith("local:"):
-        u = u[len("local:"):]
-    # Windows 盘符（C:\ / C:/）视为本地
-    if re.match(r"^[A-Za-z]:[\\/]", u):
-        return Path(u)
-    # 远程 scheme：含 :// 或 "word:" 形式（盘符已在上一步过滤）
-    if "://" in u or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", u):
-        return None
-    return Path(u)
 
 
-def _is_fs_root(path: Path) -> bool:
-    """是否文件系统根（``/``、``C:\\``、UNC share 根）——清空类动作的硬拒绝线。
 
-    可移植判据（``str(path) == path.anchor``）：旧的 ``path == Path(path.root)``
-    在 Windows 上对 ``/`` 失效（``WindowsPath('/')`` 的 root 是 ``\\``，两者不相等），
-    会把「当前盘根目录」放行给 rmtree。rebuild 与 delete 的 purge_disk 共用。
-    """
-    return str(path) == path.anchor
+
+# 注：``_repo_local_path`` / ``_is_fs_root`` / ``_clear_dir_contents`` / ``_unlink_logs_sync``
+# 已随候选 1 批次 ③ 搬到 ``services/repo_lifecycle.py``（清空类动作的唯一实现点）。
+# 路由层不再直接触碰仓库目录——删除与重建都经编排器。
 
 
 # ---------------------------------------------------------------- A8 仓库标识自动生成
@@ -699,39 +668,8 @@ async def delete_tombstone(
 # ``services/repo_lifecycle.py::RepoLifecycleService._purge_disk``——候选 1 批次 ①。
 # 删除路径的磁盘清理不再由路由层直接调用（路由只做入参映射）。
 
-async def _clear_dir_contents(local_path: Path) -> None:
-    """清空目录**内容**（子文件/子目录全部删除，目录本身保留）——purge/rebuild 共用。
-
-    保留目录本身：同址新建/重建不必先手动建文件夹；restic init 本就 MkdirAll，
-    但挂载点与运维预置目录不该被整体删掉（2026-10-22 owner 反馈）。
-
-    调用方须先过 ``_is_fs_root`` 硬拒绝（清空根目录内容 = 灾难）。
-    失败（权限不足/文件被占用/挂载点 EBUSY）→ ``ValidationError``（422 可操作
-    提示，不 500）——两条调用路径（delete purge / rebuild）都要求「失败即停」。
-    """
-
-    def _clear() -> None:
-        for child in local_path.iterdir():
-            # 符号链接一律 unlink：rmtree 拒绝符号链接，且绝不跟随链接删目标
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-
-    try:
-        await asyncio.to_thread(_clear)
-    except OSError as exc:
-        raise ValidationError(
-            f"仓库数据目录清理失败（权限不足或文件被占用）：{local_path}；"
-            "请在宿主机对应挂载目录手动清理后重试"
-        ) from exc
 
 
-def _unlink_logs_sync(paths: list[str]) -> None:
-    """同步删除孤儿任务日志文件（随仓库删除的终态作业；缺失/失败静默跳过）。"""
-    for raw in paths:
-        with contextlib.suppress(OSError):
-            Path(raw).unlink()
 
 
 @router.post(
@@ -1335,10 +1273,10 @@ async def set_repo_password(
         forced = True
 
     generated = not (payload.password or "").strip()
-    plain = _generate_repo_password() if generated else (payload.password or "")
+    plain = generate_repo_password() if generated else (payload.password or "")
 
     try:
-        _write_passfile(path, plain)
+        write_passfile(path, plain)
     except OSError as exc:
         raise ValidationError(
             f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
@@ -1358,7 +1296,6 @@ async def set_repo_password(
         password=plain if generated else None,
         path=str(path),
     )
-
 
 @router.post(
     "/repos/{repo_id}/rebuild",
@@ -1387,155 +1324,22 @@ async def rebuild_repo(
     """
     del session
     _validate_repo_id(repo_id)
-    repos_repo: ReposRepo = request.app.state.repos_repo
-    repo = await repos_repo.get(repo_id)
-    if repo is None:
-        raise RepoNotFoundError(repo_id)
-
-    # 远程后端不支持自动清空
-    local_path = _repo_local_path(repo.url or "")
-    if local_path is None:
-        raise ValidationError(
-            "该仓库后端不是本地文件系统（远程后端无法自动清空）。请手动清空后端存储后删除仓库、换 URL 新建。",
-            data={"url": repo.url},
-        )
-
-    # 运行中的任务冲突
-    active = await request.app.state.job_repo.list_active(repo_id)
-    if active:
-        raise JobConflictError(data={"running_job_id": active[0].id})
-
-    restic: ResticCmd = request.app.state.restic
-    config_repo: ConfigRepo = request.app.state.config_repo
-    audit = request.app.state.audit
-    settings = request.app.state.settings
-
-    # 新密码：自填或生成
-    generated = not (payload.password or "").strip()
-    plain = _generate_repo_password() if generated else (payload.password or "")
-
-    # 1) 清空仓库数据目录内容（已确认是本地文件系统目录；保留目录本身，
-    #    同址重建不必先手动建文件夹——restic init 会自行 MkdirAll）。
-    #    **清空必须先于写新密码文件**（审查 🔴 修复，2026-10-22）：若先覆盖密码文件
-    #    再清空，清空失败（EBUSY/权限 422）时旧密码已被覆盖且无回滚——盘上快照
-    #    永久不可读，「自救」变「自毁」。调序后清空失败 = 零损失（什么都没动）；
-    #    清空成功后密码文件/init 失败 = 旧数据已按确认销毁，状态自洽（空库待 re-init）。
-    if _is_fs_root(local_path):
-        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
-    if local_path.exists():
-        if not local_path.is_dir():
-            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
-        await _clear_dir_contents(local_path)
-
-    # 2) 写新密码文件（数据已清空；此时失败 = 空库无密钥，按提示手动放置后重跑 rebuild 即可）
-    path = passfile_path(settings, repo_id)
-    try:
-        _write_passfile(path, plain)
-    except OSError as exc:
-        raise ValidationError(
-            f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
-        ) from exc
-
-    # 3) restic init（用新密码文件）
-    env = await restic.env_for(repo_url=repo.url, repo_id=repo_id)
-    argv = restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
-    captured: list[str] = []
-
-    def _on_line(line: str) -> None:
-        captured.append(line)
-
-    # 一次调用走 consume() 接缝：超时 / kill / 日志生命周期全在实现里（Q4 裁决 A）
-    result = await restic.consume(
-        argv,
-        env=env,
-        timeout_seconds=REPO_INIT_TIMEOUT_SECONDS,
-        on_line=_on_line,
-        log_prefix="restic-init",
+    # 跨介质序列（清空目录 → 写密码 → restic init → 清 enc:v2 凭据）交给编排器
+    # （候选 1 批次 ③）：顺序契约（清空先于覆盖密码）与并发互斥都在那边。
+    report = await request.app.state.repo_lifecycle.rebuild(
+        repo_id, password=payload.password or None
     )
-    exit_code = result.exit_code
-    last_line = captured[-1] if captured else ""
-    if exit_code != 0:
-        reason = "初始化超时" if result.timed_out else failure_reason(exit_code, [last_line])
-        logger.warning("仓库 %s 重建初始化失败：%s", repo_id, reason)
-        raise ResticFailedError(f"重建初始化失败：{reason}", exit_code=exit_code)
-
-    # 3.1) key 中性化：``keys/`` 是仓库里唯一的明文文件，含 username/hostname/created
-    #      （KDF 参数无法加密——口令派生的硬约束；但身份标注可换）。init 后立刻把唯一
-    #      key 换成中性标识并移除旧 key，避免云端/存储侧推断真实机器与账号。
-    #      失败只记日志、不阻塞重建（仓库已可用，旧 key 仍有效）。
-    await neutralize_repo_key(
-        restic,
-        repo_id=repo_id,
-        env=env,
-        password_file=path,
-    )
-
-    # 4) default 凭据根：清除旧 enc:v2 凭据（旧密钥已丢失，无法解密）
-    crypto = request.app.state.encryption.crypto
-    cleared = 0
-    for row in await config_repo.list_all_raw():
-        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
-            continue
-        if not crypto.is_encrypted(row.value):
-            continue
-        await config_repo.delete(row.key)
-        cleared += 1
-
-    await audit.record(
-        AUDIT_REPO_REBUILD,
-        target=repo_id,
-        detail={"generated": generated, "cleared_credentials": cleared},
-        result="ok",
-    )
-    invalidate_repo_status_cache()
     return RepoPasswordResponse(
         ok=True,
-        generated=generated,
-        password=plain if generated else None,
-        path=str(path),
+        generated=report.generated,
+        password=report.password,
+        path=report.path,
     )
 
 
-# 生成用字符集（四类；剔除易混淆字符 0/O、1/l/I，与前端 passwordStrength 同口径）
-_PASSWORD_CLASSES: tuple[str, ...] = (
-    "abcdefghjkmnpqrstuvwxyz",
-    "ABCDEFGHJKMNPQRSTUVWXYZ",
-    "23456789",
-    "!@#$%^&*-_=+",
-)
-
-
-def _generate_repo_password(length: int = REPO_PASSWORD_LENGTH) -> str:
-    """生成定长强随机仓库密码（每类字符至少一个，再整体洗牌）。
-
-    长度取 ``REPO_PASSWORD_LENGTH``（32），与前端 ``utils/password.ts`` 的
-    ``generatePassword()`` 同一口径。历史上前后端位数曾不一致（后端
-    ``token_urlsafe(32)``≈43 位 vs 前端 20 位），2026-10-27 起全站统一 32 位。
-    """
-    rng = secrets.SystemRandom()
-    chars = [rng.choice(cls) for cls in _PASSWORD_CLASSES]
-    all_chars = "".join(_PASSWORD_CLASSES)
-    while len(chars) < max(length, len(_PASSWORD_CLASSES)):
-        chars.append(rng.choice(all_chars))
-    rng.shuffle(chars)
-    return "".join(chars)
-
-
-def _write_passfile(path: Path, secret: str) -> None:
-    """原子写密码文件（同目录临时文件 + rename；权限 0600）。
-
-    不追加尾随换行：restic 读取时会 TrimSpace，原样落盘可保证「写入即所用」。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(secret, encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
+# 注：``generate_repo_password`` / ``write_passfile`` / ``_PASSWORD_CLASSES`` 已搬到
+# ``utils/passfile.py``（候选 1 批次 ③）——编排器在 services 层需要它们，
+# 而 services 不能反向 import routers。路由与编排器共用同一份实现。
 
 @router.get(
     "/repos/{repo_id}/status",

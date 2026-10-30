@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from app.errors import JobConflictError, RepoNotFoundError, ValidationError
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.settings import Settings
-from app.utils.passfile import remove_passfile
+from app.utils.passfile import generate_repo_password, remove_passfile, write_passfile
 from app.utils.time import utc_iso
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,47 @@ class DeleteReport:
     purged_disk: bool = False
 
 
+@dataclass(frozen=True)
+class RebuildReport:
+    """重建产物（与 RepoPasswordResponse 同形）。"""
+
+    generated: bool = False
+    password: str | None = None
+    path: str = ""
+    cleared_credentials: int = 0
+
+
+def repo_local_path(url: str) -> Path | None:
+    """解析 restic 仓库 URL 的本地文件系统路径；非本地后端返回 ``None``。
+
+    接受：``/abs/path``、``local:/abs/path``、Windows ``C:\\...``；
+    拒绝一切远程 scheme（``s3:`` / ``rest:`` / ``sftp:`` / ``rclone:`` … 及 ``://`` 形式）。
+    清空类动作（purge / rebuild）只支持本地文件系统后端。
+
+    自 ``routers/repos.py`` 搬来（候选 1 批次 ③）：编排器在 services 层需要它，
+    而 services 不能反向 import routers。路由层改为从这里导入（单一实现点）。
+    """
+    u = (url or "").strip()
+    if not u:
+        return None
+    if u.startswith("local:"):
+        u = u[len("local:"):]
+    # Windows 盘符（C:\ / C:/）视为本地
+    if re.match(r"^[A-Za-z]:[\\\\/]", u):
+        return Path(u)
+    # 远程 scheme：含 :// 或 "word:" 形式（盘符已在上一步过滤）
+    if "://" in u or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", u):
+        return None
+    return Path(u)
+
+
 def _is_fs_root(path: Path) -> bool:
-    """是否文件系统根——清空类动作的硬拒绝线（本模块与 rebuild 共用）。"""
-    return path.anchor == str(path) or str(path) in {"/", "\\\\"}
+    """是否文件系统根（``/``、``C:\\``、UNC share 根）——清空类动作的硬拒绝线。
+
+    可移植判据（``str(path) == path.anchor``）：``path == Path(path.root)`` 在 Windows
+    上对 ``/`` 失效（``WindowsPath('/')`` 的 root 是 ``\\``，两者不相等）。
+    """
+    return str(path) == path.anchor
 
 
 async def _clear_dir_contents(local_path: Path) -> None:
@@ -102,6 +141,8 @@ class RepoLifecycleService:
         jobs: JobRepo,
         audit,
         settings: Settings,
+        restic=None,
+        crypto=None,
         status_cache=None,
         catalog=None,
     ) -> None:
@@ -114,6 +155,8 @@ class RepoLifecycleService:
             jobs: 任务仓储（活跃任务复查 + 日志路径）。
             audit: 审计仓储。
             settings: 运行期配置（密码文件路径派生）。
+            restic: :class:`ResticCmd`（rebuild 的 init 用）；不重建仓库可留 None。
+            crypto: 凭据加密器（rebuild 清 enc:v2 凭据用）；同上。
             status_cache: 状态缓存失效回调；None 时用模块级实现。
             catalog: 快照目录缓存失效回调；None 时用模块级实现。
         """
@@ -123,6 +166,8 @@ class RepoLifecycleService:
         self._jobs = jobs
         self._audit = audit
         self._settings = settings
+        self._restic = restic
+        self._crypto = crypto
         self._invalidate_status = status_cache or invalidate_repo_status_cache
         self._invalidate_catalog = catalog or invalidate_snapshot_catalog
         self._locks: dict[str, asyncio.Lock] = {}
@@ -149,9 +194,7 @@ class RepoLifecycleService:
 
         失败一律 422 **零损失**：此时行与数据都还在，可安全重发。
         """
-        from app.routers.repos import _repo_local_path  # 路径解析唯一实现点
-
-        local_path = _repo_local_path(repo.url or "")
+        local_path = repo_local_path(repo.url or "")
         if local_path is None:
             raise ValidationError(
                 "该仓库未配置地址或后端不是本地文件系统（远程后端无法自动清空）。"
@@ -215,6 +258,101 @@ class RepoLifecycleService:
             )
         except Exception:  # noqa: BLE001 - 数据已删，抛出只会让用户重试得 404
             logger.error("生命周期收尾审计写入失败（action=%s, repo=%s）", action, repo.id, exc_info=True)
+        self._invalidate_status()
+        self._invalidate_catalog()
+
+    # ---------------------------------------------------------------- rebuild 步骤
+
+    async def _clear_dir_for_rebuild(self, repo: Repo) -> None:
+        """清空仓库目录内容（**必须先于覆盖密码文件**——见 :meth:`rebuild`）。"""
+        local_path = repo_local_path(repo.url or "")
+        if local_path is None:
+            raise ValidationError(
+                "该仓库后端不是本地文件系统（远程后端无法自动清空）。"
+                "请手动清空后端存储后删除仓库、换 URL 新建。",
+                data={"url": repo.url},
+            )
+        if _is_fs_root(local_path):
+            raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
+        if local_path.exists():
+            if not local_path.is_dir():
+                raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
+            await _clear_dir_contents(local_path)
+
+    async def _restic_init(self, repo_id: str, repo: Repo, password_file: Path):
+        """restic init（一次调用走 consume() 接缝：超时 / kill / 日志生命周期全在实现里）。"""
+        from app.constants import REPO_INIT_TIMEOUT_SECONDS
+        from app.errors import ResticFailedError
+        from app.services.restic import WhitelistArgs, failure_reason
+
+        env = await self._restic.env_for(repo_url=repo.url, repo_id=repo_id)
+        argv = self._restic.build("init", args=WhitelistArgs(json_output=False), env_extras={})
+        captured: list[str] = []
+
+        def _on_line(line: str) -> None:
+            captured.append(line)
+
+        result = await self._restic.consume(  # noqa: F841 保留句柄便于后续扩展
+            argv,
+            env=env,
+            timeout_seconds=REPO_INIT_TIMEOUT_SECONDS,
+            on_line=_on_line,
+            log_prefix="restic-init",
+        )
+        if result.exit_code != 0:
+            reason = "初始化超时" if result.timed_out else failure_reason(
+                result.exit_code, [captured[-1] if captured else ""]
+            )
+            logger.warning("仓库 %s 重建初始化失败：%s", repo_id, reason)
+            raise ResticFailedError(f"重建初始化失败：{reason}", exit_code=result.exit_code)
+        self._init_env = env
+        return result
+
+    async def _neutralize_key(self, repo_id: str, password_file: Path) -> None:
+        """key 中性化：失败只记日志、不阻塞（仓库已可用，旧 key 仍有效）。"""
+        from app.services.repo_keys import neutralize_repo_key
+
+        try:
+            await neutralize_repo_key(
+                self._restic,
+                repo_id=repo_id,
+                env=self._init_env,
+                password_file=str(password_file),
+            )
+        except Exception:  # noqa: BLE001 - key 中性化是锦上添花，不得阻断重建
+            logger.warning("仓库 %s 的 key 中性化失败（不影响重建结果）", repo_id, exc_info=True)
+
+    async def _clear_encrypted_credentials(self, repo_id: str) -> int:
+        """清该仓库的 enc:v2 凭据（旧密钥已丢失、无法解密）；明文凭据保留。"""
+        if self._crypto is None:
+            return 0
+        cleared = 0
+        prefix = f"cred.{repo_id}."
+        for row in await self._config.list_all_raw():
+            if not (row.key.startswith(prefix) and row.source != "env" and row.value):
+                continue
+            if not self._crypto.is_encrypted(row.value):
+                continue  # 明文凭据不受密钥轮换影响，保留
+            await self._config.delete(row.key)
+            cleared += 1
+        return cleared
+
+    async def _finish_rebuild(self, repo: Repo, report: RebuildReport) -> None:
+        """重建的收尾审计 + 缓存失效（审计失败吞掉，同 :meth:`_finish`）。"""
+        from app.constants import AUDIT_REPO_REBUILD
+
+        try:
+            await self._audit.record(
+                AUDIT_REPO_REBUILD,
+                target=repo.id,
+                detail={
+                    "generated": report.generated,
+                    "cleared_credentials": report.cleared_credentials,
+                },
+                result="ok",
+            )
+        except Exception:  # noqa: BLE001 - 仓库已可用，抛出只会误导用户
+            logger.error("重建收尾审计写入失败（repo=%s）", repo.id, exc_info=True)
         self._invalidate_status()
         self._invalidate_catalog()
 
@@ -392,6 +530,69 @@ class RepoLifecycleService:
                 )
                 self._invalidate_status()
                 self._invalidate_catalog()
+                return report
+            except Exception as exc:
+                await self._failed(op, repo_id, exc)
+                raise
+    async def rebuild(self, repo_id: str, *, password: str | None = None) -> RebuildReport:
+        """重建仓库：清空目录内容 → 写新密码文件 → restic init → 清 enc:v2 凭据。
+
+        **顺序是先例提升成的契约**（审查 🔴 修复，2026-10-22）：清空必须先于覆盖
+        密码文件——若先覆盖密码再清空，清空失败（EBUSY/权限 422）时旧密码已被覆盖
+        且无回滚，盘上快照永久不可读，「自救」变「自毁」。
+
+        失败态语义（调用方据此提示用户）：
+        - 清空失败 = **零损失**（什么都没动，旧密码仍在）；
+        - 清空成功后密码/init 失败 = 旧数据已按确认销毁，状态自洽（空库待 re-init），
+          可重入（重跑 rebuild 即可）。
+
+        Args:
+            repo_id: 仓库 id。
+            password: 新密码；None/空 = 由本方法生成 32 位强随机密码。
+        Returns:
+            :class:`RebuildReport`。
+        Raises:
+            ValidationError: 远程后端 / 文件系统根 / 非目录 / 清空失败 / 密码写入失败。
+            JobConflictError: 仍有活跃作业。
+            ResticFailedError: restic init 失败或超时。
+        """
+        async with self._lock(repo_id):
+            op = "rebuild"
+            try:
+                repo = await self._require_repo(repo_id)
+                if await self._jobs.list_active(repo_id):
+                    raise JobConflictError(data={"repo_id": repo_id})
+                await self._begin(op, repo, generated=not (password or "").strip())
+
+                # 1) 清空目录内容（必须先于覆盖密码文件——见 docstring）
+                await self._clear_dir_for_rebuild(repo)
+
+                # 2) 写新密码文件
+                plain = password or generate_repo_password()
+                path = self._settings.passfile_path(repo_id)
+                try:
+                    write_passfile(path, plain)
+                except OSError as exc:
+                    raise ValidationError(
+                        f"密码文件写入失败（只读挂载或权限不足）：{path}；"
+                        "请在宿主机对应挂载目录手动放置该密码文件"
+                    ) from exc
+
+                # 3) restic init（一次调用走 consume() 接缝；失败由内部抛 ResticFailedError）
+                await self._restic_init(repo_id, repo, path)
+                # 3.1) key 中性化：失败只记日志、不阻塞（仓库已可用，旧 key 仍有效）
+                await self._neutralize_key(repo_id, path)
+
+                # 4) 清旧 enc:v2 凭据（旧密钥已丢失，无法解密）；明文凭据不受影响
+                cleared = await self._clear_encrypted_credentials(repo_id)
+
+                report = RebuildReport(
+                    generated=not password,
+                    password=plain if not password else None,
+                    path=str(path),
+                    cleared_credentials=cleared,
+                )
+                await self._finish_rebuild(repo, report)
                 return report
             except Exception as exc:
                 await self._failed(op, repo_id, exc)

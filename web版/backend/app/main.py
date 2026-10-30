@@ -300,6 +300,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         jobs=job_repo,
         audit=audit,
         settings=settings,
+        restic=restic_cmd,
+        crypto=encryption.crypto,
     )
     # 回填给 retention：归档到期的删除步骤改走编排器（单一实现点）。
     # retention 构造更早（挂调度器需要它），故此处回填而非构造参数。

@@ -19,7 +19,7 @@ from conftest import ORIGIN, finish_bootstrap
 
 from app.constants import AUDIT_REPO_REBUILD
 from app.errors import ValidationError
-from app.routers import repos as repos_router
+from app.services import repo_lifecycle as repo_lifecycle_mod
 
 
 class _FakeProc:
@@ -218,7 +218,9 @@ async def test_rebuild_clear_failure_preserves_old_passfile(app_client, tmp_path
     async def _boom(_local_path):  # noqa: ANN001, ANN202
         raise ValidationError("仓库数据目录清理失败（权限不足或文件被占用）：模拟 EBUSY")
 
-    monkeypatch.setattr(repos_router, "_clear_dir_contents", _boom)
+    # 候选 1 批次 ③：_clear_dir_contents 已搬到 services/repo_lifecycle.py。
+    # 仍 patch routers 会**静默失效**——测试照绿，但什么都没测。
+    monkeypatch.setattr(repo_lifecycle_mod, "_clear_dir_contents", _boom)
 
     resp = await ns.client.post(
         "/api/repos/rb6/rebuild", json={"password": "would-be-lost"}, headers=ORIGIN

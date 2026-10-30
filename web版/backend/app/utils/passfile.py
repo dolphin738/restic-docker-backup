@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from app.constants import REPO_PASSWORD_LENGTH
 
 if TYPE_CHECKING:
     from app.settings import Settings
@@ -30,6 +34,51 @@ logger = logging.getLogger(__name__)
 
 # 密码文件固定文件名（E5 per-repo 布局：<passfile_root>/<repo_id>/password）。
 PASSFILE_NAME = "password"
+
+# 生成用字符集（四类；剔除易混淆字符 0/O、1/l/I，与前端 passwordStrength 同口径）
+_PASSWORD_CLASSES: tuple[str, ...] = (
+    "abcdefghjkmnpqrstuvwxyz",
+    "ABCDEFGHJKMNPQRSTUVWXYZ",
+    "23456789",
+    "!@#$%^&*-_=+",
+)
+
+
+def generate_repo_password(length: int = REPO_PASSWORD_LENGTH) -> str:
+    """生成定长强随机仓库密码（每类字符至少一个，再整体洗牌）。
+
+    长度取 ``REPO_PASSWORD_LENGTH``（32），与前端 ``utils/password.ts`` 的
+    ``generatePassword()`` 同一口径。历史上前后端位数曾不一致（后端
+    ``token_urlsafe(32)``≈43 位 vs 前端 20 位），2026-10-27 起全站统一 32 位。
+
+    自 ``routers/repos.py`` 搬来（候选 1 批次 ③）：编排器在 services 层需要它，
+    而 services 不能反向 import routers。
+    """
+    rng = secrets.SystemRandom()
+    chars = [rng.choice(cls) for cls in _PASSWORD_CLASSES]
+    all_chars = "".join(_PASSWORD_CLASSES)
+    while len(chars) < max(length, len(_PASSWORD_CLASSES)):
+        chars.append(rng.choice(all_chars))
+    rng.shuffle(chars)
+    return "".join(chars)
+
+
+def write_passfile(path: Path, secret: str) -> None:
+    """原子写密码文件（同目录临时文件 + rename；权限 0600）。
+
+    不追加尾随换行：restic 读取时会 TrimSpace，原样落盘可保证「写入即所用」。
+
+    自 ``routers/repos.py`` 搬来（候选 1 批次 ③），理由同上。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(secret, encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def remove_passfile(settings: Settings, repo_id: str) -> bool:
