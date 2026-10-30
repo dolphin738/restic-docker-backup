@@ -14,6 +14,13 @@
 #
 # 注意：本脚本的排除列表已逐条实跑校准，避免把合规写法误判为违规。
 # 新增豁免前请先确认排除理由成立，不要为"让检查通过"而放宽断言。
+#
+# ⚠️ 优先用 pytest 版门禁（不依赖 bash/wsl，CI 与代理沙箱可直接跑）：
+#   cd backend && .venv\Scripts\python.exe -m pytest tests/test_redline_assertions.py -q
+# 该版本与本脚本断言完全对齐，并修掉了本脚本的两处潜在误报：
+#   ① A3 只扫代码（跳过注释/docstring），不会把 routers/sources.py 的 E31 散文当违规；
+#   ② G8 以字节捕获 check_dockerignore.py 输出，不被 GBK 控制台编码崩溃误导。
+# 本脚本保留作为「无 Python 环境时的兜底」与双保险。
 
 set -uo pipefail
 
