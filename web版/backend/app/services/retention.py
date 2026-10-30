@@ -387,7 +387,8 @@ class RetentionService:
                     if self._lifecycle is not None:
                         await self._lifecycle.expire_archived(repo.id)
                     else:
-                        # 测试基座未注入编排器：退回仓储直调（旧但可用的顺序）
+                        # 测试基座未注入编排器：退回仓储直调（旧但可用的顺序）。
+                        # 生产路径恒走编排器——main.py 在构造后立即回填 _lifecycle。
                         for row in await self._config.list_all_raw():
                             if (
                                 row.key.startswith(f"cred.{repo.id}.")
@@ -396,7 +397,7 @@ class RetentionService:
                             ):
                                 await self._config.delete(row.key)
                         await asyncio.to_thread(remove_passfile, self._settings, repo.id)
-                        await self._repos.hard_delete(repo.id, data_destroyed=False)
+                        await self._repos.drop_row(repo.id)
                     report.repos_expired.append(repo.id)
 
             tomb_days = await self._resolve_days(

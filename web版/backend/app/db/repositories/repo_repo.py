@@ -209,58 +209,7 @@ class ReposRepo:
         await self._db.write("DELETE FROM repo_tombstones WHERE repo_id = ?", (repo_id,))
         return True
 
-    async def release_id(self, repo_id: str, *, snapshot_count: int | None = None) -> list[str]:
-        """释放归档仓库的 ID：落墓碑（``released_at`` = 现在）后删除 ``repos`` 行。
 
-        释放后该 id 立即可被新仓库复用（:meth:`create` 只查 ``repos``）。语义上等于
-        用户声明「旧快照我不再通过本应用找回」——但**不删任何磁盘数据**，数据仍是
-        手工可救的（守 §6 红线：记录/数据分离）。
-
-        Returns:
-            被级联删除的终态作业 ``log_path`` 列表（同 :meth:`hard_delete`）。
-        """
-        repo = await self.get(repo_id)
-        if repo is None:
-            return []
-        now = utc_iso()
-        await self.insert_tombstone(
-            repo_id=repo_id,
-            name=repo.name,
-            repo_type=repo.type,
-            url_display=repo.url,
-            archived_at=repo.deleted_at or now,
-            snapshot_count=snapshot_count,
-            data_destroyed=False,
-            released_at=now,
-        )
-        return await self._drop_row_legacy(repo_id)
-
-    async def hard_delete(
-        self,
-        repo_id: str,
-        *,
-        data_destroyed: bool,
-        snapshot_count: int | None = None,
-    ) -> list[str]:
-        """彻底删除仓库行（+ 终态作业级联），并留一条墓碑。
-
-        与 :meth:`release_id` 的区别只在「留墓碑」：``data_destroyed=True`` 表示走了
-        ``purge_disk``（目录内容 + 密码文件已销毁，**不可恢复**）。
-        """
-        repo = await self.get(repo_id)
-        if repo is None:
-            return []
-        now = utc_iso()
-        await self.insert_tombstone(
-            repo_id=repo_id,
-            name=repo.name,
-            repo_type=repo.type,
-            url_display=repo.url,
-            archived_at=repo.deleted_at or now,
-            snapshot_count=snapshot_count,
-            data_destroyed=data_destroyed,
-        )
-        return await self._drop_row_legacy(repo_id)
 
     async def drop_row(self, repo_id: str, *, tx: Tx | None = None) -> None:
         """删除仓库行并级联清终态作业行（不做前置校验；**不返回**日志路径）。
@@ -286,25 +235,6 @@ class ReposRepo:
             await self._db.write(delete_jobs, params)
             await self._db.write(delete_repos, (repo_id,))
 
-    async def _drop_row_legacy(self, repo_id: str) -> list[str]:
-        """旧顺序：删行并**同时**返回日志路径（批 ② 迁移后删除本方法）。
-
-        候选 1 的新顺序要求「日志路径先取、行最后删」，而本方法是先删行再让调用方
-        拿路径去删文件——那样崩溃在中间就再也拿不到路径了。保留至 :meth:`release_id`
-        与 :meth:`hard_delete` 改走 ``RepoLifecycleService``。
-        """
-        terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
-        rows = await self._db.fetch_all(
-            f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
-            (repo_id, *TERMINAL_JOB_STATUSES),
-        )
-        if rows:
-            await self._db.write(
-                f"DELETE FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",
-                (repo_id, *TERMINAL_JOB_STATUSES),
-            )
-        await self._db.write("DELETE FROM repos WHERE id = ?", (repo_id,))
-        return [str(r["log_path"]) for r in rows]
 
     async def exists(self, repo_id: str) -> bool:
         """仓库是否存在（路由层 404 REPO_NOT_FOUND 判定的唯一实现点）。"""
@@ -456,9 +386,10 @@ class ReposRepo:
         if mirror_rows:
             raise RepoInUseAsMirrorError(repo_id, tasks=mirror_rows)
 
-    # 注：原 ``delete()``（ensure_deletable + _drop_row）全仓零调用点，且与 ``hard_delete``
-    # 是同一件事的第二份实现——候选 1 批次 0 已删除。删除路径统一走 ``hard_delete``
-    # （留墓碑）与即将落地的 ``RepoLifecycleService``。
+    # 注：本层不再提供「删仓库」的整段语义（原 ``delete()`` / ``hard_delete`` /
+    # ``release_id`` 均已删除——它们是同一件事的三份实现，且都先删行后清凭据）。
+    # 删除顺序是契约，归 ``services/repo_lifecycle.py::RepoLifecycleService``；
+    # 本层只提供可组合的原子块：insert_tombstone(tx=...) + drop_row(tx=...)。
 
     # ---------------------------------------------------------------- env 同步专用（无写保护）
 
