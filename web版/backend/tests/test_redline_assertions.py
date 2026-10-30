@@ -7,12 +7,20 @@
 
 与 bash 版保持一致的部分：
 - 各红线编号（S1/A2、S2、S3、S4、S6、S7、A1、A3、A5、A6、C8）及其豁免清单完全对齐；
-- 双文档编号锚点一致性、G8 .dockerignore 一致性。
+- 双文档编号锚点一致性、G8 .dockerignore 一致性；
+- **扫描口径 = 全行扫描**（含注释与 docstring），与 bash ``grep -rIn`` 同宽。
 
-相对 bash 版**修正的两处潜在误报**（即原脚本自身的 latent bug，转录时一并修掉）：
-1. A3 ``lost+found``：只扫**代码**（跳过注释与文档字符串），不把解释性 docstring 当违规；
-2. G8：以 ``PYTHONIOENCODING=utf-8`` 调用 ``check_dockerignore.py`` 并基于其**真实校验输出**
-   判定，规避其在 GBK 控制台下 ``print`` 崩溃、误报 rc=1 的问题。
+相对 bash 版的两处差异（都有明确理由，不是放宽断言）：
+1. C8 **排除本文件自身**：本门禁含有 ``from zoneinfo import`` 的正则字面量，全行扫描
+   必然命中自己。bash 版在这里会误报（它把本文件判为违规）。这是纯自匹配，与真实
+   的 zoneinfo 直连无关。
+2. G8：以 ``PYTHONIOENCODING=utf-8`` 调 ``check_dockerignore.py`` 并基于其**真实校验
+   输出**判定，规避其在 GBK 控制台下 ``print`` 崩溃、误报 rc=1 的问题。
+
+⚠️ 历史教训（勿回退）：曾用「手写 ``\"\"\"`` 状态机跳过 docstring」来消除 A3 的散文
+误报，结果状态机遇非常规引号即失步，导致个别文件 63 行之后**完全不被扫描**——
+门禁出现静默盲区。现改为全行扫描 + 按行内容的窄排除（A3 用 ``命中/置黄色/告警``
+过滤散文），假阳性由窄排除处理，绝不牺牲覆盖率。
 
 扫描约定：所有文件以「仓库根为基准的相对 POSIX 路径」参与排除匹配，精确复刻
 bash ``grep -r`` 的行为（排除子串用正斜杠）。
@@ -42,12 +50,16 @@ SCAN_APP = APP
 SCAN_FRONTEND = FRONTEND_SRC
 
 
-def _iter_code_lines(root: Path, exts):
-    """产出 (rel_posix_path, line_no, line_text)，跳过注释与文档字符串。
+def _grep(root: Path, pattern: str, exts=PY_EXTS):
+    """返回命中列表：每个元素为 (rel_posix_path, line_no, line_text)。
 
-    跳过注释/文档字符串是为了避免把**解释性散文**（如 docstring 里举例
-    ``lost+found``）误判为代码里的重复定义——这是相对 bash 版修正的一处潜在误报。
+    **全行扫描，不跳过注释与文档字符串**——与 bash 版 ``grep -rIn`` 完全同口径。
+    刻意如此：门禁的假阴性（放过真违规）远比假阳性危险，而省略注释/docstring 会让
+    扫描器出现盲区（早期版本用手写 ``\"\"\"`` 状态机跳过 docstring，遇非常规引号即失步，
+    曾导致整个文件后半段不被扫描）。散文类误报由各用例的**显式窄排除**处理。
     """
+    rx = re.compile(pattern)
+    hits = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix not in exts:
             continue
@@ -56,47 +68,9 @@ def _iter_code_lines(root: Path, exts):
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
-        in_docstring = False
         for no, line in enumerate(lines, 1):
-            stripped = line.lstrip()
-            # 文档字符串 / 注释跳过（仅对 .py 做 docstring 状态追踪，其余语言跳过 // 与 /* */ 注释行）
-            if path.suffix == ".py":
-                if '"""' in line:
-                    # 同一行内有成对的 """ 视为未跨行的 docstring 片段，仍跳过该片段行
-                    if line.count('"""') >= 2:
-                        continue
-                    in_docstring = not in_docstring
-                    continue
-                if in_docstring:
-                    continue
-                if stripped.startswith("#"):
-                    continue
-            else:
-                if stripped.startswith("//"):
-                    continue
-            yield rel, no, line
-
-
-def _grep(root: Path, pattern: str, exts=PY_EXTS, code_only: bool = True):
-    """返回命中列表：每个元素为 (rel_path, line_no, line_text)。"""
-    rx = re.compile(pattern)
-    hits = []
-    if code_only:
-        for rel, no, line in _iter_code_lines(root, exts):
             if rx.search(line):
                 hits.append((rel, no, line))
-    else:
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.suffix not in exts:
-                continue
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            try:
-                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            except OSError:
-                continue
-            for no, line in enumerate(lines, 1):
-                if rx.search(line):
-                    hits.append((rel, no, line))
     return hits
 
 
@@ -108,6 +82,12 @@ def _drop(hits, *substrings):
             continue
         out.append((rel, no, line))
     return out
+
+
+def _drop_line_re(hits, pattern: str):
+    """丢弃**行内容**匹配 ``pattern`` 的命中（复刻 bash ``grep -vE``）。"""
+    rx = re.compile(pattern)
+    return [h for h in hits if not rx.search(h[2])]
 
 
 def _fmt(hits):
@@ -247,8 +227,12 @@ def test_a1_sql_only_in_repositories():
 def test_a3_exclusion_set_not_duplicated():
     hits = _grep(SCAN_FRONTEND, r"lost\+found", TS_EXTS)
     hits += [(rel, no, line) for rel, no, line in _grep(SCAN_APP, r"lost\+found", PY_EXTS)]
-    # 豁免真实定义与常量；测试夹具样例输入（解释性，非复制）已被 code-only 扫描排除
+    # 真源本身与常量豁免；测试夹具样例输入不是"复制"（真源仍是 exclusions.py）
     hits = _drop(hits, "exclusions.py", "constants.py", "__tests__/")
+    # 散文类误报：解释「伪文件系统告警」的 docstring（如 E31 的 sources.py）会提到
+    # lost+found。与 bash 版同口径地按行内容排除，而非整文件排除——整文件放行会
+    # 连带放过真正把清单复制进该文件的情况。
+    hits = _drop_line_re(hits, r"命中|置黄色|告警")
     assert not hits, f"A3 内置排除集疑似被复制到别处：{_fmt(hits)}"
 
 
@@ -283,6 +267,9 @@ def test_c8_zoneinfo_only_in_utils_time():
     hits += [(rel, no, line) for rel, no, line in
              _grep(BACKEND / "tests", r"from zoneinfo import|^import zoneinfo", PY_EXTS)]
     hits = _drop(hits, "utils/time.py")
+    # 自匹配排除：本门禁文件自身含有该正则的**字面量**，全行扫描必然命中自己。
+    # bash 版在这里会误报（它把本文件列为违规），本版显式排除且不影响任何真实判定。
+    hits = _drop(hits, "tests/test_redline_assertions.py")
     assert not hits, f"C8 zoneinfo 直连出现在 utils/time.py 之外：{_fmt(hits)}"
 
 
