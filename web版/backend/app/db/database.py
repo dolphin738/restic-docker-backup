@@ -5,13 +5,19 @@
   ``foreign_keys=ON``；
 - 单写连接：全部写操作经 :meth:`Database.write` 串行化（SQLite 单写多读，规避 SQLITE_BUSY）；
 - schema 版本由 ``PRAGMA user_version`` 记录，启动时按序执行 ``migrations/000N_*.sql``，
-  每个文件一个事务、幂等可重复执行。
+  每个文件一个事务、幂等可重复执行；
+- 多语句原子性只经 :meth:`Database.transaction`（候选 1）：单写连接是全局排他的，
+  事务内**不得** await 任何 IO/子进程；事务中调用 :meth:`Database.write` 会抛
+  ``RuntimeError``（那会把事务静默腰斩），须改用 :meth:`Tx.execute` 或给仓储方法传 ``tx``。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +54,11 @@ class Database:
         self.migrations_dir = Path(migrations_dir) if migrations_dir else _MIGRATIONS_DIR
         self._busy_timeout_ms = busy_timeout_ms
         self._conn: aiosqlite.Connection | None = None
+        self._in_transaction = False
+        # 事务入口互斥：单写连接上并发 BEGIN 会直接 OperationalError
+        # （实测：两条并发事务的第二条报 "cannot start a transaction within a transaction"）。
+        # 与 A5 同精神——写本来就串行，事务更不允许重叠。
+        self._tx_lock = asyncio.Lock()
 
     @property
     def busy_timeout_ms(self) -> int:
@@ -144,15 +155,54 @@ class Database:
             applied += 1
         return applied
 
-    # ---------------------------------------------------------------- 读写
+    # ---------------------------------------------------------------- 事务（候选 1）
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Tx]:
+        """多语句原子写（候选 1 批次 0）：``BEGIN IMMEDIATE`` … ``COMMIT`` / ``ROLLBACK``。
+
+        单写连接是**全局排他**的，故事务必须短：事务内禁止 await 任何 IO/子进程，
+        只允许连续发 SQL。事务期间 :meth:`write` 抛 ``RuntimeError``（防静默腰斩），
+        仓储方法须走 :meth:`Tx.execute` 或接收 ``tx`` 参数。
+
+        Yields:
+            :class:`Tx`：事务内的执行句柄（只执行，不提交）。
+
+        Raises:
+            RuntimeError: 已有事务在进行（不支持嵌套）。
+        """
+        if self._in_transaction:
+            # 先查标志再抢锁：嵌套会死锁（asyncio.Lock 不可重入），必须显式报错
+            raise RuntimeError("已有事务在进行中，不支持嵌套事务")
+        async with self._tx_lock:
+            conn = self.conn
+            await conn.execute("BEGIN IMMEDIATE")
+            self._in_transaction = True
+            try:
+                yield Tx(conn)
+            except BaseException:
+                await conn.rollback()
+                raise
+            else:
+                await conn.commit()
+            finally:
+                self._in_transaction = False
 
     async def write(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         """执行写语句并提交（全部写经此方法串行化）。
 
+        事务进行中调用本方法会抛 ``RuntimeError``——它会立即 ``commit()`` 把事务腰斩，
+        且**不报错**，属于只在生产才暴露的隐性 bug（候选 1 决策 2）。
+
         Args:
             sql: 带 ``?`` 占位符的 SQL。
             params: 绑定参数。
+
+        Raises:
+            RuntimeError: 处于 :meth:`transaction` 之中。
         """
+        if self._in_transaction:
+            raise RuntimeError("事务进行中禁止调用 write()（会把事务静默腰斩），请用 Tx.execute")
         await self.conn.execute(sql, params)
         await self.conn.commit()
 
@@ -171,6 +221,31 @@ class Database:
         """返回最近一次 INSERT 的自增 id（audit_logs 写入后取用）。"""
         row = await self.fetch_one("SELECT last_insert_rowid() AS id")
         return int(row["id"]) if row else 0
+
+
+class Tx:
+    """事务内的执行句柄：只执行，不提交（提交/回滚由 :meth:`Database.transaction` 负责）。
+
+    仓储写方法统一接受可选 ``tx: Tx | None``：给了走 :meth:`execute`，不给走
+    :meth:`Database.write`（各自提交）。仓储层仍是唯一 SQL 出口（A7 不破）。
+    """
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        """绑定到已开启事务的连接。
+
+        Args:
+            conn: 已 ``BEGIN`` 的连接。
+        """
+        self._conn = conn
+
+    async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        """在事务内执行一条写语句（不提交）。
+
+        Args:
+            sql: 带 ``?`` 占位符的 SQL。
+            params: 绑定参数。
+        """
+        await self._conn.execute(sql, params)
 
 
 def _script_index(filename: str) -> int:
