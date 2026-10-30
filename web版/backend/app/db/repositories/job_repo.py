@@ -164,6 +164,27 @@ class JobRepo:
         await self._db.write(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(ids))
         return [str(row["log_path"]) for row in rows]
 
+    async def terminal_log_paths(self, repo_id: str) -> list[str]:
+        """列出该仓库**终态**任务的 ``log_path``（只查不删，候选 1 批次 0 拆出）。
+
+        与 :meth:`purge_older_than` 的差别是**不删行**：候选 1 把仓库删除改成
+        "行最后删"，故日志文件要先于删行拿到路径——行一删就再也查不到了
+        （``delete_repo`` 首行 404 会让后续步骤失去重试入口）。口径同为终态
+        （success/failed/interrupted/cancelled），活跃任务的行不在此列。
+
+        Args:
+            repo_id: 仓库标识。
+
+        Returns:
+            终态任务的 ``log_path`` 列表（可能为空）。
+        """
+        terminal_placeholders = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        rows = await self._db.fetch_all(
+            f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_placeholders})",
+            (repo_id, *TERMINAL_JOB_STATUSES),
+        )
+        return [str(row["log_path"]) for row in rows]
+
     async def latest_backup_by_tasks(self, task_ids: list[int]) -> dict[int, str]:
         """每任务最近一次 **terminal** backup 任务的状态（E34 卡片 ``last_result`` 数据源）。
 

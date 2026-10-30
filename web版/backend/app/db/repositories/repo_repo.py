@@ -207,7 +207,7 @@ class ReposRepo:
         手工可救的（守 §6 红线：记录/数据分离）。
 
         Returns:
-            被级联删除的终态作业 ``log_path`` 列表（同 :meth:`delete`）。
+            被级联删除的终态作业 ``log_path`` 列表（同 :meth:`hard_delete`）。
         """
         repo = await self.get(repo_id)
         if repo is None:
@@ -234,7 +234,7 @@ class ReposRepo:
     ) -> list[str]:
         """彻底删除仓库行（+ 终态作业级联），并留一条墓碑。
 
-        与 :meth:`delete` 的区别只在「留墓碑」：``data_destroyed=True`` 表示走了
+        与 :meth:`release_id` 的区别只在「留墓碑」：``data_destroyed=True`` 表示走了
         ``purge_disk``（目录内容 + 密码文件已销毁，**不可恢复**）。
         """
         repo = await self.get(repo_id)
@@ -383,7 +383,7 @@ class ReposRepo:
     async def ensure_deletable(self, repo_id: str) -> None:
         """删除前置校验（**零副作用**）：default 禁删；有任务/活跃作业即拒；**被镜像引用亦拒**。
 
-        从 :meth:`delete` 抽出的独立入口，供路由层的 ``purge_disk`` 流程
+        从删除路径抽出的独立入口，供路由层的 ``purge_disk`` 流程
         **先校验后清理**——rmtree 若发生在校验之后，「拒绝删除却已毁数据」
         会比原来的死循环更糟（典型：default 禁删，但数据已被清空）。
 
@@ -417,34 +417,9 @@ class ReposRepo:
         if mirror_rows:
             raise RepoInUseAsMirrorError(repo_id, tasks=mirror_rows)
 
-    async def delete(self, repo_id: str) -> list[str]:
-        """删除仓库，并级联清理其终态作业历史行（E41 v2，2026-10-21 修订）。
-
-        规则：
-        - ``default`` 不可删（切换器/补跑/env 覆盖的共同锚点）；
-        - 仍有 ``backup_tasks`` → 409（先删任务：任务删除 UI 自带确认门）；
-        - 仍有 running/pending ``jobs`` → 409（先取消：取消入口存在）；
-        - 终态 jobs（success/failed/interrupted/cancelled）随仓库一并删除——
-          v1「有历史即拒删」会使任何初始化过的仓库永远无法删除（restic 仓库
-          使用前必须 init，init 即落 job 行），且 jobs 无单行删除入口，规则
-          不可达；``jobs.repo_id`` 外键无级联动作，删库前须显式清子行。
-
-        删除前置校验（default/任务/活跃作业三门）委托 :meth:`ensure_deletable`；
-        路由层的磁盘清理（purge_disk）必须**先自行调用该校验**再动手删数据。
-
-        Args:
-            repo_id: 仓库 id。
-
-        Returns:
-            被级联删除的终态作业 ``log_path`` 列表（调用方负责清理孤儿文件，
-            口径同 :meth:`JobRepo.purge_older_than`）。
-
-        Raises:
-            ValidationError: default 仓库不可删。
-            RepoNotEmptyError: 仓库下仍有备份任务或活跃作业。
-        """
-        await self.ensure_deletable(repo_id)
-        return await self._drop_row(repo_id)
+    # 注：原 ``delete()``（ensure_deletable + _drop_row）全仓零调用点，且与 ``hard_delete``
+    # 是同一件事的第二份实现——候选 1 批次 0 已删除。删除路径统一走 ``hard_delete``
+    # （留墓碑）与即将落地的 ``RepoLifecycleService``。
 
     # ---------------------------------------------------------------- env 同步专用（无写保护）
 
