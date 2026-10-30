@@ -71,7 +71,6 @@ from app.errors import (
     ResticFailedError,
     ValidationError,
 )
-from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import (
     AuditArchiveItem,
     AuditOut,
@@ -142,6 +141,7 @@ from app.services.notifier import (
 )
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
+from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.restic import (
     ResticCmd,
     WhitelistArgs,

@@ -50,7 +50,6 @@ from app.constants import (
     REPO_PASSWORD_LENGTH,
     REPO_PROBE_TIMEOUT_SECONDS,
     REPO_STATS_TIMEOUT_SECONDS,
-    REPO_STATUS_CACHE_SECONDS,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
@@ -105,6 +104,14 @@ from app.services.rclone_config import (
     RcloneConfigUnavailable,
 )
 from app.services.repo_keys import classify_keys, neutralize_repo_key, parse_key_list
+from app.services.repo_status_cache import (
+    invalidate_repo_status_cache,
+    read_cached,
+    write_cached,
+)
+from app.services.repo_status_cache import (
+    status_lock as _status_lock,
+)
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.utils.passfile import remove_passfile
@@ -116,9 +123,10 @@ router = APIRouter(prefix="/api", tags=["repos"])
 
 _PROTECTED = [Depends(require_session), Depends(require_bootstrap_done)]
 
-# E30 进程内 TTL 缓存：按 repo_id 分桶（多仓库互不污染）
-_status_cache: dict[str, tuple[float, RepoStatusResponse]] = {}
-_status_lock = asyncio.Lock()
+# E30 进程内 TTL 缓存的状态与失效出口已搬到 services/repo_status_cache.py
+# （候选 1 批次 0：编排器在 services 层，不能反向 import routers，否则成环）。
+# 这里只保留 ``_status_lock`` 别名：读写入口统一走 ``read_cached`` / ``write_cached``，
+# 缓存本体不再由本模块持有（测试如需重置请用 ``repo_status_cache.status_cache``）。
 
 # 锁残留关键词（从 cat config 的失败输出里识别，零额外 restic 调用）
 _LOCK_KEYWORDS: tuple[str, ...] = ("already locked", "unable to create lock", "remove stale locks")
@@ -1614,16 +1622,16 @@ async def repo_status(
 ) -> RepoStatusResponse:
     """仓库状态卡数据源：``{connected, locked, capacity, last_error}``（按 repo_id 缓存）。"""
     del session
-    cached = _status_cache.get(repo_id)
-    if cached is not None and time.monotonic() - cached[0] < REPO_STATUS_CACHE_SECONDS:
-        return cached[1]
+    cached = read_cached(repo_id)
+    if cached is not None:
+        return cached
 
     async with _status_lock:
-        cached = _status_cache.get(repo_id)  # 双检：等锁期间可能已被别的请求刷新
-        if cached is not None and time.monotonic() - cached[0] < REPO_STATUS_CACHE_SECONDS:
-            return cached[1]
+        cached = read_cached(repo_id)  # 双检：等锁期间可能已被别的请求刷新
+        if cached is not None:
+            return cached
         status = await _probe_repo_status(request, repo_id)
-        _status_cache[repo_id] = (time.monotonic(), status)
+        write_cached(repo_id, status)
         return status
 
 
@@ -1684,19 +1692,6 @@ async def repo_keys(
         # 成功但读不到 key：仓库可能尚未初始化（空仓库上 key list 的行为随版本而异）
         probe_error=None if items else "未读取到任何密钥（仓库可能尚未初始化）",
     )
-
-
-def invalidate_repo_status_cache() -> None:
-    """清除 E30 的进程内 TTL 缓存（全仓库；配置写入/任务终态时调用）。
-
-    调用时机：仓库资料更新（url/凭据变了）、任务终态（init/unlock 会改变仓库可连性，
-    由 JobRunner 的 ``on_finish`` 回调触发）。无锁——字典赋空是原子的。
-
-    P1：连带清快照目录缓存——backup 终态会新增快照，任务卡片的 ``snapshot_count``
-    不该继续吃旧快照列表（TTL 之外的即时失效）。
-    """
-    _status_cache.clear()
-    invalidate_snapshot_catalog()
 
 
 async def _probe_repo_status(request: Request, repo_id: str) -> RepoStatusResponse:

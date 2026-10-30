@@ -259,7 +259,7 @@ async def test_snapshot_count_refreshes_after_status_cache_invalidation(app_clie
     argv_log = _patch_run_json(ns, lines=[_snapshot_line(SNAPSHOT_A, [task["tag"]])])
 
     assert (await _list_cards(ns))[0]["snapshot_count"] == 1
-    from app.routers.repos import invalidate_repo_status_cache
+    from app.services.repo_status_cache import invalidate_repo_status_cache
 
     invalidate_repo_status_cache()
     assert (await _list_cards(ns))[0]["snapshot_count"] == 1

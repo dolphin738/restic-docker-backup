@@ -70,7 +70,6 @@ from app.routers import restore as restore_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
 from app.routers import system as system_router
-from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
 from app.services.compare import CompareService
@@ -85,6 +84,7 @@ from app.services.rclone import RcloneProbe
 from app.services.rclone_config import RcloneConfigService
 from app.services.rclone_forms import import_legacy_sidecar
 from app.services.repo_migration import migrate_legacy_repo_config
+from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
 from app.services.scheduler import SchedulerService

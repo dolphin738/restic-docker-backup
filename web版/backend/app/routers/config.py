@@ -50,7 +50,6 @@ from app.constants import (
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import CredentialKeyUnavailableError, ValidationError
-from app.routers.repos import invalidate_repo_status_cache
 from app.schemas.api_schemas import (
     ConfigItem,
     ConfigPatchRequest,
@@ -61,6 +60,7 @@ from app.services.crypto import EncryptionState
 from app.services.env_sync import passfile_status
 from app.services.log_control import apply_log_level
 from app.services.metrics import hash_metrics_token
+from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.scheduler import TIMEZONE_KEY
 from app.services.time_sync import NTP_BACKUP_KEY, NTP_PRIMARY_KEY, validate_ntp_server
 from app.utils.time import is_valid_timezone

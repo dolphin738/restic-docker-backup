@@ -123,9 +123,9 @@ def api_env(tmp_path, monkeypatch):
     # 检测结果按 (DEPLOY_MODE, SOURCES_ROOT) 进程级缓存，跨用例必须清，否则串味
     invalidate_deploy_mode_cache()
 
-    import app.routers.repos as repos_module
+    import app.services.repo_status_cache as cache_module
 
-    monkeypatch.setattr(repos_module, "_status_cache", {})
+    monkeypatch.setattr(cache_module, "status_cache", {})
     return SimpleNamespace(data_dir=data_dir, tmp_path=tmp_path, passfile=passfile)
 
 
