@@ -205,6 +205,12 @@ AUDIT_REPO_PURGE_REMOTE_ACK = "repo.purge_remote_ack"  # 埋点：用户已确�
 # 批量改指向（受控出口）：把引用某 remote 的仓库 url 前缀切到另一个 remote。
 # 属**纯配置写入**（无删除副作用），与 repo.update 同性质 → **不入 S6 危险清单**。
 AUDIT_REPO_REPOINT = "repo.repoint"
+# 候选 1：生命周期动作的**过程留痕**（2026-10-31）——begin 在副作用之前、failed 在中途失败时。
+# 不入 S6 危险清单（维持 23 项）：危险的是 repo.delete / repo.purge / repo.id_release 本身，
+# 这两条只是它们的进展与失败记录。用 detail.op 区分流程（archive/restore/delete/purge/
+# release/rebuild/expire），避免每个流程 2 个常量（4 流程 × 2 = 8）且新增流程就要再加。
+AUDIT_REPO_LIFECYCLE_BEGIN = "repo.lifecycle.begin"
+AUDIT_REPO_LIFECYCLE_FAILED = "repo.lifecycle.failed"
 AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_CONFIG_EXPORT = "config.export"  # 批次 E：配置导出（凭据口令加密，文件出系统边界，危险操作留痕）

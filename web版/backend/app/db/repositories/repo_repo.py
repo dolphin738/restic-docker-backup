@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
-from app.db.database import Database
+from app.db.database import Database, Tx
 from app.errors import (
     EnvOverriddenError,
     RepoInUseAsMirrorError,
@@ -159,26 +159,36 @@ class ReposRepo:
         snapshot_count: int | None,
         data_destroyed: bool,
         released_at: str | None = None,
+        tx: Tx | None = None,
     ) -> None:
         """写墓碑（**不含密码与凭据**）：名称/类型/地址展示/归档时刻/当时快照数/是否已销毁数据。
 
         只记「这里曾经有过什么」，绝不存恢复能力（守 §6 双轨红线：记录与数据解耦）。
+        用 ``INSERT OR REPLACE``：候选 1 的「行最后删」依赖它可重入（崩溃后重发
+        不会因墓碑已存在而失败）。
+
+        Args:
+            tx: 事务句柄（候选 1）；给了就在事务内执行且不提交，否则各自提交。
         """
-        await self._db.write(
+        sql = (
             "INSERT OR REPLACE INTO repo_tombstones "
             "(repo_id, name, type, url_display, archived_at, snapshot_count, data_destroyed, released_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                repo_id,
-                name,
-                repo_type,
-                url_display,
-                archived_at,
-                snapshot_count,
-                1 if data_destroyed else 0,
-                released_at,
-            ),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        params = (
+            repo_id,
+            name,
+            repo_type,
+            url_display,
+            archived_at,
+            snapshot_count,
+            1 if data_destroyed else 0,
+            released_at,
+        )
+        if tx is not None:
+            await tx.execute(sql, params)
+        else:
+            await self._db.write(sql, params)
 
     async def list_tombstones(self) -> list[dict[str, Any]]:
         """返回全部墓碑行（按归档时间倒序）。"""
@@ -223,7 +233,7 @@ class ReposRepo:
             data_destroyed=False,
             released_at=now,
         )
-        return await self._drop_row(repo_id)
+        return await self._drop_row_legacy(repo_id)
 
     async def hard_delete(
         self,
@@ -250,10 +260,39 @@ class ReposRepo:
             snapshot_count=snapshot_count,
             data_destroyed=data_destroyed,
         )
-        return await self._drop_row(repo_id)
+        return await self._drop_row_legacy(repo_id)
 
-    async def _drop_row(self, repo_id: str) -> list[str]:
-        """删除仓库行并级联清终态作业行，返回被删作业的日志路径（不做前置校验）。"""
+    async def drop_row(self, repo_id: str, *, tx: Tx | None = None) -> None:
+        """删除仓库行并级联清终态作业行（不做前置校验；**不返回**日志路径）。
+
+        候选 1 把仓库删除改序为「行最后删」，日志路径必须由调用方**在删行之前**
+        用 :meth:`JobRepo.terminal_log_paths` 取好——行一删就查不到了。
+
+        Args:
+            repo_id: 仓库 id。
+            tx: 事务句柄；给了就整段落在同一事务内（墓碑 + 删 jobs + 删 repos）。
+        Raises:
+            sqlite3.IntegrityError: 仍有活跃任务行时外键会挡下删行（**不要加级联**——
+                这是候选 1 的安全网：崩溃后可重试，行还在）。
+        """
+        terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
+        delete_jobs = f"DELETE FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})"
+        params: tuple[Any, ...] = (repo_id, *TERMINAL_JOB_STATUSES)
+        delete_repos = "DELETE FROM repos WHERE id = ?"
+        if tx is not None:
+            await tx.execute(delete_jobs, params)
+            await tx.execute(delete_repos, (repo_id,))
+        else:
+            await self._db.write(delete_jobs, params)
+            await self._db.write(delete_repos, (repo_id,))
+
+    async def _drop_row_legacy(self, repo_id: str) -> list[str]:
+        """旧顺序：删行并**同时**返回日志路径（批 ② 迁移后删除本方法）。
+
+        候选 1 的新顺序要求「日志路径先取、行最后删」，而本方法是先删行再让调用方
+        拿路径去删文件——那样崩溃在中间就再也拿不到路径了。保留至 :meth:`release_id`
+        与 :meth:`hard_delete` 改走 ``RepoLifecycleService``。
+        """
         terminal_ph = ",".join("?" * len(TERMINAL_JOB_STATUSES))
         rows = await self._db.fetch_all(
             f"SELECT log_path FROM jobs WHERE repo_id = ? AND status IN ({terminal_ph})",

@@ -35,10 +35,8 @@ from app.constants import (
     AUDIT_RCLONE_CONFIG_EDIT,
     AUDIT_RCLONE_CONFIG_RESTORE,
     AUDIT_REPO_ARCHIVE,
-    AUDIT_REPO_DELETE,
     AUDIT_REPO_ID_RELEASE,
     AUDIT_REPO_PASSWORD_SET,
-    AUDIT_REPO_PURGE,
     AUDIT_REPO_REBUILD,
     AUDIT_REPO_REPOINT,
     AUDIT_REPO_RESTORE,
@@ -114,7 +112,6 @@ from app.services.repo_status_cache import (
 )
 from app.services.restic import ResticCmd, WhitelistArgs, failure_reason
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
-from app.utils.passfile import remove_passfile
 from app.utils.time import now_utc
 
 logger = logging.getLogger(__name__)
@@ -530,21 +527,22 @@ async def delete_repo(
     3. ``purge_disk=1`` = 销毁数据：先清空仓库目录**内容** + 删密码文件，再删行；
        与归档**互斥**（勾了就落不回归档），墓碑标 ``data_destroyed=1``。
 
-    三门守卫（default 禁删 / 仍有 backup_tasks / 仍有活跃作业）对三条分支一视同仁，
-    且**先于一切副作用**执行——校验拒绝时数据必须原封不动。
+    三门守卫（default 禁删 / 仍有 backup_tasks / 仍有活跃作业）对三条分支一视同仁。
+    hard/purge 分支的执行顺序由 ``RepoLifecycleService.hard_delete`` 持有
+    （候选 1：**行最后删**，崩在删行之前的任何一步都能整请求重发并收敛）。
 
     仓库不存在 → 404 ``REPO_NOT_FOUND``（先于校验，避免为无效 target 落审计）。
     审计：归档 ``repo.archive``、彻底删 ``repo.delete``、销毁 ``repo.purge``。
     """
     del session
     repos_repo: ReposRepo = request.app.state.repos_repo
-    config_repo: ConfigRepo = request.app.state.config_repo
     # 存在性前置：仓库不存在直接 404，避免为「删了个不存在的仓库」落一条成功审计
     existing = await repos_repo.get(repo_id)
     if existing is None:
         raise RepoNotFoundError(repo_id)
     # 删除前置校验（default 禁删 + 无任务/无活跃作业 + 未被镜像引用）先于一切副作用——
-    # purge_disk 的磁盘清理尤其不能跑到校验前面
+    # purge_disk 的磁盘清理尤其不能跑到校验前面。三条分支一视同仁（归档分支也要过）。
+    # hard/purge 分支会在编排器的锁内**再跑一次**（关掉校验后到执行前的 TOCTOU 窗口）。
     await repos_repo.ensure_deletable(repo_id)
 
     if not purge_disk and not hard:
@@ -560,32 +558,9 @@ async def delete_repo(
         invalidate_snapshot_catalog()
         return OkResponse()
 
-    purged = await _purge_repo_disk(request, repo_id, existing.url or "") if purge_disk else False
-    removed_logs = await repos_repo.hard_delete(repo_id, data_destroyed=purged)
-    # 孤儿日志清理（口径同 retention：行没了，日志没有保留价值；缺失/失败静默跳过）
-    if removed_logs:
-        await asyncio.to_thread(_unlink_logs_sync, removed_logs)
-    # 凭据键清理（镜像 rebuild 先例：跳过 env 来源与空值——env 键归 env 同步管）
-    cleared = 0
-    for row in await config_repo.list_all_raw():
-        if not (row.key.startswith(f"cred.{repo_id}.") and row.source != "env" and row.value):
-            continue
-        await config_repo.delete(row.key)
-        cleared += 1
-    if cleared:
-        logger.info("仓库 %s 已删除：级联清理凭据键 %d 个", repo_id, cleared)
-    # 审计：只记计数与仓库名，不回显凭据（S3）。purge 入 S6 危险清单（不可逆销毁）。
-    await request.app.state.audit.record(
-        AUDIT_REPO_PURGE if purged else AUDIT_REPO_DELETE,
-        target=repo_id,
-        detail={
-            "name": existing.name,
-            "removed_logs": len(removed_logs),
-            "cleared_credentials": cleared,
-            "purged_disk": purged,
-        },
-        result="ok",
-    )
+    # hard / purge 分支：跨介质多步序列整体交给编排器（候选 1）——顺序契约、并发互斥、
+    # 事务边界与审计留痕都在 RepoLifecycleService 里，路由只做入参映射。
+    await request.app.state.repo_lifecycle.hard_delete(repo_id, purge_disk=purge_disk)
     invalidate_repo_status_cache()
     # P0 L4-3：仓库行没了 → 该仓库的快照计数缓存随之失效（原先只清状态缓存）
     invalidate_snapshot_catalog()
@@ -735,41 +710,9 @@ async def delete_tombstone(
     return OkResponse()
 
 
-async def _purge_repo_disk(request: Request, repo_id: str, url: str) -> bool:
-    """清空仓库磁盘数据（delete 的 ``purge_disk``）：清空仓库目录内容 + 删密码文件。
-
-    返回是否实际清空了数据目录（目录本不存在时为 False；密码文件仍会尝试清理）。
-    调用方保证：删除前置校验已通过、DB 行尚未删——故这里的 422 一律「零损失」
-    （校验/清理失败时仓库行与数据都还在，可安全重试）。
-
-    - 远程后端/未配置地址/文件系统根/非目录 → 422（可操作提示，不静默）；
-    - 清理失败（权限不足/文件被占用）→ 422 可操作提示，不 500。
-
-    **保留目录本身、只清内容**（2026-10-22 owner 反馈）：整体删掉
-    ``/home/123/qqq`` 后，同址新建还得先手动建文件夹；restic init 虽会
-    MkdirAll，但挂载点/运维预置目录不该被连根拔掉。
-    """
-    local_path = _repo_local_path(url)
-    if local_path is None:
-        raise ValidationError(
-            "该仓库未配置地址或后端不是本地文件系统（远程后端无法自动清空）。"
-            "请手动清空后端存储后再删除，或换 URL 新建。",
-            data={"url": url},
-        )
-    if _is_fs_root(local_path):
-        raise ValidationError(f"仓库路径解析为文件系统根目录，拒绝清空：{local_path}")
-    removed = False
-    if local_path.exists():
-        if not local_path.is_dir():
-            raise ValidationError(f"仓库路径不是目录，拒绝清空：{local_path}")
-        await _clear_dir_contents(local_path)
-        removed = True
-    # 密码文件随数据一并清除（purge 语义 = 该地址可干净重用）：删除动作收口在
-    # `utils/passfile.remove_passfile`（唯一出口）——`RESTIC_PASSWORD_FILE` 全局共用
-    # 密码文件时会拒绝删除，否则删一个仓库的密码文件等于毁掉全部仓库的可读性。
-    remove_passfile(request.app.state.settings, repo_id)
-    return removed
-
+# 注：原 ``_purge_repo_disk``（delete 的 purge_disk 分支）已迁到
+# ``services/repo_lifecycle.py::RepoLifecycleService._purge_disk``——候选 1 批次 ①。
+# 删除路径的磁盘清理不再由路由层直接调用（路由只做入参映射）。
 
 async def _clear_dir_contents(local_path: Path) -> None:
     """清空目录**内容**（子文件/子目录全部删除，目录本身保留）——purge/rebuild 共用。

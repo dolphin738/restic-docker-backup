@@ -45,11 +45,11 @@ class _FakeProc:
 @pytest.fixture(autouse=True)
 def _reset_repo_status_cache():
     """E30 状态缓存是模块级全局：用例间清零，避免跨用例污染。"""
-    from app.routers import repos as repos_router
+    from app.services import repo_status_cache as repos_router
 
-    repos_router._status_cache = {}
+    repos_router.status_cache.clear()
     yield
-    repos_router._status_cache = {}
+    repos_router.status_cache.clear()
 
 
 def _passfile(ns, repo_id: str) -> Path:

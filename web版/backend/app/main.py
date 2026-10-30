@@ -83,6 +83,7 @@ from app.services.path_mapper import PathMapper
 from app.services.rclone import RcloneProbe
 from app.services.rclone_config import RcloneConfigService
 from app.services.rclone_forms import import_legacy_sidecar
+from app.services.repo_lifecycle import RepoLifecycleService
 from app.services.repo_migration import migrate_legacy_repo_config
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.restic import ResticCmd
@@ -291,6 +292,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("rclone 凭据形态记录已从旧 sidecar 导入数据库：%d 段", imported_forms)
     # P1：快照目录（一次快照列表 → 按 tag 分组计数；任务卡片 snapshot_count 数据源）
     snapshot_catalog = SnapshotCatalog()
+    # 候选 1：仓库生命周期编排器——delete/purge/release/rebuild 的顺序契约与并发互斥收在这里
+    repo_lifecycle = RepoLifecycleService(
+        db=db,
+        repos=repos_repo,
+        config=config_repo,
+        jobs=job_repo,
+        audit=audit,
+        settings=settings,
+    )
 
     # 调度器（R-013 本批落地，增量设计 §4）：per-task cron + 启动补跑 + 动态重载 + 维护任务域
     scheduler = SchedulerService(
@@ -333,6 +343,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.rclone_config_service = rclone_config_service
     app.state.rclone_archive_repo = rclone_archive_repo
     app.state.snapshot_catalog = snapshot_catalog
+    app.state.repo_lifecycle = repo_lifecycle
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()

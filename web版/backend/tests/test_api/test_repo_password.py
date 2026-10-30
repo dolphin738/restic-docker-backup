@@ -23,11 +23,11 @@ from app.schemas.api_schemas import RepoStatusResponse
 @pytest.fixture(autouse=True)
 def _reset_repo_status_cache():
     """E30 的 TTL 缓存是模块级全局：用例间必须清零，否则前一个用例的探测结果会泄漏。"""
-    from app.routers import repos as repos_router
+    from app.services import repo_status_cache as repos_router
 
-    repos_router._status_cache = {}
+    repos_router.status_cache.clear()
     yield
-    repos_router._status_cache = {}
+    repos_router.status_cache.clear()
 
 
 def _passfile(ns, repo_id: str) -> Path:
