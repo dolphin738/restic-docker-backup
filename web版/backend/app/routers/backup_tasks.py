@@ -12,7 +12,6 @@ repo 作用域（E6）：路径前缀 ``/api/repos/{repo_id}/backup-tasks``；``
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from typing import Any
@@ -62,7 +61,6 @@ from app.services.restic import ResticCmd, WhitelistArgs
 from app.services.scheduler import SchedulerService
 from app.services.snapshot_catalog import SnapshotCatalog
 from app.utils.time import utc_iso
-from app.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
 
@@ -481,48 +479,49 @@ async def dry_run_task(
     argv = restic.build("backup", args=args, env_extras=env_extras)
     env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
 
-    log_path = settings.jobs_dir / f"dryrun-task-{new_ulid()}.log"
-    proc = await restic.spawn(argv, log_path, env=env)
-
     items: list[DryRunItem] = []
     warnings: list[DryRunWarning] = []
     truncated = False
+
+    async def _on_line(line: str) -> bool:
+        """逐行解析；达到条目上限时返回真值要求机制层停止读取。"""
+        nonlocal truncated
+        event = await asyncio.to_thread(parser.parse_line, line)
+        if not isinstance(event, FileRecord):
+            return False
+        file_path = event.path
+        items.append(
+            DryRunItem(
+                path=file_path,
+                display_path=mapper.to_display(file_path),
+                size=event.size,
+            )
+        )
+        warning = _pseudo_warning(file_path)
+        if warning is not None:
+            warnings.append(warning)
+        if len(items) >= DRY_RUN_MAX_ITEMS:
+            truncated = True
+            return True
+        return False
+
+    result = await restic.consume(
+        argv,
+        env=env,
+        timeout_seconds=DRY_RUN_TIMEOUT_SECONDS,
+        on_line=_on_line,
+        log_prefix="dryrun-task",
+    )
+    if result.stopped_early:
+        truncated = True
     error: str | None = None
-    exit_code = -1
-    try:
-        async with asyncio.timeout(DRY_RUN_TIMEOUT_SECONDS):
-            async for line in proc.lines():
-                event = await asyncio.to_thread(parser.parse_line, line)
-                if isinstance(event, FileRecord):
-                    file_path = event.path
-                    items.append(
-                        DryRunItem(
-                            path=file_path,
-                            display_path=mapper.to_display(file_path),
-                            size=event.size,
-                        )
-                    )
-                    warning = _pseudo_warning(file_path)
-                    if warning is not None:
-                        warnings.append(warning)
-                    if len(items) >= DRY_RUN_MAX_ITEMS:
-                        truncated = True
-                        break
-        if truncated:
-            proc.kill()
-        exit_code = await proc.wait()
-    except TimeoutError:
+    if result.timed_out:
         truncated = True
         error = f"预览超时（>{DRY_RUN_TIMEOUT_SECONDS}s），结果不完整"
         logger.warning("任务 dry-run 预览超时：task=%s sources=%s", task_id, sources)
-        proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-    finally:
-        log_path.unlink(missing_ok=True)
 
-    if error is None and not truncated and exit_code != 0:
-        error = f"restic 退出码 {exit_code}：仓库可能未初始化或凭据缺失"
+    if error is None and not truncated and result.exit_code != 0:
+        error = f"restic 退出码 {result.exit_code}：仓库可能未初始化或凭据缺失"
 
     for source in raw_sources:
         warning = _pseudo_warning(source)

@@ -107,6 +107,16 @@ web版/dev-scripts/.dev-*.pid
 # ---------- 其它 ----------
 tmp/
 temp/
+# 受限沙箱下跑 pytest 时临时重定向的目录：pytest 的 tmp_path 夹具会在其中建
+# pytest-of-<user>，其 ACL 可能被锁住而无法回收——不入库即可，不必清理
+web版/backend/.tmp-run/
+web版/backend/.pytest-tmp/
+web版/backend/.pytest_cache/
+# pytest 在 cwd 落下的临时产物（tmp_path 创建失败或被 ACL 锁死时残留）
+web版/backend/pytest-of-*/
+web版/backend/rclone-meta-test-*/
+web版/backend/.pytemp*/
+web版/backend/.tmp-split/
 .ci-image-tags
 # P4 HomeIcons 目视预览页（一次性验证产物，与 .e2e/ 同口径：本机保留、不入库）
 web版/frontend/icon-preview.html

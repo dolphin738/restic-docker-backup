@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -97,6 +98,25 @@ class ProbeResult:
     exit_code: int = -1
     lines: list[str] = field(default_factory=list)
     truncated: bool = False
+
+
+@dataclass(frozen=True)
+class ConsumeResult:
+    """流式调用（:meth:`ResticCmd.consume`）的一次调用结果。
+
+    只描述**机制层事实**（退出码 / 是否超时 / 是否被回调提前叫停），不解释业务含义——
+    失败该不该抛、该映射成哪个 ``failure_kind``，是调用方的语义决定（Q3 裁决 A：
+    模块只返回结果，不替调用方选择「失败即异常」还是「失败回结构化结果」）。
+
+    Attributes:
+        exit_code: restic 退出码；``-1`` 表示超时被杀或未能取得退出码。
+        timed_out: 是否因超时被 SIGKILL。
+        stopped_early: 是否因 ``on_line`` 回调返回真值而提前停止（如条目上限截断）。
+    """
+
+    exit_code: int = -1
+    timed_out: bool = False
+    stopped_early: bool = False
 
 
 @dataclass
@@ -422,6 +442,90 @@ class ResticCmd:
         finally:
             log_path.unlink(missing_ok=True)
         return ProbeResult(exit_code=exit_code, lines=lines, truncated=truncated)
+
+    async def consume(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        timeout_seconds: float,
+        on_line: Callable[[str], bool | None | Awaitable[bool | None]],
+        log_prefix: str = "call",
+        retain_log: str | Path | None = None,
+    ) -> ConsumeResult:
+        """执行一次 restic 调用并逐行交给回调（流式消费的唯一入口）。
+
+        这是「一次 restic 调用」的机制接缝：spawn、超时、kill、日志文件命名与生命周期、
+        逐行解码全部收在这里，调用方只提供 ``on_line`` 回调与超时。此前 E31 dry-run
+        在两个路由里各抄了一份约 56 行的等价循环（``sources.py`` 与 ``backup_tasks.py``），
+        两份的超时文案、kill 时机、日志清理都要手工保持一致——本方法把那套机制
+        收敛为单一实现点（Q1 裁决 B / Q4 裁决 A）。
+
+        与 :meth:`run_json` / :meth:`spawn` 的分工：
+        - :meth:`run_json`：**收完**输出再返回（探测类，输出规模可控）；
+        - :meth:`consume`：**逐行**交给回调（读取过程中累积或提前停止）；
+        - :meth:`spawn`：**不消费**，交给调用方自行编排（长任务 + 独立 SSE 通道）。
+
+        Args:
+            argv: :meth:`build` 产出的参数列表。
+            env: 子进程环境（缺省继承当前进程环境）。
+            timeout_seconds: 超时秒数；超时即 SIGKILL 并置 ``timed_out``。
+            on_line: 每读到一行调用一次；**返回真值表示"够了"**，本方法停止读取并
+                kill 子进程（返回 None/False 表示继续）。
+            log_prefix: 临时日志文件名前缀。**命名权归本方法**（Q4 裁决 A）——两个
+                dry-run 调用点此前的唯一差异就是 ``dryrun-`` / ``dryrun-task-`` 前缀。
+            retain_log: 需要**留存**日志时给出的目标路径（如 copy 的产物留存）；
+                给定时日志写在该路径并保留，不给则用 ``jobs_dir/<prefix>-<uuid>.log``
+                并在结束时删除。
+
+        Returns:
+            :class:`ConsumeResult`（退出码 / 是否超时 / 是否被回调提前停止）。
+
+        Raises:
+            OSError: restic 二进制缺失或不可执行（由 :meth:`spawn` 透传；临时日志已清理）。
+        """
+        if retain_log is not None:
+            path = Path(retain_log)
+        else:
+            path = self._settings.jobs_dir / f"{log_prefix}-{uuid4().hex}.log"
+        temp = retain_log is None
+
+        stopped_early = False
+        timed_out = False
+        exit_code = -1
+        try:
+            proc = await self.spawn(argv, path, env=env)
+        except OSError:
+            if temp:
+                path.unlink(missing_ok=True)
+            raise
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async for line in proc.lines():
+                    verdict = on_line(line)
+                    # 回调可以是同步或异步（CPU 密集的解析需自行 to_thread 后 await）
+                    if inspect.isawaitable(verdict):
+                        verdict = await verdict
+                    if verdict:
+                        # 回调宣告"够了"：停止读取并 kill，避免子进程继续写满管道后挂住
+                        stopped_early = True
+                        proc.kill()
+                        break
+            exit_code = await proc.wait()
+        except TimeoutError:
+            timed_out = True
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            exit_code = -1
+        finally:
+            if temp:
+                path.unlink(missing_ok=True)
+        return ConsumeResult(
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stopped_early=stopped_early,
+        )
 
     # ---------------------------------------------------------------- 内部实现
 

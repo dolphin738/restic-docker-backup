@@ -56,7 +56,6 @@ from app.services.parser import FileRecord, OutputParser
 from app.services.path_mapper import PathMapper, browse_allowed_prefixes, source_allowed_prefixes
 from app.services.restic import ResticCmd, WhitelistArgs
 from app.settings import Settings
-from app.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
 
@@ -243,48 +242,49 @@ async def dry_run(
     argv = restic.build("backup", args=args, env_extras=env_extras)
     env = restic.build_env(repo_url=repo_url, repo_id=repo_id, env_extras=env_extras)
 
-    log_path = settings.jobs_dir / f"dryrun-{new_ulid()}.log"
-    proc = await restic.spawn(argv, log_path, env=env)
-
     items: list[DryRunItem] = []
     warnings: list[DryRunWarning] = []
     truncated = False
+
+    async def _on_line(line: str) -> bool:
+        """逐行解析；达到条目上限时返回真值要求机制层停止读取。"""
+        nonlocal truncated
+        event = await asyncio.to_thread(parser.parse_line, line)
+        if not isinstance(event, FileRecord):
+            return False
+        file_path = event.path
+        items.append(
+            DryRunItem(
+                path=file_path,
+                display_path=mapper.to_display(file_path),
+                size=event.size,
+            )
+        )
+        warning = _pseudo_warning(file_path)
+        if warning is not None:
+            warnings.append(warning)
+        if len(items) >= DRY_RUN_MAX_ITEMS:
+            truncated = True
+            return True
+        return False
+
+    result = await restic.consume(
+        argv,
+        env=env,
+        timeout_seconds=DRY_RUN_TIMEOUT_SECONDS,
+        on_line=_on_line,
+        log_prefix="dryrun",
+    )
+    if result.stopped_early:
+        truncated = True
     error: str | None = None
-    exit_code = -1
-    try:
-        async with asyncio.timeout(DRY_RUN_TIMEOUT_SECONDS):
-            async for line in proc.lines():
-                event = await asyncio.to_thread(parser.parse_line, line)
-                if isinstance(event, FileRecord):
-                    file_path = event.path
-                    items.append(
-                        DryRunItem(
-                            path=file_path,
-                            display_path=mapper.to_display(file_path),
-                            size=event.size,
-                        )
-                    )
-                    warning = _pseudo_warning(file_path)
-                    if warning is not None:
-                        warnings.append(warning)
-                    if len(items) >= DRY_RUN_MAX_ITEMS:
-                        truncated = True
-                        break
-        if truncated:
-            proc.kill()
-        exit_code = await proc.wait()
-    except TimeoutError:
+    if result.timed_out:
         truncated = True
         error = f"预览超时（>{DRY_RUN_TIMEOUT_SECONDS}s），结果不完整"
         logger.warning("备份源预览超时：%s", sources)
-        proc.kill()
-        with _suppress():
-            await proc.wait()
-    finally:
-        log_path.unlink(missing_ok=True)
 
-    if error is None and not truncated and exit_code != 0:
-        error = f"restic 退出码 {exit_code}：仓库可能未初始化或凭据缺失"
+    if error is None and not truncated and result.exit_code != 0:
+        error = f"restic 退出码 {result.exit_code}：仓库可能未初始化或凭据缺失"
 
     for source in payload.sources:
         warning = _pseudo_warning(source)
@@ -345,15 +345,3 @@ def _dedupe_warnings(warnings: list[DryRunWarning]) -> list[DryRunWarning]:
         seen.add(warning.path)
         result.append(warning)
     return result
-
-
-class _suppress:
-    """极简上下文管理器：吞掉块内异常（用于收尾阶段的 best-effort 调用）。"""
-
-    def __enter__(self) -> _suppress:
-        """进入上下文。"""
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
-        """退出上下文并吞掉异常。"""
-        return True
