@@ -56,6 +56,7 @@ import type {
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import DirPickerInline from '@/components/DirPickerInline.vue'
+import RepoMaintenanceCard from '@/pages/repo/RepoMaintenanceCard.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 // P6 形态层：add-new 行动卡（对齐 Duplicati destinations.html：plus-circle + 标题 + 描述，
 // 整卡可点 + Enter/Space）——替代原卡右上角「新建仓库」按钮（用户 2026-10-22 指令改回原样式）。
@@ -71,7 +72,6 @@ import { backendIcon } from '@/components/icons/icons'
 // add-new 卡图标（Duplicati destinations.html：plus-circle）
 import { IconPlusCircle } from '@/components/icons/icons'
 import { useUiStore } from '@/stores/ui'
-import { formatDateTime } from '@/utils/datetime'
 // G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
 import { generatePassword as generateRandomPassword } from '@/utils/password'
 // rclone 远端配置面板（原设置页分区；B11 迁入本页，A 方案改为抽屉浮层按需唤出，不占主页纵向）
@@ -932,6 +932,23 @@ const {
   copyShow, copying, copyTarget, copyResult, copySourceLabel, copyOptions, openCopy, onCopy,
 } = gates
 
+/** 维护卡的开门请求 → 打开对应确认门（门仍在下方 template 里，生命周期不变）。 */
+function onMaintenanceOpen(action: 'unlock' | 'repair' | 'recover' | 'rotate' | 'copy' | 'cache'): void {
+  if (action === 'unlock') unlockShow.value = true
+  else if (action === 'repair') repairShow.value = true
+  else if (action === 'recover') recoverShow.value = true
+  else if (action === 'rotate') openRotate()
+  else if (action === 'copy') openCopy()
+  else cacheShow.value = true
+}
+
+/** 维护区作业终态 → 清 jobId 让进度卡消失并刷新状态。 */
+function onMaintenanceJobDone(job: 'unlock' | 'repair' | 'recover'): void {
+  if (job === 'unlock') onUnlockDone()
+  else if (job === 'repair') onRepairDone()
+  else onRecoverDone()
+}
+
 /** copy 源仓固定为「当前查看的仓库」，弹窗显式标出——否则极易把复制方向看反。 */
 
 /** copy 目标候选：其它仓库中已配地址与密码的（否则后端 422）。 */
@@ -1060,36 +1077,8 @@ const testPasswordWrong = computed(
 // ---------------------------------------------------------------- 展示辅助
 const repoStatus = computed(() => statusQuery.data.value ?? null)
 
-/** 缓存占用一行文案（truncated 时值仍可用，标注为「部分统计」即可，后端不 5xx）。 */
-const cacheUsageText = computed(() => {
-  const usage = cacheQuery.data.value
-  if (!usage) {
-    return t('repo.cacheUnknown')
-  }
-  return t('repo.cacheUsage', { size: formatBytes(usage.size_bytes), n: usage.items_count })
-})
 
-/** 缓存目录一行文案（原设置页专区字段并入，沿用纯文本注释口径）；无数据时不渲染。 */
-const cachePathLine = computed(() => {
-  const usage = cacheQuery.data.value
-  return usage ? t('repo.cachePath', { path: usage.path }) : ''
-})
-
-/** 测量时间一行文案；无数据时不渲染。 */
-const cacheMeasuredLine = computed(() => {
-  const usage = cacheQuery.data.value
-  return usage ? t('repo.cacheMeasured', { time: formatDateTime(usage.measured_at) }) : ''
-})
-
-/** du 超时截断标注（后端回部分值，仍可用，仅提示不精确）。 */
-const cacheTruncated = computed(() => cacheQuery.data.value?.truncated ?? false)
-
-const capacityText = computed(() => {
-  // capacity 可能为 null（后端缺省/代理改写/未初始化），?. 兜底——否则整页渲染抛错白屏
-  const size = repoStatus.value?.capacity?.size
-  return size ? formatBytes(size) : t('common.none')
-})
-
+/** 字节数人读化（容量卡用；维护卡的缓存展示在 RepoMaintenanceCard 内另有一份）。 */
 function formatBytes(value: number): string {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let size = value
@@ -1100,6 +1089,13 @@ function formatBytes(value: number): string {
   }
   return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
+
+const capacityText = computed(() => {
+  // capacity 可能为 null（后端缺省/代理改写/未初始化），?. 兜底——否则整页渲染抛错白屏
+  const size = repoStatus.value?.capacity?.size
+  return size ? formatBytes(size) : t('common.none')
+})
+
 </script>
 
 <template>
@@ -1316,6 +1312,21 @@ function formatBytes(value: number): string {
         </div>
       </n-space>
     </n-card>
+    <!-- 维护卡（候选 4 批 2：RepoMaintenanceCard 自包含展示，确认门仍在下方由本页持有） -->
+    <RepoMaintenanceCard
+      :repo-status="repoStatus"
+      :passfile-missing="passfileMissing"
+      :unlock-job-id="unlockJobId"
+      :repair-job-id="repairJobId"
+      :recover-job-id="recoverJobId"
+      :unlocking="unlocking"
+      :repairing="repairing"
+      :recovering="recovering"
+      :cache-clearing="cacheClearing"
+      @open="onMaintenanceOpen"
+      @job-done="onMaintenanceJobDone"
+    />
+
     <!--
       仓库维护（G6：对齐 Duplicati `backup/database` 的 Maintenance 分区范式——
       「先解释风险，再给动作」：分区标题 → 风险说明段 → 动作行）。
@@ -1324,117 +1335,6 @@ function formatBytes(value: number): string {
       E25 清空缓存（原设置页专区已并入本分区，本页是唯一 UI 入口，复用 api/settings 的同一对函数）。
       危险动作一律走 ConfirmGate 关键词确认。
     -->
-    <n-card :title="t('repo.maintenanceTitle')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3" class="repo__note">{{ t('repo.maintenanceIntro') }}</n-text>
-
-        <!-- 动作行 1：解锁（仅锁残留时有意义） -->
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.unlockBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.unlockHint') }}</n-text>
-          </div>
-          <n-button
-            size="small"
-            type="warning"
-            :disabled="!repoStatus?.locked"
-            :loading="unlocking"
-            @click="unlockShow = true"
-          >
-            {{ t('repo.unlockBtn') }}
-          </n-button>
-        </div>
-
-        <!-- 动作行 2：修复索引/卷（B1，仅已连接可操作） -->
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.repairBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.repairHint') }}</n-text>
-          </div>
-          <n-button
-            size="small"
-            type="error"
-            :disabled="!repoStatus?.connected"
-            :loading="repairing"
-            @click="repairShow = true"
-          >
-            {{ t('repo.repairBtn') }}
-          </n-button>
-        </div>
-
-        <!-- 动作行 3：找回丢失快照（B3，G1 新增入口） -->
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.recoverBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.recoverHint') }}</n-text>
-          </div>
-          <n-button
-            size="small"
-            type="error"
-            :disabled="!repoStatus?.connected"
-            :loading="recovering"
-            @click="recoverShow = true"
-          >
-            {{ t('repo.recoverBtn') }}
-          </n-button>
-        </div>
-
-        <!-- 初始化不在此处：已按用户要求移到每个仓库行内（未初始化才显示），见仓库列表行卡。 -->
-
-        <!-- 动作行 5/6：C4 密钥轮换 + 手动 copy（搬迁自状态卡，逻辑不变） -->
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.rotateBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.rotateHint') }}</n-text>
-          </div>
-          <n-button
-            size="small"
-            secondary
-            :disabled="passfileMissing"
-            @click="openRotate"
-          >
-            {{ t('repo.rotateBtn') }}
-          </n-button>
-        </div>
-
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.copyBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.copyHint') }}</n-text>
-          </div>
-          <n-button size="small" secondary @click="openCopy">
-            {{ t('repo.copyBtn') }}
-          </n-button>
-        </div>
-
-        <!-- 动作行 7：E25 清空本地缓存（后端 S6 危险操作，有活跃任务时 409）。
-             原设置页「缓存维护」专区已并入本行：路径/大小/条目数/测量时间/截断
-             全部沿用本行纯文本注释口径展示（不再用设置页的 descriptions 表格）。 -->
-        <div class="repo__maint-row">
-          <div class="repo__maint-text">
-            <n-text strong>{{ t('repo.cacheBtn') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ t('repo.cacheHint') }}</n-text>
-            <n-text depth="3" class="repo__note">{{ cacheUsageText }}</n-text>
-            <n-text v-if="cachePathLine" depth="3" class="repo__note">{{ cachePathLine }}</n-text>
-            <n-text v-if="cacheMeasuredLine" depth="3" class="repo__note">{{ cacheMeasuredLine }}</n-text>
-            <n-text v-if="cacheTruncated" depth="3" class="repo__note">{{ t('settings.cache.truncated') }}</n-text>
-          </div>
-          <n-button size="small" secondary :loading="cacheClearing" @click="cacheShow = true">
-            {{ t('repo.cacheBtn') }}
-          </n-button>
-        </div>
-
-        <template v-if="unlockJobId">
-          <JobProgress :job-id="unlockJobId" :title="t('repo.unlockJobTitle')" @done="onUnlockDone" @failed="onUnlockDone" />
-        </template>
-        <template v-if="repairJobId">
-          <JobProgress :job-id="repairJobId" :title="t('repo.repairJobTitle')" @done="onRepairDone" @failed="onRepairDone" />
-        </template>
-        <template v-if="recoverJobId">
-          <JobProgress :job-id="recoverJobId" :title="t('repo.recoverJobTitle')" @done="onRecoverDone" @failed="onRecoverDone" />
-        </template>
-      </n-space>
-    </n-card>
     </template>
 
     <!-- 编辑态（对齐 Duplicati destinations 编辑态）：← 返回 + 单配置卡；
