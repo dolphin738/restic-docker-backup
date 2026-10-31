@@ -183,3 +183,10 @@ async function onSaveBehavior(): Promise<void> {
       </n-space>
     </n-card>
 </template>
+
+<style scoped>
+.settings__form { max-width: 560px; }
+.settings__number { width: 120px; }
+.settings__ratio-item { max-width: 480px; }
+.settings__hint { font-size: 12px; }
+</style>

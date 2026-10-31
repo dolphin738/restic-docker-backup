@@ -104,7 +104,6 @@ async function onSaveSystem(): Promise<void> {
                 :options="LOG_LEVEL_OPTIONS"
                 :disabled="systemEnvLocked"
                 size="small"
-                class="settings__select"
               />
             </n-form-item>
             <n-text depth="3" class="settings__hint">{{ t('settings.system.logLevelHint') }}</n-text>
@@ -139,3 +138,9 @@ async function onSaveSystem(): Promise<void> {
       </n-space>
     </n-card>
 </template>
+
+<style scoped>
+.settings__form { max-width: 560px; }
+.settings__number { width: 120px; }
+.settings__hint { font-size: 12px; }
+</style>

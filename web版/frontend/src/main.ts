@@ -10,6 +10,7 @@ import { useUiStore } from './stores/ui'
 import { fontFamilyMono } from './theme/tokens'
 import { setDisplayTimezone } from './utils/datetime'
 import './theme/skin.css'
+import './theme/settings-panel.css'
 
 // 等宽字体常量（tokens.ts 单一来源）落成 documentElement 级 CSS 变量：
 // 页面/抽屉/弹层等 portal 内容同样可继承——SFC style 内 v-bind() 只作用于组件根元素，

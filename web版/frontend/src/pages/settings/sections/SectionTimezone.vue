@@ -430,3 +430,13 @@ async function doSyncTime(): Promise<void> {
       @confirm="doSyncTime"
     />
 </template>
+
+<style scoped>
+.settings__form { max-width: 560px; }
+
+/* 时区下拉（IANA 清单可搜索，留足宽度避免长名截断） */
+.settings__tz-select { max-width: 360px; }
+
+/* 服务器实时时钟（等宽数字，避免秒位抖动导致横向窜动） */
+.settings__clock { font-variant-numeric: tabular-nums; }
+</style>

@@ -309,3 +309,21 @@ async function doImport(): Promise<void> {
       </n-space>
     </n-card>
 </template>
+
+<style scoped>
+/* G4 强度条：四段等宽，颜色由 JS 按分档给出 */
+.settings__strength { flex-wrap: wrap; }
+.settings__strength-bar {
+  display: flex;
+  gap: 4px;
+  width: 160px;
+}
+.settings__strength-seg {
+  flex: 1 1 0;
+  height: 4px;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+
+.settings__file-input { display: none; }
+</style>

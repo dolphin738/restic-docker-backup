@@ -120,7 +120,8 @@ function onSectionChange(id: string): void {
 /* 布局（2026-10-21 改版，替代 P4 锚点长页）：顶部分段 Tab + 单面板，内容全宽。
    曾用「左 NMenu 分区导航 + 右内容」双栏，因与主导航并排成双竖导航被否决
    （见文件头）——勿回退双栏形态。根 n-el 提供 --n-color（naive 把 bodyColor
-   暴露在自渲染元素上），分段条吸顶背景随主题，暗色不回落白条。 */
+   暴露在自渲染元素上），分段条吸顶背景随主题，暗色不回落白条。
+ */
 
 /* 分区切换分段条：全断点统一形态；吸顶常驻（滚长表单时仍在视口），
    窄屏横向滚动不换行（P6 起由共用 SegmentedTabs 的 .rw-segmented 承担）。
@@ -134,109 +135,8 @@ function onSectionChange(id: string): void {
   background: var(--n-color, #fff);
 }
 
-/* 内容面板：仅渲染当前分区；分区卡片带该类，切换（v-if 换卡）即重放入场动画。
-   尊重系统减少动效偏好（WCAG 2.3.3）。 */
-.settings__panel {
-  animation: settings-panel-in 0.16s ease-out;
-}
-
-@keyframes settings-panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .settings__panel {
-    animation: none;
-  }
-}
-
-/* P4：dump 吸底保存条——表单最长（8 键 + 密码三态），保存动作常驻视口底部。
-   背景继承所在 NCard 的 --n-color（= cardColor），故此处不能包 n-el（会把变量重置成 bodyColor）。 */
-.settings__savebar {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 12px 0 4px;
-  background: var(--n-color, #fff);
-  border-top: 1px solid var(--n-border-color, rgba(125, 133, 152, 0.28));
-}
-
-.settings__form {
-  max-width: 560px;
-}
-
-.settings__password-form {
-  max-width: 420px;
-}
-
-.settings__grid {
-  flex-wrap: wrap;
-}
-
-.settings__cell {
-  width: 220px;
-}
-
-.settings__cell--narrow {
-  width: 120px;
-}
-
-.settings__full {
-  width: 100%;
-}
-
-.settings__dump-type {
-  max-width: 220px;
-}
-
-/* E39：时区下拉（IANA 清单可搜索，留足宽度避免长名截断） */
-.settings__tz-select {
-  max-width: 360px;
-}
-
-/* E39：服务器实时时钟（等宽数字，避免秒位抖动导致横向窜动） */
-.settings__clock {
-  font-variant-numeric: tabular-nums;
-}
-
-.settings__number {
-  width: 120px;
-}
-
-.settings__ratio-item {
-  max-width: 480px;
-}
-
-.settings__hint {
-  font-size: 12px;
-}
-
-/* G4 强度条：四段等宽，颜色由 JS 按分档给出（语义色沿用主题基准值） */
-.settings__strength {
-  flex-wrap: wrap;
-}
-
-.settings__strength-bar {
-  display: flex;
-  gap: 4px;
-  width: 160px;
-}
-
-.settings__strength-seg {
-  flex: 1 1 0;
-  height: 4px;
-  border-radius: 2px;
-  transition: background 0.15s;
-}
-
-.settings__file-input {
-  display: none;
-}
+/* 分区样式已随组件拆分：
+   - .settings__panel（面板入场动画）→ theme/settings-panel.css（全局，跨分区共用）
+   - 其余 .settings__* 规则 → 各 sections/SectionXxx.vue 的 scoped 块
+   原因：scoped 属性不穿透子组件，父页的 [data-v-x] 规则匹配不到子组件节点。 */
 </style>

@@ -112,3 +112,8 @@ async function onSaveMetricsToken(): Promise<void> {
       </n-space>
     </n-card>
 </template>
+
+<style scoped>
+.settings__form { max-width: 560px; }
+.settings__hint { font-size: 12px; }
+</style>

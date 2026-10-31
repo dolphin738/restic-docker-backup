@@ -71,3 +71,7 @@ async function onToggleCredEncryption(value: boolean): Promise<void> {
       </n-space>
     </n-card>
 </template>
+
+<style scoped>
+.settings__hint { font-size: 12px; }
+</style>

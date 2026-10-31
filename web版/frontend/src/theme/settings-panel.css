@@ -1,0 +1,26 @@
+/* 设置页各分区的共用面板样式（候选 6 样式解耦，2026-10-31）。
+ *
+ * 为什么需要这个文件：拆分区后每个 SectionXxx.vue 都是独立组件的 scoped 样式域，
+ * 父页 index.vue 的 .settings__panel[data-v-xxx] 规则**匹配不到子组件渲染的节点**
+ * ——scoped 属性不会穿透到子组件模板。凡跨分区共用的类必须放这里（全局、非 scoped）。
+ *
+ * 只放「所有分区都用的」：面板入场动画 + 减少动效偏好。分区各自的类
+ * （form/number/hint…）留在各自组件内，避免这里变成新的公共垃圾场。
+ */
+
+.settings__panel {
+  animation: settings-panel-in 0.16s ease-out;
+}
+
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings__panel {
+    animation: none;
+  }
+}

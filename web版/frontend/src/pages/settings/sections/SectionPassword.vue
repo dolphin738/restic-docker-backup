@@ -101,3 +101,7 @@ async function onChangePassword(): Promise<void> {
       </n-form>
     </n-card>
 </template>
+
+<style scoped>
+.settings__password-form { max-width: 420px; }
+</style>

@@ -219,3 +219,30 @@ async function onSaveDump(): Promise<void> {
 
     <!-- 行为开关（批次 B 实装：behavior.* 五键） -->
 </template>
+
+<style scoped>
+/* dump 表单：8 键 + 密码三态，是最长的一张。 */
+.settings__form { max-width: 560px; }
+.settings__grid { flex-wrap: wrap; }
+.settings__cell { width: 220px; }
+.settings__cell--narrow { width: 120px; }
+.settings__full { width: 100%; }
+.settings__dump-type { max-width: 220px; }
+.settings__number { width: 120px; }
+.settings__hint { font-size: 12px; }
+
+/* 吸底保存条：表单最长，保存动作常驻视口底部。背景继承所在 NCard 的
+   --n-color（= cardColor），故此处不能包 n-el。 */
+.settings__savebar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0 4px;
+  background: var(--n-color, #fff);
+  border-top: 1px solid var(--n-border-color, rgba(125, 133, 152, 0.28));
+}
+</style>
