@@ -13,7 +13,8 @@ from datetime import datetime
 from conftest import ORIGIN, finish_bootstrap
 
 from app.constants import REPO_ID_MAX_LENGTH, REPO_ID_PATTERN
-from app.routers.repos import _new_repo_id, _resolve_repo_id
+from app.routers.repos_shared import new_repo_id as _new_repo_id
+from app.routers.repos_shared import resolve_repo_id as _resolve_repo_id
 
 _ID_RE = re.compile(REPO_ID_PATTERN)
 # 新规则完整形态：r + 6 位日期 + '-' + 6 位小写 Base32（显式列全 32 字符，与

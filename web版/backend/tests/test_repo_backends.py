@@ -24,7 +24,8 @@ from conftest import ORIGIN, finish_bootstrap
 
 from app.db.repositories.repo_repo import derive_repo_type
 from app.errors import ValidationError
-from app.routers.repos import _validate_repo_url, _validate_repo_url_syntax
+from app.routers.repos_shared import validate_repo_url as _validate_repo_url
+from app.routers.repos_shared import validate_repo_url_syntax as _validate_repo_url_syntax
 from app.services.env_sync import load_credentials
 from app.services.rclone import RcloneProbe, RcloneRemotes
 from app.services.restic import ResticCmd

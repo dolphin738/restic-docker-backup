@@ -158,7 +158,7 @@ def test_tally_is_frozen_with_empty_defaults():
 
 def test_remote_of_parses_prefix_exactly():
     """remote 段按**完整相等**切分：``foo`` 不误命中 ``foobar``。"""
-    from app.routers.repos import _rclone_remote_of
+    from app.routers.repos_shared import rclone_remote_of as _rclone_remote_of
 
     assert _rclone_remote_of("rclone:foo:bucket") == "foo"
     assert _rclone_remote_of("rclone:foobar:bucket") == "foobar"

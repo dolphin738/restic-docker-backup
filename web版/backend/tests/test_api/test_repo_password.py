@@ -162,7 +162,7 @@ async def test_force_overwrite_allowed_when_repo_unreachable(app_client, monkeyp
     自救通道：default 仓库禁删、旧密码又无从找回时，界面此前没有任何出路。
     放行前必须先探测一次——只有仓库**当前打不开**才接受覆盖。
     """
-    from app.routers import repos as repos_router
+    from app.routers import repos_status as repos_router
 
     async def unreachable(_request, _repo_id):
         return RepoStatusResponse(
@@ -192,7 +192,7 @@ async def test_force_overwrite_allowed_when_repo_unreachable(app_client, monkeyp
 
 async def test_force_still_rejected_when_repo_connected(app_client, monkeypatch):
     """仓库此刻能正常打开（密码正确）→ 即使 force 也拒绝：换密码必须走密钥轮换。"""
-    from app.routers import repos as repos_router
+    from app.routers import repos_status as repos_router
 
     async def reachable(_request, _repo_id):
         return RepoStatusResponse(connected=True)
