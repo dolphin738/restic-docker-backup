@@ -28,7 +28,6 @@ import {
   NFormItem,
   NIcon,
   NInput,
-  NInputNumber,
   NModal,
   NSelect,
   NSpace,
@@ -54,6 +53,8 @@ import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import SectionDump from '@/pages/settings/sections/SectionDump.vue'
 import SectionBehavior from '@/pages/settings/sections/SectionBehavior.vue'
 import SectionCredential from '@/pages/settings/sections/SectionCredential.vue'
+import SectionMetrics from '@/pages/settings/sections/SectionMetrics.vue'
+import SectionSystem from '@/pages/settings/sections/SectionSystem.vue'
 // G4：导出口令强度条（纯函数估算，见 utils/passwordStrength.ts）
 // 生成统一走全站唯一生成器 utils/password.ts（32 位，与仓库密码同口径）
 import { generatePassword } from '@/utils/password'
@@ -77,49 +78,6 @@ function configItem(key: string) {
 }
 
 // ---------------------------------------------------------------- 凭据加密（R-025 / P3-A）
-
-// ---------------------------------------------------------------- Prometheus 指标（R-024 / P3-B）
-
-/** 令牌三态（同 dump.password 先例）：读取回 *_set 布尔；清除提交空串、输入新值提交原文。
- * 后端只存 SHA-256 硬哈希——设置后不可读，遗失需重新生成。 */
-const metricsTokenSet = ref(false)
-const metricsTokenInput = ref('')
-const metricsTokenClear = ref(false)
-const savingMetrics = ref(false)
-
-watch(configQuery.data, (data) => {
-  if (!data) {
-    return
-  }
-  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
-  metricsTokenSet.value = item('metrics.token')?.has_value ?? false
-}, { immediate: true })
-
-const metricsTokenDirty = computed(() => metricsTokenClear.value || metricsTokenInput.value !== '')
-
-async function onSaveMetricsToken(): Promise<void> {
-  if (savingMetrics.value || !metricsTokenDirty.value) {
-    return
-  }
-  const patch: Record<string, string | null> = {}
-  if (metricsTokenClear.value) {
-    patch['metrics.token'] = ''
-  } else if (metricsTokenInput.value !== '') {
-    patch['metrics.token'] = metricsTokenInput.value
-  }
-  savingMetrics.value = true
-  try {
-    await saveDumpBehaviorConfig(patch)
-    message.success(t('settings.metrics.saved'))
-    metricsTokenInput.value = ''
-    metricsTokenClear.value = false
-    await configQuery.refetch()
-  } catch {
-    // 错误（422 校验等）由 http 层全局提示
-  } finally {
-    savingMetrics.value = false
-  }
-}
 
 // ---------------------------------------------------------------- 时区（E39：手动设置 + 时间同步）
 
@@ -202,62 +160,6 @@ async function onSaveTimezone(): Promise<void> {
     // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
   } finally {
     savingTimezone.value = false
-  }
-}
-
-// ---- 系统域（compose → UI 迁移第一批：log.level / db.busy_timeout_ms）----
-
-const LOG_LEVEL_OPTIONS = [
-  { label: 'DEBUG', value: 'DEBUG' },
-  { label: 'INFO', value: 'INFO' },
-  { label: 'WARNING', value: 'WARNING' },
-  { label: 'ERROR', value: 'ERROR' },
-]
-
-const logLevelItem = computed(() => configItem('log.level'))
-const busyTimeoutItem = computed(() => configItem('db.busy_timeout_ms'))
-/** env 覆盖锁定（任一键被 compose 锁定即整区禁用，避免半锁半可改的困惑）。 */
-const systemEnvLocked = computed(
-  () => logLevelItem.value?.source === 'env' || busyTimeoutItem.value?.source === 'env',
-)
-
-const systemLogLevel = ref('INFO')
-const systemBusyTimeout = ref<number | null>(5000)
-const savingSystem = ref(false)
-
-watch(configQuery.data, (data) => {
-  if (!data) {
-    return
-  }
-  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
-  systemLogLevel.value = (item('log.level')?.value ?? 'INFO').toUpperCase()
-  const rawBusy = item('db.busy_timeout_ms')?.value
-  const parsed = Number(rawBusy)
-  systemBusyTimeout.value = rawBusy && Number.isFinite(parsed) ? parsed : 5000
-})
-
-const systemDirty = computed(
-  () =>
-    systemLogLevel.value !== (logLevelItem.value?.value ?? 'INFO').toUpperCase() ||
-    String(systemBusyTimeout.value ?? '') !== (busyTimeoutItem.value?.value ?? '5000'),
-)
-
-async function onSaveSystem(): Promise<void> {
-  if (savingSystem.value || systemEnvLocked.value) {
-    return
-  }
-  savingSystem.value = true
-  try {
-    await saveDumpBehaviorConfig({
-      'log.level': systemLogLevel.value,
-      'db.busy_timeout_ms': String(systemBusyTimeout.value ?? 5000),
-    })
-    message.success(t('settings.system.saved'))
-    await configQuery.refetch()
-  } catch {
-    // 错误（422 键级校验 / ENV_OVERRIDDEN 等）由 http 层全局提示
-  } finally {
-    savingSystem.value = false
   }
 }
 
@@ -659,47 +561,13 @@ function onSectionChange(id: string): void {
     <!-- 凭据加密（候选 6 拆分：SectionCredential 自包含） -->
     <SectionCredential v-if="activeSection === 'credential'" />
 
-    <n-card v-if="activeSection === 'metrics'" id="sec-metrics" class="settings__panel" :title="t('settings.metrics.title')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
-        <n-form label-placement="top" class="settings__form">
-          <n-space align="center" :size="8">
-            <n-text>{{ t('settings.metrics.token') }}</n-text>
-            <!-- P3c 收口：抓取令牌三态（原 success / 无 type 两形态统一） -->
-            <StatusTag v-if="metricsTokenSet" kind="success" :label="t('settings.metrics.tokenSet')" />
-            <StatusTag v-else kind="default" :label="t('settings.metrics.tokenUnset')" />
-          </n-space>
-          <n-form-item :label="t('settings.metrics.newToken')">
-            <PasswordInput
-              v-model="metricsTokenInput"
-              width="100%"
-              :placeholder="t('settings.metrics.newTokenPlaceholder')"
-            />
-          </n-form-item>
-          <n-space align="center" :size="8">
-            <n-checkbox v-model:checked="metricsTokenClear" :disabled="!metricsTokenSet">
-              {{ t('settings.metrics.clear') }}
-            </n-checkbox>
-            <n-button
-              size="small"
-              type="primary"
-              :loading="savingMetrics"
-              :disabled="!metricsTokenDirty"
-              @click="onSaveMetricsToken"
-            >
-              <template #icon>
-                <n-icon :size="16"><IconCheckCircle /></n-icon>
-              </template>
-              {{ t('settings.metrics.save') }}
-            </n-button>
-          </n-space>
-        </n-form>
-        <n-text depth="3" class="settings__hint">{{ t('settings.metrics.hint') }}</n-text>
-      </n-space>
-    </n-card>
+    <!-- Prometheus 指标（候选 6 拆分：SectionMetrics 自包含） -->
+    <SectionMetrics v-if="activeSection === 'metrics'" />
 
-    <!-- 时区（E39：手动设置 + 服务器时间展示 + NTP 时间同步） -->
-    <n-card v-else-if="activeSection === 'timezone'" id="sec-timezone" class="settings__panel" :title="t('settings.timezone.title')" size="small">
+    <!-- 系统域（候选 6 拆分：SectionSystem 自包含） -->
+    <SectionSystem v-if="activeSection === 'system'" />
+
+    <n-card v-if="activeSection === 'timezone'" id="sec-timezone" class="settings__panel" :title="t('settings.timezone.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.timezone.desc') }}</n-text>
 
@@ -828,55 +696,6 @@ function onSectionChange(id: string): void {
 
     <!-- 管理员改密（E28） -->
     <!-- 系统域（compose → UI 迁移第一批）：日志级别 + SQLite 锁等待 -->
-    <n-card v-else-if="activeSection === 'system'" id="sec-system" class="settings__panel" :title="t('settings.system.title')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3">{{ t('settings.system.desc') }}</n-text>
-        <n-alert v-if="systemEnvLocked" type="warning" :show-icon="false">
-          {{ t('settings.system.envLocked') }}
-        </n-alert>
-        <n-form label-placement="top" class="settings__form">
-          <n-space vertical :size="12">
-            <n-form-item :label="t('settings.system.logLevel')">
-              <n-select
-                v-model:value="systemLogLevel"
-                :options="LOG_LEVEL_OPTIONS"
-                :disabled="systemEnvLocked"
-                size="small"
-                class="settings__select"
-              />
-            </n-form-item>
-            <n-text depth="3" class="settings__hint">{{ t('settings.system.logLevelHint') }}</n-text>
-            <n-form-item :label="t('settings.system.busyTimeout')">
-              <n-input-number
-                v-model:value="systemBusyTimeout"
-                :min="100"
-                :max="600000"
-                :step="1000"
-                :show-button="false"
-                :disabled="systemEnvLocked"
-                size="small"
-                class="settings__number"
-              />
-            </n-form-item>
-            <n-text depth="3" class="settings__hint">{{ t('settings.system.busyTimeoutHint') }}</n-text>
-          </n-space>
-          <n-space justify="end">
-            <n-button
-              type="primary"
-              :loading="savingSystem"
-              :disabled="!systemDirty || systemEnvLocked"
-              @click="onSaveSystem"
-            >
-              <template #icon>
-                <n-icon :size="16"><IconCheckCircle /></n-icon>
-              </template>
-              {{ t('common.save') }}
-            </n-button>
-          </n-space>
-        </n-form>
-      </n-space>
-    </n-card>
-
     <n-card v-else-if="activeSection === 'password'" id="sec-password" class="settings__panel" :title="t('settings.password.title')" size="small">
       <n-form label-placement="top" class="settings__password-form">
         <n-form-item :label="t('settings.password.oldPassword')">
