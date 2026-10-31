@@ -129,6 +129,14 @@ node e2e/p13-wizard-probe.cjs       # 退出码 0 = PASS；产物落 web版/.e2e
 - AI 代理实现**不自行提交**——实现完成后报告改动清单，由负责人（`restic-web-dev <dev@local>`，与 git 身份一致）审查后提交并决定是否 push；
 - 本地 commit 不自动 push；main 分支仅经审查合并。
 
+
+
+## 工作区与同步
+
+- **Windows 端（`D:\agent\AI Coding\restic-docker-backup\web版`）为唯一开发点**；WSL 侧（`/home/AI-Coding/restic-docker-backup/web版`）仅作测试用途，不在此开发、不提交。
+- 需要测试时，把 Windows 端源码经 rsync 本地复制到 WSL 跑测试（排除 node_modules/.venv/.git/dist/__pycache__）；复制进 WSL 的文件仅用于跑测试，不在 WSL 提交。
+- 同步/推送等工作副本改动操作须负责人授权，AI 不自行执行（详见 `docs/工作区与同步约定.md`）。
+
 ## 工作流
 
 三段式：**engineer 实现 → QA 独立验证（核对 git diff 与测试真实性 + 需求符合度——文档声称项逐条对照代码现实，trust but verify）→ owner 审查合并**。**文档超前 / 实现偏离一律提交 owner 裁决，不自行修正，裁决前不合并**（规范 §4.3 步骤 3，v1.6）。审查按 `docs/代码审查规范.md` 执行：🔴 Blocker（安全/红线/数据丢失）必须修复，🟡 Suggestion 应修复或记 issue，💭 Nit 不阻塞；**🔴 须在同一会话内闭环，跨会话遗留的未处置 🔴 视为阻塞项**。commit 描述须含：改了什么、为什么、如何验证、影响面。
