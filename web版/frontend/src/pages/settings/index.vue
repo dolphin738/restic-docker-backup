@@ -7,7 +7,6 @@
  * 1366px 屏内容区被挤到约 700px）被 owner 否决——勿回退该形态。深链保留：
  * 切换即 `#sec-<id>` replaceState，刷新 / 分享链接仍直达对应分区。
  *
- * → 行为开关（批次 B 实装：behavior.* 五键）→ 凭据加密（R-025）
  * → Prometheus 指标（R-024）→ 时区（E39 实装：手动设置 + 服务器
  * 实时时钟 + NTP 时间同步 + 主备 NTP 服务器设置）→ 管理员改密（E28）
  * → 配置迁移（批次 E：导出 / 导入）。
@@ -33,7 +32,6 @@ import {
   NModal,
   NSelect,
   NSpace,
-  NSwitch,
   NText,
   useMessage,
 } from 'naive-ui'
@@ -54,6 +52,8 @@ import StatusTag from '@/components/StatusTag.vue'
 // 深链（#sec-<id>）与未知 id 防御已内置于组件（hashPrefix='sec'）。
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import SectionDump from '@/pages/settings/sections/SectionDump.vue'
+import SectionBehavior from '@/pages/settings/sections/SectionBehavior.vue'
+import SectionCredential from '@/pages/settings/sections/SectionCredential.vue'
 // G4：导出口令强度条（纯函数估算，见 utils/passwordStrength.ts）
 // 生成统一走全站唯一生成器 utils/password.ts（32 位，与仓库密码同口径）
 import { generatePassword } from '@/utils/password'
@@ -76,110 +76,7 @@ function configItem(key: string) {
   return configQuery.data.value?.items?.find((item) => item.key === key) ?? null
 }
 
-// ---------------------------------------------------------------- 行为开关（批次 B：behavior.* 五键）
-
-const behaviorAutoInit = ref(false)
-const behaviorAutoUnlock = ref(false)
-const behaviorCheckEnabled = ref(false)
-// 每日 n/t 滚动扫描周期天数 t（1–256；0 = 不做每日扫描，仅月度全量）
-const behaviorCheckSubsetDenominator = ref<number>(30)
-const behaviorMonthlyFullEnabled = ref(false)
-const behaviorMonthlyFullDay = ref<number>(1)
-const savingBehavior = ref(false)
-
-watch(configQuery.data, (data) => {
-  if (!data) {
-    return
-  }
-  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
-  behaviorAutoInit.value = item('behavior.auto_init')?.value === '1'
-  behaviorAutoUnlock.value = item('behavior.auto_unlock')?.value === '1'
-  behaviorCheckEnabled.value = item('behavior.check_enabled')?.value === '1'
-  // 新键优先；旧键 check_sample_ratio（已废弃的随机百分比）兜底按 t = round(1/ratio) 换算
-  const rawDenominator = item('behavior.check_subset_denominator')?.value
-  const denom = Number(rawDenominator)
-  if (rawDenominator !== undefined && Number.isInteger(denom) && denom >= 0 && denom <= 256) {
-    behaviorCheckSubsetDenominator.value = denom
-  } else {
-    const ratio = Number(item('behavior.check_sample_ratio')?.value)
-    behaviorCheckSubsetDenominator.value =
-      Number.isFinite(ratio) && ratio > 0 ? Math.min(Math.round(1 / ratio), 256) : 30
-  }
-  behaviorMonthlyFullEnabled.value = item('behavior.monthly_full_enabled')?.value === '1'
-  const day = Number(item('behavior.monthly_full_day')?.value)
-  behaviorMonthlyFullDay.value = Number.isInteger(day) && day >= 1 && day <= 28 ? day : 1
-}, { immediate: true })
-
-const behaviorDenominatorValid = computed(
-  () => Number.isInteger(behaviorCheckSubsetDenominator.value) && behaviorCheckSubsetDenominator.value >= 0 && behaviorCheckSubsetDenominator.value <= 256,
-)
-// 派生展示：每天约读 1/t（t=0 = 不做每日扫描）；仅用于提示文案，不回写后端
-const behaviorDailyPercent = computed(() => {
-  const total = behaviorCheckSubsetDenominator.value
-  return total > 0 ? (100 / total).toFixed(1) : '0'
-})
-const behaviorDayValid = computed(
-  () => Number.isInteger(behaviorMonthlyFullDay.value) && behaviorMonthlyFullDay.value >= 1 && behaviorMonthlyFullDay.value <= 28,
-)
-const behaviorFormValid = computed(() => behaviorDenominatorValid.value && behaviorDayValid.value)
-
-async function onSaveBehavior(): Promise<void> {
-  if (!behaviorFormValid.value || savingBehavior.value) {
-    return
-  }
-  savingBehavior.value = true
-  try {
-    await saveDumpBehaviorConfig({
-      'behavior.auto_init': behaviorAutoInit.value ? '1' : '0',
-      'behavior.auto_unlock': behaviorAutoUnlock.value ? '1' : '0',
-      'behavior.check_enabled': behaviorCheckEnabled.value ? '1' : '0',
-      // 周期天数 t：每天读第 n 个桶，t 天把全仓数据块无重复、无遗漏读一遍
-      'behavior.check_subset_denominator': String(behaviorCheckSubsetDenominator.value),
-      'behavior.monthly_full_enabled': behaviorMonthlyFullEnabled.value ? '1' : '0',
-      'behavior.monthly_full_day': String(behaviorMonthlyFullDay.value),
-    })
-    message.success(t('settings.behavior.saved'))
-    await configQuery.refetch()
-  } catch {
-    // 错误（422 键级校验等）由 http 层全局提示
-  } finally {
-    savingBehavior.value = false
-  }
-}
-
 // ---------------------------------------------------------------- 凭据加密（R-025 / P3-A）
-
-/** 缺省开（与后端 owner 2026-10-16 裁决一致）：键缺失 = 开；仅显式 '0' 为关。 */
-const credEncryption = ref(true)
-/** 密码文件就位与否（E06 passfile_status）：缺失时开关置灰，启用被后端 422 拒绝。 */
-const credEncryptionAvailable = ref(true)
-const savingCredEncryption = ref(false)
-
-watch(configQuery.data, (data) => {
-  if (!data) {
-    return
-  }
-  const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
-  credEncryption.value = item('security.cred_encryption')?.value !== '0'
-  credEncryptionAvailable.value = data.passfile_status === 'configured'
-}, { immediate: true })
-
-/** 即时保存（单开关不设保存按钮）：失败回滚开关，错误文案由 http 层全局提示。 */
-async function onToggleCredEncryption(value: boolean): Promise<void> {
-  if (savingCredEncryption.value) {
-    return
-  }
-  savingCredEncryption.value = true
-  try {
-    await saveDumpBehaviorConfig({ 'security.cred_encryption': value ? '1' : '0' })
-    message.success(t('settings.credential.saved'))
-    await configQuery.refetch()
-  } catch {
-    credEncryption.value = !value
-  } finally {
-    savingCredEncryption.value = false
-  }
-}
 
 // ---------------------------------------------------------------- Prometheus 指标（R-024 / P3-B）
 
@@ -756,112 +653,13 @@ function onSectionChange(id: string): void {
     <!-- DB dump（候选 6 拆分：SectionDump 自包含） -->
     <SectionDump v-if="activeSection === 'dump'" />
 
-    <n-card v-if="activeSection === 'behavior'" id="sec-behavior" class="settings__panel" :title="t('settings.behavior.title')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3">{{ t('settings.behavior.desc') }}</n-text>
-        <n-form label-placement="top" class="settings__form">
-          <n-space vertical :size="12">
-            <n-space vertical :size="4">
-              <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorAutoInit" size="small" :aria-label="t('settings.behavior.autoInit')" />
-                <n-text>{{ t('settings.behavior.autoInit') }}</n-text>
-              </n-space>
-              <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoInitHint') }}</n-text>
-            </n-space>
-            <n-space vertical :size="4">
-              <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorAutoUnlock" size="small" :aria-label="t('settings.behavior.autoUnlock')" />
-                <n-text>{{ t('settings.behavior.autoUnlock') }}</n-text>
-              </n-space>
-              <n-text depth="3" class="settings__hint">{{ t('settings.behavior.autoUnlockHint') }}</n-text>
-            </n-space>
-            <n-space vertical :size="4">
-              <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorCheckEnabled" size="small" :aria-label="t('settings.behavior.checkEnabled')" />
-                <n-text>{{ t('settings.behavior.checkEnabled') }}</n-text>
-              </n-space>
-              <n-text depth="3" class="settings__hint">{{ t('settings.behavior.checkEnabledHint') }}</n-text>
-            </n-space>
-            <n-form-item
-              :label="t('settings.behavior.checkSubsetDenominator')"
-              :validation-status="behaviorDenominatorValid ? undefined : 'error'"
-              :feedback="behaviorDenominatorValid ? undefined : t('settings.behavior.invalidDenominator')"
-              class="settings__ratio-item"
-            >
-              <n-space align="center" :size="8">
-                <n-input-number
-                  v-model:value="behaviorCheckSubsetDenominator"
-                  :min="0"
-                  :max="256"
-                  :step="1"
-                  :show-button="false"
-                  class="settings__number"
-                />
-                <n-text depth="3">{{ t('settings.behavior.checkSubsetDenominatorHint', { percent: behaviorDailyPercent }) }}</n-text>
-              </n-space>
-            </n-form-item>
-            <n-space vertical :size="4">
-              <n-space align="center" :size="8">
-                <n-switch v-model:value="behaviorMonthlyFullEnabled" size="small" :aria-label="t('settings.behavior.monthlyFullEnabled')" />
-                <n-text>{{ t('settings.behavior.monthlyFullEnabled') }}</n-text>
-              </n-space>
-              <n-text depth="3" class="settings__hint">{{ t('settings.behavior.monthlyFullEnabledHint') }}</n-text>
-            </n-space>
-            <n-form-item
-              :label="t('settings.behavior.monthlyFullDay')"
-              :validation-status="behaviorDayValid ? undefined : 'error'"
-              :feedback="behaviorDayValid ? undefined : t('settings.behavior.invalidDay')"
-              class="settings__ratio-item"
-            >
-              <n-space align="center" :size="8">
-                <n-input-number
-                  v-model:value="behaviorMonthlyFullDay"
-                  :min="1"
-                  :max="28"
-                  :show-button="false"
-                  :disabled="!behaviorMonthlyFullEnabled"
-                  class="settings__number"
-                />
-                <n-text depth="3">{{ t('settings.behavior.monthlyFullDayHint') }}</n-text>
-              </n-space>
-            </n-form-item>
-          </n-space>
-          <n-space justify="end">
-            <n-button type="primary" :loading="savingBehavior" :disabled="!behaviorFormValid" @click="onSaveBehavior">
-              <template #icon>
-                <n-icon :size="16"><IconCheckCircle /></n-icon>
-              </template>
-              {{ t('common.save') }}
-            </n-button>
-          </n-space>
-        </n-form>
-      </n-space>
-    </n-card>
+    <!-- 行为开关（候选 6 拆分：SectionBehavior 自包含） -->
+    <SectionBehavior v-if="activeSection === 'behavior'" />
 
-    <!-- 凭据加密（R-025 / P3-A：密钥源自仓库密码文件，默认开） -->
-    <n-card v-else-if="activeSection === 'credential'" id="sec-credential" class="settings__panel" :title="t('settings.credential.title')" size="small">
-      <n-space vertical :size="12">
-        <n-text depth="3">{{ t('settings.credential.desc') }}</n-text>
-        <n-alert v-if="!credEncryptionAvailable" type="warning" :show-icon="false">
-          {{ t('settings.credential.unavailable') }}
-        </n-alert>
-        <n-space align="center" :size="8">
-          <n-switch
-            :value="credEncryption"
-            :aria-label="t('settings.credential.enabled')"
-            size="small"
-            :loading="savingCredEncryption"
-            :disabled="!credEncryptionAvailable"
-            @update:value="onToggleCredEncryption"
-          />
-          <n-text>{{ t('settings.credential.enabled') }}</n-text>
-        </n-space>
-        <n-text depth="3" class="settings__hint">{{ t('settings.credential.hint') }}</n-text>
-      </n-space>
-    </n-card>
+    <!-- 凭据加密（候选 6 拆分：SectionCredential 自包含） -->
+    <SectionCredential v-if="activeSection === 'credential'" />
 
-    <!-- Prometheus 指标（R-024 / P3-B：抓取令牌三态 + 端点提示） -->
-    <n-card v-else-if="activeSection === 'metrics'" id="sec-metrics" class="settings__panel" :title="t('settings.metrics.title')" size="small">
+    <n-card v-if="activeSection === 'metrics'" id="sec-metrics" class="settings__panel" :title="t('settings.metrics.title')" size="small">
       <n-space vertical :size="12">
         <n-text depth="3">{{ t('settings.metrics.desc') }}</n-text>
         <n-form label-placement="top" class="settings__form">
