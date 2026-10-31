@@ -27,32 +27,25 @@ import {
 import { computed, h, nextTick, onUnmounted, reactive, ref, watch, type FunctionalComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getConfig, putConfig } from '@/api/config'
-import { createJob } from '@/api/jobs'
 // E25 缓存端点已在 api/settings.ts（GET /api/cache、POST /api/cache/clear）。
 // 设置页缓存维护专区已并入本维护区（2026-10-19），本页是唯一 UI 入口，
 // 复用同一对函数，避免第二套路径（/api/ops/cache 并不存在）。
-import { clearCache, getCacheUsage } from '@/api/settings'
+import { getCacheUsage } from '@/api/settings'
 import {
   createRepo,
-  deleteRepo,
   getRepo,
   getRepoStatus,
-  getRepoUsage,
   listRepos,
   listRcloneConfigs,
   listRcloneRemotes,
-  manualCopy,
-  rebuildRepo,
-  rotateRepoKey,
   setRepoPassword,
   suggestRepoId,
   testRepo,
   updateRepo,
 } from '@/api/repo'
-import { hasCode, isAppError } from '@/api/http'
+import { isAppError } from '@/api/http'
 import type {
   ConfigItem,
-  JobDonePayload,
   RcloneConfigsOut,
   RcloneRemotesOut,
   RepoOut,
@@ -60,7 +53,6 @@ import type {
   RepoStatusResponse,
   RepoTestResponse,
   RepoUpdateRequest,
-  RepoUsageOut,
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import DirPickerInline from '@/components/DirPickerInline.vue'
@@ -68,6 +60,7 @@ import PasswordInput from '@/components/PasswordInput.vue'
 // P6 形态层：add-new 行动卡（对齐 Duplicati destinations.html：plus-circle + 标题 + 描述，
 // 整卡可点 + Enter/Space）——替代原卡右上角「新建仓库」按钮（用户 2026-10-22 指令改回原样式）。
 import ActionCard from '@/components/dashboard/ActionCard.vue'
+import { useRepoGates } from '@/composables/useRepoGates'
 import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -543,93 +536,20 @@ async function onCreateAndTest(): Promise<void> {
 const creating = ref(false)
 
 // ---------------------------------------------------------------- 删除仓库（R-023）
-const deleting = ref(false)
-const deleteShow = ref(false)
-const deleteTarget = ref<string | null>(null)
 /** 删除确认门的「同时删除磁盘数据」勾选（默认不勾：保留磁盘数据，重新添加同 id 仓库可复用）。
  *  勾选后 purge_disk=true：rmtree 仓库目录 + 删密码文件——治「删库后同址新建撞上
  *  打不开的旧仓库」的孤儿死循环；仅本地 FS 可自动清空（远程后端后端 422）。 */
-const deletePurge = ref(false)
 /** 删除目标仓库行（勾选框仅本地 FS 显示：远程后端无本地数据可清）。 */
-const deleteTargetRepo = computed(() => repos.value.find((x) => x.id === deleteTarget.value))
-
-// 删除门的「后果可视化」（删除保护方案 P1，裁决 6）：打开门时查一次占用明细。
-// snapshot_total = 仓库内快照**总条数**（含无 tag 的手工快照）；null = 不可知，
-// UI 必须显示「不可知」而不是 0——0 会让用户误判「从没备过」而放心删除。
-const deleteUsage = ref<RepoUsageOut | null>(null)
-const deleteUsageLoading = ref(false)
 
 /** 删除门描述：按是否勾选「同时删除磁盘数据」分两档（口径见方案 §3.1 / §4 L3）。
  *  - 不勾：快照数据与密码文件都留在磁盘，但本应用**再无入口**——需以相同 id 与地址
  *    重建仓库才能恢复；删除误导句「仓库内的 restic 快照不受影响」。
  *  - 勾选：目录内容 + 密码文件一并销毁，**不可逆、无归档可救**。
  */
-const deleteDescription = computed(() => (deletePurge.value ? t('repo.deletePurgeConfirm') : t('repo.deleteConfirm')))
 
 /** 快照数展示文案：null / 加载中 → 不可知（不写 0）。 */
-const deleteSnapshotText = computed(() => {
-  if (deleteUsageLoading.value) return t('repo.usageLoading')
-  const total = deleteUsage.value?.snapshot_total
-  return typeof total === 'number' ? t('repo.usageSnapshots', { n: total }) : t('repo.usageUnknown')
-})
 
 /** 镜像引用（非空 → 后端必然 409，门里提前说清去哪解）。 */
-const deleteMirrorRefs = computed(() => deleteUsage.value?.mirror_refs ?? [])
-
-async function loadDeleteUsage(id: string): Promise<void> {
-  deleteUsage.value = null
-  deleteUsageLoading.value = true
-  try {
-    deleteUsage.value = await getRepoUsage(id)
-  } catch {
-    // 占用明细只用于「让后果可见」，取不到不阻断删除门（失败即显示不可知）
-    deleteUsage.value = null
-  } finally {
-    deleteUsageLoading.value = false
-  }
-}
-
-function onDeleteClick(id: string): void {
-  if (id === 'default') {
-    message.warning(t('repo.deleteDefaultForbidden'))
-    return
-  }
-  deleteTarget.value = id
-  deletePurge.value = false
-  deleteUsage.value = null
-  deleteShow.value = true
-  void loadDeleteUsage(id)
-}
-
-async function confirmDelete(): Promise<void> {
-  const id = deleteTarget.value
-  if (!id) {
-    return
-  }
-  const purging = deletePurge.value
-  deleting.value = true
-  try {
-    await deleteRepo(id, { purgeDisk: purging })
-    message.success(purging ? t('repo.destroyed') : t('repo.archived'))
-    if (ui.currentRepoId === id) {
-      onSetCurrent('default')
-    }
-    // 归档（删除保护方案 D13）：本仓从「仓库列表」移入「归档」页。列表已 refetch，但归档页
-    // 数据是独立查询（['archive','repos']）——不失效的话，归档页若在本会话已访问过会命中
-    // 缓存（全局 staleTime 10s + 组件 remount 才重取），表现为「归档后归档页不出现新条目，
-    // 需手动刷新」。此处主动失效，跳转即见（缺陷 issue 3）。
-    await queryClient.invalidateQueries({ queryKey: ['archive', 'repos'] })
-    await reposQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    deleting.value = false
-    deleteTarget.value = null
-    deleteShow.value = false
-  }
-}
 
 function typeLabel(ty: string): string {
   const key = `repo.type${ty.charAt(0).toUpperCase()}${ty.slice(1)}`
@@ -678,43 +598,6 @@ function closePassword(): void {
 // 2026-10-21 前仅 default 开放；删除仓库不触碰磁盘数据 ⇒ 同址新建会撞上打不开的旧仓库
 // （cat config 报「密码错误」），非默认仓库此前没有任何恢复路径（死循环），故放开到全部仓库。
 // 仅本地 FS 可自动清空（远程 422，需手动清空后端存储后删除重建）。
-const rebuildShow = ref(false)
-const rebuildResultShow = ref(false)
-const rebuildTargetId = ref<string | null>(null)
-const rebuildPassword = ref<string | null>(null)
-const rebuildSaving = ref(false)
-
-/** 打开重建确认门（列表行内与编辑态测试区共用；目标缺省当前仓库）。 */
-function openRebuild(id?: string): void {
-  rebuildTargetId.value = id ?? currentRepoId.value
-  rebuildShow.value = true
-}
-
-async function onRebuild(id: string): Promise<void> {
-  rebuildSaving.value = true
-  try {
-    const res = await rebuildRepo(id, {})
-    rebuildPassword.value = res.generated ? res.password : null
-    rebuildResultShow.value = true
-    message.success(t('repo.rebuildOk'))
-    // 旧测试结论（典型：密码错误）描述的是重建前的旧仓库，必须作废——
-    // 否则编辑态内联测试区仍挂着旧错误分支，把「重建后是全新仓库」的事实盖掉
-    resetTestResult()
-    await Promise.all([reposQuery.refetch(), repoQuery.refetch(), statusQuery.refetch(), configQuery.refetch()])
-    await queryClient.invalidateQueries({ queryKey: ['repo', 'status'] })
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    rebuildSaving.value = false
-  }
-}
-
-function closeRebuild(): void {
-  rebuildResultShow.value = false
-  rebuildPassword.value = null
-}
 
 async function generatePassword(): Promise<void> {
   await submitPassword({})
@@ -997,69 +880,16 @@ const credFields = computed<CredField[]>(() => CRED_FIELDS[formType.value])
 const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<RepoTestResponse | null>(null)
-const unlockShow = ref(false)
-const unlocking = ref(false)
-const unlockJobId = ref('')
-const initShow = ref(false)
-const initializing = ref(false)
-// A 方案：init 进度行级化（绑定具体仓库）；initJobMap[repoId]=jobId，initTargetId=正在初始化的仓库
-const initTargetId = ref<string | null>(null)
-const initJobMap = reactive<Record<string, string>>({})
-// B1 自愈：仓库修复（repair index / repair packs），危险操作 ConfirmGate 关键词 REPAIR
-const repairShow = ref(false)
-const repairing = ref(false)
-const repairJobId = ref('')
-const repairTarget = ref<'index' | 'packs'>('index')
 // B3 自愈：找回丢失快照（restic recover），危险操作 ConfirmGate 关键词 RECOVER。
 // 后端早已支持（constants.py JOB_TYPES + job_runner 埋 AUDIT_RECOVER_RUN），此前前端零入口——G1 补齐。
-const recoverShow = ref(false)
-const recovering = ref(false)
-const recoverJobId = ref('')
 
 // ---------------------------------------------------------------- C4 密钥轮换 + 手动 copy（搬家）
 // 输入方式与 E44 同款（生成→复制 / 自填），与「设置仓库密码」共用 PasswordEntryModal。
 // 区别只在生成实现：轮换新密码后端不回显（S3）→ 前端本地生成、确认后才随请求提交。
-const rotateShow = ref(false)
-const rotating = ref(false)
-/** 生成态的一次性明文（前端本地生成）；null = 自填态。确认前仅存于内存。 */
-const rotateGenerated = ref<string | null>(null)
-const copyShow = ref(false)
-const copying = ref(false)
-const copyTarget = ref<string | null>(null)
-const copyResult = ref<{
-  ok: boolean
-  exit_code: number
-  message: string
-  copied: number | null
-  target_total: number | null
-  log_name: string | null
-} | null>(null)
-
-function openRotate(): void {
-  rotateGenerated.value = null
-  rotateShow.value = true
-}
 
 /** 前端本地生成 32 位随机密码（唯一生成器 utils/password.ts，纯 crypto 源，不经网络、不落任何存储）。 */
 function generateRotatePw(): void {
   rotateGenerated.value = generateRandomPassword()
-}
-
-async function onRotate(newPassword: string): Promise<void> {
-  if (!currentRepoId.value || newPassword.length < 10) {
-    return
-  }
-  rotating.value = true
-  try {
-    await rotateRepoKey({ repo_id: currentRepoId.value, new_password: newPassword })
-    message.success(t('repo.rotateOk'))
-    rotateShow.value = false
-    rotateGenerated.value = null
-  } catch {
-    // AppError 已有全局提示
-  } finally {
-    rotating.value = false
-  }
 }
 
 // E25 本地缓存：占用查询（服务端 30s 缓存，前端 5 分钟不重取）+ 清空（S6 危险操作）
@@ -1069,65 +899,42 @@ const cacheQuery = useQuery({
   staleTime: 300_000,
   refetchOnWindowFocus: false,
 })
-const cacheShow = ref(false)
-const cacheClearing = ref(false)
 
-/** copy 源仓固定为「当前查看的仓库」，弹窗显式标出——否则极易把复制方向看反。 */
-const copySourceLabel = computed(() => {
-  const hit = (reposQuery.data.value ?? []).find((repo) => repo.id === currentRepoId.value)
-  return hit ? `${hit.name} (${hit.id})` : (currentRepoId.value ?? '—')
+// 候选 4 批 1：9 个危险动作确认门的开关与确认动作全部收进 useRepoGates()
+// （此前它们散在本文件各处，状态定义与门渲染相隔约 1700 行）。
+const gates = useRepoGates({
+  currentRepoId,
+  t,
+  message,
+  queryClient,
+  reposQuery,
+  repoQuery,
+  statusQuery,
+  configQuery,
+  cacheQuery,
+  repos,
+  onDeleted: onSetCurrent,
+  resetTestResult,
 })
 
+// 解构到原名（template 与既有代码零改动）
+const {
+  unlockShow, unlocking, unlockJobId, onUnlock, onUnlockDone,
+  initShow, initializing, initTargetId, initJobMap, onInitGateToggle, onInit, onInitDone,
+  repairShow, repairing, repairJobId, repairTarget, onRepair, onRepairDone,
+  recoverShow, recovering, recoverJobId, onRecover, onRecoverDone,
+  cacheShow, cacheClearing, onClearCache,
+  deleteShow, deleting, deleteTarget, deletePurge, deleteTargetRepo,
+  deleteDescription, deleteSnapshotText, deleteMirrorRefs, onDeleteClick, confirmDelete,
+  rebuildShow, rebuildResultShow, rebuildTargetId, rebuildPassword, rebuildSaving,
+  openRebuild, onRebuild, closeRebuild,
+  rotateShow, rotating, rotateGenerated, openRotate, onRotate,
+  copyShow, copying, copyTarget, copyResult, copySourceLabel, copyOptions, openCopy, onCopy,
+} = gates
+
+/** copy 源仓固定为「当前查看的仓库」，弹窗显式标出——否则极易把复制方向看反。 */
+
 /** copy 目标候选：其它仓库中已配地址与密码的（否则后端 422）。 */
-const copyOptions = computed(() =>
-  (reposQuery.data.value ?? [])
-    .filter((repo) => repo.id !== currentRepoId.value)
-    .map((repo) => ({
-      label: `${repo.name} (${repo.id})`,
-      value: repo.id,
-      disabled: !(repo.url ?? '').trim() || repo.passfile_status !== 'configured',
-    })),
-)
-
-async function onCopy(): Promise<void> {
-  if (!currentRepoId.value || !copyTarget.value) {
-    return
-  }
-  copying.value = true
-  copyResult.value = null
-  try {
-    const resp = await manualCopy({ source_repo_id: currentRepoId.value, target_repo_id: copyTarget.value })
-    const copied = resp.copied ?? null
-    copyResult.value = {
-      ok: resp.ok,
-      exit_code: resp.exit_code,
-      message: resp.message,
-      copied,
-      target_total: resp.target_total ?? null,
-      log_name: resp.log_name ?? null,
-    }
-    if (resp.ok) {
-      // exit 0 ≠ 复制了东西：copied=0 说明目标已包含全部快照，必须提示「未新增」而不是「完成」
-      if (copied === 0) {
-        message.warning(t('repo.copyNoNew'))
-      } else if (copied !== null && copied > 0) {
-        message.success(t('repo.copyOkN', { n: copied }))
-      } else {
-        message.success(t('repo.copyOk'))
-      }
-    }
-  } catch {
-    // AppError 已有全局提示
-  } finally {
-    copying.value = false
-  }
-}
-
-function openCopy(): void {
-  copyTarget.value = null
-  copyResult.value = null
-  copyShow.value = true
-}
 
 // ---------------------------------------------------------------- 保存 / 测试 / 解锁 / 初始化
 async function onSave(): Promise<void> {
@@ -1249,155 +1056,6 @@ const testNotInitialized = computed(() => {
 const testPasswordWrong = computed(
   () => repoTestState.value === 'error' && testResult.value?.failure_kind === 'password',
 )
-
-async function onUnlock(): Promise<void> {
-  unlocking.value = true
-  try {
-    const created = await createJob('unlock')
-    unlockJobId.value = created.id
-    message.success(t('repo.unlockSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    unlocking.value = false
-  }
-}
-
-/** 确认门开合（v-model 拆开写）：关闭时必须按「是否真的提交了作业」决定要不要清目标标记——
- *  ① 纯取消（未提交、无作业）→ 清，否则按钮 loading（绑 initTargetId）永久转圈；
- *  ② 提交中（initializing）或已有作业（initJobMap）→ 不清，清了会提前解锁按钮，
- *     诱发重复 init（在错误地址上另建新仓库，不可逆）。
- *  顺序安全：ConfirmGate 先 emit('confirm')（同步把 initializing 置 true）再 close()。 */
-function onInitGateToggle(visible: boolean): void {
-  initShow.value = visible
-  if (visible) {
-    return
-  }
-  const target = initTargetId.value
-  const hasJob = target ? Boolean(initJobMap[target]) : false
-  if (!initializing.value && !hasJob) {
-    initTargetId.value = null
-  }
-}
-
-async function onInit(): Promise<void> {
-  const targetId = currentRepoId.value
-  initializing.value = true
-  try {
-    const created = await createJob('init')
-    initJobMap[targetId] = created.id
-    message.success(t('repo.initSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-    // 提交失败也要清理（避免留下空 jobId 卡）
-    delete initJobMap[targetId]
-    if (initTargetId.value === targetId) {
-      initTargetId.value = null
-    }
-  } finally {
-    initializing.value = false
-  }
-}
-
-/** init 作业终态（成功或失败都要刷新）：仓库可连性变了，行状态与列表必须立刻跟上——
- *  此前只 refetch 当前仓库状态卡，行级查询仍持 30s 缓存，表现为「初始化完了按钮还在，
- *  刷新网页才消失」（后端缓存在任务终态已清，缺的是前端失效）。
- *  A 方案：按 repoId 清理对应行内进度卡，避免全站浮卡永不消失。 */
-async function onInitDone(repoId: string, payload?: JobDonePayload): Promise<void> {
-  delete initJobMap[repoId]
-  if (initTargetId.value === repoId) {
-    initTargetId.value = null
-  }
-  // 终态反馈：init 是秒级短任务，进度卡一闪即逝（无 progress 事件、只有日志与终态行），
-  // 卡片清掉后必须有明确结论，否则用户不知道成功还是失败。
-  if (payload) {
-    if (payload.exit_code === 0) {
-      message.success(t('repo.initDone'))
-    } else {
-      message.error(t('repo.initFailed', { reason: payload.summary || t('repo.testFail') }))
-    }
-  }
-  // 结论作废：init 后「仓库不存在/未初始化」已不成立，留着旧红条会把用户引向重复 init
-  resetTestResult()
-  await queryClient.invalidateQueries({ queryKey: ['repo'] })
-  await Promise.all([reposQuery.refetch(), statusQuery.refetch()])
-  // 行级状态失效：初始化后仓库可连性变化，行内判定（needsInit/passwordAction）须立刻跟上
-  await queryClient.invalidateQueries({ queryKey: ['repo', 'status', 'row', repoId] })
-}
-
-async function onRepair(): Promise<void> {
-  repairing.value = true
-  try {
-    const created = await createJob('repair', { params: { repair_target: repairTarget.value } })
-    repairJobId.value = created.id
-    message.success(t('repo.repairSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    repairing.value = false
-  }
-}
-
-/** B3 自愈：找回丢失快照（restic recover 无子命令、无额外参数），动作入审计 recover.run。 */
-async function onRecover(): Promise<void> {
-  recovering.value = true
-  try {
-    const created = await createJob('recover')
-    recoverJobId.value = created.id
-    message.success(t('repo.recoverSubmitted'))
-    void statusQuery.refetch()
-  } catch (error) {
-    if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    recovering.value = false
-  }
-}
-
-// 维护区 3 个作业（unlock/repair/recover）终态清理：此前浮卡无 @done，完成/失败都永久残留。
-// 这里成功与失败都清空对应 jobId，让浮卡自动消失；并刷新当前仓库状态。
-function onUnlockDone(): void {
-  unlockJobId.value = ''
-  void statusQuery.refetch()
-}
-function onRepairDone(): void {
-  repairJobId.value = ''
-  void statusQuery.refetch()
-}
-function onRecoverDone(): void {
-  recoverJobId.value = ''
-  void statusQuery.refetch()
-}
-
-/** E25 清空本地缓存：与设置页同口径——409 JOB_CONFLICT 单独提示（有任务在跑不能清），
- *  其余错误交给全局提示（clearCache 是 silent 请求，不会双重 toast）。 */
-async function onClearCache(): Promise<void> {
-  cacheClearing.value = true
-  try {
-    await clearCache()
-    message.success(t('settings.cache.cleared'))
-    cacheShow.value = false
-    await cacheQuery.refetch()
-  } catch (error) {
-    if (hasCode(error, 'JOB_CONFLICT')) {
-      message.warning(t('settings.cache.conflict'))
-    } else if (!isAppError(error)) {
-      throw error
-    }
-  } finally {
-    cacheClearing.value = false
-  }
-}
 
 // ---------------------------------------------------------------- 展示辅助
 const repoStatus = computed(() => statusQuery.data.value ?? null)
