@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useQueries, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import {
   NAutoComplete,
   NAlert,
@@ -50,17 +50,16 @@ import type {
   RcloneRemotesOut,
   RepoOut,
   RepoPasswordRequest,
-  RepoStatusResponse,
   RepoTestResponse,
   RepoUpdateRequest,
 } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import DirPickerInline from '@/components/DirPickerInline.vue'
+import RepoListCard from '@/pages/repo/RepoListCard.vue'
 import RepoMaintenanceCard from '@/pages/repo/RepoMaintenanceCard.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 // P6 形态层：add-new 行动卡（对齐 Duplicati destinations.html：plus-circle + 标题 + 描述，
 // 整卡可点 + Enter/Space）——替代原卡右上角「新建仓库」按钮（用户 2026-10-22 指令改回原样式）。
-import ActionCard from '@/components/dashboard/ActionCard.vue'
 import { useRepoGates } from '@/composables/useRepoGates'
 import JobProgress from '@/components/JobProgress.vue'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
@@ -70,7 +69,6 @@ import KeyIdentity from './KeyIdentity.vue'
 // 存储后端类型图标（零依赖内联 SVG）：仓库列表行卡 + 编辑态类型卡共用
 import { backendIcon } from '@/components/icons/icons'
 // add-new 卡图标（Duplicati destinations.html：plus-circle）
-import { IconPlusCircle } from '@/components/icons/icons'
 import { useUiStore } from '@/stores/ui'
 // G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
 import { generatePassword as generateRandomPassword } from '@/utils/password'
@@ -92,75 +90,13 @@ const repos = computed<RepoOut[]>(() => reposQuery.data.value ?? [])
 // 逐行仓库状态（唯一用途：判定行内「初始化」按钮是否显示——已初始化即隐藏）。
 // 后端对同一 repo_id 有 30s 进程内缓存（REPO_STATUS_CACHE_SECONDS），前端同源缓存；
 // 结论未到时不渲染按钮，避免已初始化仓库闪现一个按钮再消失。
-const rowStatusQueries = useQueries({
-  queries: () =>
-    repos.value.map((r) => ({
-      // key 带 'row' 段：与状态卡的 ['repo','status', id] **刻意分开**——同 key 会被
-      // vue-query 合并成同一个 observer，行查询的 staleTime 反过来拖住状态卡（反之亦然），
-      // 两者的刷新时效互相污染 = 「切换仓库后各行按钮显示乱」的根因之一。
-      queryKey: ['repo', 'status', 'row', r.id],
-      queryFn: () => getRepoStatus(r.id),
-      staleTime: 30_000,
-    })),
-})
+/** 值得给「初始化」入口的失败分类：只有「未初始化」与兜底 unknown。 */
+const INIT_FAILURE_KINDS = new Set(['not_initialized', 'unknown'])
 
-/** 逐行状态结论：**按 queryKey 精确取**，不按下标取。
- *  useQueries 的返回数组在 repos 长度变化的同一帧内可能尚未重排（新建/删除仓库后），
- *  按下标取会拿到别的仓库的结论 = 「初始化按钮显示在错误的行上」。dataUpdatedAt 只作
- *  响应式订阅信号，真正取值走 queryClient.getQueryData（key 与行一一对应，永不错位）。 */
-const rowStatusById = computed<Record<string, RepoStatusResponse | undefined>>(() => {
-  void rowStatusQueries.value.map((q) => q.dataUpdatedAt)
-  const out: Record<string, RepoStatusResponse | undefined> = {}
-  for (const r of repos.value) {
-    out[r.id] = queryClient.getQueryData<RepoStatusResponse>(['repo', 'status', 'row', r.id])
-  }
-  return out
-})
 
 /** 值得给「初始化」入口的失败分类：只有「仓库不存在/未初始化」与兜底 unknown。
  *  其余分类给 init 只会帮倒忙——密码错误 → 重设密码；凭据/网络 → 改配置；锁残留 → 解锁。
  *  判定取自后端结构化 failure_kind（不匹配的中文文案：文案可改、分类稳定）。 */
-const INIT_FAILURE_KINDS = new Set(['not_initialized', 'unknown'])
-
-/** 需要初始化 = 已填地址 + 探测结论「未连接」且分类落在上述集合；无地址（未配置）与已连接均不显示。 */
-function needsInit(r: RepoOut): boolean {
-  if (!r.url) {
-    return false
-  }
-  const st = rowStatusById.value[r.id]
-  if (!st || st.connected) {
-    return false
-  }
-  return INIT_FAILURE_KINDS.has(st.failure_kind ?? 'unknown')
-}
-
-/** 行内密码动作：'set' = 密码文件缺失（首次写入）；'reset' = 密码文件在但仓库打不开
- *  （failure_kind=password，旧密码无从找回 → 走 force 覆盖）；null = 不需要入口。
- *  判定用列表自带的 passfile_status + 行状态分类，两者都不依赖编辑态。 */
-function passwordAction(r: RepoOut): 'set' | 'reset' | null {
-  if (r.passfile_status !== 'configured') {
-    return 'set'
-  }
-  const st = rowStatusById.value[r.id]
-  if (st && !st.connected && st.failure_kind === 'password') {
-    return 'reset'
-  }
-  return null
-}
-
-/** 行级可达性（删除保护方案 P1-3）：已填地址 + 探测结论为不可达。
- *  「不可达」= 快照暂时打不开，用户不必点进快照页才吃 500——列表就把它标出来。
- *  探测结论缺失（加载中 / 请求失败）**不**判为不可达：宁可不报，也不误报红。 */
-function isUnreachable(r: RepoOut): boolean {
-  if (!r.url) {
-    return false
-  }
-  const st = rowStatusById.value[r.id]
-  return Boolean(st && !st.connected)
-}
-
-/** 当前不可达仓库清单（页面级告警用；随行状态查询自动刷新，无额外请求）。 */
-const unreachableRepos = computed(() => repos.value.filter((r) => isUnreachable(r)))
 
 /** 行内初始化：先把该仓库设为当前（init 作业按当前仓库寻址），再开确认门。 */
 function openInit(id: string): void {
@@ -551,10 +487,6 @@ const creating = ref(false)
 
 /** 镜像引用（非空 → 后端必然 409，门里提前说清去哪解）。 */
 
-function typeLabel(ty: string): string {
-  const key = `repo.type${ty.charAt(0).toUpperCase()}${ty.slice(1)}`
-  return t(key)
-}
 
 // ---------------------------------------------------------------- 仓库密码（R-023）
 // 密码文件按仓库维度摆放（<PASSFILE_ROOT>/<repo_id>/password），新仓库缺省不存在。
@@ -1161,157 +1093,23 @@ const capacityText = computed(() => {
          add-new 卡下直接接仓库行卡（用户 2026-10-22 指令去掉「或管理已保存的仓库」分隔文案，不留空 divider）。
          行卡 = [类型图标][名称 + 状态标签][地址·主机标识][右侧操作]，整行点击 = 设为当前
          （Duplicati 选中目标位置语义；当前行高亮且空转）；删除走 ConfirmGate 三门，default 禁删。 -->
-    <n-card :title="t('repo.listTitle')" size="small">
-      <template #header-extra>
-        <n-button size="tiny" secondary @click="openRcloneDrawer">
-          {{ t('repo.rcloneManageBtn') }}
-        </n-button>
-      </template>
-      <!-- 不可达仓库告警（删除保护方案 P1-3）：让「快照暂时打不开」在列表就可见，
-           不必点进快照页才吃 500。刻意**放在 n-space 之外**：n-space 展平插槽子节点
-           按索引发 key，多一个条件兄弟会让索引相撞（本项目既有纪律）。 -->
-      <div v-if="unreachableRepos.length > 0" class="repo__unreachable">
-        <n-alert type="warning" :show-icon="false">
-          {{ t('repo.unreachableBanner', { n: unreachableRepos.length }) }}
-          <span class="repo__del-names">{{ unreachableRepos.map((r) => r.name).join(' / ') }}</span>
-          <div class="repo__del-hint">{{ t('repo.unreachableBannerHint') }}</div>
-        </n-alert>
-      </div>
-      <n-space vertical :size="12">
-        <ActionCard
-          :icon="IconPlusCircle"
-          :title="t('repo.listAddTitle')"
-          :description="t('repo.listAddDesc')"
-          @click="openCreate"
-        />
-        <!-- 分界线：新建仓库操作卡 ↔ 仓库列表（用户 2026-10-24 指令）。
-             与列表行同生同灭（repos 为空时不渲染），不会单独抖动——避免 n-space
-             展平插槽子节点按索引发 key 时索引相撞（本项目既有纪律）。 -->
-        <div v-if="repos.length > 0" class="repo__list-divider"></div>
-        <!-- 仓库行卡：整行点击 = 设为当前；当前行高亮且点击空转（已是选中态）。
-             交互形态照搬 Duplicati destination.component.html：div + role=button + tabindex=0
-             + keydown.enter/space（避免 button 嵌 button 的非法 HTML——行内还有删除按钮）。 -->
-        <div
-          v-for="r in repos"
-          :key="r.id"
-          role="button"
-          tabindex="0"
-          class="repo__dest"
-          :class="{ 'repo__dest--current': r.id === ui.currentRepoId }"
-          :aria-current="r.id === ui.currentRepoId ? 'true' : undefined"
-          @click="onSelectRepo(r.id)"
-          @keydown.enter="onSelectRepo(r.id)"
-          @keydown.space.prevent="onSelectRepo(r.id)"
-        >
-          <n-icon :size="20" class="repo__dest-icon"><component :is="backendIcon(r.type)" /></n-icon>
-          <span class="repo__dest-body">
-            <span class="repo__dest-name">
-              <n-text strong>{{ r.name }}</n-text>
-              <!-- 仓库 ID（改版前的表格有 ID 列，行卡化后曾在列表态丢失；ID 是凭据键
-                   cred.{id}.* 与 RESTIC_REPOSITORY 寻址的锚点，必须可见可核对） -->
-              <n-text depth="3" class="repo__dest-id">#{{ r.id }}</n-text>
-              <StatusTag v-if="r.id === 'default'" size="tiny" kind="warning" :label="t('repo.defaultTag')" />
-              <StatusTag v-if="r.id === ui.currentRepoId" size="tiny" kind="success" :label="t('repo.currentTag')" />
-              <StatusTag
-                size="tiny"
-                :kind="r.passfile_status === 'configured' ? 'success' : 'warning'"
-                :label="r.passfile_status === 'configured' ? t('repo.passfileConfigured') : t('repo.passfileMissingShort')"
-              />
-              <!-- 行级不可达标记（P1-3）：只做提示，不阻断任何动作（用户仍可编辑/修复）。 -->
-              <n-tooltip v-if="isUnreachable(r)" trigger="hover">
-                <template #trigger>
-                  <StatusTag size="tiny" kind="error" :label="t('repo.unreachableTag')" />
-                </template>
-                {{ t('repo.unreachableHint') }}
-              </n-tooltip>
-            </span>
-            <n-text depth="3" class="repo__dest-desc">
-              {{ r.url || '—' }}<template v-if="r.host_tag"> · {{ r.host_tag }}</template>
-            </n-text>
-          </span>
-          <n-text depth="3" class="repo__dest-type">{{ typeLabel(r.type) }}</n-text>
-          <!-- 行内动作（对齐 Duplicati manage-actions）：管理（整页切编辑态）+ 初始化 + 删除；均须 stop 冒泡。
-               初始化只在「已填地址且探测未连接」时出现（已初始化的仓库不再显示），
-               密码文件缺失时禁用并给原因——与维护区原门禁同口径。 -->
-          <n-button size="tiny" secondary @click.stop="openManage(r.id)">
-            {{ t('repo.manage') }}
-          </n-button>
-          <!-- 密码入口（与「初始化」同位置、同口径：逐行判定）：
-               密码文件缺失 → 设置；仓库打不开且分类是密码错误 → 重设（force 覆盖，
-               后端仍会先探测，仓库能打开时拒绝）。 -->
-          <template v-if="passwordAction(r) === 'reset'">
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-button size="tiny" secondary type="warning" @click.stop="openPassword(r.id, true)">
-                  {{ t('repo.passwordResetBtn') }}
-                </n-button>
-              </template>
-              {{ t('repo.passwordWrongHint') }}
-            </n-tooltip>
-            <!-- 密码错（文件在但打不开）→ 重设（force 覆盖）+ 重建。
-                 重建 2026-10-21 起对所有本地 FS 仓库开放：删除仓库不触碰磁盘数据，
-                 同址新建会撞上打不开的旧仓库（cat config 报「密码错误」），
-                 此前非默认仓库只能「删除后换 URL 新建」——同址即死循环，无路可走。 -->
-            <n-button
-              v-if="r.type === 'local'"
-              size="tiny"
-              secondary
-              type="error"
-              @click.stop="openRebuild(r.id)"
-            >
-              {{ t('repo.rebuildBtn') }}
-            </n-button>
-            <!-- 远程后端：无本地数据可自动清空——手动清空后端存储后删除、换 URL 新建 -->
-            <n-text v-else depth="3" class="repo__note">{{ t('repo.rebuildRemoteHint') }}</n-text>
-          </template>
-          <n-button
-            v-else-if="passwordAction(r) === 'set'"
-            size="tiny"
-            secondary
-            type="primary"
-            @click.stop="openPassword(r.id, false)"
-          >
-            {{ t('repo.passwordSetBtn') }}
-          </n-button>
-          <n-tooltip v-if="needsInit(r) && r.passfile_status !== 'configured'" trigger="hover">
-            <template #trigger>
-              <n-button size="tiny" secondary type="warning" disabled>{{ t('repo.initBtn') }}</n-button>
-            </template>
-            {{ t('repo.initBlockedByPassfile') }}
-          </n-tooltip>
-          <n-button
-            v-else-if="needsInit(r)"
-            size="tiny"
-            secondary
-            type="warning"
-            :loading="initTargetId === r.id"
-            @click.stop="openInit(r.id)"
-          >
-            {{ t('repo.initBtn') }}
-          </n-button>
-          <!-- A 方案：init 进度行级化——挂在被初始化的仓库行内，done/failed 回调清理对应卡。
-               抽屉（日志）是覆盖层，不占行布局；非当前仓库也能在它自己的行看到进度。 -->
-          <JobProgress
-            v-if="initJobMap[r.id]"
-            :job-id="initJobMap[r.id]"
-            :title="`${r.name} · ${t('repo.initJobTitle')}`"
-            hide-progress-bar
-            class="repo__init-progress"
-            @done="onInitDone(r.id, $event)"
-            @failed="onInitDone(r.id, $event)"
-          />
-          <n-button
-            size="tiny"
-            secondary
-            type="error"
-            :disabled="r.id === 'default'"
-            @click.stop="onDeleteClick(r.id)"
-          >
-            {{ t('repo.delete') }}
-          </n-button>
-        </div>
-      </n-space>
-    </n-card>
+    <!-- 仓库列表卡（候选 4 批 3：RepoListCard 自包含行卡与行内判定） -->
+    <RepoListCard
+      :repos="repos"
+      :current-repo-id="ui.currentRepoId"
+      :init-job-map="initJobMap"
+      :init-target-id="initTargetId"
+      @select="onSelectRepo"
+      @manage="openManage"
+      @create="openCreate"
+      @rclone-drawer="openRcloneDrawer"
+      @password="openPassword"
+      @init="openInit"
+      @rebuild="openRebuild"
+      @delete="onDeleteClick"
+      @init-done="onInitDone"
+    />
+
     <!-- 维护卡（候选 4 批 2：RepoMaintenanceCard 自包含展示，确认门仍在下方由本页持有） -->
     <RepoMaintenanceCard
       :repo-status="repoStatus"
