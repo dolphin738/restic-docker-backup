@@ -93,6 +93,11 @@ async def test_export_excludes_other_repo_credentials(app_client):
     await finish_bootstrap(ns)
     task = await _create_task(ns)
     await ns.app.state.config_repo.set("cred.default.repo_password", SECRET)
+    # B1 严格语义：非 default 仓库要有自己的口令文件才存得下凭据
+    await ns.app.state.repos_repo.create("other", "其他仓库")
+    other_passfile = ns.app.state.settings.passfile_path("other")
+    other_passfile.parent.mkdir(parents=True, exist_ok=True)
+    other_passfile.write_text("other-password", encoding="utf-8")
     await ns.app.state.config_repo.set("cred.other.repo_password", "OTHER-SECRET-7")
 
     parsed = parse_export_pack((await _export(ns, task["id"])).json(), PASSWORD)

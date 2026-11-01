@@ -20,6 +20,7 @@ from conftest import ORIGIN, finish_bootstrap
 from app.constants import AUDIT_REPO_REBUILD
 from app.errors import ValidationError
 from app.services import repo_lifecycle as repo_lifecycle_mod
+from app.services.env_sync import load_credentials
 
 
 class _FakeProc:
@@ -108,6 +109,48 @@ async def test_rebuild_non_default_repo_succeeds(app_client, tmp_path):
     detail = json.loads(str(rows[0].detail))
     assert detail == {"generated": False, "cleared_credentials": 1}
     assert "brand-new-pw" not in str(rows[0].detail)
+
+
+async def test_rebuild_default_keeps_other_repo_credentials(app_client, tmp_path):
+    """B2：重建 default 只毁 default 自己的凭据，其他仓库的 cred.* 必须存活。
+
+    修复前所有仓库共用**一份** default 口令文件派生的密钥：重建 default 即换掉该
+    口令文件，其他仓库的 enc:v2 凭据全部解不开——行还在、值已死，等于静默数据丢失。
+    per-repo 加密（B1）落地后，各仓库凭据由各自口令文件派生，重建 default 不波及。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+
+    # default 自己也得是「本地 FS + 有口令文件 + 有旧数据」才可重建
+    default_dir = tmp_path / "repo-default"
+    (default_dir / "data").mkdir(parents=True)
+    (default_dir / "config").write_text("old-default-config", encoding="utf-8")
+    await ns.app.state.repos_repo.update("default", url=str(default_dir))
+    _passfile(ns, "default").parent.mkdir(parents=True, exist_ok=True)
+    _passfile(ns, "default").write_text("default-old-password", encoding="utf-8")
+    await ns.app.state.config_repo.set("cred.default.aws_secret_access_key", "default-secret")
+
+    # 另外两座仓库各有自己的口令文件与凭据
+    await _seed_repo(ns, tmp_path, repo_id="rb1")
+    await _seed_repo(ns, tmp_path, repo_id="rb2")
+
+    async def _fake_spawn(argv, log_path, *, env=None):  # noqa: ANN001, ANN202
+        return _FakeProc(Path(log_path), 0)
+
+    ns.app.state.restic.spawn = _fake_spawn  # type: ignore[assignment]
+
+    resp = await ns.client.post(
+        "/api/repos/default/rebuild", json={"password": "brand-new-default-pw"}, headers=ORIGIN
+    )
+    assert resp.status_code == 200, resp.text
+
+    # default 自己的旧密钥凭据被清除（旧密文已不可解）
+    assert (await ns.app.state.config_repo.get("cred.default.aws_secret_access_key")) is None
+
+    # 其他仓库的凭据完好：行还在，且用各自口令文件仍能解出明文（= 没被连带毁掉）
+    config_repo = ns.app.state.config_repo
+    assert await load_credentials(config_repo, "rb1") == {"AWS_SECRET_ACCESS_KEY": "sekret-1"}
+    assert await load_credentials(config_repo, "rb2") == {"AWS_SECRET_ACCESS_KEY": "sekret-1"}
 
 
 async def test_rebuild_generates_password_when_absent(app_client, tmp_path):

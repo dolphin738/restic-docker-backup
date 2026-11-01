@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from app.db.database import Database
 from app.errors import CredentialDecryptError, EnvOverriddenError, ValidationError
 from app.schemas.enums import ConfigSource
-from app.services.crypto import CredentialCrypto
+from app.services.crypto import CredentialCrypto, CryptoProvider
 from app.utils.time import utc_iso
 
 if TYPE_CHECKING:  # 避免运行时循环导入（crypto 不依赖本模块，仅类型注解需要）
@@ -54,28 +54,48 @@ class ConfigRow:
 class ConfigRepo:
     """config 表唯一访问点。"""
 
-    def __init__(self, db: Database, encryption: EncryptionState | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        encryption: EncryptionState | None = None,
+        provider: CryptoProvider | None = None,
+    ) -> None:
         """构造仓储。
 
         Args:
             db: 数据库单例。
             encryption: 凭据加密运行态（R-025）；None 时行为与本特性前一致
                 （明文存储；但若库里已有密文，读取仍尝试解密，无密钥组件则报错
-                而非把密文当明文透出）。
+                而非把密文当明文透出）。仍是**写侧开关**的唯一事实源（``enabled``）。
+            provider: 多仓库凭据加密编排器（B1：``cred.<repo_id>.*`` 按仓库口令文件
+                隔离，全局键落到 default）。与 ``encryption`` 并存——前者选「哪个密钥」、
+                后者定「是否加密」。仅 ``encryption`` 而无 ``provider`` 时退化为单实例
+                （default）语义，保持历史测试兼容。
         """
         self._db = db
         self._encryption = encryption
+        self._provider = provider
 
     # ---------------------------------------------------------------- 读
 
-    def _maybe_decrypt(self, value: str | None) -> str | None:
+    def _crypto_for(self, key: str) -> CredentialCrypto:
+        """返回该配置键应使用的凭据加密实例（B1：``cred.<repo_id>.*`` → 该仓库；其余 → default）。
+
+        无 ``provider``（仅 ``encryption``）时退化为单实例 default 语义；
+        无 ``encryption`` 组件时抛 ``CredentialDecryptError``（装配缺失，绝不透出密文）。
+        """
+        if self._encryption is None:
+            raise CredentialDecryptError()
+        if self._provider is not None:
+            return self._provider.for_key(key)
+        return self._encryption.crypto
+
+    def _maybe_decrypt(self, value: str | None, key: str = "") -> str | None:
         """读侧透明解密：非密文前缀（v1/v2）原样返回（与开关无关，崩溃安全）。"""
         if value is None or not CredentialCrypto.is_encrypted(value):
             return value
-        if self._encryption is None:
-            # 密文存在却无加密组件（装配缺失）——报错，绝不把密文当明文透给业务
-            raise CredentialDecryptError()
-        return self._encryption.crypto.decrypt(value)
+        # 密文存在却无加密组件（装配缺失）——_crypto_for 报错，绝不把密文当明文透给业务
+        return self._crypto_for(key).decrypt(value)
 
     async def get(self, key: str) -> ConfigRow | None:
         """按键读取一行；不存在返回 None。"""
@@ -106,7 +126,7 @@ class ConfigRepo:
         base = _to_row(row)
         return ConfigRow(
             key=base.key,
-            value=self._maybe_decrypt(base.value),
+            value=self._maybe_decrypt(base.value, base.key),
             source=base.source,
             updated_at=base.updated_at,
         )
@@ -166,7 +186,7 @@ class ConfigRepo:
             return value
         if not self.is_sensitive(key):
             return value
-        return self._encryption.crypto.encrypt(value)
+        return self._crypto_for(key).encrypt(value)
 
     async def migrate_encryption(self, *, encrypt: bool) -> int:
         """敏感键存量形态搬运（R-025 开关/启动期迁移；幂等）。
@@ -179,18 +199,18 @@ class ConfigRepo:
         """
         if self._encryption is None:
             return 0
-        crypto = self._encryption.crypto
         changed = 0
         now = utc_iso()
         for row in await self.list_all_raw():
             if not row.value or not self.is_sensitive(row.key):
                 continue
+            cr = self._crypto_for(row.key)
             if not encrypt:
                 # 关闭迁移：密文 → 明文（v1/v2 都可解——读侧按前缀选 info）
-                if not crypto.is_encrypted(row.value):
+                if not cr.is_encrypted(row.value):
                     continue
                 try:
-                    plaintext = crypto.decrypt(row.value)
+                    plaintext = cr.decrypt(row.value)
                 except CredentialDecryptError:
                     # 密码文件被更换 ⇒ 该键旧密文不可解密：跳过并告警（不中断整批），
                     # 保留原密文形态；恢复手段=经 E07 覆写该键（set 守卫不解密旧值）
@@ -204,12 +224,12 @@ class ConfigRepo:
             #   ② legacy enc:v1:（HKDF info 未混仓库标识，审计 2026-10-16 🟡-1）
             #      → 重加密为 enc:v2:（跨仓库密钥隔离）；
             #   ③ enc:v2: 已就位 → 跳过。幂等：重跑零改动。
-            if not crypto.is_encrypted(row.value):
-                await self._upsert(row.key, crypto.encrypt(row.value), row.source, now)
+            if not cr.is_encrypted(row.value):
+                await self._upsert(row.key, cr.encrypt(row.value), row.source, now)
                 changed += 1
-            elif crypto.needs_reencrypt(row.value):
+            elif cr.needs_reencrypt(row.value):
                 try:
-                    await self._upsert(row.key, crypto.reencrypt(row.value), row.source, now)
+                    await self._upsert(row.key, cr.reencrypt(row.value), row.source, now)
                     changed += 1
                 except CredentialDecryptError:
                     # v1 密文不可解（密码文件被更换）：跳过并告警，恢复手段同上

@@ -566,8 +566,12 @@ class RepoLifecycleService:
 
                 # 1) 清空目录内容（必须先于覆盖密码文件——见 docstring）
                 await self._clear_dir_for_rebuild(repo)
+                # 2) 清旧 enc:v2 凭据（旧密钥已随目录清空丢失，无法解密）；明文凭据不受影响。
+                #    必须先于 restic init：init 取凭据要 list_all() 全表解密（B1 起按仓库密钥），
+                #    此时新密码文件尚未写入、该仓库旧密文已不可解 —— 留到 init 之后会 500。
+                cleared = await self._clear_encrypted_credentials(repo_id)
 
-                # 2) 写新密码文件
+                # 3) 写新密码文件
                 plain = password or generate_repo_password()
                 path = self._settings.passfile_path(repo_id)
                 try:
@@ -578,13 +582,10 @@ class RepoLifecycleService:
                         "请在宿主机对应挂载目录手动放置该密码文件"
                     ) from exc
 
-                # 3) restic init（一次调用走 consume() 接缝；失败由内部抛 ResticFailedError）
+                # 4) restic init（一次调用走 consume() 接缝；失败由内部抛 ResticFailedError）
                 await self._restic_init(repo_id, repo, path)
-                # 3.1) key 中性化：失败只记日志、不阻塞（仓库已可用，旧 key 仍有效）
+                # 4.1) key 中性化：失败只记日志、不阻塞（仓库已可用，旧 key 仍有效）
                 await self._neutralize_key(repo_id, path)
-
-                # 4) 清旧 enc:v2 凭据（旧密钥已丢失，无法解密）；明文凭据不受影响
-                cleared = await self._clear_encrypted_credentials(repo_id)
 
                 report = RebuildReport(
                     generated=not password,

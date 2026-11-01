@@ -175,6 +175,7 @@ class JobRunner:
         repos_repo: ReposRepo | None = None,
         on_finish: Callable[[], None] | None = None,
         on_task_backup_success: Callable[[int], Awaitable[None]] | None = None,
+        config: ConfigRepo | None = None,
     ) -> None:
         """构造执行器。
 
@@ -198,6 +199,9 @@ class JobRunner:
                 非空时以 task_id await 调用（X6：清 ``dry_run_pending``，由 main.py
                 注入 ``TaskRepo.clear_dry_run_pending``）；回调异常只记 WARNING，
                 不得影响 job 终态落库。
+            config: 配置仓储（B0：必须复用 main.py 注入的**加密态**实例，否则
+                ``env_sync.load_credentials`` 解密敏感密文会抛 ``CredentialDecryptError``
+                致真实任务失败）；缺省退化为无加密 ``ConfigRepo(db)``（仅兼容无加密测试）。
         """
         self._db = db
         self._restic = restic
@@ -213,7 +217,7 @@ class JobRunner:
         self._on_task_backup_success = on_task_backup_success
 
         self._jobs = JobRepo(db)
-        self._config = ConfigRepo(db)
+        self._config = config if config is not None else ConfigRepo(db)
         self._repos = repos_repo or ReposRepo(db)
         self._exclusions = ExclusionRules(self._settings)
         self._locks: dict[str, asyncio.Lock] = {}

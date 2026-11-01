@@ -23,6 +23,7 @@ from app.db.database import Database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import Job, JobRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID
 from app.db.repositories.task_repo import TaskRepo
 from app.errors import (
     JobConflictError,
@@ -30,6 +31,7 @@ from app.errors import (
     NotFoundError,
     ValidationError,
 )
+from app.services.crypto import CredentialCrypto, EncryptionState
 from app.services.job_runner import JobRunner
 from app.services.parser import OutputParser
 from app.settings import Settings
@@ -203,6 +205,48 @@ async def test_pending_running_success(tmp_path):
     assert final.skipped_count == 1  # archival error
     assert final.last_event_id == 4  # 日志行号推进到最后一行
     assert final.snapshot_id == "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+    await db.close()
+
+
+async def test_job_runs_with_encrypted_sensitive_key(tmp_path):
+    """B0 回归：JobRunner 必须复用带凭据加密的 ConfigRepo，而非内部自建无加密实例。
+
+    此前 ``JobRunner._config = ConfigRepo(db)`` 永无加密组件；config 表一旦存在任意
+    密文行，``env_sync.load_credentials`` 调用 ``list_all()`` 解密即抛
+    ``CredentialDecryptError``，真实任务（非探针/状态）必然失败。本测试锁死：传入
+    加密态 ConfigRepo 后，含 ``cred.*`` 密文的备份任务仍须 success。
+    """
+    root = tmp_path / "repos"
+    (root / "default").mkdir(parents=True, exist_ok=True)
+    (root / "default" / "password").write_text("repo-password", encoding="utf-8")
+
+    settings = Settings(data_dir=str(tmp_path), passfile_root=str(root))
+    settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    db = Database(tmp_path / "jobs.db")
+    await db.connect()
+
+    crypto = CredentialCrypto(settings, repo_id=DEFAULT_REPO_ID)
+    cfg = ConfigRepo(db, encryption=EncryptionState(crypto, enabled=True))
+    # 写入一条敏感密文（cred.* 命中 SENSITIVE_PREFIXES）
+    await cfg.set("cred.default.aws_secret_access_key", "sekret-1")
+
+    runner = JobRunner(
+        db,
+        FakeRestic(lines=BACKUP_LINES),  # type: ignore[arg-type]
+        OutputParser(),
+        AuditRepo(db),
+        settings=settings,
+        config=cfg,
+    )
+
+    job = await runner.submit("backup", params={"sources": ["/sources/etc"]})
+    assert job.status == "pending"
+    await await_job(runner, job.id)
+
+    final = await JobRepo(db).get(job.id)
+    assert final is not None
+    assert final.status == "success"  # 解密不崩，任务不失败
     await db.close()
 
 

@@ -20,6 +20,13 @@ from app.db.repositories.rclone_archive_repo import RcloneArchiveRepo
 
 _SECRET = "s3cr3t-ak-value"
 
+def _write_passfile(ns, repo_id: str, password: str = "test-password") -> None:
+    """B1 严格语义：cred.<repo>.* 的密钥源自该仓库口令文件，测试须先造出来。"""
+    path = ns.app.state.settings.passfile_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(password, encoding="utf-8")
+
+
 
 def _iso(days_ago: int) -> str:
     return (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -28,6 +35,7 @@ def _iso(days_ago: int) -> str:
 async def _archive_repo(ns, repo_id: str, *, days_ago: int = 0) -> None:
     """造一个已归档仓库（deleted_at 直接改写成指定天数前）。"""
     await ns.app.state.repos_repo.create(repo_id, f"仓库{repo_id}", url=f"/data/{repo_id}")
+    _write_passfile(ns, repo_id, "archive-password")
     await ns.app.state.config_repo.set(f"cred.{repo_id}.ak", _SECRET)
     await ns.app.state.repos_repo.archive(repo_id)
     await ns.app.state.db.write(
@@ -45,9 +53,10 @@ async def test_archive_expiry_clears_credentials_and_passfile_but_not_data(app_c
     await _archive_repo(ns, "old", days_ago=40)
     # 覆盖 url 指向真实目录，验证数据不被删
     await ns.app.state.db.write("UPDATE repos SET url = ? WHERE id = 'old'", (str(data_dir),))
+    # 口令文件由 _archive_repo 建好（凭据已用它加密）；此处不得覆写，
+    # 否则密钥一变 cred.old.ak 就解不开（B1 严格语义）
     passfile = ns.app.state.settings.passfile_path("old")
-    passfile.parent.mkdir(parents=True, exist_ok=True)
-    passfile.write_text("pw", encoding="utf-8")
+    assert passfile.exists()
 
     report = await ns.app.state.retention.cleanup_archives()
     assert report.repos_expired == ["old"]

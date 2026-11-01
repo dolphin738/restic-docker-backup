@@ -29,6 +29,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID
 from app.errors import CredentialDecryptError, CredentialKeyUnavailableError
 from app.settings import Settings, get_settings
 
@@ -235,3 +236,48 @@ class EncryptionState:
         """
         self.crypto = crypto
         self.enabled = enabled
+
+
+# ---------------------------------------------------------------- 多仓库凭据加密编排（B1）
+
+
+def _repo_id_for_cred_key(key: str) -> str:
+    """凭据键 ``cred.<repo_id>.<field>`` → 该仓库标识；其余键落到 default。
+
+    只有**三段及以上**才把第二段当仓库标识：``cred.<repo_id>.<field>`` 是 E5 per-repo
+    布局，而 ``cred.<field>``（无仓库段的 legacy 两段形态）与全局键
+    （``dump.password`` / ``notify.*`` / ``metrics.token`` 等）都不被任何仓库口令文件
+    隔离——它们跨仓库共享，恒由 default 实例加密（与单实例时代一致）。
+    """
+    if key.startswith("cred."):
+        rest = key[len("cred."):]
+        parts = rest.split(".", 1)
+        if len(parts) == 2 and parts[0]:
+            return parts[0]
+    return DEFAULT_REPO_ID
+
+
+class CryptoProvider:
+    """按仓库编排 :class:`CredentialCrypto` 实例（B1：落地 enc:v2 跨仓库密钥隔离）。
+
+    - 每个 ``repo_id`` 惰性建一个实例并复用（实例内 ``(mtime_ns, size)`` 缓存按 HKDF
+      info 分桶——本就 per-repo 隔离，换实例即换密钥，无需额外并发锁）；
+    - 全局键（非 ``cred.*``）恒落到 ``DEFAULT_REPO_ID`` 实例，保持跨仓库共享语义；
+    - 密钥源自各仓库 E5 per-repo 口令文件，故「单仓库口令文件更换只影响该仓库凭据」。
+    """
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings or get_settings()
+        self._cache: dict[str, CredentialCrypto] = {}
+
+    def for_repo(self, repo_id: str) -> CredentialCrypto:
+        """返回（并缓存）指定仓库的凭据加密实例。"""
+        cached = self._cache.get(repo_id)
+        if cached is None:
+            cached = CredentialCrypto(self._settings, repo_id=repo_id)
+            self._cache[repo_id] = cached
+        return cached
+
+    def for_key(self, key: str) -> CredentialCrypto:
+        """返回该配置键应使用的凭据加密实例（按键名判定仓库归属）。"""
+        return self.for_repo(_repo_id_for_cred_key(key))

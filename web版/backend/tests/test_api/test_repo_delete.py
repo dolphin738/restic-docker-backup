@@ -19,6 +19,13 @@ from app.constants import AUDIT_REPO_ARCHIVE, AUDIT_REPO_DELETE, AUDIT_REPO_PURG
 
 _SECRET = "s3cr3t-ak-value"
 
+def _write_passfile(ns, repo_id: str, password: str = "test-password") -> None:
+    """B1 严格语义：cred.<repo>.* 的密钥源自该仓库口令文件，测试须先造出来。"""
+    path = ns.app.state.settings.passfile_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(password, encoding="utf-8")
+
+
 
 @pytest.fixture(autouse=True)
 def _reset_repo_status_cache():
@@ -59,6 +66,8 @@ async def test_delete_repo_writes_audit_with_counts(app_client):
     await finish_bootstrap(ns)
     await ns.app.state.repos_repo.create("r2", "二号仓库")
     log_path = await _insert_terminal_job(ns, "job-init-01", "r2")
+    # B1 严格语义：cred.<repo>.* 用该仓库自己的口令文件派生密钥 —— 没有文件就不给存
+    _write_passfile(ns, "r2", "r2-password")
     await ns.app.state.config_repo.set("cred.r2.ak", _SECRET)
 
     resp = await ns.client.delete("/api/repos/r2?hard=1", headers=ORIGIN)

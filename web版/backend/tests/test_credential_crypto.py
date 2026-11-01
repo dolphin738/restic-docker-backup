@@ -25,6 +25,7 @@ from app.services.crypto import (
     PREFIX,
     PREFIX_V1,
     CredentialCrypto,
+    CryptoProvider,
     EncryptionState,
     _hkdf_sha256,
 )
@@ -512,4 +513,86 @@ async def test_migrate_reencrypts_v1_to_v2(tmp_path, monkeypatch) -> None:
 
     # 幂等：重跑零改动
     assert await repo.migrate_encryption(encrypt=True) == 0
+    await db.close()
+
+
+# -------------------------------------------- B1：per-repo 凭据加密编排（CryptoProvider）
+
+
+async def test_repo_crypto_instances_are_per_repo(tmp_path, monkeypatch) -> None:
+    """B1：provider 按仓库给出**不同**实例，密钥源自各仓库自己的口令文件。
+
+    这是 enc:v2 声称的「跨仓库密钥隔离」的真正落地——此前装配只建了一个恒用
+    default 口令文件的实例，隔离形同虚设（审计 2026-10-16 🟡-1）。
+    """
+    monkeypatch.delenv("RESTIC_PASSWORD_FILE", raising=False)
+    root = tmp_path / "repos"
+    for repo_id, password in (("default", "default-password"), ("rb1", "rb1-password")):
+        (root / repo_id).mkdir(parents=True, exist_ok=True)
+        (root / repo_id / "password").write_text(password, encoding="utf-8")
+
+    provider = CryptoProvider(Settings(passfile_root=str(root)))
+    default_crypto = provider.for_repo("default")
+    rb1_crypto = provider.for_repo("rb1")
+
+    # 实例互不相同，且各自记着自己的仓库标识（HKDF info 因此不同）
+    assert default_crypto is not rb1_crypto
+    assert default_crypto._repo_id == "default"
+    assert rb1_crypto._repo_id == "rb1"
+    # 同一仓库复用同一实例（缓存，避免每次派生和重复 stat）
+    assert provider.for_repo("rb1") is rb1_crypto
+
+    # 键名归属：三段 cred.<repo_id>.<field> 落该仓库；两段 legacy 与全局键落 default
+    assert provider.for_key("cred.rb1.aws_secret_access_key") is rb1_crypto
+    assert provider.for_key("cred.default.aws_secret_access_key") is default_crypto
+    assert provider.for_key("cred.aws_secret_access_key") is default_crypto
+    assert provider.for_key("dump.password") is default_crypto
+
+    # 真正的隔离：rb1 密钥加密的密文，default 实例解不开
+    stored = rb1_crypto.encrypt(SECRET)
+    assert rb1_crypto.decrypt(stored) == SECRET
+    with pytest.raises(CredentialDecryptError):
+        default_crypto.decrypt(stored)
+
+
+async def test_config_repo_routes_credentials_by_repo(tmp_path, monkeypatch) -> None:
+    """B1：ConfigRepo 注入 provider 后，cred.<repo_id>.* 各用自己仓库的密钥落库。
+
+    B2 的前提：某仓库口令文件更换只影响该仓库凭据，其他仓库的 cred.* 仍可解。
+    """
+    monkeypatch.delenv("RESTIC_PASSWORD_FILE", raising=False)
+    root = tmp_path / "repos"
+    for repo_id, password in (("default", "default-password"), ("rb1", "rb1-password")):
+        (root / repo_id).mkdir(parents=True, exist_ok=True)
+        (root / repo_id / "password").write_text(password, encoding="utf-8")
+
+    settings = Settings(passfile_root=str(root))
+    provider = CryptoProvider(settings)
+    state = EncryptionState(provider.for_repo("default"), enabled=True)
+    db = Database(tmp_path / "cred.db")
+    await db.connect()
+    repo = ConfigRepo(db, encryption=state, provider=provider)
+
+    await repo.set("cred.default.aws_secret_access_key", "default-secret")
+    await repo.set("cred.rb1.aws_secret_access_key", "rb1-secret")
+    await repo.set("dump.password", "dump-secret")
+
+    # 存的是密文，且两仓库的密文用不同密钥（同明文不同仓库 → 密文互不可解）
+    raw = {row.key: row.value for row in await repo.list_all_raw()}
+    assert raw["cred.default.aws_secret_access_key"].startswith(PREFIX)
+    assert raw["cred.rb1.aws_secret_access_key"].startswith(PREFIX)
+    assert raw["dump.password"].startswith(PREFIX)
+    assert provider.for_repo("default").decrypt(raw["cred.default.aws_secret_access_key"]) == "default-secret"
+    assert provider.for_repo("rb1").decrypt(raw["cred.rb1.aws_secret_access_key"]) == "rb1-secret"
+    # 全局键恒用 default 密钥
+    assert provider.for_repo("default").decrypt(raw["dump.password"]) == "dump-secret"
+    with pytest.raises(CredentialDecryptError):
+        provider.for_repo("rb1").decrypt(raw["cred.default.aws_secret_access_key"])
+
+    # 读侧透明还原（业务拿到明文）
+    rows = {row.key: row.value for row in await repo.list_all()}
+    assert rows["cred.default.aws_secret_access_key"] == "default-secret"
+    assert rows["cred.rb1.aws_secret_access_key"] == "rb1-secret"
+    assert rows["dump.password"] == "dump-secret"
+
     await db.close()

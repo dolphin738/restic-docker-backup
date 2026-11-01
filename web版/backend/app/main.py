@@ -73,7 +73,7 @@ from app.routers import system as system_router
 from app.schemas.api_schemas import ErrorResponse
 from app.services.cache_service import CacheService
 from app.services.compare import CompareService
-from app.services.crypto import CredentialCrypto, EncryptionState
+from app.services.crypto import CryptoProvider, EncryptionState
 from app.services.env_sync import load_credentials, sync_env_overrides, sync_env_repo_overrides
 from app.services.job_runner import JobRunner
 from app.services.log_control import apply_log_level
@@ -209,9 +209,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # （E5 per-repo 布局）经 HKDF-SHA256 派生；缺省 enabled=True，随后按持久化键校准。
     # repo_id 显式传入并混入 HKDF info（enc:v2:，审计 2026-10-16 🟡-1：跨仓库密钥
     # 隔离）——当前单实例即 default；多仓库各自凭据加密时按仓库各建实例。
-    credential_crypto = CredentialCrypto(settings, repo_id=DEFAULT_REPO_ID)
+    # B1：per-repo 实例由 CryptoProvider 编排（cred.<repo_id>.* 落该仓库口令文件，
+    # 全局键恒落 default）——单仓库口令文件更换只影响该仓库凭据（B2/B3 数据丢失面收口）。
+    crypto_provider = CryptoProvider(settings)
+    credential_crypto = crypto_provider.for_repo(DEFAULT_REPO_ID)
     encryption = EncryptionState(credential_crypto)
-    config_repo = ConfigRepo(db, encryption=encryption)
+    config_repo = ConfigRepo(db, encryption=encryption, provider=crypto_provider)
     # R-023 多仓库（P3-C）：repos 表为仓库事实源（0003 扩列）；TaskRepo 经它取 host_tag
     repos_repo = ReposRepo(db)
     # 删除保护方案 D3：rclone 配置段删除自动归档（值等价于凭据 → 只落库、永不回显）
@@ -264,6 +267,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         on_task_backup_success=on_task_backup_success,
         # R-018：真实 Notifier（healthchecks/webhook/MeoW；全渠道未配置时零网络调用）
         notifier=notifier,
+        # B0：复用加密态 ConfigRepo——真实任务经 env_sync.load_credentials 解密
+        # cred.* 密文，缺此即抛 CredentialDecryptError 致任务失败
+        config=config_repo,
     )
 
     # 保留服务（R-020）与缓存服务（R-021）：retention 挂调度器每日维护任务；
@@ -326,6 +332,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config_repo = config_repo
     app.state.repos_repo = repos_repo
     app.state.encryption = encryption
+    app.state.crypto_provider = crypto_provider
     app.state.sessions = sessions
     app.state.admin = admin
     app.state.auth_service = auth_service

@@ -19,6 +19,10 @@ async def _mk_archived(ns, repo_id: str, url: str | None = None) -> None:
     await ns.app.state.repos_repo.create(repo_id, "归档仓库")
     if url:
         await ns.app.state.repos_repo.update(repo_id, url=url)
+    # B1 严格语义：cred.<repo>.* 用该仓库自己的口令文件派生密钥
+    path = ns.app.state.settings.passfile_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("archived-password", encoding="utf-8")
     await ns.app.state.repos_repo.archive(repo_id)
 
 
