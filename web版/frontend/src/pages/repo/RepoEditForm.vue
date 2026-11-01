@@ -126,6 +126,9 @@ const props = defineProps<{
   initJobMap: Record<string, string>
   /** 智能主按钮（父页计算：新建 = 创建并测试，脏且未验 = 保存并测试，否则保存）。 */
   saveButton: { label: string; type: 'primary' | 'warning' | 'error'; run: () => Promise<void> }
+  /** 嵌入式场景（任务向导建仓步）：隐藏「返回列表」与整块卡头/底栏——
+   *  向导有自己的步骤标题与页脚，再叠一层会出现两个「取消 / 下一步」与重复标题。 */
+  embedded?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -172,12 +175,13 @@ const isLocalRepo = computed(() => props.repo?.type === 'local')
 </script>
 
 <template>
-  <div class="repo__edit-header">
+  <div v-if="!embedded" class="repo__edit-header">
     <n-button quaternary size="small" @click="emit('cancel')">{{ t('repo.backToList') }}</n-button>
   </div>
   <n-card size="small">
-    <!-- 卡头：左侧标题 + 仓库 ID（紧跟标题）；右侧放本卡的动作入口（rclone 远端管理） -->
-    <template #header>
+    <!-- 卡头：左侧标题 + 仓库 ID（紧跟标题）；右侧放本卡的动作入口（rclone 远端管理）。
+         embedded（向导建仓步）时不渲染——向导已有步骤标题，重复会出现两个「新建仓库」。 -->
+    <template v-if="!embedded" #header>
       <div class="repo__edit-title">
         <span>{{ creatingNew ? t('repo.newRepoTitle') : t('repo.editRepoTitle') }}</span>
         <n-text v-if="!creatingNew" depth="3" class="repo__id-chip">
@@ -185,7 +189,7 @@ const isLocalRepo = computed(() => props.repo?.type === 'local')
         </n-text>
       </div>
     </template>
-    <template #header-extra>
+    <template v-if="!embedded" #header-extra>
       <n-button
         v-if="formType === 'rclone'"
         size="small"
@@ -212,7 +216,9 @@ const isLocalRepo = computed(() => props.repo?.type === 'local')
             @update:value="emit('type-change', $event)"
           />
           <n-text depth="3" class="repo__note">
-            {{ creatingNew ? t('repo.dest.hint') : t('repo.formTypeChangeHint') }}
+            <!-- 新建态默认用 repo.dest.hint（仓库页新建：凭据创建后再填）；
+                 向导建仓步（embedded）在创建时一并写凭据，故改用不带该误导的说明。 -->
+            {{ creatingNew ? (embedded ? t('wizard.newRepoTypeHint') : t('repo.dest.hint')) : t('repo.formTypeChangeHint') }}
           </n-text>
         </n-form-item>
 
@@ -671,8 +677,10 @@ const isLocalRepo = computed(() => props.repo?.type === 'local')
       </template>
 
       <!-- 底部动作（对齐 Duplicati form-footer 智能主按钮：
-           新建 = 创建仓库；有变更且未验证 = 测试并保存（warn，失败转 error）；已验证/无变更 = 保存） -->
-      <div class="repo__form-footer">
+           新建 = 创建仓库；有变更且未验证 = 测试并保存（warn，失败转 error）；已验证/无变更 = 保存）。
+           embedded（向导建仓步）时不渲染：向导页脚已有「上一步 / 下一步」，
+           再多一组「取消 / 创建并初始化仓库」会让用户不知道哪个才是离开本步的方式。 -->
+      <div v-if="!embedded" class="repo__form-footer">
         <n-button quaternary @click="emit('cancel')">{{ t('common.cancel') }}</n-button>
         <!-- 新建/编辑共用一枚主按钮（语义见 saveButton）：新建态 = 创建并测试 -->
         <n-button :type="saveButton.type" :loading="saving || testing || creating" @click="saveButton.run">

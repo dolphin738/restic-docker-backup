@@ -520,6 +520,8 @@ export default {
     newRepoCreated: 'Repository {id} created — the task will belong to it.',
     needNewRepo: 'Finish creating and initializing the repository in this step first',
     newRepoCreate: 'Create and initialize repository',
+    newRepoTypeHint: 'Pick a repository type, then fill in the address and credentials. Creating runs: create repository → write password file → store credentials → initialize → test connection.',
+    newRepoCreating: 'Creating…',
     // Ownership and switch confirmation once a repository exists (§6.1 R3/R12)
     newRepoOwner: 'Note: the task will belong to repository {id} once saved (the current repository was switched to it).',
     newRepoOffTitle: 'Turn off "New repository"',

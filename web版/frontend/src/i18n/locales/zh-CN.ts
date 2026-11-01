@@ -509,6 +509,8 @@ export default {
     newRepoCreated: '已创建仓库 {id}，任务将归属该仓库。',
     needNewRepo: '请先在本步骤完成仓库创建与初始化',
     newRepoCreate: '创建并初始化仓库',
+    newRepoTypeHint: '选择仓库类型后填写地址与凭据；创建会依次完成：建仓库 → 写密码文件 → 存凭据 → 初始化 → 连接测试。',
+    newRepoCreating: '正在创建…',
     // 已建仓后的归属与切换确认（§6.1 R3/R12）
     newRepoOwner: '注意：任务保存后将归属仓库 {id}（当前仓库已切到它）。',
     newRepoOffTitle: '关闭「新建仓库」',

@@ -68,21 +68,25 @@ describe('NewRepoStep 建仓步骤壳', () => {
     w.unmount()
   })
 
-  it('已建仓（父组件传 provisionedRepoId）时渲染测试与初始化入口', async () => {
-    const w = await mountStep('r1')
-    const text = w.element.textContent ?? ''
-    expect(text).toContain('立即测试')
-    expect(text).toContain('初始化仓库')
+  it('未建仓（creatingNew=true）时不渲染测试区——链路靠建仓成功后翻态打通', async () => {
+    const w = await mountStep()
+    const labels = (Array.from(w.element.querySelectorAll('button')) as HTMLElement[]).map((b) =>
+      (b.textContent ?? '').trim(),
+    )
+    // 新建态 RepoEditForm 的测试区被 v-if="!creatingNew" 挡掉（:549），这是有意为之：
+    // 未落库的仓库无法测试（后端 testRepo 读已落库配置）。
+    expect(labels.some((l) => l.includes('立即测试'))).toBe(false)
     w.unmount()
   })
 
-  it('已建仓时主按钮不再是「创建」语义（避免重复建仓）', async () => {
+  it('壳自己不画建仓按钮于已建仓之后（避免与 RepoEditForm 的入口重复）', async () => {
     const w = await mountStep('r1')
     const labels = (Array.from(w.element.querySelectorAll('button')) as HTMLElement[]).map((b) =>
       (b.textContent ?? '').trim(),
     )
-    // 建仓完成后仍存在创建按钮也无妨，但测试/初始化入口必须在
-    expect(labels.some((l) => l.includes('立即测试'))).toBe(true)
+    // 「创建并初始化仓库」只在未建仓时出现——建仓后再出现等于给重复建仓开口子
+    expect(labels.some((l) => l.includes('创建并初始化仓库'))).toBe(false)
+    console.log('LABELS:', JSON.stringify(labels))
     w.unmount()
   })
 })

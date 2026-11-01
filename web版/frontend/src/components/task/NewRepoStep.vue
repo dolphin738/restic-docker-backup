@@ -8,22 +8,24 @@
  * - **建仓编排不写在这里**：走 `composables/useRepoProvisioning.ts`（与仓库页同源，
  *   消除 §6.1 R6 的表单/流程漂移面）。
  * - 建仓成功后把 `creatingNew` 翻成 false（复刻仓库页 onCreateAndTest 的既有做法）：
- *   RepoEditForm 的测试区与 init 入口都以 `!creatingNew` 为前提，不翻则链路断掉。
+ *   RepoEditForm.vue:549 的 `v-if="repoForm.type && !creatingNew"` 把测试区、init 入口、
+ *   密码入口整块排除在新建态之外，不翻则链路在第一步就断。
  *   翻之后用户看到的是「测试失败 → 未初始化 → 初始化按钮」这条现成闭环。
+ *   ⚠️ 方案 §4.3 F14 原写「creatingNew 传 true、repo 传 null」，**该取值已被证伪**
+ *   （repo=null 还会打掉 :657 的密码状态行与 :171 的本地判定），更正见方案 v1.2 F14 注。
  *
  * 完成态判定（validateStep(KEY_NEW_REPO) 读的就是它）：仓库已创建 + 密码文件已配 +
  * init 作业成功 + 测试通过，四项齐备才置 provisionedRepoId。
  */
 
 import { computed, reactive, ref, watch } from 'vue'
-import { NAlert, NButton, NSpace, NText, useMessage } from 'naive-ui'
+import { NButton, NSpace, NText, useMessage } from 'naive-ui'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useI18n } from 'vue-i18n'
 import { getConfig } from '@/api/config'
 import { isAppError } from '@/api/http'
 import { getRepo, getRepoStatus, listRepos, listRcloneConfigs, listRcloneRemotes, suggestRepoId, testRepo } from '@/api/repo'
 import type { JobDonePayload, RepoTestResponse, RcloneConfigsOut } from '@/api/types'
-import JobProgress from '@/components/JobProgress.vue'
 import RepoEditForm from '@/pages/repo/RepoEditForm.vue'
 import { useRepoProvisioning } from '@/composables/useRepoProvisioning'
 import { CRED_FIELDS } from '@/utils/repoCredentials'
@@ -373,6 +375,7 @@ watch(
       :init-target-id="initJobId ? (provisionedRepoId ?? null) : null"
       :init-job-map="initJobId && provisionedRepoId ? { [provisionedRepoId]: initJobId } : {}"
       :save-button="{ label: t('wizard.newRepoCreate'), type: 'primary', run: onCreate }"
+      embedded
       @cancel="() => {}"
       @type-change="onTypeChange"
       @regenerate-id="onRegenerateId"
@@ -384,28 +387,13 @@ watch(
       @init-done="onInitDone"
     />
 
-    <JobProgress
-      v-if="initJobId"
-      :job-id="initJobId"
-      :title="t('repo.initJobTitle')"
-      hide-progress-bar
-      @done="onInitDone"
-      @failed="onInitDone"
-    />
-
-    <n-alert v-if="repoTestState === 'success'" type="success" :show-icon="false">
-      {{ t('wizard.newRepoCreated', { id: provisionedRepoId ?? '' }) }}
-    </n-alert>
-    <n-space v-else-if="provisionedRepoId" align="center" :size="8">
-      <n-button size="small" secondary :loading="testing" @click="onTest">{{ t('repo.testNow') }}</n-button>
-      <n-button
-        v-if="!passfileMissing"
-        size="small"
-        type="warning"
-        :loading="initializing || initJobId !== null"
-        @click="onInit"
-      >
-        {{ t('repo.initBtn') }}
+    <!-- 建仓主按钮：RepoEditForm 的底栏在 embedded 下隐藏，故由本壳提供。
+         建仓后的「测试 / 初始化 / 密码状态 / init 进度」全部由 RepoEditForm 内部渲染
+         （它的测试区在 creatingNew 翻 false 后自动出现）——壳里再画一套会出现
+         重复的「初始化仓库任务」进度卡与两套按钮（真机截图已证）。 -->
+    <n-space v-if="!provisionedRepoId" align="center" :size="8">
+      <n-button type="primary" :loading="saving" @click="onCreate">
+        {{ saving ? t('wizard.newRepoCreating') : t('wizard.newRepoCreate') }}
       </n-button>
     </n-space>
   </n-space>
