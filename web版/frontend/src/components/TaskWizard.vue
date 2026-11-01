@@ -53,6 +53,7 @@ import {
 import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
 } from '@/components/task/ScheduleRetentionForm.vue'
+import NewRepoStep from '@/components/task/NewRepoStep.vue'
 import SourcesPicker from '@/components/task/SourcesPicker.vue'
 import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
 import StatusTag from '@/components/StatusTag.vue'
@@ -445,6 +446,14 @@ function legacyStepToKey(step: number): number {
   return map[step] ?? step
 }
 
+
+/** 建仓步骤回传（§4.3 F15）：记录仓库 id 并刷新仓库列表。
+ *  切仓本身已由建仓步在提交 init 之前完成（init 作业按 X-Repo-Id 定目标）；
+ *  测试结论写回也在切仓之后——顺序颠倒会被 watch(ui.currentRepoId) 清空。 */
+function onRepoProvisioned(id: string): void {
+  provisionedRepoId.value = id
+  void queryClient.invalidateQueries({ queryKey: ['repos'] })
+}
 
 function validateStep(current: number): boolean {
   if (current === KEY_BASICS && form.name.trim() === '') {
@@ -985,15 +994,12 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
         </template>
 
-        <!-- ② 新建仓库（仅开关打开时进入序列；本步当前是空壳，建仓链路见方案 §5.7 第 5 步） -->
+        <!-- ② 新建仓库（仅开关打开时进入序列；建仓编排见 composables/useRepoProvisioning） -->
         <template v-else-if="step === KEY_NEW_REPO">
-          <n-space vertical :size="4">
-            <n-text strong>{{ t('wizard.stepNewRepo') }}</n-text>
-            <n-text depth="3" class="wizard__note">{{ t('wizard.newRepoStepDesc') }}</n-text>
-          </n-space>
-          <n-alert v-if="provisionedRepoId" type="success" :show-icon="false">
-            {{ t('wizard.newRepoCreated', { id: provisionedRepoId }) }}
-          </n-alert>
+          <NewRepoStep
+            :provisioned-repo-id="provisionedRepoId"
+            @provisioned="onRepoProvisioned"
+          />
         </template>
 
         <!-- ③ 备份源 -->

@@ -26,7 +26,6 @@ import { getConfig, putConfig } from '@/api/config'
 // 复用同一对函数，避免第二套路径（/api/ops/cache 并不存在）。
 import { getCacheUsage } from '@/api/settings'
 import {
-  createRepo,
   getRepo,
   getRepoStatus,
   listRepos,
@@ -206,6 +205,8 @@ import {
   resolveRcloneTarget,
   type RepoTypeKey,
 } from '@/utils/repoUrl'
+import { CRED_FIELDS, ENDPOINT_OPTIONS, type CredField } from '@/utils/repoCredentials'
+import { useRepoProvisioning } from '@/composables/useRepoProvisioning'
 
 /** 类型下拉选项（用户裁决：本项目无后端类型列表端点，用下拉替代 Duplicati 类型选择器列表）。 */
 const REPO_TYPES = computed<Array<{ key: RepoTypeKey; label: string }>>(() => [
@@ -377,6 +378,15 @@ function openCreate(): void {
   editing.value = true
 }
 
+/** 建仓编排（§4.3 F14b）：本页与任务向导建仓步共用 useRepoProvisioning，
+ *  此处只注入本页的切仓钩子与列表失效。 */
+const provisioning = useRepoProvisioning({
+  setCurrentRepoId: (id: string) => onSetCurrent(id),
+  onRepoCreated: async () => {
+    await reposQuery.refetch()
+  },
+})
+
 /** 落库一次创建（不含「之后干什么」的决策）：成功返回新仓库 id 并已设为当前仓库；
  *  失败返回 null（AppError 如 id 重复 409/422 已由全局提示展示）。 */
 async function runCreate(): Promise<string | null> {
@@ -391,28 +401,22 @@ async function runCreate(): Promise<string | null> {
   }
   creating.value = true
   try {
-    const created = await createRepo({
-      id: repoForm.id.trim() || undefined,
-      name: repoForm.name.trim(),
-      url: composeRepoUrl(repoForm).trim() || null,
-      host_tag: repoForm.hostTag.trim() || null,
-    })
-    // 凭据随创建落盘：键 = cred.{created.id}.*（id 留空时用服务端生成的，输入按 suffix 暂存
+    // 建仓与凭据写入走 useRepoProvisioning（与任务向导建仓步同一实现，§4.3 F14b）。
+    // 凭据键 = cred.{created.id}.*（id 留空时用服务端生成的，输入按 suffix 暂存
     // 不绑 id，因此「先填凭据再换 id」也不丢）。repoFormMissing 已保证 type 已选。
-    const credPatch: Record<string, string | null> = {}
-    for (const field of CRED_FIELDS[repoForm.type as RepoTypeKey]) {
-      const value = credInput[field.suffix]
-      if (value) {
-        credPatch[`cred.${created.id}.${field.suffix}`] = value
-      }
-    }
-    if (Object.keys(credPatch).length > 0) {
-      await putConfig(credPatch)
-    }
+    const createdId = await provisioning.create({
+      id: repoForm.id,
+      name: repoForm.name,
+      url: composeRepoUrl(repoForm).trim() || null,
+      hostTag: repoForm.hostTag,
+      type: repoForm.type as RepoTypeKey,
+      credInput,
+    })
+    await provisioning.writeCredentials(createdId, repoForm.type as RepoTypeKey, credInput)
     message.success(t('repo.created'))
     await reposQuery.refetch()
-    onSetCurrent(created.id)
-    return created.id
+    onSetCurrent(createdId)
+    return createdId
   } catch (error) {
     // AppError（如 id 重复 → 409 / 422）已由全局提示展示
     if (!isAppError(error)) {
@@ -696,58 +700,6 @@ watch(currentRepoId, () => {
 
 // ---------------------------------------------------------------- 凭据（按仓库命名空间）
 const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig })
-
-interface CredField {
-  suffix: string
-  labelKey: string
-  /** secret = 密码框；region = 常用值下拉建议（可手填）；text = 明文（ID/名称/路径等非敏感项）。
-   *  曾有的 endpoint 类已退役：restic 0.19.1 的 s3 后端 ApplyEnvironment 只读
-   *  AWS_DEFAULT_REGION，AWS_ENDPOINT_URL 全库零引用（minio-go v7.1.0 实证）——
-   *  自定义 S3 服务器的正确配置位是地址区的「服务器地址」（进 URL 首段）。 */
-  kind: 'text' | 'secret' | 'region'
-}
-
-/** 常用 S3 Endpoint 建议值（MinIO 本机 / 阿里云 OSS / 腾讯云 COS / AWS 官方）。
- *  用于地址区「服务器地址」输入（endpointSuggestions 在其后拼接既有仓库提取值）。 */
-const ENDPOINT_OPTIONS = [
-  'http://127.0.0.1:9000',
-  'https://oss-cn-hangzhou.aliyuncs.com',
-  'https://oss-cn-beijing.aliyuncs.com',
-  'https://oss-cn-shanghai.aliyuncs.com',
-  'https://cos.ap-beijing.myqcloud.com',
-  'https://cos.ap-shanghai.myqcloud.com',
-  'https://s3.amazonaws.com',
-]
-
-/** 凭据键表（§4.3）：基础后缀；完整键 = cred.{repo_id}.{suffix}（R-023 命名空间化）。
- * A1 新增后端（restic 0.19.1 官方 env 逐一登记；sftp 无凭据字段——免密登录；
- * rclone 无凭据字段——conf 宿主机托管，Q17 只读档位）。 */
-const CRED_FIELDS: Record<RepoTypeKey, CredField[]> = {
-  local: [],
-  s3: [
-    { suffix: 'aws_access_key_id', labelKey: 'repo.credAwsAccessKeyId', kind: 'text' },
-    { suffix: 'aws_secret_access_key', labelKey: 'repo.credAwsSecretAccessKey', kind: 'secret' },
-    { suffix: 'aws_default_region', labelKey: 'repo.credAwsDefaultRegion', kind: 'region' },
-  ],
-  b2: [
-    { suffix: 'b2_account_id', labelKey: 'repo.credB2AccountId', kind: 'text' },
-    { suffix: 'b2_account_key', labelKey: 'repo.credB2AccountKey', kind: 'secret' },
-  ],
-  sftp: [],
-  azure: [
-    { suffix: 'azure_account_name', labelKey: 'repo.credAzureAccountName', kind: 'text' },
-    { suffix: 'azure_account_key', labelKey: 'repo.credAzureAccountKey', kind: 'secret' },
-  ],
-  gcs: [
-    { suffix: 'google_project_id', labelKey: 'repo.credGoogleProjectId', kind: 'text' },
-    { suffix: 'google_application_credentials', labelKey: 'repo.credGoogleApplicationCredentials', kind: 'text' },
-  ],
-  rest: [
-    { suffix: 'restic_rest_username', labelKey: 'repo.credRestUsername', kind: 'text' },
-    { suffix: 'restic_rest_password', labelKey: 'repo.credRestPassword', kind: 'secret' },
-  ],
-  rclone: [],
-}
 
 const credPrefix = computed(() => `cred.${currentRepoId.value}.`)
 const credInput = reactive<Record<string, string>>({})

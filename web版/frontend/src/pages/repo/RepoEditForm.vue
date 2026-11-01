@@ -38,16 +38,14 @@ import PasswordInput from '@/components/PasswordInput.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { backendIcon } from '@/components/icons/icons'
 import type { JobDonePayload, RepoOut, RepoTestResponse, RcloneRemotesOut } from '@/api/types'
+import type { CredField } from '@/utils/repoCredentials'
+import { credOptions } from '@/utils/repoCredentials'
 import type { RepoTypeKey } from '@/utils/repoUrl'
 
 const { t } = useI18n()
 
-/** 凭据字段（与父页 CRED_FIELDS 同构；此处只取渲染所需的形状）。 */
-export interface CredField {
-  suffix: string
-  labelKey: string
-  kind: 'text' | 'secret' | 'region'
-}
+/** 凭据字段形状由 utils/repoCredentials.ts 单一定义（父页与向导共用），此处只做再导出。 */
+export type { CredField } from '@/utils/repoCredentials'
 
 /** 编辑态表单字段集（父页 repoForm 的形状）。 */
 export interface RepoFormFields {
@@ -167,26 +165,6 @@ function renderTypeLabel(option: { label: string; value: string }) {
     h(NIcon, { size: 18 }, () => h(backendIcon(option.value))),
     option.label,
   ])
-}
-
-/** 常用区域建议值（S3 URL 区域段与 AWS_DEFAULT_REGION 共用）。 */
-const REGION_OPTIONS = [
-  'cn-north-1',
-  'cn-northwest-1',
-  'ap-east-1',
-  'ap-southeast-1',
-  'us-east-1',
-  'us-west-1',
-  'us-west-2',
-  'eu-west-1',
-]
-
-/** 字段类型 → 建议值列表（null = 无建议，纯输入）。 */
-function credOptions(kind: CredField['kind']): string[] | null {
-  if (kind === 'region') {
-    return REGION_OPTIONS
-  }
-  return null
 }
 
 /** 本地 FS 类型（重建入口仅本地可见：远程后端无法自动清空）。 */

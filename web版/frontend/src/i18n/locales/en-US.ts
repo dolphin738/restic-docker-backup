@@ -519,6 +519,8 @@ export default {
       'Create a dedicated repository here and finish initialization; the task will belong to it afterwards.',
     newRepoCreated: 'Repository {id} created — the task will belong to it.',
     needNewRepo: 'Finish creating and initializing the repository in this step first',
+    newRepoCreate: 'Create and initialize repository',
+    newRepoPassword: 'Repository password (shown once — back it up now): {password}',
     modeCard: 'Runtime mode',
     passfile: 'Password file mount status',
     passfileConfigured: 'Mounted',

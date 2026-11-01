@@ -508,6 +508,8 @@ export default {
     newRepoStepDesc: '在此创建一座专属仓库并完成初始化；创建后任务将归属该仓库。',
     newRepoCreated: '已创建仓库 {id}，任务将归属该仓库。',
     needNewRepo: '请先在本步骤完成仓库创建与初始化',
+    newRepoCreate: '创建并初始化仓库',
+    newRepoPassword: '仓库密码（仅显示这一次，请立即备份）：{password}',
     modeCard: '运行模式',
     passfile: '密码文件挂载状态',
     passfileConfigured: '已挂载',
