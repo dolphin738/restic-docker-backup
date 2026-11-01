@@ -228,3 +228,150 @@ describe('TaskWizard 步骤序列（stepKey 重构，行为等价）', () => {
     expect(currentBadge(w)).toBe('2')
   })
 })
+
+/** 第①步「新建仓库」开关（n-switch）——按 aria-label 定位，不依赖 DOM 顺序。 */
+function newRepoSwitch(wrapper: ReturnType<typeof mount>): HTMLElement | null {
+  return wrapper.element.querySelector('[aria-label="为此任务新建仓库"]') as HTMLElement | null
+}
+
+/** 点开关。naive 的 n-switch 是 button[role=switch]，click 即翻转。 */
+async function toggleNewRepo(wrapper: ReturnType<typeof mount>): Promise<void> {
+  const sw = newRepoSwitch(wrapper)
+  expect(sw, '第①步应有「新建仓库」开关').not.toBeNull()
+  sw!.click()
+  await flushPromises()
+  await nextTick()
+}
+
+describe('TaskWizard「新建仓库」开关分支（方案 v1.1 §5.7 第 3–4 步）', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    i18n.global.locale.value = 'zh-CN'
+  })
+
+  it('开关默认关：序列仍是 5 步，不出现「新建仓库」', async () => {
+    const w = await mountWizard()
+    expect(newRepoSwitch(w)).not.toBeNull()
+    expect(stepTitles(w)).not.toContain('新建仓库')
+    expect(stepBadges(w)).toEqual(['1', '2', '3', '4', '5'])
+    w.unmount()
+  })
+
+  it('开关打开：序列变 6 步，「新建仓库」插在「基础信息」与「备份源」之间', async () => {
+    const w = await mountWizard()
+    await toggleNewRepo(w)
+    expect(stepTitles(w)).toEqual(['基础信息', '新建仓库', '备份源', '存储目标', '调度', '保留与首跑'])
+    expect(stepBadges(w)).toEqual(['1', '2', '3', '4', '5', '6'])
+    // 开→关不移动当前位置：仍停在第①步
+    expect(currentBadge(w)).toBe('1')
+    w.unmount()
+  })
+
+  it('开关关回：序列恢复 5 步，显示序号重新收敛', async () => {
+    const w = await mountWizard()
+    await toggleNewRepo(w)
+    expect(stepBadges(w)).toHaveLength(6)
+    await toggleNewRepo(w)
+    expect(stepBadges(w)).toEqual(['1', '2', '3', '4', '5'])
+    w.unmount()
+  })
+
+  it('开分支的数字键按新显示序号换算：按 2 落在「新建仓库」、按 3 落在「备份源」', async () => {
+    const w = await mountWizard()
+    await toggleNewRepo(w)
+
+    // 前进需过名称校验；先填名再按数字键
+    await fillName(w)
+    await pressKey(w, '2')
+    expect(currentBadge(w)).toBe('2')
+    expect(stepTitles(w)[1]).toBe('新建仓库')
+
+    // 建仓步未完成 → validateStep 拦截，按 3 应停在「新建仓库」而非越过
+    await pressKey(w, '3')
+    expect(currentBadge(w)).toBe('2')
+    w.unmount()
+  })
+
+  it('开分支的末步仍是「保留与首跑」：页脚在该步不显示「下一步」', async () => {
+    const w = await mountWizard()
+    await toggleNewRepo(w)
+    // 直接按数字键 6 跳末步会被逐级校验拦住，故只验序列末位标题与页脚规则的一致性
+    expect(stepTitles(w)[stepTitles(w).length - 1]).toBe('保留与首跑')
+    await fillName(w)
+    await pressKey(w, '1')
+    expect(footerText(w)).toContain('下一步')
+    expect(footerText(w)).not.toContain('上一步')
+    w.unmount()
+  })
+})
+
+describe('TaskWizard 草稿字段扩展（方案 v1.1 §5.7 第 3 步）', () => {
+  const DRAFT_KEY = 'restic-web:wizard-draft:v1'
+
+  beforeEach(() => {
+    localStorage.clear()
+    i18n.global.locale.value = 'zh-CN'
+  })
+
+  it('旧 v1 草稿（只有序数 step）按 1→1、2→3、3→4、4→5、5→6 映射后恢复', async () => {
+    // 旧草稿：序数 3 表示「存储目标」→ 新键 KEY_TARGET=4，显示序号仍是 3
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ step: 3, form: { name: '旧草稿', sources: [] }, savedAt: '2026-01-01T00:00:00.000Z' }),
+    )
+    const w = await mountWizard()
+    const restore = (Array.from(w.element.querySelectorAll('button')) as HTMLElement[]).find(
+      (b) => (b.textContent ?? '').trim() === '恢复',
+    )
+    expect(restore, '应提示可恢复草稿').toBeTruthy()
+    restore!.click()
+    await flushPromises()
+    await nextTick()
+
+    // 显示序号 3 即「存储目标」——映射正确才可能落在这一步
+    expect(currentBadge(w)).toBe('3')
+    expect(stepTitles(w)[2]).toBe('存储目标')
+    w.unmount()
+  })
+
+  it('草稿停在「新建仓库」步且开关开：恢复后仍在该步（开关先回填，否则会被 5 步序列钳到首步）', async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        step: 2,
+        stepKey: 2,
+        newRepoWanted: true,
+        provisionedRepoId: null,
+        form: { name: '建仓中', sources: [] },
+        savedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    )
+    const w = await mountWizard()
+    const restore = (Array.from(w.element.querySelectorAll('button')) as HTMLElement[]).find(
+      (b) => (b.textContent ?? '').trim() === '恢复',
+    )
+    expect(restore, '应提示可恢复草稿').toBeTruthy()
+    restore!.click()
+    await flushPromises()
+    await nextTick()
+
+    expect(stepBadges(w)).toHaveLength(6)
+    expect(currentBadge(w)).toBe('2')
+    expect(stepTitles(w)[1]).toBe('新建仓库')
+    w.unmount()
+  })
+
+  it('新草稿写盘包含 stepKey / newRepoWanted，刷新后可还原开关态', async () => {
+    const w = await mountWizard()
+    await toggleNewRepo(w)
+    // 防抖 500ms
+    await new Promise((r) => setTimeout(r, 650))
+    const raw = localStorage.getItem(DRAFT_KEY)
+    expect(raw, '切开关应落盘（原实现只监听 form，切开关不落盘）').not.toBeNull()
+    const envelope = JSON.parse(raw!) as { stepKey?: number; newRepoWanted?: boolean; step?: number }
+    expect(envelope.newRepoWanted).toBe(true)
+    expect(envelope.stepKey).toBe(1)
+    expect(envelope.step).toBe(1)
+    w.unmount()
+  })
+})

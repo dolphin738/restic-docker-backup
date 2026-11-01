@@ -498,6 +498,7 @@ export default {
   },
   wizard: {
     step1: 'Basics',
+    stepNewRepo: 'New repository',
     step2: 'Sources',
     step3: 'Storage target',
     step4: 'Schedule',
@@ -505,10 +506,19 @@ export default {
     name: 'Task name',
     namePlaceholder: 'e.g. Daily full backup',
     enabled: 'Task enabled',
+    // Ordinals are avoided on purpose: the numbering shifts when the "new repository" switch is on.
     enabledHint:
-      'Turning this off stops automatic backups; you can still run manually. The schedule configured in step 4 is kept and resumes when you switch this back on.',
+      'Turning this off stops automatic backups; you can still run manually. The schedule already configured is kept and resumes when you switch this back on.',
     schedulePausedHint:
-      'This task is paused ("Task enabled" is off in step 1) — the schedule below will not take effect.',
+      'This task is paused ("Task enabled" is off) — the schedule below will not take effect.',
+    // "New repository" switch + provisioning step (plan v1.1 §4.3 F10/F16; default off, §6.2 P2)
+    newRepoSwitch: 'Create a dedicated repository for this task',
+    newRepoHint:
+      'When on, a "New repository" step is inserted before "Sources" to create and initialize a dedicated repository; the task will belong to it. When off, the current repository is used.',
+    newRepoStepDesc:
+      'Create a dedicated repository here and finish initialization; the task will belong to it afterwards.',
+    newRepoCreated: 'Repository {id} created — the task will belong to it.',
+    needNewRepo: 'Finish creating and initializing the repository in this step first',
     modeCard: 'Runtime mode',
     passfile: 'Password file mount status',
     passfileConfigured: 'Mounted',
@@ -558,7 +568,7 @@ export default {
     summaryYearly: 'Runs yearly on {month}/{days} at {time}',
     summaryNoDay: '(no specific day selected)',
     // E2 leave protection + E3 step bar reachability (G7 skeleton alignment)
-    stepsNavLabel: 'Wizard step navigation (←/→ to move, keys 1–5 to jump)',
+    stepsNavLabel: 'Wizard step navigation (←/→ to move, number keys jump by displayed order)',
     leaveConfirm: 'There are unsaved changes. Leave the wizard anyway?',
     retryCount: 'Retry count on failure',
     retryHint: 'Max automatic retries after a failed scheduled trigger (0 = no retry)',
@@ -641,7 +651,7 @@ export default {
     draftDiscard: 'Discard',
     dry_run_confirm: 'Confirm and run now',
     save_only: 'Save only, run manually later',
-    rescan_required: 'Sources changed: preview the scan scope (dry-run) in step 5 of the task wizard first',
+    rescan_required: 'Sources changed: preview the scan scope (dry-run) in the "Retention & first run" step of the task wizard first',
     tagReadonly: 'Snapshot tag (auto-generated, read-only)',
     submitCreate: 'Create task',
     submitUpdate: 'Save changes',

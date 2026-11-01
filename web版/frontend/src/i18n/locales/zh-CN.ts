@@ -489,6 +489,7 @@ export default {
   },
   wizard: {
     step1: '基础信息',
+    stepNewRepo: '新建仓库',
     step2: '备份源',
     step3: '存储目标',
     step4: '调度',
@@ -497,9 +498,16 @@ export default {
     namePlaceholder: '如：每日全量',
     enabled: '启用任务',
     /** 开关的语义澄清：它管的是整个任务的启用/暂停（不只是调度）——关闭只停自动，手动仍可跑。 */
-    enabledHint: '关闭后自动备份停止，仍可手动运行；第 4 步已配的调度会保留，重新开启即恢复。',
-    /** 第 4 步顶部条件提示：避免用户关了第 1 步却在配 cron，以为会生效。 */
-    schedulePausedHint: '当前任务已暂停（第 1 步「启用任务」为关闭），下面的调度暂不会生效。',
+    /** 序号在「新建仓库」开关打开时会顺延，故文案不写死第几步。 */
+    enabledHint: '关闭后自动备份停止，仍可手动运行；已配的调度会保留，重新开启即恢复。',
+    /** 调度步顶部条件提示：避免用户关了总闸却在配 cron，以为会生效。 */
+    schedulePausedHint: '当前任务已暂停（「启用任务」为关闭），下面的调度暂不会生效。',
+    // 「新建仓库」开关 + 建仓步（方案 v1.1 §4.3 F10/F16；默认关，§6.2 P2）
+    newRepoSwitch: '为此任务新建仓库',
+    newRepoHint: '开启后在「备份源」之前插入「新建仓库」一步，创建一个专属仓库并完成初始化；任务将归属该仓库。关闭则沿用当前仓库。',
+    newRepoStepDesc: '在此创建一座专属仓库并完成初始化；创建后任务将归属该仓库。',
+    newRepoCreated: '已创建仓库 {id}，任务将归属该仓库。',
+    needNewRepo: '请先在本步骤完成仓库创建与初始化',
     modeCard: '运行模式',
     passfile: '密码文件挂载状态',
     passfileConfigured: '已挂载',
@@ -549,7 +557,7 @@ export default {
     summaryYearly: '每年 {month} 月 {days} 日的 {time} 运行',
     summaryNoDay: '（未选择具体日期）',
     // E2 离开保护 + E3 步骤条可达（G7 骨架对齐）
-    stepsNavLabel: '向导步骤导航（←/→ 翻步，数字键 1–5 直达）',
+    stepsNavLabel: '向导步骤导航（←/→ 翻步，数字键按显示序号直达）',
     leaveConfirm: '有未保存的修改，确定离开当前向导吗？',
     // C1 任务级前后钩子 + C3 失败重试
     retryCount: '失败重试次数',
@@ -633,7 +641,7 @@ export default {
     draftDiscard: '丢弃',
     dry_run_confirm: '确认并立即首跑',
     save_only: '仅保存，稍后手动运行',
-    rescan_required: '备份源已变更：请先到任务编辑向导第 5 步预览扫描范围（dry-run）',
+    rescan_required: '备份源已变更：请先到任务编辑向导的「保留与首跑」步预览扫描范围（dry-run）',
     tagReadonly: '快照 tag（自动生成，不可修改）',
     submitCreate: '创建任务',
     submitUpdate: '保存修改',

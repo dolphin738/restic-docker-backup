@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /** 新建/编辑任务五步向导（增量设计 §5.3）。
  *
- * 步骤：①基础（名称/启停/运行模式/密码文件状态）→ ②备份源（SourcesPicker）
- * → ③存储目标（仓库只读 + 测试连接）→ ④调度（ScheduleRetentionForm）
- * → ⑤保留与首跑（dry-run 预览门 + 保存/首跑）。
+ * 步骤（默认 5 步；第①步「新建仓库」开关打开时插入「新建仓库」步，共 6 步）：
+ * ①基础（名称/启停/运行模式/密码文件状态）→ ②新建仓库（仅开分支）→ ③备份源（SourcesPicker）
+ * → ④存储目标（仓库只读 + 测试连接）→ ⑤调度（ScheduleRetentionForm）
+ * → ⑥保留与首跑（dry-run 预览门 + 保存/首跑）。
  *
  * 编辑流：E34b 预填；tag 只读；sources/excludes 变更后服务端重置 dry_run_pending
  * （UI 拦截双保险，R-026-08）。
@@ -77,6 +78,15 @@ onUnmounted(() => ui.setMessageApi(null))
 const isEdit = computed(() => props.taskId != null)
 const step = ref(1)
 
+/** 「为此任务新建仓库」开关（方案 §4.3 F1/F10）。
+ *  **不进 TaskFormState**——TaskUpsertRequest 无该字段，混进去会随 buildPayload 泄漏到 API。
+ *  默认关（§6.2 P2 定案）：等价于保持现有流程，首任务用户不被打扰，p13 探针仍绿。 */
+const newRepoWanted = ref(false)
+
+/** 建仓步骤里已创建成功的仓库 id。仓库是真实资产——草稿作废也不撤销它，
+ *  只用来在重进时展示「已创建」态而非重建（§6.2 P6 / R8）。 */
+const provisionedRepoId = ref<string | null>(null)
+
 // ---------------------------------------------------------------- 表单状态
 interface TaskFormState extends ScheduleRetentionValue {
   name: string
@@ -145,10 +155,15 @@ const form = reactive<TaskFormState>(defaultForm())
 /** 表单基线快照：预填完成 / 草稿恢复 / 保存成功后刷新，用于「是否有未保存改动」判定。
  *  用快照比对而非 deep watch 标志位——预填与草稿恢复都是批量赋值，deep watch 会误判为脏。 */
 const formBaseline = ref(JSON.stringify(defaultForm()))
-const dirty = computed(() => JSON.stringify(form) !== formBaseline.value)
+/** 开关的脏基线：只切开关（不动表单）也算未保存改动，否则离开时不给确认（§4.3 F13）。 */
+const newRepoBaseline = ref(false)
+const dirty = computed(
+  () => JSON.stringify(form) !== formBaseline.value || newRepoWanted.value !== newRepoBaseline.value,
+)
 
 function markClean(): void {
   formBaseline.value = JSON.stringify(form)
+  newRepoBaseline.value = newRepoWanted.value
 }
 
 // ---------------------------------------------------------------- 草稿持久化（P4：仅新建模式）
@@ -157,8 +172,15 @@ function markClean(): void {
 const DRAFT_KEY = 'restic-web:wizard-draft:v1'
 
 interface DraftEnvelope {
+  /** 旧草稿（早期 v1）存的是序数 1..5；新草稿同值同 stepKey，读取时 stepKey 优先。 */
   step: number
+  /** 语义键。存在时优先于 step——序数在插步后会错位，stepKey 不会。 */
+  stepKey?: number
   form: TaskFormState
+  /** 「新建仓库」开关态；缺省按关处理（旧草稿无此字段）。 */
+  newRepoWanted?: boolean
+  /** 已创建成功的仓库 id（见 provisionedRepoId）。 */
+  provisionedRepoId?: string | null
   savedAt: string
 }
 
@@ -194,8 +216,13 @@ function restoreDraft(): void {
     return
   }
   Object.assign(form, defaultForm(), draft.form)
-  // 旧草稿存的是序数 1..5；新草稿存 stepKey。两者都经 legacyStepToKey + clampKey 归一。
-  step.value = clampKey(legacyStepToKey(Number(draft.step) || KEY_BASICS))
+  // 开关必须**先**于 step 回填：stepSequence 依赖它，顺序颠倒会让停在「新建仓库」步的草稿
+  // 在 5 步序列里被钳到首步（该键此时还不在序列中）。
+  newRepoWanted.value = draft.newRepoWanted === true
+  provisionedRepoId.value = draft.provisionedRepoId ?? null
+  // stepKey 优先（插步后旧序数会错位）；缺省才回退到旧序数映射，两者都经 clampKey 钳位。
+  const rawKey = typeof draft.stepKey === 'number' ? draft.stepKey : legacyStepToKey(Number(draft.step) || KEY_BASICS)
+  step.value = clampKey(rawKey)
   draftPending.value = null
   markClean()
 }
@@ -213,10 +240,13 @@ function clearDraft(): void {
   discardDraft()
 }
 
-/** 防抖写盘（500ms）：reactive 深度监听；草稿待决期间不写，避免覆盖用户尚未决定的那份。 */
+/** 防抖写盘（500ms）；草稿待决期间不写，避免覆盖用户尚未决定的那份。
+ *  **必须监听 step / newRepoWanted / provisionedRepoId**：原实现只监听 form，
+ *  切步与切开关本身不落盘，「切开关 → 刷新」会丢开关态（§5.5 现状缺口）。
+ *  form 是 reactive 对象，直接放进 sources 数组即等价 deep 监听其字段。 */
 let draftTimer: ReturnType<typeof setTimeout> | undefined
 watch(
-  form,
+  [() => form, step, newRepoWanted, provisionedRepoId],
   () => {
     if (isEdit.value || draftPending.value) {
       return
@@ -225,7 +255,10 @@ watch(
     draftTimer = setTimeout(() => {
       const envelope: DraftEnvelope = {
         step: step.value,
+        stepKey: step.value,
         form: { ...form } as TaskFormState,
+        newRepoWanted: newRepoWanted.value,
+        provisionedRepoId: provisionedRepoId.value,
         savedAt: new Date().toISOString(),
       }
       try {
@@ -349,13 +382,19 @@ const sourcesChanged = computed(() => {
  *  键值与旧序数的对应关系：1 基础信息 / 3 备份源 / 4 存储目标 / 5 调度 / 6 保留与首跑
  *  （跳过 2 是给「新建仓库」留位，使旧草稿可一次映射、且两分支共用同一组键）。 */
 const KEY_BASICS = 1
+const KEY_NEW_REPO = 2
 const KEY_SOURCES = 3
 const KEY_TARGET = 4
 const KEY_SCHEDULE = 5
 const KEY_REVIEW = 6
 
-/** 当前分支的内部序列（顺序即显示顺序，下标 + 1 即显示序号）。 */
-const stepSequence = computed<number[]>(() => [KEY_BASICS, KEY_SOURCES, KEY_TARGET, KEY_SCHEDULE, KEY_REVIEW])
+/** 当前分支的内部序列（顺序即显示顺序，下标 + 1 即显示序号）。
+ *  「新建仓库」只在开关打开（且非编辑）时进入序列——关分支仍是 5 步，
+ *  与改造前完全一致，故步骤条 / 数字键 / 页脚 / 草稿钳位全部自动随分支切换。 */
+const stepSequence = computed<number[]>(() => {
+  const base = [KEY_BASICS, KEY_SOURCES, KEY_TARGET, KEY_SCHEDULE, KEY_REVIEW]
+  return newRepoWanted.value && !isEdit.value ? [KEY_BASICS, KEY_NEW_REPO, ...base.slice(1)] : base
+})
 
 /** stepKey 在序列中的下标；不在序列里返回 -1。 */
 function posOf(key: number): number {
@@ -406,9 +445,16 @@ function legacyStepToKey(step: number): number {
   return map[step] ?? step
 }
 
+
 function validateStep(current: number): boolean {
   if (current === KEY_BASICS && form.name.trim() === '') {
     message.warning(t('wizard.needName'))
+    return false
+  }
+  // 建仓完成态（§5.3）：仓库已创建即视为本步完成。init / 连接测试的强门禁在
+  // 存储目标步（targetBlocked）统一把守——此处重复校验只会让用户卡在两处。
+  if (current === KEY_NEW_REPO && provisionedRepoId.value === null) {
+    message.warning(t('wizard.needNewRepo'))
     return false
   }
   if (current === KEY_SOURCES && form.sources.length === 0) {
@@ -441,6 +487,7 @@ function goPrev(): void {
  *  由 stepSequence 派生——序号徽标由组件按 index+1 生成，此处不再出现任何数字字面量。 */
 const STEP_TITLES: Record<number, string> = {
   [KEY_BASICS]: 'wizard.step1',
+  [KEY_NEW_REPO]: 'wizard.stepNewRepo',
   [KEY_SOURCES]: 'wizard.step2',
   [KEY_TARGET]: 'wizard.step3',
   [KEY_SCHEDULE]: 'wizard.step4',
@@ -483,7 +530,7 @@ function onStepJump(target: number): void {
   step.value = target
 }
 
-/** 键盘可达（修复模版步骤条 tabindex=-1 的缺陷）：←/→ 前后翻步，数字键 1–5 直达。
+/** 键盘可达（修复模版步骤条 tabindex=-1 的缺陷）：←/→ 前后翻步，数字键按显示序号直达。
  *  焦点挂在包裹 nav 上——naive 的步骤节点是 div（不可聚焦），容器级键盘导航是最小改动解。 */
 function onStepsKeydown(event: KeyboardEvent): void {
   if (event.key === 'ArrowLeft') {
@@ -832,7 +879,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 <template>
   <n-space vertical :size="16">
     <n-card :title="isEdit ? t('task.edit') : t('wizard.submitCreate')" size="small">
-      <!-- E3：步骤条可点击跳步 + 键盘可达（←/→ 翻步、数字键 1–5 直达）。
+      <!-- E3：步骤条可点击跳步 + 键盘可达（←/→ 翻步、数字键按显示序号直达）。
            P20：n-steps 换成全站共用 WizardStepper（步骤序号徽标 + 文案与恢复向导同款）；
            组件根元素即 <nav>，tabindex / aria-label / @keydown 经 attribute 透传落到它身上，
            故不再另行包一层 nav（nav 套 nav 属无效嵌套）。 -->
@@ -866,11 +913,11 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
       </n-alert>
 
       <!-- 容器必须用普通 flex div，不能用 n-space：n-space 会把每个子节点包进
-           key 写死为 1 的 div（node_modules/naive-ui/.../Space.js），而本容器下挂 5 个
-           互斥的 <template v-if/v-else-if/v-else> 步 + 常驻 footer，步与步的顶层子节点数量不同
-           （第④步=2、第⑤步≈6）。两套「全 key=1」的列表互相 diff 时 Vue 复用错乱，旧步的
-           wrapper 不被卸载 → 来回切步就出现重复「策略」块、甚至第④步的 ScheduleRetentionForm
-           泄漏进第⑤步。改用 flex+gap 等价复刻 n-space 的 16px 间距，彻底避开该陷阱。 -->
+           key 写死为 1 的 div（node_modules/naive-ui/.../Space.js），而本容器下挂 6 个
+           互斥的 <template v-if/v-else-if> 步 + 常驻 footer，步与步的顶层子节点数量不同
+           （调度步=2、保留与首跑步≈6）。两套「全 key=1」的列表互相 diff 时 Vue 复用错乱，旧步的
+           wrapper 不被卸载 → 来回切步就出现重复「策略」块、甚至调度步的 ScheduleRetentionForm
+           泄漏进保留与首跑步。改用 flex+gap 等价复刻 n-space 的 16px 间距，彻底避开该陷阱。 -->
       <div class="wizard__body">
         <!-- ① 基础信息 -->
         <template v-if="step === KEY_BASICS">
@@ -881,6 +928,16 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
               :placeholder="t('wizard.namePlaceholder')"
               :maxlength="64"
             />
+          </n-space>
+
+          <!-- 新建仓库开关（§4.3 F10）：编辑模式隐藏——编辑不可换仓
+               （api/backupTasks.ts 取 currentRepoId，TaskUpsertRequest 无 repo_id 字段）。 -->
+          <n-space v-if="!isEdit" vertical :size="4">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="newRepoWanted" size="small" :aria-label="t('wizard.newRepoSwitch')" />
+              <n-text depth="3">{{ t('wizard.newRepoSwitch') }}</n-text>
+            </n-space>
+            <n-text depth="3" class="wizard__note">{{ t('wizard.newRepoHint') }}</n-text>
           </n-space>
 
           <!-- 任务总闸：控制的是整个任务的启用/暂停（不只是调度）——关闭只停自动，手动仍可跑。
@@ -928,7 +985,18 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
         </template>
 
-        <!-- ② 备份源 -->
+        <!-- ② 新建仓库（仅开关打开时进入序列；本步当前是空壳，建仓链路见方案 §5.7 第 5 步） -->
+        <template v-else-if="step === KEY_NEW_REPO">
+          <n-space vertical :size="4">
+            <n-text strong>{{ t('wizard.stepNewRepo') }}</n-text>
+            <n-text depth="3" class="wizard__note">{{ t('wizard.newRepoStepDesc') }}</n-text>
+          </n-space>
+          <n-alert v-if="provisionedRepoId" type="success" :show-icon="false">
+            {{ t('wizard.newRepoCreated', { id: provisionedRepoId }) }}
+          </n-alert>
+        </template>
+
+        <!-- ③ 备份源 -->
         <template v-else-if="step === KEY_SOURCES">
           <SourcesPicker
             v-model:sources="form.sources"
@@ -937,7 +1005,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           />
         </template>
 
-        <!-- ③ 存储目标 -->
+        <!-- ④ 存储目标 -->
         <template v-else-if="step === KEY_TARGET">
           <n-space vertical :size="4">
             <n-text strong>{{ t('wizard.repoReadonly') }}</n-text>
@@ -995,17 +1063,17 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
         </template>
 
-        <!-- ④ 调度 -->
+        <!-- ⑤ 调度 -->
         <template v-else-if="step === KEY_SCHEDULE">
-          <!-- 暂停提示：总闸在第 1 步、被它控制的东西在第 4 步，中间隔两步——
-               不提示的话用户会在第 4 步配半天 cron 才发现根本不触发。 -->
+          <!-- 暂停提示：总闸在「基础信息」步、被它控制的调度在本步，中间隔着数步——
+               不提示的话用户会在这里配半天 cron 才发现根本不触发。 -->
           <n-alert v-if="!form.enabled" type="warning" :show-icon="false" class="wizard__paused-alert">
             {{ t('wizard.schedulePausedHint') }}
           </n-alert>
           <ScheduleRetentionForm :model-value="scheduleValue" @update:model-value="onScheduleUpdate" />
         </template>
 
-        <!-- ⑤ 保留与首跑 -->
+        <!-- ⑥ 保留与首跑 -->
         <template v-else-if="step === KEY_REVIEW">
           <n-space v-if="isEdit" align="center" :size="8">
             <n-text depth="3">{{ t('wizard.tagReadonly') }}：</n-text>
@@ -1125,7 +1193,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
   margin-bottom: 8px;
 }
 
-/* 移动端走查：5 步在 390px 放不下，横向滚动优于裁切。
+/* 移动端走查：5 步（开分支 6 步）在 390px 放不下，横向滚动优于裁切。
    ⚠️ 不能无条件加 overflow-x:auto——滚动容器会「收住」子元素外边距（不再与父级折叠），
    实测桌面端 steps 导航高度 22→30、下方整体下移 8px（像素 diff 抓出）。
    故只在移动断点启用；桌面保持原盒模型。 */
