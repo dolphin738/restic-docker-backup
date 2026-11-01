@@ -170,7 +170,7 @@ def register(router: APIRouter) -> None:
         """
         del session
         _validate_repo_id(repo_id)
-        # 跨介质序列（清空目录 → 写密码 → restic init → 清 enc:v2 凭据）交给编排器
+        # 跨介质序列（清空目录 → 清该仓库旧 enc:v2 凭据 → 写密码 → restic init）交给编排器
         # （候选 1 批次 ③）：顺序契约（清空先于覆盖密码）与并发互斥都在那边。
         report = await request.app.state.repo_lifecycle.rebuild(
             repo_id, password=payload.password or None
