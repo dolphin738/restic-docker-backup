@@ -194,7 +194,8 @@ function restoreDraft(): void {
     return
   }
   Object.assign(form, defaultForm(), draft.form)
-  step.value = Math.min(5, Math.max(1, Number(draft.step) || 1))
+  // 旧草稿存的是序数 1..5；新草稿存 stepKey。两者都经 legacyStepToKey + clampKey 归一。
+  step.value = clampKey(legacyStepToKey(Number(draft.step) || KEY_BASICS))
   draftPending.value = null
   markClean()
 }
@@ -343,12 +344,74 @@ const sourcesChanged = computed(() => {
 })
 
 // ---------------------------------------------------------------- 步骤导航
+/** 步骤语义键。**不再用序数 1..5**——序数一旦插步就要全站改数字，
+ *  而 stepKey 只增不改，显示序号一律由 stepSequence 下标派生。
+ *  键值与旧序数的对应关系：1 基础信息 / 3 备份源 / 4 存储目标 / 5 调度 / 6 保留与首跑
+ *  （跳过 2 是给「新建仓库」留位，使旧草稿可一次映射、且两分支共用同一组键）。 */
+const KEY_BASICS = 1
+const KEY_SOURCES = 3
+const KEY_TARGET = 4
+const KEY_SCHEDULE = 5
+const KEY_REVIEW = 6
+
+/** 当前分支的内部序列（顺序即显示顺序，下标 + 1 即显示序号）。 */
+const stepSequence = computed<number[]>(() => [KEY_BASICS, KEY_SOURCES, KEY_TARGET, KEY_SCHEDULE, KEY_REVIEW])
+
+/** stepKey 在序列中的下标；不在序列里返回 -1。 */
+function posOf(key: number): number {
+  return stepSequence.value.indexOf(key)
+}
+
+/** 序列内前进一步的键；已在末位则返回自身。 */
+function nextKeyOf(key: number): number {
+  const pos = posOf(key)
+  if (pos < 0 || pos >= stepSequence.value.length - 1) {
+    return key
+  }
+  return stepSequence.value[pos + 1]!
+}
+
+/** 序列内后退一步的键；已在首位则返回自身。 */
+function prevKeyOf(key: number): number {
+  const pos = posOf(key)
+  if (pos <= 0) {
+    return key
+  }
+  return stepSequence.value[pos - 1]!
+}
+
+/** 末步的键（页脚据此决定显示「下一步」还是保存按钮）。 */
+const lastKey = computed(() => stepSequence.value[stepSequence.value.length - 1]!)
+
+/** 把任意键钳到序列内的合法位置（草稿恢复 / 越界防护）。
+ *  越界钳到两端；落在序列空隙里（如未来只在「开」分支出现的键）则回到首步——
+ *  宁可让用户从第一步重走，也不要停在一个当前分支不存在的步骤上。 */
+function clampKey(key: number): number {
+  const seq = stepSequence.value
+  if (seq.includes(key)) {
+    return key
+  }
+  if (key <= seq[0]!) {
+    return seq[0]!
+  }
+  if (key >= seq[seq.length - 1]!) {
+    return seq[seq.length - 1]!
+  }
+  return seq[0]!
+}
+
+/** 旧草稿的序数（1..5）→ stepKey 映射；已是新键则原样返回。 */
+function legacyStepToKey(step: number): number {
+  const map: Record<number, number> = { 1: KEY_BASICS, 2: KEY_SOURCES, 3: KEY_TARGET, 4: KEY_SCHEDULE, 5: KEY_REVIEW }
+  return map[step] ?? step
+}
+
 function validateStep(current: number): boolean {
-  if (current === 1 && form.name.trim() === '') {
+  if (current === KEY_BASICS && form.name.trim() === '') {
     message.warning(t('wizard.needName'))
     return false
   }
-  if (current === 2 && form.sources.length === 0) {
+  if (current === KEY_SOURCES && form.sources.length === 0) {
     message.warning(t('wizard.needSources'))
     return false
   }
@@ -361,27 +424,32 @@ function goNext(): void {
   }
   // G3/E1 强门禁：新建流程第③步必须先通过连接测试（无逃生门）。
   // 与 Duplicati `next()` 同口径——逐个目的地顺序验证，失败即停在当前步。
-  if (step3Blocked.value) {
+  if (targetBlocked.value) {
     message.warning(t('wizard.testRequired'))
     void onTestConnection()
     return
   }
-  step.value = Math.min(5, step.value + 1)
+  step.value = nextKeyOf(step.value)
 }
 
 function goPrev(): void {
-  step.value = Math.max(1, step.value - 1)
+  step.value = prevKeyOf(step.value)
 }
 
 // ---------------------------------------------------------------- E3/G7 步骤条跳步
-/** 步骤定义（P20：WizardStepper 统一消费；key 与 step 变量、数字键 1–5 三处对齐）。 */
-const stepItems = computed(() => [
-  { key: 1, title: t('wizard.step1') },
-  { key: 2, title: t('wizard.step2') },
-  { key: 3, title: t('wizard.step3') },
-  { key: 4, title: t('wizard.step4') },
-  { key: 5, title: t('wizard.step5') },
-])
+/** 步骤定义（P20：WizardStepper 统一消费）。
+ *  由 stepSequence 派生——序号徽标由组件按 index+1 生成，此处不再出现任何数字字面量。 */
+const STEP_TITLES: Record<number, string> = {
+  [KEY_BASICS]: 'wizard.step1',
+  [KEY_SOURCES]: 'wizard.step2',
+  [KEY_TARGET]: 'wizard.step3',
+  [KEY_SCHEDULE]: 'wizard.step4',
+  [KEY_REVIEW]: 'wizard.step5',
+}
+
+const stepItems = computed(() =>
+  stepSequence.value.map((key) => ({ key, title: t(STEP_TITLES[key]!) })),
+)
 
 /** 跳步规则：向后随意（不丢数据）；向前须逐级通过校验（含第③步连接测试门禁），
  *  首个不通过的步即为落点——与「提交时回流首个未过步骤」同一套判定，避免两处口径漂移。 */
@@ -389,18 +457,26 @@ function onStepJump(target: number): void {
   if (target === step.value) {
     return
   }
-  if (target < step.value) {
+  const from = posOf(step.value)
+  const to = posOf(target)
+  if (from < 0 || to < 0) {
+    return
+  }
+  // 后退：随意（不丢数据）
+  if (to < from) {
     step.value = target
     return
   }
-  for (let cursor = step.value; cursor < target; cursor += 1) {
+  // 前进：按**序列下标**逐级校验（不能按数值自增——键非连续会跳错或死循环）
+  for (let pos = from; pos < to; pos += 1) {
+    const cursor = stepSequence.value[pos]!
     if (!validateStep(cursor)) {
       step.value = cursor
       return
     }
-    if (cursor === 3 && !isEdit.value && !testPassed.value) {
+    if (cursor === KEY_TARGET && !isEdit.value && !testPassed.value) {
       message.warning(t('wizard.testRequired'))
-      step.value = 3
+      step.value = KEY_TARGET
       return
     }
   }
@@ -420,16 +496,25 @@ function onStepsKeydown(event: KeyboardEvent): void {
     goNext()
     return
   }
-  if (/^[1-5]$/.test(event.key)) {
-    event.preventDefault()
-    onStepJump(Number(event.key))
+  // 数字键 = **显示序号**（1..序列长度），换算成 stepKey 再跳
+  if (/^[1-9]$/.test(event.key)) {
+    const pos = Number(event.key) - 1
+    const target = stepSequence.value[pos]
+    if (target !== undefined) {
+      event.preventDefault()
+      onStepJump(target)
+    }
   }
 }
 
 /** G7：提交前串行校验 ①–③，失败则**回流到首个未通过的步骤**
  *  （原先只在第⑤步弹一句「请填写任务名」，用户还要自己猜是哪一步出错）。 */
 function focusFirstInvalidStep(): boolean {
-  for (let cursor = 1; cursor <= 3; cursor += 1) {
+  // 只校验到存储目标步为止（含）：调度与保留步无必填项
+  for (const cursor of stepSequence.value) {
+    if (posOf(cursor) > posOf(KEY_TARGET)) {
+      break
+    }
     if (!validateStep(cursor)) {
       step.value = cursor
       return false
@@ -437,7 +522,7 @@ function focusFirstInvalidStep(): boolean {
   }
   if (!isEdit.value && !testPassed.value) {
     message.warning(t('wizard.testRequired'))
-    step.value = 3
+    step.value = KEY_TARGET
     return false
   }
   return true
@@ -662,7 +747,7 @@ const testPassed = computed(
 
 /** 是否拦在第③步：仅新建任务（isEdit=false）走强门禁——编辑时仓库已验收过，无需重测
  *  （与 Duplicati `next()` 的 `isNew()` 分支同口径）。无逃生门：不提供「仍然继续」。 */
-const step3Blocked = computed(() => step.value === 3 && !isEdit.value && !testPassed.value)
+const targetBlocked = computed(() => step.value === KEY_TARGET && !isEdit.value && !testPassed.value)
 
 // 切换仓库 → 旧结论作废（配置信息已变，缓存不可复用）
 watch(
@@ -788,7 +873,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
            泄漏进第⑤步。改用 flex+gap 等价复刻 n-space 的 16px 间距，彻底避开该陷阱。 -->
       <div class="wizard__body">
         <!-- ① 基础信息 -->
-        <template v-if="step === 1">
+        <template v-if="step === KEY_BASICS">
           <n-space vertical :size="4">
             <n-text strong>{{ t('wizard.name') }}</n-text>
             <n-input
@@ -844,7 +929,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </template>
 
         <!-- ② 备份源 -->
-        <template v-else-if="step === 2">
+        <template v-else-if="step === KEY_SOURCES">
           <SourcesPicker
             v-model:sources="form.sources"
             v-model:excludes="form.excludes"
@@ -853,7 +938,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </template>
 
         <!-- ③ 存储目标 -->
-        <template v-else-if="step === 3">
+        <template v-else-if="step === KEY_TARGET">
           <n-space vertical :size="4">
             <n-text strong>{{ t('wizard.repoReadonly') }}</n-text>
             <n-input :value="repoUrl" readonly :placeholder="t('wizard.repoReadonly')" />
@@ -890,7 +975,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
             {{ testResult.reason || t('wizard.testFail') }}
           </n-alert>
           <!-- 门禁提示（aria-live：屏幕阅读器在点「继续」时也能听到拦截原因） -->
-          <n-text v-if="step3Blocked" depth="3" class="wizard__note" aria-live="polite">
+          <n-text v-if="targetBlocked" depth="3" class="wizard__note" aria-live="polite">
             {{ t('wizard.testRequired') }}
           </n-text>
 
@@ -911,7 +996,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </template>
 
         <!-- ④ 调度 -->
-        <template v-else-if="step === 4">
+        <template v-else-if="step === KEY_SCHEDULE">
           <!-- 暂停提示：总闸在第 1 步、被它控制的东西在第 4 步，中间隔两步——
                不提示的话用户会在第 4 步配半天 cron 才发现根本不触发。 -->
           <n-alert v-if="!form.enabled" type="warning" :show-icon="false" class="wizard__paused-alert">
@@ -921,7 +1006,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
         </template>
 
         <!-- ⑤ 保留与首跑 -->
-        <template v-else>
+        <template v-else-if="step === KEY_REVIEW">
           <n-space v-if="isEdit" align="center" :size="8">
             <n-text depth="3">{{ t('wizard.tagReadonly') }}：</n-text>
             <n-tag size="small" round>{{ loadedTask?.tag ?? '' }}</n-tag>
@@ -986,7 +1071,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
 
         <!-- G7：页脚两端对齐（返回← 在左 / 继续→ 在右），对齐 Duplicati form-actions 形态 -->
         <n-space justify="space-between" align="center" class="wizard__footer">
-          <n-button v-if="step > 1" quaternary @click="goPrev">
+          <n-button v-if="step !== stepSequence[0]" quaternary @click="goPrev">
             <template #icon>
               <n-icon :size="16"><IconArrowLeft /></n-icon>
             </template>
@@ -994,7 +1079,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-button>
           <n-space v-else />
           <n-space align="center" :size="8">
-            <n-button v-if="step < 5" type="primary" @click="goNext">
+            <n-button v-if="step !== lastKey" type="primary" @click="goNext">
               <template #icon>
                 <n-icon :size="16"><IconChevronRight /></n-icon>
               </template>
