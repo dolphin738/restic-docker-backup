@@ -13,7 +13,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
-import { NConfigProvider, NMessageProvider, NSwitch } from 'naive-ui'
+import { NConfigProvider, NDialogProvider, NMessageProvider, NSwitch } from 'naive-ui'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { h, nextTick } from 'vue'
@@ -93,7 +93,12 @@ async function mountWizard() {
     h(
       NConfigProvider,
       { themeOverrides: lightThemeOverrides },
-      { default: () => h(NMessageProvider, null, { default: () => h(TaskWizard, { taskId: 1 }) }) },
+      {
+        default: () =>
+          h(NDialogProvider, null, {
+            default: () => h(NMessageProvider, null, { default: () => h(TaskWizard, { taskId: 1 }) }),
+          }),
+      },
     ),
     {
       global: {

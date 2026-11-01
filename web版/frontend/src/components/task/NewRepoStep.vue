@@ -36,8 +36,10 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** 建仓完成（四项齐备）：父组件写入 provisionedRepoId 并据此放行本步。 */
+  /** 建仓完成：父组件写入 provisionedRepoId 并据此放行本步。 */
   (e: 'provisioned', id: string): void
+  /** 即将切仓：把切之前的仓库 id 交给父组件（回滚 / 撤销都靠它）。 */
+  (e: 'switching', fromRepoId: string): void
 }>()
 
 const { t } = useI18n()
@@ -193,7 +195,11 @@ const testPasswordWrong = computed(
 
 // ---------------------------------------------------------------- 建仓编排
 const provisioning = useRepoProvisioning({
-  setCurrentRepoId: (id: string) => ui.setCurrentRepoId(id),
+  setCurrentRepoId: (id: string) => {
+    // 切仓前先告知父组件「原仓库是谁」——切完就取不到了
+    emit('switching', ui.currentRepoId)
+    ui.setCurrentRepoId(id)
+  },
   onRepoCreated: async (id: string) => {
     emit('provisioned', id)
     await Promise.all([reposQuery.refetch(), queryClient.invalidateQueries({ queryKey: ['repos'] })])

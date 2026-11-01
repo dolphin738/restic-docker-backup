@@ -24,6 +24,7 @@ import {
   NTag,
   NText,
   NTooltip,
+  useDialog,
   useMessage,
 } from 'naive-ui'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
@@ -39,7 +40,7 @@ import {
 import { getConfig } from '@/api/config'
 import { hasCode, isAppError } from '@/api/http'
 import { createJob } from '@/api/jobs'
-import { getRepo, getRepoStatus, listRepos, testRepo } from '@/api/repo'
+import { deleteRepo, getRepo, getRepoStatus, listRepos, testRepo } from '@/api/repo'
 import type { BackupTask, DryRunResponse, RepoTestResponse, TaskUpsertRequest } from '@/api/types'
 import { emptyExcludeSpec, specFromFlatExcludes, type ExcludeSpec } from '@/utils/excludeSpec'
 import {
@@ -73,6 +74,7 @@ const ui = useUiStore()
 const queryClient = useQueryClient()
 
 const message = useMessage()
+const dialog = useDialog()
 ui.setMessageApi(message)
 onUnmounted(() => ui.setMessageApi(null))
 
@@ -87,6 +89,11 @@ const newRepoWanted = ref(false)
 /** 建仓步骤里已创建成功的仓库 id。仓库是真实资产——草稿作废也不撤销它，
  *  只用来在重进时展示「已创建」态而非重建（§6.2 P6 / R8）。 */
 const provisionedRepoId = ref<string | null>(null)
+
+/** 建仓**切仓前**的当前仓库（§6.1 R12）：回滚与撤销都据它把 currentRepoId 切回去。
+ *  不能在这里读 ui.currentRepoId 当基线——草稿恢复时 store 里已经是新仓库了。
+ *  正确来源是建仓步切仓那一刻的回调（onRepoSwitching），并随草稿持久化。 */
+const previousRepoId = ref<string | null>(ui.currentRepoId)
 
 // ---------------------------------------------------------------- 表单状态
 interface TaskFormState extends ScheduleRetentionValue {
@@ -182,6 +189,8 @@ interface DraftEnvelope {
   newRepoWanted?: boolean
   /** 已创建成功的仓库 id（见 provisionedRepoId）。 */
   provisionedRepoId?: string | null
+  /** 建仓切仓前的原仓库 id（见 previousRepoId）。 */
+  previousRepoId?: string | null
   savedAt: string
 }
 
@@ -221,6 +230,7 @@ function restoreDraft(): void {
   // 在 5 步序列里被钳到首步（该键此时还不在序列中）。
   newRepoWanted.value = draft.newRepoWanted === true
   provisionedRepoId.value = draft.provisionedRepoId ?? null
+  previousRepoId.value = draft.previousRepoId ?? previousRepoId.value
   // stepKey 优先（插步后旧序数会错位）；缺省才回退到旧序数映射，两者都经 clampKey 钳位。
   const rawKey = typeof draft.stepKey === 'number' ? draft.stepKey : legacyStepToKey(Number(draft.step) || KEY_BASICS)
   step.value = clampKey(rawKey)
@@ -247,7 +257,7 @@ function clearDraft(): void {
  *  form 是 reactive 对象，直接放进 sources 数组即等价 deep 监听其字段。 */
 let draftTimer: ReturnType<typeof setTimeout> | undefined
 watch(
-  [() => form, step, newRepoWanted, provisionedRepoId],
+  [() => form, step, newRepoWanted, provisionedRepoId, previousRepoId],
   () => {
     if (isEdit.value || draftPending.value) {
       return
@@ -260,6 +270,7 @@ watch(
         form: { ...form } as TaskFormState,
         newRepoWanted: newRepoWanted.value,
         provisionedRepoId: provisionedRepoId.value,
+        previousRepoId: previousRepoId.value,
         savedAt: new Date().toISOString(),
       }
       try {
@@ -450,9 +461,50 @@ function legacyStepToKey(step: number): number {
 /** 建仓步骤回传（§4.3 F15）：记录仓库 id 并刷新仓库列表。
  *  切仓本身已由建仓步在提交 init 之前完成（init 作业按 X-Repo-Id 定目标）；
  *  测试结论写回也在切仓之后——顺序颠倒会被 watch(ui.currentRepoId) 清空。 */
+/** 建仓步即将切仓：此刻 ui.currentRepoId 还是原仓库，正是要记下的值。 */
+function onRepoSwitching(fromRepoId: string): void {
+  previousRepoId.value = fromRepoId
+}
+
 function onRepoProvisioned(id: string): void {
   provisionedRepoId.value = id
   void queryClient.invalidateQueries({ queryKey: ['repos'] })
+}
+
+/** 开关切换（§6.1 R3/R12）：关掉要确认归属，因为任务保存时按 currentRepoId 落库，
+ *  而建仓已把当前仓库切到了新仓库——用户以为「关掉就回到原仓库」，实际仍归新仓库。
+ *  两个出口：保留新仓库（承认归属）/ 回滚原仓库（切回 initialRepoId）。 */
+function onNewRepoSwitch(value: boolean): void {
+  if (value) {
+    // 关→开：不移动当前位置（§4.3 F11），用户可按步骤条回访建仓步
+    newRepoWanted.value = true
+    return
+  }
+  const backTo = previousRepoId.value
+  if (!provisionedRepoId.value || !backTo) {
+    // 没建过仓 / 不知道原仓库 = 没有可回滚的副作用，直接关
+    newRepoWanted.value = false
+    return
+  }
+  const createdId = provisionedRepoId.value
+  dialog.warning({
+    title: t('wizard.newRepoOffTitle'),
+    content: t('wizard.newRepoOffConfirm', { id: createdId, back: backTo }),
+    positiveText: t('wizard.newRepoOffKeep'),
+    negativeText: t('wizard.newRepoOffRollback'),
+    onPositiveClick: () => {
+      // 保留：仓库与任务归属都不变，只把这个步骤从向导里去掉
+      newRepoWanted.value = false
+      message.info(t('wizard.newRepoKept', { id: createdId }))
+    },
+    onNegativeClick: () => {
+      // 回滚：把当前仓库切回进向导时的那个，任务才会落回原仓库
+      ui.setCurrentRepoId(backTo)
+      provisionedRepoId.value = null
+      newRepoWanted.value = false
+      message.info(t('wizard.newRepoRolledBack', { back: backTo }))
+    },
+  })
 }
 
 function validateStep(current: number): boolean {
@@ -462,6 +514,8 @@ function validateStep(current: number): boolean {
   }
   // 建仓完成态（§5.3）：仓库已创建即视为本步完成。init / 连接测试的强门禁在
   // 存储目标步（targetBlocked）统一把守——此处重复校验只会让用户卡在两处。
+  // R4/§5.3 建仓完成态：仓库建好 + 测试通过才放行。
+  // init 失败/超时的处置在新建仓库步骤内（重试 / 到仓库页处理），此处只拦前进。
   if (current === KEY_NEW_REPO && provisionedRepoId.value === null) {
     message.warning(t('wizard.needNewRepo'))
     return false
@@ -585,14 +639,66 @@ function focusFirstInvalidStep(): boolean {
 }
 
 // ---------------------------------------------------------------- E2 离开保护
-/** 路由级离开确认（侧栏导航、浏览器后退均覆盖）。 */
-onBeforeRouteLeave(() => {
+/** 路由级离开确认（侧栏导航、浏览器后退均覆盖）。
+ *
+ *  两档（§6.2 P6）：
+ *  - 已建仓但任务还没保存 → 三选项（继续编辑 / 撤销删除仓库 / 保留仓库后离开）。
+ *    用 dialog 而非 window.confirm：原生确认只有两个按钮，表达不了三种结局。
+ *  - 其余情况 → 原生确认（无需新增弹窗组件，且不打断 naive 的消息队列）。
+ *
+ *  撤销删除用 purgeDisk=false：只删 DB 行，磁盘上的仓库数据保留
+ *  （仓库可能是刚初始化过的真实资产，自动销毁代价过高）。
+ */
+onBeforeRouteLeave(async () => {
   if (!dirty.value) {
     return true
   }
-  // 原生确认：无需新增弹窗组件，且不打断 naive 的消息队列
-  return window.confirm(t('wizard.leaveConfirm'))
+  if (provisionedRepoId.value === null) {
+    return window.confirm(t('wizard.leaveConfirm'))
+  }
+  return await askLeaveWithRepo()
 })
+
+/** 三选项离开确认：resolve(true) 放行离开，false 留在向导。
+ *  选「保留」直接放行；选「撤销删除」先删仓库再放行；关掉弹窗 = 继续编辑。 */
+function askLeaveWithRepo(): Promise<boolean> {
+  const createdId = provisionedRepoId.value as string
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const done = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    dialog.warning({
+      title: t('wizard.leaveRepoTitle'),
+      content: t('wizard.leaveRepoConfirm', { id: createdId }),
+      positiveText: t('wizard.leaveRepoKeep'),
+      negativeText: t('wizard.leaveRepoDelete'),
+      onPositiveClick: () => done(true),
+      onNegativeClick: () => {
+        void (async () => {
+          try {
+            await deleteRepo(createdId, { purgeDisk: false })
+            provisionedRepoId.value = null
+            if (previousRepoId.value) {
+              // 仓库没了，当前仓库要回到原处，否则后续请求都打向一个不存在的仓库
+              ui.setCurrentRepoId(previousRepoId.value)
+            }
+            message.success(t('wizard.leaveRepoDeleted'))
+            void queryClient.invalidateQueries({ queryKey: ['repos'] })
+            done(true)
+          } catch {
+            // 删除失败（如权限/后端拒绝）：不放行，让用户留在向导里重试或改选保留
+            done(false)
+          }
+        })()
+      },
+      onClose: () => done(false),
+      onMaskClick: () => done(false),
+    })
+  })
+}
 
 /** 关闭标签页/刷新：浏览器只认 preventDefault + returnValue，文案由浏览器提供。 */
 function onBeforeUnload(event: BeforeUnloadEvent): void {
@@ -940,13 +1046,24 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
 
           <!-- 新建仓库开关（§4.3 F10）：编辑模式隐藏——编辑不可换仓
-               （api/backupTasks.ts 取 currentRepoId，TaskUpsertRequest 无 repo_id 字段）。 -->
+               （api/backupTasks.ts 取 currentRepoId，TaskUpsertRequest 无 repo_id 字段）。
+               开关是**受控**的：关闭要过 onNewRepoSwitch（R3/R12 归属确认），
+               因此用 :value + @update:value 而非 v-model。 -->
           <n-space v-if="!isEdit" vertical :size="4">
             <n-space align="center" :size="8">
-              <n-switch v-model:value="newRepoWanted" size="small" :aria-label="t('wizard.newRepoSwitch')" />
+              <n-switch
+                :value="newRepoWanted"
+                size="small"
+                :aria-label="t('wizard.newRepoSwitch')"
+                @update:value="onNewRepoSwitch"
+              />
               <n-text depth="3">{{ t('wizard.newRepoSwitch') }}</n-text>
             </n-space>
             <n-text depth="3" class="wizard__note">{{ t('wizard.newRepoHint') }}</n-text>
+            <!-- 已建仓后的归属提示（R3）：任务保存时落到哪个仓库，必须明写 -->
+            <n-alert v-if="provisionedRepoId" type="warning" :show-icon="false" class="wizard__note">
+              {{ t('wizard.newRepoOwner', { id: provisionedRepoId }) }}
+            </n-alert>
           </n-space>
 
           <!-- 任务总闸：控制的是整个任务的启用/暂停（不只是调度）——关闭只停自动，手动仍可跑。
@@ -999,6 +1116,7 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           <NewRepoStep
             :provisioned-repo-id="provisionedRepoId"
             @provisioned="onRepoProvisioned"
+            @switching="onRepoSwitching"
           />
         </template>
 
