@@ -4,9 +4,13 @@
  * ① 向导五步：/tasks/new 走完 基础信息 → 备份源（手动加入路径）→ 存储目标
  *    （测试连接 stub 通过，过 G3/E1 强门禁）→ 调度 → 保留与清除；第⑤步
  *    跑 dry-run（stub 无 error 未截断）→ 断言「确认并立即首跑」从禁用变可用。
- * ② ConfirmGate：/repo 上对非默认仓库点「删除」→ 三门确认门（keyword 输入）
- *    弹出可见（默认仓库删除禁用逻辑不在本探针范围，单测已覆盖）。
- * 不真正提交任务 / 不真正删仓库——断言到「门放行 / 门弹出」为止。
+ * ② ConfirmGate：/repo 上对非默认仓库点「删除」→ 打开的是**归档**两段门
+ *    （确认影响 → 二次确认，全程无关键词输入；终态按钮「归档」）。
+ *    默认仓库删除禁用逻辑不在本探针范围，单测已覆盖。
+ * 不真正提交任务 / 不真正归档仓库——断言到「门放行 / 门弹出」为止。
+ *
+ * ⚠️ ② 的断言口径于 2026-11-03 修正：删除保护方案归档后，仓库门改为归档两段式，
+ * 旧断言的 input[placeholder="DELETE"] 与「确认执行」按钮已不存在（长期必挂）。
  *
  * 用法：node p13-wizard-probe.cjs [base]
  */
@@ -151,7 +155,10 @@ const STUBS = {
   console.log('[向导] 源路径已加入:', sourceAdded, '| 测试连接:', testOk > 0,
     '| dry-run 前确认键可用:', beforeDryRun, '| dry-run 后确认键可用:', confirmEnabled);
 
-  // ============ ② ConfirmGate（repo 删除三门）：预览 → 输入 DELETE → 二次确认 ============
+  // ============ ② ConfirmGate（仓库 ARCHIVE 两门）：确认影响 → 二次确认 ============
+  // 2026-11-03 修正：仓库行按钮虽仍叫「删除」，但打开的是**归档**门——两段式、无关键词输入。
+  // 旧断言等 input[placeholder="DELETE"] 与「确认执行」按钮，那套关键词三门已随删除保护方案
+  // 归档而退役，探针却一直没同步（一个多月前起就必挂，与向导改动无关）。
   await page.goto(BASE + '/repo', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
   const probeRow = page.locator('.repo__dest', { hasText: '探针仓库' });
@@ -159,31 +166,30 @@ const STUBS = {
   await page.waitForTimeout(500);
   const gate = page.locator('.n-modal').first();
   const gateVisible = await gate.count() > 0 && await gate.getByText('确认影响').count() > 0;
-  // 第 1→2 步：预览后下一步，出现关键词输入（placeholder=DELETE）
+  // 第 1 步：确认影响（归档语义 + 快照数 + 可选「同时销毁磁盘数据」），无关键词输入
+  const step1HasKeyword = await gate.locator('input[placeholder="DELETE"]').count() > 0;
+  const step1Text = ((await gate.textContent()) || '').replace(/\s+/g, ' ');
+  const step1DescribesArchive = step1Text.includes('归档');
+  // 第 1→2 步：下一步进入二次确认
   await gate.getByRole('button', { name: '下一步' }).click();
-  await page.waitForTimeout(300);
-  const keywordInput = gate.locator('input[placeholder="DELETE"]');
-  const keywordShown = await keywordInput.count() > 0;
-  // 第 2→3 步：填错关键词时下一步禁用，填对后放行
-  await keywordInput.fill('WRONG');
-  await page.waitForTimeout(200);
-  const nextDisabledOnWrong = await gate.getByRole('button', { name: '下一步' }).isDisabled();
-  await keywordInput.fill('DELETE');
-  await page.waitForTimeout(200);
-  const nextEnabledOnRight = !(await gate.getByRole('button', { name: '下一步' }).isDisabled());
-  await gate.getByRole('button', { name: '下一步' }).click();
-  await page.waitForTimeout(300);
-  const finalShown = await gate.getByRole('button', { name: '确认执行' }).count() > 0;
-  await page.screenshot({ path: path.join(OUT, 'repo-delete-gate.png'), fullPage: true });
-  console.log('[repo] ConfirmGate 弹出:', gateVisible, '| 关键词步出现:', keywordShown,
-    '| 错词禁用:', nextDisabledOnWrong, '| 对词放行:', nextEnabledOnRight, '| 三门终态按钮:', finalShown);
+  await page.waitForTimeout(400);
+  const step2Text = ((await gate.textContent()) || '').replace(/\s+/g, ' ');
+  const step2IsFinalConfirm = step2Text.includes('最后一步确认');
+  // 终态动作按钮是「归档」（不是「确认执行」）；断言它存在即门已走到可执行态
+  const finalShown = await gate.getByRole('button', { name: '归档', exact: true }).count() > 0;
+  // 可退回：上一步存在（两门都保留退路，避免误点即不可逆）
+  const canGoBack = await gate.getByRole('button', { name: '上一步' }).count() > 0;
+  await page.screenshot({ path: path.join(OUT, 'repo-archive-gate.png'), fullPage: true });
+  console.log('[repo] ConfirmGate 弹出:', gateVisible, '| 归档语义:', step1DescribesArchive,
+    '| 第1步无关键词框:', step1HasKeyword === false, '| 第2步为最终确认:', step2IsFinalConfirm,
+    '| 终态「归档」按钮:', finalShown, '| 可退回:', canGoBack);
 
   console.log('pageerror:', errors.length ? errors.join(' | ') : '(无)');
 
   const pass =
     sourceAdded === true && testOk > 0 && beforeDryRun === false && confirmEnabled === true &&
-    gateVisible === true && keywordShown === true && nextDisabledOnWrong === true &&
-    nextEnabledOnRight === true && finalShown === true && errors.length === 0;
+    gateVisible === true && step1DescribesArchive === true && step1HasKeyword === false &&
+    step2IsFinalConfirm === true && finalShown === true && canGoBack === true && errors.length === 0;
   console.log(pass ? 'P13 PROBE PASS' : 'P13 PROBE FAIL');
   await browser.close();
   process.exit(pass ? 0 : 1);
