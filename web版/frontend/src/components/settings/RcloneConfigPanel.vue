@@ -655,7 +655,7 @@ defineExpose({ refresh })
     <NCard size="small" :title="formTitle" class="rclone-panel__card">
       <NForm label-placement="left" label-width="140">
         <NFormItem :label="t('settings.rclone.type')">
-          <NSelect v-model:value="form.type" :options="TYPE_OPTIONS" :disabled="isEdit" style="width: 200px" />
+          <NSelect v-model:value="form.type" :options="TYPE_OPTIONS" :disabled="isEdit" style="width: 320px" />
         </NFormItem>
         <NFormItem :label="t('settings.rclone.remoteName')">
           <NInput
@@ -685,12 +685,12 @@ defineExpose({ refresh })
                   :options="remoteOptions"
                   :placeholder="t('settings.rclone.cryptRemoteNamePlaceholder')"
                   filterable
-                  style="width: 220px"
+                  style="width: 320px"
                 />
                 <NInput
                   v-model:value="form.cryptRemotePath"
                   :placeholder="t('settings.rclone.cryptRemotePathPlaceholder')"
-                  style="width: 280px"
+                  style="width: 320px"
                 />
               </NSpace>
               <span class="rclone-panel__muted">{{ t('settings.rclone.cryptRemoteHint') }}</span>
@@ -709,39 +709,39 @@ defineExpose({ refresh })
             />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.password')">
-            <PasswordInput
-              v-model="form.password"
-              width="400px"
-              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              :generate-label="t('common.generatePassword')"
-              @generate="requestGenerate('password')"
-            />
-            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
-            <span v-if="isEdit" class="rclone-panel__warn rclone-panel__note">
-              {{ t('settings.rclone.passwordRewriteWarn') }}
-            </span>
+            <NSpace vertical :size="4" style="width: 100%">
+              <PasswordInput
+                v-model="form.password"
+                width="400px"
+                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+                :generate-label="t('common.generatePassword')"
+                @generate="requestGenerate('password')"
+              />
+              <span v-if="isEdit" class="rclone-panel__muted">{{ t('settings.rclone.passwordObscureNote') }}</span>
+              <span v-if="isEdit" class="rclone-panel__warn">{{ t('settings.rclone.passwordRewriteWarn') }}</span>
+            </NSpace>
           </NFormItem>
           <NFormItem :label="t('settings.rclone.password2')">
-            <PasswordInput
-              v-model="form.password2"
-              width="400px"
-              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              :generate-label="t('common.generatePassword')"
-              @generate="requestGenerate('password2')"
-            />
-            <span v-if="isEdit" class="rclone-panel__warn rclone-panel__note">
-              {{ t('settings.rclone.passwordRewriteWarn') }}
-            </span>
+            <NSpace vertical :size="4" style="width: 100%">
+              <PasswordInput
+                v-model="form.password2"
+                width="400px"
+                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+                :generate-label="t('common.generatePassword')"
+                @generate="requestGenerate('password2')"
+              />
+              <span v-if="isEdit" class="rclone-panel__warn">{{ t('settings.rclone.passwordRewriteWarn') }}</span>
+            </NSpace>
           </NFormItem>
           <NFormItem :label="t('settings.rclone.filenameEncryption')">
-            <NSelect v-model:value="form.filenameEncryption" :options="FILENAME_ENCRYPTION_OPTIONS" style="width: 200px" />
+            <NSelect v-model:value="form.filenameEncryption" :options="FILENAME_ENCRYPTION_OPTIONS" style="width: 320px" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.directoryNameEncryption')">
             <NSwitch v-model:value="form.directoryNameEncryption" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.filenameEncoding')">
             <NSpace vertical :size="4">
-              <NSelect v-model:value="form.filenameEncoding" :options="FILENAME_ENCODING_OPTIONS" style="width: 200px" />
+              <NSelect v-model:value="form.filenameEncoding" :options="FILENAME_ENCODING_OPTIONS" style="width: 320px" />
               <span class="rclone-panel__muted">{{ t('settings.rclone.filenameEncodingHint') }}</span>
             </NSpace>
           </NFormItem>
@@ -752,28 +752,32 @@ defineExpose({ refresh })
             <NInput v-model:value="form.webdavUrl" :placeholder="t('settings.rclone.webdavUrlPlaceholder')" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.vendor')">
-            <NSelect v-model:value="form.vendor" :options="VENDOR_OPTIONS" style="width: 200px" />
+            <NSelect v-model:value="form.vendor" :options="VENDOR_OPTIONS" style="width: 320px" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.user')">
             <NInput v-model:value="form.user" />
           </NFormItem>
           <NFormItem :label="t('settings.rclone.bearerToken')">
-            <PasswordInput
-              v-model="form.bearerToken"
-              width="400px"
-              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : t('settings.rclone.bearerTokenPlaceholder')"
-            />
-            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
+            <NSpace vertical :size="4" style="width: 100%">
+              <PasswordInput
+                v-model="form.bearerToken"
+                width="400px"
+                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : t('settings.rclone.bearerTokenPlaceholder')"
+              />
+              <span v-if="isEdit" class="rclone-panel__muted">{{ t('settings.rclone.passwordObscureNote') }}</span>
+            </NSpace>
           </NFormItem>
           <NFormItem :label="t('settings.rclone.pass')">
-            <PasswordInput
-              v-model="form.pass"
-              width="400px"
-              :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
-              :generate-label="t('common.generatePassword')"
-              @generate="requestGenerate('pass')"
-            />
-            <span v-if="isEdit" class="rclone-panel__muted rclone-panel__note">{{ t('settings.rclone.passwordObscureNote') }}</span>
+            <NSpace vertical :size="4" style="width: 100%">
+              <PasswordInput
+                v-model="form.pass"
+                width="400px"
+                :placeholder="isEdit ? t('settings.rclone.passwordKeepHint') : ''"
+                :generate-label="t('common.generatePassword')"
+                @generate="requestGenerate('pass')"
+              />
+              <span v-if="isEdit" class="rclone-panel__muted">{{ t('settings.rclone.passwordObscureNote') }}</span>
+            </NSpace>
           </NFormItem>
         </template>
 
@@ -784,7 +788,7 @@ defineExpose({ refresh })
                 v-model:value="form.passwordForm"
                 :options="PASSWORD_FORM_OPTIONS"
                 :disabled="passwordFormDisabled"
-                style="width: 320px"
+                style="width: 400px"
               />
               <!-- 落盘形态只读徽标：目标形态恒定，用户不选 -->
               <NTag v-if="isEdit" size="small" :bordered="false" :type="storedFormTagType">
@@ -799,6 +803,26 @@ defineExpose({ refresh })
               }}
             </span>
 
+            <!-- 形态未知（无记录 / conf 被外部改过）：只能填密码重存来重建记录 -->
+            <span v-if="isEdit && storedForm === null" class="rclone-panel__muted">
+              {{ t('settings.rclone.formUnknownHint') }}
+            </span>
+
+            <!-- 次级维护入口归组：找回密码（命令示例，凭据零回显）+ 明文段就地修正 -->
+            <div v-if="showRecoverHint || canRepairPlain" class="rclone-panel__maint">
+              <div class="rclone-panel__maint-label">{{ t('settings.rclone.maintGroupLabel') }}</div>
+              <div class="rclone-panel__row">
+                <NButton
+                  v-if="showRecoverHint"
+                  size="tiny"
+                  secondary
+                  @click="recoverOpen = true"
+                >
+                  {{ t('settings.rclone.recoverBtn') }}
+                </NButton>
+              </div>
+            </div>
+
             <!-- 历史明文段：不填密码也能就地修正（后端做 reveal 一致性检查，绝不二次混淆） -->
             <NAlert v-if="canRepairPlain" type="warning" :bordered="false">
               <div class="rclone-panel__formform">
@@ -810,17 +834,6 @@ defineExpose({ refresh })
                 </div>
               </div>
             </NAlert>
-            <!-- 形态未知（无记录 / conf 被外部改过）：只能填密码重存来重建记录 -->
-            <span v-if="isEdit && storedForm === null" class="rclone-panel__muted">
-              {{ t('settings.rclone.formUnknownHint') }}
-            </span>
-
-            <!-- 找回密码：只弹命令示例文本（凭据零回显——本工具不读、不传、不回显密码） -->
-            <div v-if="showRecoverHint" class="rclone-panel__row">
-              <NButton size="tiny" secondary @click="recoverOpen = true">
-                {{ t('settings.rclone.recoverBtn') }}
-              </NButton>
-            </div>
 
             <!-- 有仓库引用该远端 → 明示阻断原因与占用清单（裁决 1/2/3） -->
             <NAlert v-if="isEdit && usedByCount > 0" type="warning" :bordered="false">
@@ -972,9 +985,17 @@ defineExpose({ refresh })
   gap: 8px;
   flex-wrap: wrap;
 }
-.rclone-panel__note {
-  display: block;
-  margin-top: 4px;
+/* 次级维护入口分组框（找回密码 / 就地修正）：与主输入区分层，弱化为虚线细框 */
+.rclone-panel__maint {
+  border: 1px dashed var(--n-border-color, rgba(255, 255, 255, 0.14));
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.rclone-panel__maint-label {
+  color: var(--n-text-color-3, #8a8f98);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
 }
 .rclone-panel__cmdrow {
   display: flex;
