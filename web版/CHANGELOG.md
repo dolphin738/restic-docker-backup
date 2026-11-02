@@ -178,6 +178,7 @@
   - **缺口 6 · release 端点缺守卫**：`POST /api/archive/repos/{repo_id}/release` 补齐三门——`ensure_deletable`（default 禁删 + 有任务/活跃作业 409 + 被镜像引用 409）、**必须已归档**否则 422、外键冲突 `IntegrityError` 译成 409 不落 500。修复前正常 UI 操作即可删掉 default 行。
 
 ### 变更（行为变化，需留意）
+- **向导「新建仓库」步的一次性密码改为可复制弹窗（2026-11-02）**：建仓生成态原用 `message.warning` 常驻 toast 呈现 32 位密码——不可选中复制，用户只能手抄；现复用全站唯一实现（`PasswordEntryModal` 生成态 = `SecretReveal`：只读明文 + 复制按钮 + 确认关闭），与仓库页「设置密码 / 重建结果」同款交互。确认只关弹窗，不影响建仓「四项齐备」放行判定；明文仍只在内存（S3）。i18n 键 `wizard.newRepoPassword`（含明文插值）替换为 `newRepoPasswordTitle/Hint/Confirm` 三键（中英同批）。护栏 `newRepoPassword.spec.ts`；真机探针 PASS。
 - **读取侧降级语义（方案 B-full）**：`ConfigRow` / `ConfigItem` 增 `degraded: bool` + `degraded_reason: str|null`，三态判定——没配过（`has_value=false` 且 `degraded=false`）/ 有值（`has_value=true`）/ **失效**（`has_value=false` 且 `degraded=true`）。`list_all()` 改为**按密钥源分组解密**：某密钥源首次失败即降级该源全部键，其余密钥源照常读出。
 - **两条路径语义刻意分叉**：**展示路径**（E06 `GET /api/config`、两条导出）降级**不抛**；**执行路径**（`env_sync.load_credentials`，每个备份任务的必经之路）遇降级行**抛 `CredentialDecryptError`（500）**，**绝不降级为空值**静默跑——否则备份会带着缺失的云凭据跑到「认证失败」，把排查引向错误方向。该错误码自本版起也承担「密钥源失效」语义。
 - **启动期**把失效密钥源汇总成**一条** `logger.warning`（不是逐键刷屏）。前端 `api/types.ts` / `openapi.json` / `schema.d.ts` 同步。
