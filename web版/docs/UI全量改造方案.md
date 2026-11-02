@@ -1,6 +1,6 @@
 # UI 全量改造方案（对齐 Duplicati ngclient 设计语言）
 
-> 版本：v1.40（2026-10-29）
+> 版本：v1.41（2026-11-03）
 > **历史修订（v1.0–v1.40）已移入 [CHANGELOG.md](../CHANGELOG.md#UI全量改造方案修订史)**——本文只保留当前契约。
 > 状态：活跃——owner 2026-10-17 指令立项；2026-10-19 指令修订：「查看项目后端源码与 Duplicati UI 源码，按原对话要求修订方案」（后端能力面已对齐 Duplicati 后的重对比）。**2026-10-23 起为 UI 视觉与功能面的唯一权威**：原《UI界面设计方案》（视觉基线）已作废并入 §6，不再另存视觉文档（文档管理规范 §5 硬规则 3）。
 > 设计基准：Duplicati ngclient（模版版本 0.0.243）源码组件细读——本轮细读 8 组组件。外部分析报告与源码副本均在仓库外的本机目录中，**不进版本库、不作为取值依据**（历史记载见 §「修订记录」v1.0/v1.1）。
@@ -711,6 +711,33 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 - **修法（复用既有解，S-4）**：抽 `ensureMounts()` **与树位置解耦**，独立发一次 `browseFs("/", null, 1)` 只取 `mounts`（与 `RestoreTargetPicker` 同款），并在 `openCreate` / `loadRepoIntoForm`（编辑回填）/ `onTypeChange`（切到 local）三处接线，内部幂等（已有则跳过）、失败静默降级（快跳只是便利）。
 - **顺带补的键盘可达性**：三角 `@keydown.esc` 收起菜单。原先只靠「点击组件外」关闭，键盘用户（Tab 到三角 + Enter 展开）**没有关闭路径**。
 - **护栏**：`PathBreadcrumb.spec.ts` 增 `④b` 一例（三角聚焦后 Esc 收起、不 emit）；探针 `.e2e/p20-repo-path-picker.cjs` 增断言「**未点击前** `hasCaret` 为真 + 展开后菜单项 ≥2」，真机 1440/390 复跑 pass（挂载点 `/home` `/srv` `/mnt` 全部在菜单内，点 `srv` 仍只写输入框、地址栏保持 `/`）。
+
+### 4.10 第十一轮：rclone 表单排布规整 + 全站「生成密码」按钮统一 + 单一实现收口（2026-11-03）
+
+**触发**：owner 截图指认 rclone 配置表单「按钮样式和文案的布局杂乱」；随后追问「生成密码怎么没在输入框里」「全站还有多少处」「有没有组件不用却手写的其他地方」，三连追问把一次视觉修复推进为三层统一。
+
+#### 4.10.1 rclone 表单排布（owner 选「按方案 B 原稿实现」，演示稿对比后拍板）
+
+- 密码/加密盐（crypt）与 token/pass（webdav）四个输入行：说明与警告从输入框**右侧同行**改为**下方独立整行**（`NSpace vertical`）——同行混排时按钮存在感被橙色长警告吃掉，且位置随窗口宽度漂移；
+- 警告缩为单句「⚠ 一旦修改…永久无法解密」（括号补语删除）；`passwordObscureNote` 的「上方」随布局改「下方」；`passwordFormHint` 重排为先答「你填的是什么」再补 conf 恒为混淆；中英同批；
+- 控件宽度五档（200/220/280/320/400px）收敛为 **320/400 两档**；
+- 「密码形态」块重排：下拉+落盘徽标一行 → 说明 → **「维护与找回」虚线分组框**收纳「如何找回密码」入口（新增 i18n 键 `maintGroupLabel`）→ 条件 Alert 按状态出现。裁决逻辑零改动（裁决 17、凭据零回显、SecretReveal 不动）。
+
+#### 4.10.2 「生成密码」按钮全站统一（owner 裁决：**取配置迁移导出口令按钮的样式为全站唯一形态**）
+
+- 形态 = 输入框**右侧外部**、secondary small、盾牌图标（IconShieldCheck 16px）+ 文字；收进 `PasswordInput`（S-4），按钮落点演进：框外原样 →（当日一度改框内后缀）→ owner 指认与演示稿不符 → 框内 order 翻转 → **最终按形态③框外+图标**定稿，组件头注释记录完整决策链；
+- `PasswordEntryModal` 底部独立 primary 生成按钮删除，挪进自填态 PasswordInput（`showGenerate=false` 的强制重置/向导展示态仍不渲染）；
+- `SectionTransfer` 手写 `n-button` 删除，改 `generate-label` 通道（生成逻辑零改动）；
+- 全站 6 个可见生成按钮自此单一形态：rclone×3 + E44 + 轮换 + 配置迁移；四重口径交叉核查（裸 password 扫描 / utils\password.ts 消费方 / i18n 键 `common.generatePassword` 全消费点 / @click 手写兜底）确认无第 7 处；
+- **顺带修复既有结构错误**：`SectionTransfer` 的导入覆盖 ConfirmGate 曾误嵌在生成按钮 `<template #icon>` 内（teleport 掩盖了运行时症状），迁移时解缠至导入区末尾。
+
+#### 4.10.3 单一实现收口（owner 问「还有没有别的手写」后逐层核查修复）
+
+- **字节数格式化**（`utils/format.ts` 单一实现点）：删 3 份手写副本——`repo/index.vue`（注释自曝「维护卡另有一份」）、`RepoMaintenanceCard.vue`（逐字节相同）、`audit/index.vue`（变体：无 GiB/TiB 档，口径已漂移，修后归档大小展示自然补齐单位档）；
+- **字符类别计数**：`utils/passwordStrength.ts` 新增 `countCharClasses()` 作类别定义唯一出处，`estimatePasswordStrength` 与 `bootstrap` 的 `strengthOk` 准入校验共用（内联正则数组删除）；
+- **剪贴板复制**：新增 `utils/clipboard.ts` 的 `copyWithNotify()`，收口 ConfirmGate / SecretReveal / RcloneConfigPanel(找回命令) 三处相同样板；bootstrap 引导密码复制**刻意不迁**（失败静默是刻意策略，头注释写明）。
+
+**护栏与验证**：`PasswordInput.spec`（含裸 password 护栏）、`RcloneConfigPanel.spec` 22 例（「找回密码唯一入口」「按钮元素查询」等断言在新布局下全部保持绿）、前端全量 **575 passed**（2 条 wizardStepSequence Errors 为 HEAD 基线固有）、vue-tsc 0 error、红线 19/19；真机逐处核验（rclone 编辑/配置迁移导出行/密钥轮换弹窗的按钮几何 + 找回弹窗复制 toast）。**零后端改动**。
 
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 

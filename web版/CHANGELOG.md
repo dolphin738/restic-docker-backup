@@ -208,9 +208,16 @@
 - **为什么进加密段**：`degraded` 的键名就是凭据键名，放明文段等于把「本实例配过哪些凭据」泄露给任何拿到导出文件的人（S3）；原因串只含密钥源标识与异常类别，不含任何键值/密文。
 - **护栏**：`tests/test_config_transfer.py` 增 4 例（v2 降级键带标记且明文段不出现键名与原因 / 无降级行不写字段 / v1 旧包仍可导入 / version=99 被拒）。
 
+### 第 7 批 · rclone 表单规整 + 全站「生成密码」统一 + 单一实现收口（2026-11-03，纯前端）
+
+- **rclone 配置表单排布规整（owner 截图指认 + 方案 B 演示稿对比拍板）**：说明/警告从输入框右侧同行改为下方独立整行（四输入行）；警告缩为单句 + `passwordFormHint` 重排 + `passwordObscureNote` 方位词修正（中英同批）；控件宽度五档收敛 **320/400 两档**；「密码形态」块重排并新增「维护与找回」分组框（i18n 键 `maintGroupLabel`）。裁决逻辑零改动（裁决 17、凭据零回显、SecretReveal 不动）。
+- **全站「生成密码」按钮统一（owner 裁决：取配置迁移导出口令按钮样式为唯一形态）**：收进 `PasswordInput`（输入框右侧、secondary small、盾牌图标，S-4 单一实现）；`PasswordEntryModal` 底部生成按钮挪进自填态输入框（`showGenerate=false` 态仍隐藏）；`SectionTransfer` 手写按钮改走 `generate-label` 通道。全站 6 处可见生成按钮单一形态。**顺带修复**：导入覆盖 ConfirmGate 曾误嵌在按钮 `<template #icon>` 内，解缠至导入区末尾。
+- **单一实现收口（owner 追问「还有没有别的手写」后核查）**：① `formatBytes` 三份手写副本删除（`repo/index.vue` / `RepoMaintenanceCard.vue` 逐字节相同、`audit/index.vue` 口径已漂移缺 GiB/TiB 档），统一走 `utils/format.ts`；② `utils/passwordStrength.ts` 新增 `countCharClasses()`，类别定义唯一出处，bootstrap `strengthOk` 改为消费它；③ 新增 `utils/clipboard.ts` `copyWithNotify()`，收口 ConfirmGate / SecretReveal / RcloneConfigPanel 三处复制样板（bootstrap 静默策略刻意不迁）。全站核查（裸 password 扫描 / 唯一生成器消费方 / i18n 键反查 / @click 兜底）确认无其他「有组件却手写」遗留。
+- **护栏**：`PasswordInput.spec`（含裸 password 护栏）+ `RcloneConfigPanel.spec` 22 例在新布局下全绿；零后端改动。
+
 ### 校验结果
 - 后端 WSL 全量 `pytest tests -q`：**1296 passed / 0 failed**（第 6 批 4 条护栏后为 1296；第 5 批时为 1292）。
-- 前端 WSL 全量 `vitest run`：**571 passed / 60 files**（含本批新增 5 例；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，已在 **HEAD 基线**复现同样 2 条，与本批无关）。
+- 前端全量 `vitest run`：**575 passed / 61 files**（第 7 批后；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，HEAD 基线复现同样 2 条，与本批无关）。
 - 前端 `vue-tsc --noEmit`：0 error。
 - `ruff check app tests` 干净。
 - `bash scripts/verify_redlines.sh`：**19/19 全部通过**（Windows Git-Bash 不设任何环境变量、WSL 两侧均实测；G8 需 python 解释器，无 python 时该项跳过并计 18/18）——AGENTS.md 与规范 §3.1 编号锚点一致，未新增/删除红线条款。
