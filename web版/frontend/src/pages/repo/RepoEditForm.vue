@@ -84,8 +84,12 @@ const props = defineProps<{
   endpointSuggestions: string[]
   /** 凭据字段表（按当前所选类型）。 */
   credFields: CredField[]
-  /** 凭据项查询（has_value / source）；新建态传 null。 */
-  itemOf: ((suffix: string) => { has_value?: boolean; source?: string } | undefined) | null
+  /** 凭据项查询（has_value / source / degraded / degraded_reason）；新建态传 null。 */
+  itemOf:
+    | ((
+        suffix: string,
+      ) => { has_value?: boolean; source?: string; degraded?: boolean; degraded_reason?: string | null } | undefined)
+    | null
   /** 地址由 env 覆盖 → 整段只读。 */
   envLocked: boolean
   /** rclone 远端探测结果（null = 未探测）。 */
@@ -496,9 +500,19 @@ const isLocalRepo = computed(() => props.repo?.type === 'local')
             <n-text strong>{{ t('repo.credentials') }}</n-text>
             <n-form-item v-for="field in credFields" :key="field.suffix" :label="t(field.labelKey)">
               <n-space vertical :size="4" class="repo__cred">
-                <!-- 编辑态才显示已配置/未配置与 env 覆盖（itemOf 读当前仓库命名空间，新建态无意义） -->
+                <!-- 编辑态才显示三态徽标与 env 覆盖（itemOf 读当前仓库命名空间，新建态无意义）：
+                     优先级 失效(degraded) → 已配置(has_value) → 未配置；原因走 tooltip 不塞进徽标。 -->
                 <n-space v-if="!creatingNew" align="center" :size="8">
+                  <n-tooltip v-if="itemOf?.(field.suffix)?.degraded" trigger="hover">
+                    <template #trigger>
+                      <StatusTag size="tiny" kind="warning" :label="t('repo.credDegraded')" />
+                    </template>
+                    {{
+                      t('repo.credDegradedReason', { reason: itemOf?.(field.suffix)?.degraded_reason || t('common.none') })
+                    }}
+                  </n-tooltip>
                   <StatusTag
+                    v-else
                     size="tiny"
                     :kind="itemOf?.(field.suffix)?.has_value ? 'success' : 'default'"
                     :label="itemOf?.(field.suffix)?.has_value ? t('repo.credSet') : t('repo.credUnset')"

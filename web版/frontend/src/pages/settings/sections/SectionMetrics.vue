@@ -15,6 +15,7 @@ import {
   NIcon,
   NSpace,
   NText,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
@@ -33,6 +34,9 @@ const configQuery = useQuery({ queryKey: ['config', 'settings-page'], queryFn: g
 /** 令牌三态（同 dump.password 先例）：读取回 *_set 布尔；清除提交空串、输入新值提交原文。
  * 后端只存 SHA-256 硬哈希——设置后不可读，遗失需重新生成。 */
 const metricsTokenSet = ref(false)
+/** 失效态（degraded 三态之一）：凭据源读不出来时 has_value=false 但不得当作「未设置」。 */
+const metricsTokenDegraded = ref(false)
+const metricsTokenDegradedReason = ref<string | null>(null)
 const metricsTokenInput = ref('')
 const metricsTokenClear = ref(false)
 
@@ -43,6 +47,8 @@ watch(configQuery.data, (data) => {
   }
   const item = (key: string) => data.items.find((entry) => entry.key === key) ?? null
   metricsTokenSet.value = item('metrics.token')?.has_value ?? false
+  metricsTokenDegraded.value = item('metrics.token')?.degraded ?? false
+  metricsTokenDegradedReason.value = item('metrics.token')?.degraded_reason ?? null
 }, { immediate: true })
 
 const metricsTokenDirty = computed(() => metricsTokenClear.value || metricsTokenInput.value !== '')
@@ -79,8 +85,16 @@ async function onSaveMetricsToken(): Promise<void> {
         <n-form label-placement="top" class="settings__form">
           <n-space align="center" :size="8">
             <n-text>{{ t('settings.metrics.token') }}</n-text>
-            <!-- P3c 收口：抓取令牌三态（原 success / 无 type 两形态统一） -->
-            <StatusTag v-if="metricsTokenSet" kind="success" :label="t('settings.metrics.tokenSet')" />
+            <!-- P3c 收口：抓取令牌状态徽标（失效 → 已设置 → 未设置）；原因走 tooltip 不塞进徽标 -->
+            <n-tooltip v-if="metricsTokenDegraded" trigger="hover">
+              <template #trigger>
+                <StatusTag kind="warning" :label="t('settings.metrics.tokenDegraded')" />
+              </template>
+              {{
+                t('settings.metrics.tokenDegradedReason', { reason: metricsTokenDegradedReason || t('common.none') })
+              }}
+            </n-tooltip>
+            <StatusTag v-else-if="metricsTokenSet" kind="success" :label="t('settings.metrics.tokenSet')" />
             <StatusTag v-else kind="default" :label="t('settings.metrics.tokenUnset')" />
           </n-space>
           <n-form-item :label="t('settings.metrics.newToken')">

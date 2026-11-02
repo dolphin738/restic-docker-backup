@@ -21,6 +21,7 @@ import {
   NSpace,
   NSwitch,
   NText,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
@@ -51,6 +52,9 @@ const dumpRetentionDays = ref<number | null>(null)
 /** 密码三态：读取回 *_set 布尔；提交时「清除」提交空串、「输入新值」提交原文、都不动 = 不变。 */
 const dumpPasswordSet = ref(false)
 const dumpPasswordSource = ref<'ui' | 'env' | null>(null)
+/** 失效态（degraded 三态之一）：凭据源读不出来时 has_value=false 但不得当作「未配置」。 */
+const dumpPasswordDegraded = ref(false)
+const dumpPasswordDegradedReason = ref<string | null>(null)
 const dumpPasswordClear = ref(false)
 const dumpPasswordInput = ref('')
 
@@ -79,6 +83,8 @@ watch(configQuery.data, (data) => {
   const password = item('dump.password')
   dumpPasswordSet.value = password?.has_value ?? false
   dumpPasswordSource.value = password?.source ?? null
+  dumpPasswordDegraded.value = password?.degraded ?? false
+  dumpPasswordDegradedReason.value = password?.degraded_reason ?? null
 }, { immediate: true })
 
 const dumpTypeOptions = computed(() =>
@@ -159,8 +165,17 @@ async function onSaveDump(): Promise<void> {
           <n-form-item :label="t('settings.dump.password')">
             <n-space vertical :size="8" class="settings__full">
               <n-space align="center" :size="8">
-                <!-- P3c 收口：口令已设/未设 + env 来源（色/文案不变，形态统一 pill） -->
+                <!-- P3c 收口：口令三态（失效 → 已配置 → 未配置）+ env 来源（色/文案不变，形态统一 pill） -->
+                <n-tooltip v-if="dumpPasswordDegraded" trigger="hover">
+                  <template #trigger>
+                    <StatusTag kind="warning" :label="t('settings.dump.passwordDegraded')" />
+                  </template>
+                  {{
+                    t('settings.dump.passwordDegradedReason', { reason: dumpPasswordDegradedReason || t('common.none') })
+                  }}
+                </n-tooltip>
                 <StatusTag
+                  v-else
                   :kind="dumpPasswordSet ? 'success' : 'default'"
                   :label="dumpPasswordSet ? t('settings.dump.passwordSet') : t('settings.dump.passwordUnset')"
                 />
