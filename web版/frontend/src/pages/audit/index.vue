@@ -47,6 +47,7 @@ import {
   parseAuditDetail,
 } from '@/utils/audit'
 import { formatDateTime } from '@/utils/datetime'
+import { formatBytes } from '@/utils/format'
 
 const PAGE_SIZE = 50
 
@@ -335,17 +336,6 @@ async function onSaveRetention(): Promise<void> {
     savingRetention.value = false
   }
 }
-
-/** 归档文件大小 human-readable（B / KiB / MiB）。 */
-function formatArchiveBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KiB`
-  }
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
-}
 </script>
 
 <template>
@@ -523,7 +513,7 @@ function formatArchiveBytes(bytes: number): string {
             <tbody>
               <tr v-for="file in archiveQuery.data.value" :key="file.name">
                 <td>{{ file.name }}</td>
-                <td>{{ formatArchiveBytes(file.size_bytes) }}</td>
+                <td>{{ formatBytes(file.size_bytes) }}</td>
                 <td>{{ formatDateTime(file.mtime_iso) }}</td>
               </tr>
             </tbody>

@@ -62,6 +62,8 @@ import KeyIdentity from './KeyIdentity.vue'
 import { useUiStore } from '@/stores/ui'
 // G4：强随机密码生成（纯前端，本地 crypto 源；轮换面板「生成」按钮用，不经网络）
 import { generatePassword as generateRandomPassword } from '@/utils/password'
+// 字节数人读化（utils/format 单一实现点；容量卡与维护卡同口径）
+import { formatBytes } from '@/utils/format'
 // rclone 远端配置面板（原设置页分区；B11 迁入本页，A 方案改为抽屉浮层按需唤出，不占主页纵向）
 import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 
@@ -918,19 +920,6 @@ const testPasswordWrong = computed(
 
 // ---------------------------------------------------------------- 展示辅助
 const repoStatus = computed(() => statusQuery.data.value ?? null)
-
-
-/** 字节数人读化（容量卡用；维护卡的缓存展示在 RepoMaintenanceCard 内另有一份）。 */
-function formatBytes(value: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let size = value
-  let index = 0
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024
-    index += 1
-  }
-  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
-}
 
 const capacityText = computed(() => {
   // capacity 可能为 null（后端缺省/代理改写/未初始化），?. 兜底——否则整页渲染抛错白屏

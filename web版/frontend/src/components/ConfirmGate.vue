@@ -2,6 +2,7 @@
 import { NAlert, NButton, NCard, NInput, NModal, NSpace, NText, useMessage } from 'naive-ui'
 import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { copyWithNotify } from '@/utils/clipboard'
 import { IconCopy } from '@/components/icons/icons'
 import OpResultBody from '@/components/OpResultBody.vue'
 import WizardStepper from '@/components/WizardStepper.vue'
@@ -94,15 +95,10 @@ function onConfirm(): void {
 }
 
 /** 复制第 2 步需要原样输入的确认文本（keyword），便于用户直接粘贴而非手抄。
- *  与 SecretReveal / RcloneConfigPanel 同一口径：clipboard API + 成败 toast。 */
+ *  与 SecretReveal / RcloneConfigPanel 同一口径：clipboard API + 成败 toast（utils/clipboard 单一实现点）。 */
 async function copyKeyword(): Promise<void> {
   if (!props.keyword) return
-  try {
-    await navigator.clipboard.writeText(props.keyword)
-    message.success(t('common.copied'))
-  } catch {
-    message.warning(t('common.copyFailed'))
-  }
+  await copyWithNotify(props.keyword, message, t('common.copied'), t('common.copyFailed'))
 }
 </script>
 

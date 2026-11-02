@@ -18,17 +18,25 @@ export interface PasswordStrength {
   length: number
 }
 
+/** 字符类别数（小写 / 大写 / 数字 / 符号，各计 1）——类别定义的唯一出处；
+ *  estimatePasswordStrength 与业务侧准入校验（bootstrap strengthOk）共用，
+ *  改类别口径只改这一处。 */
+export function countCharClasses(password: string): number {
+  return (
+    (/[a-z]/.test(password) ? 1 : 0) +
+    (/[A-Z]/.test(password) ? 1 : 0) +
+    (/\d/.test(password) ? 1 : 0) +
+    (/[^A-Za-z0-9]/.test(password) ? 1 : 0)
+  )
+}
+
 export function estimatePasswordStrength(password: string): PasswordStrength {
   const length = password.length
   if (length === 0) {
     return { score: 0, classes: 0, length }
   }
 
-  const classes =
-    (/[a-z]/.test(password) ? 1 : 0) +
-    (/[A-Z]/.test(password) ? 1 : 0) +
-    (/\d/.test(password) ? 1 : 0) +
-    (/[^A-Za-z0-9]/.test(password) ? 1 : 0)
+  const classes = countCharClasses(password)
 
   if (length < 10) {
     // 未达导出最低门槛：一律计 0（长度是决定性因素，类别再多也不放行）

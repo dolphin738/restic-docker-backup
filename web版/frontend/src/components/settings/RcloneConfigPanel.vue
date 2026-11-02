@@ -26,6 +26,7 @@
  */
 import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { copyWithNotify } from '@/utils/clipboard'
 import {
   NAlert,
   NButton,
@@ -597,14 +598,9 @@ const recoverCommands = computed(() => ({
   reveal: `rclone reveal <${t('settings.rclone.recoverValuePlaceholder')}>`,
 }))
 
-/** 复制到剪贴板（与 SecretReveal 同一口径：clipboard API + 失败提示）。 */
+/** 复制到剪贴板（与 SecretReveal 同一口径：clipboard API + 失败提示；utils/clipboard 单一实现点）。 */
 async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success(t('common.copied'))
-  } catch {
-    message.warning(t('common.copyFailed'))
-  }
+  await copyWithNotify(text, message, t('common.copied'), t('common.copyFailed'))
 }
 
 async function remove(remote: string): Promise<void> {

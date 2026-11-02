@@ -18,6 +18,7 @@
  * （通过 `confirm` / `back` 事件）。通常包在 `n-modal` 里使用。
  */
 import { useI18n } from 'vue-i18n'
+import { copyWithNotify } from '@/utils/clipboard'
 import { NAlert, NButton, NInput, NSpace, useMessage } from 'naive-ui'
 
 const props = withDefaults(
@@ -45,12 +46,7 @@ const { t } = useI18n()
 const message = useMessage()
 
 async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(props.secret)
-    message.success(t('common.copied'))
-  } catch {
-    message.warning(t('common.copyFailed'))
-  }
+  await copyWithNotify(props.secret, message, t('common.copied'), t('common.copyFailed'))
 }
 </script>
 

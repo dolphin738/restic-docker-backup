@@ -18,6 +18,7 @@ import { useI18n } from 'vue-i18n'
 import { getCacheUsage } from '@/api/settings'
 import JobProgress from '@/components/JobProgress.vue'
 import { formatDateTime } from '@/utils/datetime'
+import { formatBytes } from '@/utils/format'
 
 const { t } = useI18n()
 
@@ -74,18 +75,6 @@ const cacheMeasuredLine = computed(() => {
 
 /** du 超时截断标注（后端回部分值，仍可用，仅提示不精确）。 */
 const cacheTruncated = computed(() => cacheQuery.data.value?.truncated ?? false)
-
-/** 字节数人读化（缓存占用展示用）。 */
-function formatBytes(value: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let size = value
-  let index = 0
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024
-    index += 1
-  }
-  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
-}
 </script>
 
 <template>

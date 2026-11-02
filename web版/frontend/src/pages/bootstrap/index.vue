@@ -20,6 +20,7 @@ import { hasCode, isAppError } from '@/api/http'
 import { IconChevronRight, IconCopy, IconLock, IconUser } from '@/components/icons/icons'
 import WizardStepper from '@/components/WizardStepper.vue'
 import { useUiStore } from '@/stores/ui'
+import { countCharClasses } from '@/utils/passwordStrength'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -50,8 +51,8 @@ function strengthOk(value: string): boolean {
   if (value.length < 10) {
     return false
   }
-  const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(value)).length
-  return classes >= 2
+  // 类别口径统一走 utils/passwordStrength 的 countCharClasses（单一实现点）
+  return countCharClasses(value) >= 2
 }
 
 function errorTextOf(error: unknown): string {
