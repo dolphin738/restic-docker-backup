@@ -22,6 +22,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { NButton, NSpace, NText, useMessage } from 'naive-ui'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useI18n } from 'vue-i18n'
+import { rebuildRepo } from '@/api/repo'
 import { getConfig } from '@/api/config'
 import { isAppError } from '@/api/http'
 import { getRepo, getRepoStatus, listRepos, listRcloneConfigs, listRcloneRemotes, suggestRepoId, testRepo } from '@/api/repo'
@@ -31,6 +32,8 @@ import { useRepoProvisioning } from '@/composables/useRepoProvisioning'
 import { CRED_FIELDS } from '@/utils/repoCredentials'
 import { composeRepoUrl, parseRepoUrl, resolveRcloneTarget, type RepoTypeKey } from '@/utils/repoUrl'
 import { useUiStore } from '@/stores/ui'
+import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
+import ConfirmGate from '@/components/ConfirmGate.vue'
 
 const props = defineProps<{
   /** 已创建成功的仓库 id（父组件的 provisionedRepoId）；null = 尚未建仓。 */
@@ -50,6 +53,48 @@ const message = useMessage()
 const queryClient = useQueryClient()
 
 const INIT_FAILURE_KINDS = new Set(['not_initialized', 'unknown'])
+
+// 一次性明文弹窗（生成态 = SecretReveal：展示 + 复制 + 确认关闭，与仓库页重建结果同款）。
+// 明文只在内存里交给用户复制备份，绝不进 localStorage / 草稿（红线 S3）。
+const generatedPassword = ref<string | null>(null)
+
+// ---------------------------------------------------------------- 重建仓库（2026-11-02 接通）
+// RepoEditForm 在「本地 FS + 密码错误」测试结论旁出「重建仓库」按钮；此前本步把 rebuild
+// 事件吞成空函数，点击无任何反应。与仓库页 useRepoGates.onRebuild 同语义：ConfirmGate
+// 关键词 REBUILD 确认 → rebuildRepo → 生成密码走既有一次性弹窗 → 刷新查询 → 重测。
+// 仅本地 FS 可用（远程后端 422），与按钮的 v-if="isLocalRepo" 一致（方案 R7）。
+const rebuildShow = ref(false)
+const rebuildSaving = ref(false)
+function onRebuildRequested(): void {
+  rebuildShow.value = true
+}
+async function onRebuildConfirmed(): Promise<void> {
+  const id = props.provisionedRepoId
+  if (!id) return
+  rebuildSaving.value = true
+  try {
+    const res = await rebuildRepo(id, {})
+    if (res.generated && res.password) {
+      generatedPassword.value = res.password
+    }
+    await Promise.all([repoQuery.refetch(), configQuery.refetch(), statusQuery.refetch(), reposQuery.refetch()])
+    // 旧测试结论描述的是重建前的旧仓库，作废后立即重测（与仓库页 resetTestResult 同语义）
+    testResult.value = null
+    repoTestState.value = 'idle'
+    await onTest()
+  } catch (error) {
+    if (!isAppError(error)) throw error
+  } finally {
+    rebuildSaving.value = false
+  }
+}
+// PasswordEntryModal 的 v-model:show：明文非空即开；确认/关闭写回 null（清内存，S3）
+const generatedPasswordShow = computed({
+  get: () => generatedPassword.value !== null,
+  set: (show: boolean) => {
+    if (!show) generatedPassword.value = null
+  },
+})
 const NOT_INITIALIZED_MARKERS = ['未初始化', '不存在', 'not initialized', 'unable to open config file', 'no such bucket', 'does not exist']
 
 // ---------------------------------------------------------------- 表单状态（与仓库页同形状）
@@ -249,10 +294,8 @@ async function onCreate(): Promise<void> {
     verifyRequired.value = false
     testResult.value = result.test
     repoTestState.value = result.test.ok ? 'success' : 'error'
-    if (result.generatedPassword) {
-      // 明文只在内存里交给用户抄走，绝不进 localStorage / 草稿（红线 S3）
-      message.warning(t('wizard.newRepoPassword', { password: result.generatedPassword }), { duration: 0 })
-    }
+    // 一次性明文走可复制的弹窗（PasswordEntryModal 生成态），不再用不可复制的 toast
+    generatedPassword.value = result.generatedPassword ?? null
     await Promise.all([repoQuery.refetch(), configQuery.refetch(), statusQuery.refetch()])
   } catch (error) {
     if (!isAppError(error)) throw error
@@ -314,7 +357,7 @@ async function onPassword(force: boolean): Promise<void> {
   try {
     const password = await provisioning.writePassword(id, undefined, force)
     if (password) {
-      message.warning(t('wizard.newRepoPassword', { password }), { duration: 0 })
+      generatedPassword.value = password
     }
     await Promise.all([repoQuery.refetch(), configQuery.refetch()])
     if (force) await onTest()
@@ -383,7 +426,7 @@ watch(
       @test="onTest"
       @password="onPassword"
       @init="onInit"
-      @rebuild="() => {}"
+      @rebuild="onRebuildRequested"
       @init-done="onInitDone"
     />
 
@@ -396,6 +439,34 @@ watch(
         {{ saving ? t('wizard.newRepoCreating') : t('wizard.newRepoCreate') }}
       </n-button>
     </n-space>
+
+    <!-- 重建仓库确认门（2026-11-02 接通；与仓库页同款：关键词 REBUILD，仅本地 FS 出口） -->
+    <ConfirmGate
+      v-model:show="rebuildShow"
+      :title="t('repo.rebuildTitle')"
+      :keyword="'REBUILD'"
+      :description="t('repo.rebuildConfirm')"
+      :loading="rebuildSaving"
+      @confirm="onRebuildConfirmed"
+    >
+      <template #preview>
+        <n-text depth="3">{{ t('repo.rebuildPreview') }}</n-text>
+      </template>
+    </ConfirmGate>
+
+    <!-- 一次性明文展示（与仓库页「设置密码 / 重建结果」同款：SecretReveal 生成态，
+         可复制 + 确认关闭；确认只关弹窗，不动四项齐备的放行判定） -->
+    <PasswordEntryModal
+      v-model:show="generatedPasswordShow"
+      :title="t('wizard.newRepoPasswordTitle')"
+      :generated-hint="t('wizard.newRepoPasswordHint')"
+      :confirm-label="t('wizard.newRepoPasswordConfirm')"
+      :generated="generatedPassword"
+      :loading="saving"
+      :show-generated-cancel="false"
+      :show-generate="false"
+      @confirm-generated="generatedPassword = null"
+    />
   </n-space>
 </template>
 
