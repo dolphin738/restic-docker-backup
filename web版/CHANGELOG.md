@@ -171,6 +171,8 @@
 ## 未发布（2026-11-02）
 
 ### 修复
+- **仓库页子组件样式全面失效（scoped 越界）**：仓库页的 `repo__*` class 定义在父页 `<style scoped>`，但 `RepoListCard` / `RepoMaintenanceCard` / `RepoEditForm`（及向导复用的 `NewRepoStep`）内部元素不带父页 scoped 的 data-v 属性——`.repo__note { display: block }` 等规则对子组件**全部失效**，维护卡「清空本地缓存」行的多行信息堆叠被挤成单行（2026-11-02 owner 截图指认）。修复：整块去 scope（全部 class 带 `repo__` 前缀，grep 核实无页外使用，无泄漏风险）。真机核验 note 元素恢复块级堆叠。
+- **仓库删除/释放后 404「仓库 'xxx' 不存在」刷屏**：删除门 `onDeleted` 契约是「删的是当前仓 → 切回 default」，仓库页却误接成 `onSetCurrent(被删 id)`，把已删/已归档 id 持久化进 localStorage，此后每个带 `X-Repo-Id` 的请求都 404。修复：①接线改回真正切 default；②http 层兜底——`REPO_NOT_FOUND` 且失效的是**实际生效的仓库路由头**时自动切回 default（调用方显式 `X-Repo-Id` 覆盖不触发，快照页看归档仓不受影响）。护栏 `http.spec.ts` +2 例（当前仓 404 回退 / 显式覆盖不回退）。
 - **密钥源归属与凭据加密缺口（0–6 批全落地，方案源《修复方案-密钥源归属与凭据加密缺口-2026-11-02.md》v1.2，**已归档至 `docs/archive/`** 2026-11-02，仅供追溯）**
   - **缺口 1 · 轮换漏全局键**：`key.rotate` 的清理范围原本手抄 `cred.<repo>.` 前缀，漏掉归属该仓库的全局敏感键（`dump.password` / `notify.*` / `metrics.token`）；改由 `crypto.keys_of(repo_id, keys)` 给出（**双参：crypto 不读库，红线 A1，全量键由调用方传入**），键归属判定自此只有 `crypto.owner_of()` 一个出口，`_repo_id_for_cred_key` 降为其实现体。
   - **缺口 2 · force 覆盖留残密文**：`POST /api/repos/{repo_id}/password` 的 `force` 覆盖路径**压根不调用任何清理函数**，用新口令覆盖后旧 `enc:v2` 密文永不可解，进而让 `ConfigRepo.list_all()` 全表逐行解密失败——单仓库故障被放大成全站故障。现在 `write_passfile` 成功之后（写失败零副作用）按 `keys_of` 清理该密钥源旧密文，**仅清密文，明文与 env 键保留**；`_clear_credentials(D)` 与 `retention` 兜底分支(E) 同步改为问 `keys_of`。

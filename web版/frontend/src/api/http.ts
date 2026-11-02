@@ -86,6 +86,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       ...(headers as Record<string, string> | undefined),
     },
   }
+  // 实际生效的仓库路由头（含调用方覆盖）：REPO_NOT_FOUND 兜底用它判断失效的是不是当前仓——
+  // 不能用上面的 repoId 默认值，否则显式覆盖（看归档仓）的 404 会被误判成当前仓失效。
+  const effectiveRepoId = (init.headers as Record<string, string>)['X-Repo-Id'] ?? repoId
   if (body !== undefined) {
     init.body = JSON.stringify(body)
   }
@@ -120,14 +123,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       response.status,
       errorBody.data ?? null,
     )
-    applyErrorSideEffects(error, silent)
+    applyErrorSideEffects(error, silent, effectiveRepoId)
     throw error
   }
 
   return payload as T
 }
 
-function applyErrorSideEffects(error: AppError, silent: boolean | undefined): void {
+function applyErrorSideEffects(error: AppError, silent: boolean | undefined, requestRepoId = 'default'): void {
   const ui = useUiStore()
 
   if (error.code === 'UNAUTHORIZED') {
@@ -141,6 +144,13 @@ function applyErrorSideEffects(error: AppError, silent: boolean | undefined): vo
     ui.setBootstrapSteps(steps)
     redirectOnce(() => redirectHandlers.onBootstrapRequired?.(steps))
     return
+  }
+  // 当前仓失效兜底（2026-11-02）：删除/归档/释放当前仓后，localStorage 里残留的 id 会让
+  // 每个带 X-Repo-Id 的请求 404「仓库 'xxx' 不存在」刷屏。仅当失效的正是当前仓时自动切回
+  // default（调用方显式传的 X-Repo-Id 覆盖不在此列——那是快照页看归档仓的合法路径，仓库
+  // 归档后仍应可见）。持久化在 setCurrentRepoId 内完成，全局查询由仓库页切换语义失效。
+  if (error.code === 'REPO_NOT_FOUND' && error.status === 404 && requestRepoId !== 'default' && ui.currentRepoId === requestRepoId) {
+    ui.setCurrentRepoId('default')
   }
   if (!silent) {
     ui.notifyError(error.code, error.message)

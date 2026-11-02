@@ -69,4 +69,26 @@ describe('http X-Repo-Id 路由头', () => {
     expect(headers['X-Repo-Id']).toBe('archived-9')
     expect(headers['Accept']).toBe('application/json')
   })
+
+  it('当前仓 404 REPO_NOT_FOUND 时自动切回 default（删除/释放后 localStorage 残留兜底）', async () => {
+    const fetchMock = vi.fn(async () =>
+      makeResponse({ code: 'REPO_NOT_FOUND', message: "仓库 'r261102-n3d8a5' 不存在" }, false, 404),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    useUiStore().setCurrentRepoId('r261102-n3d8a5')
+    await expect(request('/api/repos/r261102-n3d8a5/status')).rejects.toThrow()
+    expect(useUiStore().currentRepoId).toBe('default')
+  })
+
+  it('非当前仓的 404 REPO_NOT_FOUND 不触碰当前仓选择（快照页看归档仓等显式覆盖）', async () => {
+    const fetchMock = vi.fn(async () =>
+      makeResponse({ code: 'REPO_NOT_FOUND', message: '仓库不存在' }, false, 404),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    useUiStore().setCurrentRepoId('active-repo')
+    await expect(request('/api/repos', { headers: { 'X-Repo-Id': 'ghost-repo' } })).rejects.toThrow()
+    expect(useUiStore().currentRepoId).toBe('active-repo')
+  })
 })

@@ -753,7 +753,9 @@ const gates = useRepoGates({
   configQuery,
   cacheQuery,
   repos,
-  onDeleted: onSetCurrent,
+  // 删除成功后切回默认仓库（useRepoGates 契约语义）。此前误接 onSetCurrent(被删 id)：
+  // 把已删/已归档 id 持久化进 localStorage，后续所有 X-Repo-Id 请求 404「仓库不存在」刷屏。
+  onDeleted: () => onSetCurrent('default'),
   resetTestResult,
 })
 
