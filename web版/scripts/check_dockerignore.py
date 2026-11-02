@@ -245,6 +245,12 @@ def report_context(di: DockerIgnore, copy_srcs: list[str]) -> None:
 # ---------------------------------------------------------------- 校验
 
 def main() -> int:
+    # Windows 控制台默认 GBK/cp936，打印 ✓ / ✗ 会抛 UnicodeEncodeError 直接崩溃，
+    # 使 verify_redlines.sh 的 G8 恒定为「假失败」（输出走管道时同样受 locale 影响）。
+    # 显式改 UTF-8：非 TTY / 被重定向的流可能没有 reconfigure，故做 hasattr 保护。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     if not DOCKERIGNORE.exists():
         print("✗ 缺少 .dockerignore")
         return 1
