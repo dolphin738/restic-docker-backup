@@ -136,6 +136,7 @@ node e2e/p13-wizard-probe.cjs       # 退出码 0 = PASS；产物落 web版/.e2e
 - **Windows 端（`D:\agent\AI Coding\restic-docker-backup\web版`）为唯一开发点**；WSL 侧（`/home/AI-Coding/restic-docker-backup/web版`）仅作测试用途，不在此开发、不提交。
 - 需要测试时，把 Windows 端源码经 rsync 本地复制到 WSL 跑测试（排除 node_modules/.venv/.git/dist/__pycache__）；复制进 WSL 的文件仅用于跑测试，不在 WSL 提交。
 - 同步/推送等工作副本改动操作须负责人授权，AI 不自行执行（详见 `docs/工作区与同步约定.md`）。
+- **Windows 本机跑 pytest 须完全权限**：受限令牌/沙箱下 pytest 的 tmp 工厂用 `os.mkdir(mode=0o700)` 建目录，`0o700` 在 Windows 上剥掉继承的 ACE → `scandir` 报 `WinError 5`，**任何用 `tmp_path` 夹具的测试都起不来**（表现为成批 ERROR 而非 FAIL，源码无关）。受限环境请走 WSL；确需本机跑时切完全权限后重跑再下结论（2026-11-02 实测：同一套件受限下 13 ERROR，完全权限下全绿）。
 
 ## 工作流
 
