@@ -171,7 +171,7 @@
 ## 未发布（2026-11-02）
 
 ### 修复
-- **密钥源归属与凭据加密缺口（0–3 批全落地，方案《修复方案-密钥源归属与凭据加密缺口-2026-11-02.md》v1.0）**
+- **密钥源归属与凭据加密缺口（0–6 批全落地，方案源《修复方案-密钥源归属与凭据加密缺口-2026-11-02.md》v1.2，**已归档至 `docs/archive/`** 2026-11-02，仅供追溯）**
   - **缺口 1 · 轮换漏全局键**：`key.rotate` 的清理范围原本手抄 `cred.<repo>.` 前缀，漏掉归属该仓库的全局敏感键（`dump.password` / `notify.*` / `metrics.token`）；改由 `crypto.keys_of(repo_id, keys)` 给出（**双参：crypto 不读库，红线 A1，全量键由调用方传入**），键归属判定自此只有 `crypto.owner_of()` 一个出口，`_repo_id_for_cred_key` 降为其实现体。
   - **缺口 2 · force 覆盖留残密文**：`POST /api/repos/{repo_id}/password` 的 `force` 覆盖路径**压根不调用任何清理函数**，用新口令覆盖后旧 `enc:v2` 密文永不可解，进而让 `ConfigRepo.list_all()` 全表逐行解密失败——单仓库故障被放大成全站故障。现在 `write_passfile` 成功之后（写失败零副作用）按 `keys_of` 清理该密钥源旧密文，**仅清密文，明文与 env 键保留**；`_clear_credentials(D)` 与 `retention` 兜底分支(E) 同步改为问 `keys_of`。
   - **缺口 3/4 · 回收误伤 default**：`retention` 的 `known_ids` **无条件并入 `DEFAULT_REPO_ID`**（配合 `crypto.must_be_owned`）——default 口令文件即使在 `repos` 行缺失时也不会被判孤儿回收，堵死「行没了 → 文件被回收 → 全局键永久解不开」。
@@ -186,8 +186,10 @@
 - **架构设计文档**：§4.3 R-025 注——② 键归属规则改为「唯一出口 `crypto.owner_of()` + `keys_of`/`must_be_owned`/`is_sensitive` 三判定，轮换/清理/回收三处必须问它」并注明 `SENSITIVE_EXACT_KEYS`/`SENSITIVE_PREFIXES` 唯一定义点在 `services/crypto.py`（config_repo 只再导出）；代价段补第二道保险；新增 **④ 读取侧降级**段。§5.0：`CREDENTIAL_DECRYPT_FAILED` 补「也承担执行路径的密钥源失效」、`REPO_NOT_EMPTY` 补「E59 release 复用该码」（**未新增错误码**）。§5.1：E06 补 `degraded`/`degraded_reason` 契约、E44 补 force 覆盖清理动作、E59 补三门守卫。
 - **云端仓库安全基线（§2.3，修订五）**：补「口令文件失效的影响面」——已按密钥源隔离（配置页显示「失效」而非「没配过」，涉及该源的备份任务直接失败），但 default 口令文件仍是全局键单点且不会被孤儿回收。
 - **部署指南**：`RESTIC_PASSWORD_FILE` 逃生舱补「显式设全局口令文件 ⇒ 隔离收益归零」；R-025 段补读取侧降级语义。
-- **文档管理规范 v1.61**：登记表该方案行状态改「活跃 v1.0（已实施 2026-11-02）」。**该方案文档本次不归档**（归档须 owner 确认）。
+- **配置迁移导入导出说明**：§2 包格式 v1 → **v2**（v1 仍可导入），§3 补「v2 新增加密段并列 `degraded` 映射（键 → 失效原因）」。
+- **文档管理规范 v1.62**：登记表该方案行改**归档行**（v1.2 六批全落地、§11 两条遗留由第 6 批关闭、结论见架构 v1.14 + 本文）。归档经 owner 确认后 `git mv` 入 `docs/archive/`。
 - **架构设计文档升 v1.14**（文首版本行 `v1.13` → `v1.14` + `文档管理规范.md` §6 登记表同步）。按本文第 8 行约定，架构文档自 v1.11 起不再内联修订历史，故此处**不**向上方「架构设计文档修订史」段追加 v1.14 条目——本次改动摘要见上三条与登记表。
+- **方案文档已归档**：`git mv` 入 `docs/archive/`（owner 确认）。归档前修掉三处指向本文的失效表述（架构 §5.1 E06 的「两条导出不含标记…见方案 §11」、E36b 的 `version=1`）并补记本文第 6 批，见《文档管理规范》v1.62。
 - **`scripts/check_dockerignore.py` 修 GBK 控制台崩溃**：脚本打印 `✓`/`✗`（U+2713/U+2717），Windows 控制台默认 cp936 下抛 `UnicodeEncodeError` 直接崩溃，致 `bash scripts/verify_redlines.sh` 的 **G8 恒为假失败**（19 项里 1 项误报）。最小修法：`main()` 开头对 `sys.stdout`/`sys.stderr` 调 `reconfigure(encoding="utf-8", errors="replace")`（`hasattr` 保护非 TTY/重定向场景），**不改脚本语义与输出形态**。修后不设任何环境变量即 19/19。
 - **方案文档本身 v1.0**：状态行改已实施 + 实施结论；`keys_of` 签名更正为双参；记 §9.3 与红测试②的断言偏差；§8.2–§8.4 标 ✅；新增 §11 已知遗留（**本次不修**：两条导出取 `row.value or ""`，降级行导出空串且包里无标记，待 owner 决定是否加 `degraded` 标记）。
 
@@ -197,8 +199,14 @@
 - **两个非显然点**：① `RepoEditForm` 的 `itemOf` prop 是结构化子类型，就地加宽即可，**父页不用改**；② 项目无 naive-ui 自动导入插件，`<n-tooltip>` 必须显式 import `NTooltip`——漏掉时 typecheck 照样过，但运行时是未知自定义元素、hover 静默无反应。
 - **护栏**：新增 `frontend/src/pages/settings/__tests__/degraded-badge.spec.ts`（5 例）——锁死「degraded 时显示失效而非未配置」「未失效时三态正确」「degraded 优先于 has_value」与中英键齐备。
 
+### 第 6 批 · 导出包降级标记（2026-11-02，关闭方案 §11 遗留）
+- **背景**：第 3 批只把「失效」做进了 `GET /api/config`，两条导出（全量 `POST /api/config/export`、单任务 `E36b`）仍取 `row.value or ""`——降级行导出空串且**包里无标记**，接收端分不清「本来没配」与「密钥源失效」，等于把「不知道」当「没有」传下去。
+- **改动**：`services/config_transfer.py` —— `PACK_VERSION` 1 → **2**，新增 `_SUPPORTED_PACK_VERSIONS = {1, 2}`（导出恒为最新版，导入兼容旧包，不作废开发期 v1 导出），`build_export_pack` 增 `degraded_rows` 参数，`parse_export_pack` 回 `degraded` 映射；`routers/ops.py`（全量导出）与 `routers/backup_tasks.py`（单任务导出，范围仍限该任务的 `cred.<repo>.*`，**刻意不动**）两处传 `{row.key: row.degraded_reason}`。
+- **为什么进加密段**：`degraded` 的键名就是凭据键名，放明文段等于把「本实例配过哪些凭据」泄露给任何拿到导出文件的人（S3）；原因串只含密钥源标识与异常类别，不含任何键值/密文。
+- **护栏**：`tests/test_config_transfer.py` 增 4 例（v2 降级键带标记且明文段不出现键名与原因 / 无降级行不写字段 / v1 旧包仍可导入 / version=99 被拒）。
+
 ### 校验结果
-- 后端 WSL 全量 `pytest tests -q`：**1292 passed / 0 failed**。
+- 后端 WSL 全量 `pytest tests -q`：**1296 passed / 0 failed**（第 6 批 4 条护栏后为 1296；第 5 批时为 1292）。
 - 前端 WSL 全量 `vitest run`：**571 passed / 60 files**（含本批新增 5 例；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，已在 **HEAD 基线**复现同样 2 条，与本批无关）。
 - 前端 `vue-tsc --noEmit`：0 error。
 - `ruff check app tests` 干净。
