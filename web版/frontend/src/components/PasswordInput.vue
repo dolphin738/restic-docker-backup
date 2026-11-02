@@ -7,12 +7,16 @@
  * 宽度在此处一次性收口（`width` 默认 320px，`max-width:100%` 防窄屏溢出）。
  *
  * 顺带统一了两件易漏的事：明文切换用 `show-password-on="click"`（点眼睛图标，
- * 不做 hover 预览——浏览器原生 hover 会频繁误触发），以及可选的「生成」按钮
- * （生成实现由父组件决定：rclone 面板用 `utils/password.ts` 的 Web Crypto 生成）。
+ * 不做 hover 预览——浏览器原生 hover 会频繁误触发），以及可选的「生成」按钮——
+ * 全站唯一形态 = 输入框右侧、secondary small、盾牌图标（2026-11-03 owner 裁决，
+ * 取配置迁移导出口令按钮的样式；曾短暂改为框内后缀后废弃。生成实现由父组件
+ * 决定：rclone 面板用 `utils/password.ts`，仓库密码走后端 secrets 生成）。
  *
  * 未声明的属性（`maxlength` / `@keyup.enter` / `autocomplete` 等）透传到内部 NInput。
  */
-import { NButton, NInput } from 'naive-ui'
+import { NButton, NIcon, NInput } from 'naive-ui'
+
+import { IconShieldCheck } from '@/components/icons/icons'
 
 // class/style/事件等一律透传给内部 NInput（见模板 v-bind="$attrs"），不落在外层容器上
 defineOptions({ inheritAttrs: false })
@@ -37,6 +41,12 @@ const model = defineModel<string>({ default: '' })
 const emit = defineEmits<{
   generate: []
 }>()
+
+/** 点击只 emit generate；事件可能缺省（测试直发 click），stopPropagation 防宿主行为误触发。 */
+function onGenerate(e?: Event): void {
+  e?.stopPropagation()
+  emit('generate')
+}
 </script>
 
 <template>
@@ -50,13 +60,19 @@ const emit = defineEmits<{
       :style="mono ? { fontFamily: 'var(--font-family-mono)' } : undefined"
       v-bind="$attrs"
     />
+    <!-- 统一「生成密码」按钮（全站唯一形态，2026-11-03 owner 裁决：取配置迁移导出口令
+         的样式——输入框右侧、secondary small、盾牌图标。此前框内后缀方案废弃）。 -->
     <NButton
       v-if="generateLabel"
       size="small"
+      secondary
       :loading="loading"
       :disabled="disabled"
-      @click="emit('generate')"
+      @click="onGenerate($event)"
     >
+      <template #icon>
+        <NIcon :size="16"><IconShieldCheck /></NIcon>
+      </template>
       {{ generateLabel }}
     </NButton>
   </div>

@@ -26,7 +26,7 @@ import type { ConfigExportPack, ConfigImportReport } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
-import { IconDownload, IconShieldCheck } from '@/components/icons/icons'
+import { IconDownload } from '@/components/icons/icons'
 import { generatePassword } from '@/utils/password'
 import { estimatePasswordStrength } from '@/utils/passwordStrength'
 
@@ -183,28 +183,16 @@ async function doImport(): Promise<void> {
           />
         </n-modal>
         <n-space align="center" :size="8" wrap>
+          <!-- 生成 32 位导出口令 → 弹窗一次性展示（SecretReveal），确认后才填入输入框；
+               生成按钮统一收进 PasswordInput（全站唯一形态，2026-11-03） -->
           <PasswordInput
             v-model="exportPassword"
             width="260px"
             :placeholder="t('settings.transfer.exportPassword')"
+            :generate-label="t('common.generatePassword')"
+            @generate="onGenerateExportPassword"
           />
-          <!-- 生成 32 位导出口令 → 弹窗一次性展示（SecretReveal），确认后才填入输入框 -->
-          <n-button size="small" secondary @click="onGenerateExportPassword">
-            <template #icon>
-              <n-icon :size="16"><IconShieldCheck /></n-icon>
-            
-    <!-- 覆盖导入确认门：预览 → 输入 IMPORT → 二次确认（覆盖不可逆） -->
-    <ConfirmGate
-      v-model:show="gateShowImport"
-      :title="t('settings.transfer.gateTitle')"
-      :keyword="'IMPORT'"
-      :description="t('settings.transfer.gateDesc')"
-      :loading="importing"
-      @confirm="doImport"
-    />
-</template>
-            {{ t('common.generatePassword') }}
-          </n-button>
+          <!-- 历史遗留修复：导入覆盖确认门曾误嵌在生成按钮的 icon 模板内，现移至导入区末尾 -->
           <n-button
             size="small"
             type="primary"
@@ -264,6 +252,16 @@ async function doImport(): Promise<void> {
             {{ t('settings.transfer.importBtn') }}
           </n-button>
         </n-space>
+
+    <!-- 覆盖导入确认门：预览 → 输入 IMPORT → 二次确认（覆盖不可逆） -->
+    <ConfirmGate
+      v-model:show="gateShowImport"
+      :title="t('settings.transfer.gateTitle')"
+      :keyword="'IMPORT'"
+      :description="t('settings.transfer.gateDesc')"
+      :loading="importing"
+      @confirm="doImport"
+    />
 
         <!-- 导入报告（逐项展示；跳过/警告全量可见，绝不静默） -->
         <template v-if="report">

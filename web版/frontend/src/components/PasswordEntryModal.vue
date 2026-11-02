@@ -103,16 +103,21 @@ function close(): void {
         <n-alert type="warning" :show-icon="false">{{ intro }}</n-alert>
         <n-form label-placement="top" size="small">
           <n-form-item :label="customLabel">
-            <PasswordInput v-model="pw" width="100%" :placeholder="customPlaceholder" />
+            <!-- 生成按钮统一收进 PasswordInput（全站唯一形态，2026-11-03）——
+                 showGenerate=false（强制重置）或未传 generateLabel 时不出现 -->
+            <PasswordInput
+              v-model="pw"
+              width="100%"
+              :placeholder="customPlaceholder"
+              :generate-label="showGenerate ? generateLabel : undefined"
+              @generate="emit('generate')"
+            />
           </n-form-item>
         </n-form>
         <n-space justify="end">
           <n-button quaternary @click="close">{{ t('common.cancel') }}</n-button>
           <n-button :disabled="!customReady" :loading="loading" @click="emit('submit-custom', pw)">
             {{ submitLabel }}
-          </n-button>
-          <n-button v-if="showGenerate" type="primary" :loading="loading" @click="emit('generate')">
-            {{ generateLabel }}
           </n-button>
         </n-space>
       </template>
