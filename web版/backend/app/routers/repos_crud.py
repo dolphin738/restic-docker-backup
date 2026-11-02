@@ -322,6 +322,15 @@ def register(router: APIRouter) -> None:
 
         **不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，只是本应用
         不再持有入口。确认门槛是「原样输入仓库 id」，避免误点。
+
+        **三门守卫（2026-11-02 补齐，D5/D6）**，与 DELETE 路由同口径：
+
+        1. ``ensure_deletable``——default 禁删（D6=(c)：**default 永不可 release**）、
+           有备份任务/活跃作业即拒 409 ``REPO_NOT_EMPTY``、被镜像引用即拒 409。
+           缺这道守卫时，正常 UI 操作（归档页 → 释放 ID → 输入 default）就能删掉
+           default 行，并在墓碑到期后让口令文件被判孤儿回收，全局敏感键永久解不开。
+        2. **必须已归档**——语义是「释放**归档**仓库的 ID」；修复前未归档的在用仓库
+           也能被释放并删除行，等于绕过 DELETE 的全部校验。
         """
         del session
         repos_repo: ReposRepo = request.app.state.repos_repo
@@ -332,6 +341,12 @@ def register(router: APIRouter) -> None:
             raise ValidationError(
                 "请输入仓库 id 以确认释放", data={"repo_id": repo_id}
             )
+        # 门 1：复用删除前置校验（default 禁删 + 无任务/无活跃作业 + 未被镜像引用）。
+        # 放在 confirm 之后：确认文案是第一道人工闸，先让它过再查库，省一次查询。
+        await repos_repo.ensure_deletable(repo_id)
+        # 门 2：只释放已归档仓库（与 restore 的 :297-298 对称校验同形）
+        if repo.deleted_at is None:
+            raise ValidationError("该仓库未归档，无需释放", data={"repo_id": repo_id})
         # 跨介质序列交给编排器（候选 1）：顺序契约、并发互斥、事务与审计都在里面
         await request.app.state.repo_lifecycle.release(repo_id)
         invalidate_repo_status_cache()

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,8 @@ from app.constants import (
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.repo_repo import Repo, ReposRepo
-from app.errors import JobConflictError, RepoNotFoundError, ValidationError
+from app.errors import JobConflictError, RepoNotEmptyError, RepoNotFoundError, ValidationError
+from app.services.crypto import keys_of
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 from app.settings import Settings
@@ -214,12 +216,18 @@ class RepoLifecycleService:
         return removed
 
     async def _clear_credentials(self, repo_id: str) -> int:
-        """清 ``cred.{repo_id}.*`` 凭据键，返回清除条数（幂等：键已无则跳过）。"""
+        """清该**密钥源**保护的凭据键，返回清除条数（幂等：键已无则跳过）。
+
+        范围问 ``crypto.keys_of``（单一判定出口）：除 ``cred.<repo_id>.*`` 外，default
+        还保护全局敏感键（``dump.password`` / ``notify.*`` / ``metrics.token``）——
+        密钥源被销毁时它们同样不可恢复，留着就是给 ``list_all()`` 埋雷。
+        """
         cleared = 0
-        prefix = f"cred.{repo_id}."
-        for row in await self._config.list_all_raw():
+        raw_rows = await self._config.list_all_raw()
+        owned = keys_of(repo_id, (row.key for row in raw_rows))
+        for row in raw_rows:
             # 镜像 rebuild 先例：跳过 env 来源与空值——env 键归 env 同步管
-            if not (row.key.startswith(prefix) and row.source != "env" and row.value):
+            if not (row.key in owned and row.source != "env" and row.value):
                 continue
             await self._config.delete(row.key)
             cleared += 1
@@ -322,14 +330,26 @@ class RepoLifecycleService:
         except Exception:  # noqa: BLE001 - key 中性化是锦上添花，不得阻断重建
             logger.warning("仓库 %s 的 key 中性化失败（不影响重建结果）", repo_id, exc_info=True)
 
-    async def _clear_encrypted_credentials(self, repo_id: str) -> int:
-        """清该仓库的 enc:v2 凭据（旧密钥已丢失、无法解密）；明文凭据保留。"""
+    async def discard_stale_credentials(self, repo_id: str) -> int:
+        """作废该**密钥源**保护的旧密文（密钥已更换/丢失 ⇒ 这些密文永不恢复）。
+
+        两处调用方共用（原 ``_clear_encrypted_credentials``，2026-11-02 第 2 批升为公开：
+        force 覆盖口令文件的路由也要调用，路由不该直接伸手进私有方法）：
+
+        - ``rebuild``：清空目录后、写新密码文件**之前**；
+        - ``POST /repos/{repo_id}/password` 的 force 覆盖：写新密码文件**之后**。
+
+        语义只问 ``crypto.keys_of``——明文凭据不受密钥更换影响（保留），env 键归
+        env 同步管（保留），空值无意义（跳过）。
+        """
         if self._crypto is None:
             return 0
         cleared = 0
-        prefix = f"cred.{repo_id}."
-        for row in await self._config.list_all_raw():
-            if not (row.key.startswith(prefix) and row.source != "env" and row.value):
+        # 范围问 crypto.keys_of：default 重建时全局敏感键的旧密文同样不可解，必须一并清
+        raw_rows = await self._config.list_all_raw()
+        owned = keys_of(repo_id, (row.key for row in raw_rows))
+        for row in raw_rows:
+            if not (row.key in owned and row.source != "env" and row.value):
                 continue
             if not self._crypto.is_encrypted(row.value):
                 continue  # 明文凭据不受密钥轮换影响，保留
@@ -476,6 +496,11 @@ class RepoLifecycleService:
 
                 await self._finish(AUDIT_REPO_ID_RELEASE, repo, report)
                 return report
+            except sqlite3.IntegrityError as exc:
+                # 外键兜不住的情形（删行瞬间有任务/作业行插入）→ 翻译成 409，
+                # 不落 500「服务器内部错误」：用户无从判断这是「仓库仍被占用」。
+                await self._failed(op, repo_id, exc)
+                raise RepoNotEmptyError(repo_id) from exc
             except Exception as exc:
                 await self._failed(op, repo_id, exc)
                 raise
@@ -569,7 +594,7 @@ class RepoLifecycleService:
                 # 2) 清旧 enc:v2 凭据（旧密钥已随目录清空丢失，无法解密）；明文凭据不受影响。
                 #    必须先于 restic init：init 取凭据要 list_all() 全表解密（B1 起按仓库密钥），
                 #    此时新密码文件尚未写入、该仓库旧密文已不可解 —— 留到 init 之后会 500。
-                cleared = await self._clear_encrypted_credentials(repo_id)
+                cleared = await self.discard_stale_credentials(repo_id)
 
                 # 3) 写新密码文件
                 plain = password or generate_repo_password()
