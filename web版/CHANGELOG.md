@@ -179,6 +179,7 @@
   - **缺口 3/4 · 回收误伤 default**：`retention` 的 `known_ids` **无条件并入 `DEFAULT_REPO_ID`**（配合 `crypto.must_be_owned`）——default 口令文件即使在 `repos` 行缺失时也不会被判孤儿回收，堵死「行没了 → 文件被回收 → 全局键永久解不开」。
   - **缺口 6 · release 端点缺守卫**：`POST /api/archive/repos/{repo_id}/release` 补齐三门——`ensure_deletable`（default 禁删 + 有任务/活跃作业 409 + 被镜像引用 409）、**必须已归档**否则 422、外键冲突 `IntegrityError` 译成 409 不落 500。修复前正常 UI 操作即可删掉 default 行。
 
+- **系统设置页保存按钮图标空白**：`SectionSystem` / `SectionMetrics` / `SectionTimezone` 三个分区的保存按钮模板使用了 `<IconCheckCircle />` 但**未 import**（Timezone 只导入了 IconClock）——Vue 将未导入组件静默回落为原生空元素，`n-icon` 的 16px 槽位照常保留，表现为「保存」文案左侧一块固定空白。补齐三处 import（Timezone 并为 `{ IconCheckCircle, IconClock }`）。该坑与第 5 批记录的「无自动导入插件、组件必须显式 import，typecheck 不报错」同型，图标版。真机三分区逐处核验图标渲染。
 ### 变更（行为变化，需留意）
 - **向导「新建仓库」步的一次性密码改为可复制弹窗（2026-11-02）**：建仓生成态原用 `message.warning` 常驻 toast 呈现 32 位密码——不可选中复制，用户只能手抄；现复用全站唯一实现（`PasswordEntryModal` 生成态 = `SecretReveal`：只读明文 + 复制按钮 + 确认关闭），与仓库页「设置密码 / 重建结果」同款交互。确认只关弹窗，不影响建仓「四项齐备」放行判定；明文仍只在内存（S3）。i18n 键 `wizard.newRepoPassword`（含明文插值）替换为 `newRepoPasswordTitle/Hint/Confirm` 三键（中英同批）。护栏 `newRepoPassword.spec.ts`；真机探针 PASS。
 - **读取侧降级语义（方案 B-full）**：`ConfigRow` / `ConfigItem` 增 `degraded: bool` + `degraded_reason: str|null`，三态判定——没配过（`has_value=false` 且 `degraded=false`）/ 有值（`has_value=true`）/ **失效**（`has_value=false` 且 `degraded=true`）。`list_all()` 改为**按密钥源分组解密**：某密钥源首次失败即降级该源全部键，其余密钥源照常读出。

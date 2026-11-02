@@ -6,6 +6,7 @@
  */
 
 import { useQuery } from '@tanstack/vue-query'
+import { IconCheckCircle } from '@/components/icons/icons'
 import {
   NButton,
   NCheckbox,
