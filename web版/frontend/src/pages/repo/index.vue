@@ -1346,7 +1346,12 @@ const capacityText = computed(() => {
   </n-space>
 </template>
 
-<style scoped>
+<!-- 样式说明：本页 class 被三个子组件（RepoListCard / RepoMaintenanceCard / RepoEditForm，
+     另有向导复用 RepoEditForm 的 NewRepoStep）共用，但子组件内部元素不带父页 scoped 的
+     data-v 属性——scoped 让 .repo__note 的 display:block 等规则对子组件全部失效，
+     维护卡「清空本地缓存」行的多行堆叠被挤成单行（2026-11-02 owner 截图指认）。
+     全部 class 带 repo__ 前缀、无页外使用（grep 已核），故整块去 scope。 -->
+<style>
 .repo__note {
   display: block;
   font-size: 12px;
