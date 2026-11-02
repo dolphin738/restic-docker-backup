@@ -64,6 +64,15 @@ export interface paths {
          *
          *     **不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，只是本应用
          *     不再持有入口。确认门槛是「原样输入仓库 id」，避免误点。
+         *
+         *     **三门守卫（2026-11-02 补齐，D5/D6）**，与 DELETE 路由同口径：
+         *
+         *     1. ``ensure_deletable``——default 禁删（D6=(c)：**default 永不可 release**）、
+         *        有备份任务/活跃作业即拒 409 ``REPO_NOT_EMPTY``、被镜像引用即拒 409。
+         *        缺这道守卫时，正常 UI 操作（归档页 → 释放 ID → 输入 default）就能删掉
+         *        default 行，并在墓碑到期后让口令文件被判孤儿回收，全局敏感键永久解不开。
+         *     2. **必须已归档**——语义是「释放**归档**仓库的 ID」；修复前未归档的在用仓库
+         *        也能被释放并删除行，等于绕过 DELETE 的全部校验。
          */
         post: operations["release_archived_repo_api_archive_repos__repo_id__release_post"];
         delete?: never;
@@ -1139,8 +1148,9 @@ export interface paths {
          *     3. ``purge_disk=1`` = 销毁数据：先清空仓库目录**内容** + 删密码文件，再删行；
          *        与归档**互斥**（勾了就落不回归档），墓碑标 ``data_destroyed=1``。
          *
-         *     三门守卫（default 禁删 / 仍有 backup_tasks / 仍有活跃作业）对三条分支一视同仁，
-         *     且**先于一切副作用**执行——校验拒绝时数据必须原封不动。
+         *     三门守卫（default 禁删 / 仍有 backup_tasks / 仍有活跃作业）对三条分支一视同仁。
+         *     hard/purge 分支的执行顺序由 ``RepoLifecycleService.hard_delete`` 持有
+         *     （候选 1：**行最后删**，崩在删行之前的任何一步都能整请求重发并收敛）。
          *
          *     仓库不存在 → 404 ``REPO_NOT_FOUND``（先于校验，避免为无效 target 落审计）。
          *     审计：归档 ``repo.archive``、彻底删 ``repo.delete``、销毁 ``repo.purge``。
@@ -2051,8 +2061,20 @@ export interface components {
         /**
          * ConfigItem
          * @description 单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。
+         *
+         *     ``degraded`` 三态（方案 §8.4）：键的密钥源读不出来时，展示路径不抛异常、也不伪装
+         *     成空值，而是 ``has_value=False`` + ``degraded=True`` + ``degraded_reason``。
+         *     于是三种状态互不混淆：没配过（``has_value=False`` 且 ``degraded=False``）、有值
+         *     （``has_value=True``）、失效（``has_value=False`` 且 ``degraded=True``）。
          */
         ConfigItem: {
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** Degraded Reason */
+            degraded_reason?: string | null;
             /**
              * Has Value
              * @default false

@@ -128,6 +128,15 @@ def register(router: APIRouter) -> None:
                 f"密码文件写入失败（只读挂载或权限不足）：{path}；请在宿主机对应挂载目录手动放置该密码文件"
             ) from exc
 
+        # 写成功之后才清理（写失败必须零副作用：不得先清后写）。
+        # 新密钥已就位、旧密钥不可恢复 ⇒ 该密钥源保护的旧密文永不可解；留着会让
+        # ConfigRepo.list_all() 全表逐行解密失败，把单仓库故障放大成全站故障（缺口 2）。
+        # 范围由编排器问 crypto.keys_of（含 default 的全局敏感键），不在此手抄前缀。
+        cleared = await request.app.state.repo_lifecycle.discard_stale_credentials(repo_id)
+        if cleared:
+            # S3：只记条数，键名与值一律不入日志
+            logger.info("force 覆盖仓库 %s 口令后清理旧密文凭据 %d 条", repo_id, cleared)
+
         # 审计只记动作与是否生成/是否覆盖，明文绝不入审计/日志（红线 S3）
         await request.app.state.audit.record(
             AUDIT_REPO_PASSWORD_SET,

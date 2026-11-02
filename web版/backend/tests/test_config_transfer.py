@@ -83,6 +83,49 @@ def test_roundtrip_and_secret_isolation():
     assert "notify.webhook.url" not in parsed["notify"]  # 敏感键以加密段为准
 
 
+def test_degraded_rows_marked_in_v2_pack():
+    """v2：密钥源失效的键必须带 degraded 标记——否则接收端分不清「没配」与「读不出来」。"""
+    pack = build_export_pack(
+        repos=[{"id": "default", "name": "主仓", "url": "local:/main", "host_tag": "nas"}],
+        tasks=[],
+        config_rows=[("cred.default.access_key", "")],
+        password=PW,
+        created_at="2026-11-02T00:00:00+00:00",
+        degraded_rows={"cred.default.access_key": "密钥源 default 的口令文件缺失或不可读，该键无法解密"},
+    )
+    assert pack["version"] == 2
+    # 降级信息进加密段：明文段不得出现键名与原因（键名本身即暴露「配过哪些凭据」）
+    raw = json.dumps(pack)
+    assert "access_key" not in raw
+    assert "口令文件缺失" not in raw
+    parsed = parse_export_pack(pack, PW)
+    assert parsed["degraded"]["cred.default.access_key"].startswith("密钥源 default")
+    # 值仍是空串——降级行本来就读不出来
+    assert parsed["creds"]["cred.default.access_key"] == ""
+
+
+def test_pack_without_degraded_has_empty_mapping():
+    """无降级行时不写该字段；解析侧回空 dict（旧行为不变）。"""
+    pack = _mini_pack()
+    assert parse_export_pack(pack, PW)["degraded"] == {}
+
+
+def test_v1_pack_still_importable():
+    """A1 决策：升 v2 但导入端接受 {1,2}，开发期旧包不作废。"""
+    pack = _mini_pack()
+    pack["version"] = 1
+    parsed = parse_export_pack(pack, PW)
+    assert parsed["creds"]["cred.default.access_key"] == "AKID"
+    assert parsed["degraded"] == {}
+
+
+def test_unsupported_pack_version_rejected():
+    pack = _mini_pack()
+    pack["version"] = 99
+    with pytest.raises(ValidationError):
+        parse_export_pack(pack, PW)
+
+
 def test_wrong_password_rejected():
     pack = _mini_pack()
     with pytest.raises(PasswordWrongError):

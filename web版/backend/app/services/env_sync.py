@@ -33,7 +33,7 @@ from app.constants import (
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
-from app.errors import CredentialKeyUnavailableError
+from app.errors import CredentialDecryptError, CredentialKeyUnavailableError
 from app.schemas.enums import ConfigSource
 from app.settings import Settings, get_settings
 
@@ -119,6 +119,17 @@ async def load_credentials(config_repo: ConfigRepo, repo_id: str = DEFAULT_REPO_
     """
     rows = await config_repo.list_all()
     prefix = f"cred.{repo_id}."
+    # 方案 §8.4 强制约束：失效密钥源保护的凭据**必须抛错**，绝不能像空值一样跳过——
+    # 否则备份会安静地不带云凭据跑起来，最后报「认证失败」，用户去查 S3 密钥查一整天。
+    # 展示路径（GET /config、两条导出）允许降级返回，执行路径（本函数，每个备份任务
+    # 的必经之路）不允许。
+    # getattr：本函数的契约只要求 key/value 两列（既有测试桩即如此），降级标记是新增列
+    if any(getattr(row, "degraded", False) and row.key.startswith(prefix) for row in rows):
+        # CredentialDecryptError 而非 CredentialKeyUnavailableError：后者是 422 校验类
+        # （契约语义「用户得改输入」，E07 写路径前置用的就是它）；执行路径读不出凭据是
+        # 服务端状态问题（口令文件被换/缺失），500 形态才如实。异常消息与 degraded_reason
+        # 一样不含任何键名与值（S3）。
+        raise CredentialDecryptError()
     extras: dict[str, str] = {}
     for row in rows:
         if not row.value or not row.key.startswith(prefix):
@@ -177,8 +188,9 @@ async def sync_env_overrides(
             touched.append(key)
             upserted += 1
             continue
-        existing = await config_repo.get(key)
-        if existing is not None and existing.source == ConfigSource.ENV:
+        # 只读 source 列（不解密）：口令文件失效期间该键解不开，但「是不是 env 覆盖键」
+        # 仍可判定——走 get() 会让启动期同步崩在一行读不出的密文上（降级语义被绕过）。
+        if await config_repo.get_source(key) == ConfigSource.ENV:
             await config_repo.delete(key, force=True)
             pruned += 1
 

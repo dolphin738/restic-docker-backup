@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,7 +40,12 @@ from app.errors import PasswordWrongError, ValidationError
 
 # 包格式标识与版本（未来结构变更只增 version；旧版是否兼容届时裁决）
 PACK_FORMAT = "restic-web-config-export"
-PACK_VERSION = 1
+# v2（2026-11-02）：secrets 段新增并列 `degraded` 映射——导出时把「密钥源失效、
+# 值读不出来」与「本来就没配」区分开（方案 §11 遗留）。接收端据此可告警而非静默丢凭据。
+PACK_VERSION = 2
+# 导出恒为 PACK_VERSION；导入**兼容**旧版：项目尚在开发期，无生产旧实例，
+# 但开发期已存在的 v1 导出包不应作废，故接受集合而非严格相等。
+_SUPPORTED_PACK_VERSIONS = frozenset({1, 2})
 # 包形态（P2 单任务导出）：导入侧按 kind 分流——「全量包」是覆盖语义（可含全局
 # notify/behavior 与多仓多任务），「单任务包」只按任务维度落地，绝不套用全量覆盖。
 # 旧包无该字段 → 视为 full（兼容既有导出文件）。
@@ -180,6 +186,7 @@ def build_export_pack(
     password: str,
     created_at: str,
     kind: str = PACK_KIND_FULL,
+    degraded_rows: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """构建导出包（凭据段加密；明文凭据只在内存瞬时存在）。
 
@@ -192,6 +199,10 @@ def build_export_pack(
         password: 导出口令（≥ ``PASSWORD_MIN_LENGTH``）。
         created_at: 包生成时间（ISO 字符串）。
         kind: 包形态（``PACK_KIND_FULL`` / ``PACK_KIND_TASK``），导入侧据此分流。
+        degraded_rows: ``{key: reason}``——**密钥源失效、值读不出来**的键（v2）。
+            它与「本来就没配」在 v1 包里不可区分（两者都是空串），接收端会静默
+            丢掉凭据；v2 把它写进**加密段**（原因里只有密钥源标识，不含任何值），
+            接收端据此可告警。缺省空 = 无降级行。
     """
     _validate_export_password(password)
     creds: dict[str, str] = {}
@@ -204,7 +215,11 @@ def build_export_pack(
                 creds[key] = value
             else:
                 notify_plain[key] = value
-    secrets_payload = {"creds": creds}
+    secrets_payload: dict[str, Any] = {"creds": creds}
+    if degraded_rows:
+        # 原因串由 ConfigRepo._degraded_reason 生成：只含密钥源标识与异常类别，
+        # 不含键值/密文（S3）。放进加密段而非明文段：键名本身即暴露「配过哪些凭据」。
+        secrets_payload["degraded"] = {str(k): str(v) for k, v in degraded_rows.items()}
     enc_head, blob = _seal_secrets(secrets_payload, password)
     return {
         "format": PACK_FORMAT,
@@ -222,7 +237,7 @@ def build_export_pack(
 
 
 def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
-    """解析并解密导出包，返回 ``{"repos", "tasks", "notify", "creds", "kind"}``。
+    """解析并解密导出包，返回 ``{"repos", "tasks", "notify", "creds", "degraded", "kind"}``。
 
     ``kind``：缺失（旧版全量包）回退 ``PACK_KIND_FULL``；非白名单值直接拒绝——
     未知形态的包不该被猜着导入。
@@ -234,7 +249,7 @@ def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
     _validate_export_password(password)
     if not isinstance(pack, dict) or pack.get("format") != PACK_FORMAT:
         raise ValidationError("不是本系统的配置导出文件")
-    if pack.get("version") != PACK_VERSION:
+    if pack.get("version") not in _SUPPORTED_PACK_VERSIONS:
         raise ValidationError(f"导出包版本不支持（{pack.get('version')}）")
     raw_kind = pack.get("kind")
     if raw_kind is None:
@@ -255,7 +270,21 @@ def parse_export_pack(pack: dict[str, Any], password: str) -> dict[str, Any]:
     creds = secrets.get("creds")
     if not isinstance(creds, dict):
         raise ValidationError("导出包凭据段结构非法")
-    return {"repos": repos, "tasks": tasks, "notify": notify, "creds": creds, "kind": kind}
+    raw_degraded = secrets.get("degraded")
+    if raw_degraded is None:
+        degraded: dict[str, str] = {}  # v1 包无该字段 → 无降级信息（旧行为）
+    elif isinstance(raw_degraded, dict):
+        degraded = {str(k): str(v) for k, v in raw_degraded.items()}
+    else:
+        raise ValidationError("导出包降级段结构非法")
+    return {
+        "repos": repos,
+        "tasks": tasks,
+        "notify": notify,
+        "creds": creds,
+        "degraded": degraded,
+        "kind": kind,
+    }
 
 
 # ---------------------------------------------------------------- 导入辅助

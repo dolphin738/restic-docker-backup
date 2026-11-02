@@ -104,6 +104,7 @@ from app.services.config_transfer import (
     parse_export_pack,
     task_values_from_pack,
 )
+from app.services.crypto import keys_of
 from app.services.env_sync import passfile_path, passfile_status
 from app.services.notifier import (
     DEFAULT_MAIL_REDACT,
@@ -527,13 +528,18 @@ async def export_config(
             detail = await task_repo.get_dict(task.id)
             if detail is not None:
                 tasks.append(detail)
-    config_rows = [(row.key, row.value or "") for row in await config_repo.list_all()]
+    all_rows = await config_repo.list_all()
+    config_rows = [(row.key, row.value or "") for row in all_rows]
+    # 降级行（密钥源失效、值读不出来）在 v1 包里与「本来没配」不可区分——
+    # 导出的包会静默缺凭据。v2 把它们单独传给打包器，接收端据此可告警。
+    degraded_rows = {row.key: (row.degraded_reason or "") for row in all_rows if row.degraded}
     pack = build_export_pack(
         repos=repo_entries,
         tasks=tasks,
         config_rows=config_rows,
         password=payload.password,
         created_at=utc_iso(),
+        degraded_rows=degraded_rows,
     )
     await audit.record(
         AUDIT_CONFIG_EXPORT,
@@ -898,9 +904,13 @@ async def rotate_repo_key(
     # 重加密（provider.for_repo 的实例缓存按口令文件 stat 自动失效，取到即新密钥）。
     reencrypt_pairs: list[tuple[str, str]] = []
     crypto = request.app.state.crypto_provider.for_repo(payload.repo_id)
-    cred_prefix = f"cred.{payload.repo_id}."
-    for row in await config_repo.list_all_raw():
-        if not (row.key.startswith(cred_prefix) and row.source != "env" and row.value):
+    # 收集范围问 crypto.keys_of（键归属单一出口）：含归属该仓库的全局敏感键——
+    # dump.password / notify.* / metrics.token 恒由 default 实例加密，只匹配
+    # cred.<repo>. 前缀会把它们漏掉（轮换 default 后永久不可解）。
+    raw_rows = await config_repo.list_all_raw()
+    owned = keys_of(payload.repo_id, (row.key for row in raw_rows))
+    for row in raw_rows:
+        if not (row.key in owned and row.source != "env" and row.value):
             continue
         if not crypto.is_encrypted(row.value):
             continue  # 明文形态（历史上关闭加密的残留），恒可读、无需重加密

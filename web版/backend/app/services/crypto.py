@@ -23,6 +23,7 @@ import base64
 import hashlib
 import hmac
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,26 @@ _NONCE_BYTES = 12          # AES-GCM 标准 nonce 长度（96 bit）
 _KEY_BYTES = 32            # AES-256
 _HKDF_SALT = b"restic-web/credential-encryption/v1"
 _HKDF_INFO_V1 = b"config-credential-encryption-key"
+
+# 敏感键：API 只回 has_value + source，不回明文（§4.3 键表"敏感=是"的项）。
+# **唯一定义点**（R-025）：写侧加密、API 脱敏、密钥源归属（:func:`keys_of`）共用此口径；
+# db/repositories/config_repo.py 从这里导入（反向 import 会成环）。
+SENSITIVE_PREFIXES: tuple[str, ...] = ("cred.",)
+# R-018：通知渠道 URL 内嵌令牌（healthchecks ping UUID / webhook 地址），同凭据口径脱敏
+# R-024：metrics.token 同口径（且库内只存 SHA-256 硬哈希，界面设置不可读）
+SENSITIVE_EXACT_KEYS: tuple[str, ...] = (
+    "dump.password",
+    "notify.healthchecks_url",
+    "notify.webhook.url",
+    "metrics.token",
+    # C2 SMTP 邮箱密码（内中继可能留空，有值即与凭据同口径：只回 has_value + 库内加密）
+    "notify.mail.password",
+)
+
+
+def is_sensitive(key: str) -> bool:
+    """判断键是否为敏感项（API 只回 has_value；加密与密钥源归属同一口径）。"""
+    return key in SENSITIVE_EXACT_KEYS or key.startswith(SENSITIVE_PREFIXES)
 
 
 def _hkdf_info(repo_id: str) -> bytes:
@@ -255,6 +276,37 @@ def _repo_id_for_cred_key(key: str) -> str:
         if len(parts) == 2 and parts[0]:
             return parts[0]
     return DEFAULT_REPO_ID
+
+
+def owner_of(key: str) -> str:
+    """该配置键由哪个密钥源保护（``cred.<repo_id>.<field>`` → 该仓库；其余落 default）。
+
+    键归属的**唯一判定出口**：轮换 / 清理 / 回收 / 读取四处都问这里，不得再手抄前缀。
+    """
+    return _repo_id_for_cred_key(key)
+
+
+def keys_of(repo_id: str, keys: Iterable[str]) -> set[str]:
+    """给定密钥源保护的**敏感键**集合（纯判定，不读库——全量键由调用方传入）。
+
+    Args:
+        repo_id: 密钥源（仓库标识）。
+        keys: 全量配置键（调用方取 ``ConfigRepo.list_all_raw()`` 的 key）。
+
+    Returns:
+        归属该密钥源的敏感键（``is_sensitive`` 口径）。非敏感明文键（``log.level`` 等）
+        不入结果——调用方的 ``is_encrypted`` 过滤不该是唯一保险。
+    """
+    return {key for key in keys if is_sensitive(key) and owner_of(key) == repo_id}
+
+
+def must_be_owned(repo_id: str) -> bool:
+    """该密钥源是否必须**永久**被视为「有主」（孤儿口令文件回收不得动它）。
+
+    ``default`` 恒为 True：全局敏感键（``dump.password`` / ``notify.*`` / ``metrics.token``）
+    的密钥源就是 default 的口令文件——判它孤儿并回收 = 全局键永久解不开。
+    """
+    return repo_id == DEFAULT_REPO_ID
 
 
 class CryptoProvider:

@@ -395,6 +395,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         migrated = await config_repo.migrate_encryption(encrypt=True)
         if migrated:
             logger.info("凭据加密已启用：%d 个存量明文键已迁移为密文", migrated)
+    # 方案 B-full（§5.1/§8.4）：读取侧按密钥源分组降级后，失效的密钥源在此汇总成
+    # **一条**告警（不逐键刷屏、不含任何键名与值——S3）。口令文件就位后无需重启即可
+    # 恢复（crypto 的 stat 失效缓存），故这里只交代影响面，绝不阻止启动。
+    degraded_sources = config_repo.degraded_sources(await config_repo.list_all())
+    if degraded_sources:
+        logger.warning(
+            "凭据密钥源不可用（%s）：其保护的凭据无法解密——配置页按「失效」标记（不当作没配过），"
+            "涉及该密钥源的备份任务将直接失败而非带着空凭据运行。请核对对应仓库密码文件是否存在且正确",
+            "、".join(degraded_sources),
+        )
     # 启动恢复：遗留 running/pending 改标 interrupted（P1 不做补跑与 AUTO_UNLOCK）
     await job_runner.recover_on_startup()
     # 调度器启动（§4.3）：recover 之后 start（内部 reload + 当天补跑），

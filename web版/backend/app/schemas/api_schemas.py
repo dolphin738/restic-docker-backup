@@ -125,13 +125,21 @@ class HealthResponse(_Base):
 
 
 class ConfigItem(_Base):
-    """单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。"""
+    """单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。
+
+    ``degraded`` 三态（方案 §8.4）：键的密钥源读不出来时，展示路径不抛异常、也不伪装
+    成空值，而是 ``has_value=False`` + ``degraded=True`` + ``degraded_reason``。
+    于是三种状态互不混淆：没配过（``has_value=False`` 且 ``degraded=False``）、有值
+    （``has_value=True``）、失效（``has_value=False`` 且 ``degraded=True``）。
+    """
 
     key: str
     value: str | None = None
     has_value: bool = False
     source: ConfigSource = ConfigSource.UI
     sensitive: bool = False
+    degraded: bool = False
+    degraded_reason: str | None = None
 
 
 class ConfigResponse(_Base):

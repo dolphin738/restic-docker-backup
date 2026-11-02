@@ -364,15 +364,17 @@ async def export_task(
                 {"id": repo.id, "name": repo.name, "url": repo.url, "host_tag": repo.host_tag}
             )
     cred_prefixes = tuple(f"cred.{rid}." for rid in repo_ids)
-    config_rows = [
-        (row.key, row.value or "")
-        for row in await config_repo.list_all()
-        if row.key.startswith(cred_prefixes)
-    ]
+    # 该任务相关仓的凭据行；按 cred.<repo>.* 前缀过滤是**刻意设计**（方案 §4.3 改造
+    # 禁区：问的是「这个仓库的凭据有哪些」，不是「这个密钥源保护哪些键」，改 keys_of
+    # 会把 dump.password 等全局键打进任务导出包 = S3 红线）。
+    scoped_rows = [row for row in await config_repo.list_all() if row.key.startswith(cred_prefixes)]
+    config_rows = [(row.key, row.value or "") for row in scoped_rows]
+    degraded_rows = {row.key: (row.degraded_reason or "") for row in scoped_rows if row.degraded}
 
     pack = build_export_pack(
         repos=repo_entries,
         tasks=[detail],
+        degraded_rows=degraded_rows,
         config_rows=config_rows,
         password=payload.password,
         created_at=utc_iso(),

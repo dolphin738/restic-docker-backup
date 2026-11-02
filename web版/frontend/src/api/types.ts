@@ -387,13 +387,21 @@ export interface RcloneConfigWriteOut {
   remotes_after: string[]
 }
 
-/** E06 配置项：敏感项只回 has_value + source，不回明文。 */
+/**
+ * E06 配置项：敏感项只回 has_value + source，不回明文。
+ *
+ * 三态（degraded 与 has_value 组合区分，互不混淆）：没配过 = has_value:false 且
+ * degraded:false；有值 = has_value:true；失效 = has_value:false 且 degraded:true
+ * （该键的密钥源读不出来，degraded_reason 给原因，不当作「没配过」）。
+ */
 export interface ConfigItem {
   key: string
   value: string | null
   has_value: boolean
   source: 'ui' | 'env'
   sensitive: boolean
+  degraded: boolean
+  degraded_reason: string | null
 }
 
 /** E06 配置读。 */

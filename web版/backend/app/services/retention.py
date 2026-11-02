@@ -61,7 +61,8 @@ from app.db.repositories.audit_repo import AuditRepo, AuditRow
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
 from app.db.repositories.rclone_archive_repo import RcloneArchiveRepo
-from app.db.repositories.repo_repo import ReposRepo
+from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
+from app.services.crypto import keys_of, must_be_owned
 from app.settings import Settings, get_settings
 from app.utils.passfile import reap_orphan_passfiles, remove_passfile
 from app.utils.time import now_utc, utc_iso
@@ -389,12 +390,12 @@ class RetentionService:
                     else:
                         # 测试基座未注入编排器：退回仓储直调（旧但可用的顺序）。
                         # 生产路径恒走编排器——main.py 在构造后立即回填 _lifecycle。
-                        for row in await self._config.list_all_raw():
-                            if (
-                                row.key.startswith(f"cred.{repo.id}.")
-                                and row.source != "env"
-                                and row.value
-                            ):
+                        # 范围问 crypto.keys_of（单一判定出口）：default 到期时全局敏感键
+                        # 同样失去密钥源，只清 cred.default.* 会留下永不可解的密文。
+                        raw_rows = await self._config.list_all_raw()
+                        owned = keys_of(repo.id, (row.key for row in raw_rows))
+                        for row in raw_rows:
+                            if row.key in owned and row.source != "env" and row.value:
                                 await self._config.delete(row.key)
                         await asyncio.to_thread(remove_passfile, self._settings, repo.id)
                         await self._repos.drop_row(repo.id)
@@ -421,6 +422,11 @@ class RetentionService:
                 known.update(repo.id for repo in await self._repos.list_all())
                 known.update(repo.id for repo in await self._repos.list_archived())
                 known.update(str(row["repo_id"]) for row in await self._repos.list_tombstones())
+                # 必须永久视为「有主」的密钥源无条件并入（不写死 default，问单一判定）：
+                # default 的口令文件是全局敏感键（dump.password / notify.* / metrics.token）
+                # 的密钥源，行缺失时判其孤儿并回收 = 全局键永久解不开（缺口 4）。
+                if must_be_owned(DEFAULT_REPO_ID):
+                    known.add(DEFAULT_REPO_ID)
                 report.passfiles_reaped = await asyncio.to_thread(
                     reap_orphan_passfiles, self._settings, known, cutoff_ts=cutoff_ts
                 )

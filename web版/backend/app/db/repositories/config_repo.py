@@ -12,14 +12,21 @@ R-025 凭据加密（P3-A，owner 2026-10-16 裁决默认开）：注入 :class:
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from app.db.database import Database
-from app.errors import CredentialDecryptError, EnvOverriddenError, ValidationError
+from app.errors import CredentialDecryptError, CredentialKeyUnavailableError, EnvOverriddenError, ValidationError
 from app.schemas.enums import ConfigSource
-from app.services.crypto import CredentialCrypto, CryptoProvider
+from app.services.crypto import (
+    SENSITIVE_EXACT_KEYS,
+    SENSITIVE_PREFIXES,
+    CredentialCrypto,
+    CryptoProvider,
+    is_sensitive,
+    owner_of,
+)
 from app.utils.time import utc_iso
 
 if TYPE_CHECKING:  # 避免运行时循环导入（crypto 不依赖本模块，仅类型注解需要）
@@ -27,28 +34,30 @@ if TYPE_CHECKING:  # 避免运行时循环导入（crypto 不依赖本模块，�
 
 logger = logging.getLogger(__name__)
 
-# 敏感键：API 只回 has_value + source，不回明文（§4.3 键表"敏感=是"的项）
-SENSITIVE_PREFIXES: tuple[str, ...] = ("cred.",)
-# R-018：通知渠道 URL 内嵌令牌（healthchecks ping UUID / webhook 地址），同凭据口径脱敏
-# R-024：metrics.token 同口径（且库内只存 SHA-256 硬哈希，界面设置不可读）
-SENSITIVE_EXACT_KEYS: tuple[str, ...] = (
-    "dump.password",
-    "notify.healthchecks_url",
-    "notify.webhook.url",
-    "metrics.token",
-    # C2 SMTP 邮箱密码（内中继可能留空，有值即与凭据同口径：只回 has_value + 库内加密）
-    "notify.mail.password",
-)
+# 敏感键清单（SENSITIVE_EXACT_KEYS / SENSITIVE_PREFIXES）唯一定义点在
+# services/crypto.py（密钥源归属 keys_of 与写侧加密同一口径）；此处仅再导出以兼容
+# 既有 import 点（config_transfer / notifier 等）。
+__all__ = ["ConfigRepo", "ConfigRow", "SENSITIVE_EXACT_KEYS", "SENSITIVE_PREFIXES"]
 
 
 @dataclass(frozen=True)
 class ConfigRow:
-    """config 表一行。"""
+    """config 表一行（三态：没配过 / 有值 / 失效）。
+
+    ``degraded`` 与 ``value is None`` 的组合是**唯一**区分方式，三者互不混淆：
+
+    - 没配过：``value is None`` 且 ``degraded is False``；
+    - 有值：``value`` 非空且 ``degraded is False``；
+    - 失效：``value is None`` 且 ``degraded is True``，
+      原因在 ``degraded_reason``——既不是「没配过」，也不得伪装成空值（方案 §8.4）。
+    """
 
     key: str
     value: str | None
     source: str
     updated_at: str
+    degraded: bool = False
+    degraded_reason: str | None = None
 
 
 class ConfigRepo:
@@ -104,6 +113,16 @@ class ConfigRepo:
             return None
         return self._decrypt_row(row)
 
+    async def get_source(self, key: str) -> str | None:
+        """只读 ``source`` 列（**不解密**）；不存在返回 None。
+
+        与 :meth:`_guard_env_source` 同一理由：只判归属/来源的调用方若走 :meth:`get`，
+        会被一行解不开的密文挡住——口令文件失效期间连「这条该不该回收」都判不了，
+        启动期 env 同步于是崩在读取上（而不是按降级语义继续）。
+        """
+        row = await self._db.fetch_one("SELECT source FROM config WHERE key = ?", (key,))
+        return None if row is None else str(row["source"])
+
     async def get_value(self, key: str, default: str | None = None) -> str | None:
         """读取键对应的值；不存在返回 default。"""
         row = await self.get(key)
@@ -112,9 +131,46 @@ class ConfigRepo:
         return row.value
 
     async def list_all(self) -> list[ConfigRow]:
-        """返回全部配置项（按 key 排序；密文透明解密）。"""
-        rows = await self._db.fetch_all("SELECT key, value, source, updated_at FROM config ORDER BY key")
-        return [self._decrypt_row(row) for row in rows]
+        """返回全部配置项（按 key 排序；**按密钥源分组**解密，失效密钥源就地降级）。
+
+        方案 B-full（§5.1/§8.4）：此前是「全表逐行解密，任一行失败即整表抛」——单个
+        仓库口令文件坏掉会把 GET /config、两条导出、load_credentials 一起拖成 500。
+        现在的算法：
+
+        1. 一次查询取**存储原形**（不解密）；
+        2. 非密文行原样返回（读侧与开关无关，崩溃安全）；
+        3. 密文行经 :func:`crypto.owner_of` 归到它的密钥源：首次解密失败即把**该密钥源**
+           记为失效并降级该行，同源的后续行直接降级（不重复派生密钥、不重复报错）；
+        4. 其余密钥源的行照常解密返回——一个仓库坏掉不再波及别的仓库。
+
+        降级行 = ``value=None`` + ``degraded=True`` + ``degraded_reason``：展示路径
+        可原样输出（``has_value=False``），执行路径（``env_sync.load_credentials``）据此抛错，
+        **绝不把「读不到」伪装成「没配过」**。
+        """
+        rows = await self._db.fetch_all(
+            "SELECT key, value, source, updated_at FROM config ORDER BY key"
+        )
+        broken: dict[str, str] = {}
+        out: list[ConfigRow] = []
+        for base in (_to_row(row) for row in rows):
+            if not CredentialCrypto.is_encrypted(base.value):
+                out.append(base)
+                continue
+            owner = owner_of(base.key)
+            reason = broken.get(owner)
+            if reason is None:
+                try:
+                    out.append(replace(base, value=self._crypto_for(base.key).decrypt(base.value)))
+                    continue
+                except (CredentialDecryptError, CredentialKeyUnavailableError) as exc:
+                    if self._encryption is None:
+                        # 装配缺失（无加密组件）不是「密钥源失效」，无 owner 语义——照旧抛
+                        raise
+                    # 逐键告警会在一个坏口令文件下刷屏：汇总告警由启动期 main.py 出（一条）
+                    reason = _degraded_reason(owner, exc)
+                    broken[owner] = reason
+            out.append(replace(base, value=None, degraded=True, degraded_reason=reason))
+        return out
 
     async def list_all_raw(self) -> list[ConfigRow]:
         """返回全部配置项**的存储原形**（不解密；仅供加密迁移判定形态，勿用于业务）。"""
@@ -200,6 +256,8 @@ class ConfigRepo:
         if self._encryption is None:
             return 0
         changed = 0
+        # 密钥源失效（口令文件缺失/不可读）时跳过的键数：启动期降级，不阻断启动
+        skipped = 0
         now = utc_iso()
         for row in await self.list_all_raw():
             if not row.value or not self.is_sensitive(row.key):
@@ -225,7 +283,14 @@ class ConfigRepo:
             #      → 重加密为 enc:v2:（跨仓库密钥隔离）；
             #   ③ enc:v2: 已就位 → 跳过。幂等：重跑零改动。
             if not cr.is_encrypted(row.value):
-                await self._upsert(row.key, cr.encrypt(row.value), row.source, now)
+                try:
+                    await self._upsert(row.key, cr.encrypt(row.value), row.source, now)
+                except CredentialKeyUnavailableError:
+                    # 口令文件缺失 ⇒ 该键无密钥可用：跳过并计数（不中断整批、**不得让启动
+                    # 崩**——main.py 对「口令文件缺失」只告警不阻止启动，此处抛即为崩溃循环）。
+                    # 明文原样保留，口令文件就位后重跑本迁移即收敛（幂等）。
+                    skipped += 1
+                    continue
                 changed += 1
             elif cr.needs_reencrypt(row.value):
                 try:
@@ -235,6 +300,10 @@ class ConfigRepo:
                     # v1 密文不可解（密码文件被更换）：跳过并告警，恢复手段同上
                     logger.warning("凭据 v1→v2 重加密跳过 %s：旧密文无法解密（密码文件可能已被更换）", row.key)
                     continue
+        if skipped:
+            logger.warning(
+                "凭据加密迁移跳过 %d 个键：仓库密码文件缺失，迁移将在密码文件就位后重试", skipped
+            )
         return changed
 
     async def set_many(self, patch: Mapping[str, str | None]) -> list[ConfigRow]:
@@ -295,21 +364,52 @@ class ConfigRepo:
 
     @staticmethod
     def is_sensitive(key: str) -> bool:
-        """判断键是否为敏感项（API 只回 has_value）。"""
-        return key in SENSITIVE_EXACT_KEYS or key.startswith(SENSITIVE_PREFIXES)
+        """判断键是否为敏感项（API 只回 has_value；判定委托 :func:`crypto.is_sensitive`）。"""
+        return is_sensitive(key)
+
+    @staticmethod
+    def degraded_sources(rows: Iterable[ConfigRow]) -> list[str]:
+        """本次读取中失效的密钥源（去重排序）——启动期「一条汇总告警」的数据源。
+
+        Args:
+            rows: ``list_all()`` 的结果。
+
+        Returns:
+            失效的密钥源标识（仓库 id）。空列表 = 全部密钥源健康。
+        """
+        return sorted({owner_of(row.key) for row in rows if row.degraded})
 
     def mask(self, row: ConfigRow) -> dict[str, Any]:
-        """按敏感性脱敏后输出：敏感项回 ``has_value`` + ``source``，不回明文。"""
+        """按敏感性脱敏后输出：敏感项回 ``has_value`` + ``source``，不回明文。
+
+        ``degraded`` / ``degraded_reason`` 对**所有**键都输出（含非敏感键）：
+        失效密钥源保护的键必须能与「没配过」区分开，脱敏挡的是值、不是状态。降级行的
+        ``has_value`` 恒为 False（``value`` 已被置 None）。
+        """
         sensitive = self.is_sensitive(row.key)
         payload: dict[str, Any] = {
             "key": row.key,
             "has_value": row.value is not None and row.value != "",
             "source": row.source,
             "sensitive": sensitive,
+            "degraded": row.degraded,
+            "degraded_reason": row.degraded_reason,
         }
         if not sensitive:
             payload["value"] = row.value
         return payload
+
+
+def _degraded_reason(repo_id: str, exc: Exception) -> str:
+    """生成「该密钥源失效」的可读原因（S3：只含密钥源标识，不含任何键值/密文）。
+
+    Args:
+        repo_id: 失效的密钥源（仓库标识）。
+        exc: 首次解密失败的异常——区分「钥匙没了」与「钥匙不对」，两者的运维动作不同。
+    """
+    if isinstance(exc, CredentialKeyUnavailableError):
+        return f"密钥源 {repo_id} 的口令文件缺失或不可读，该键无法解密"
+    return f"密钥源 {repo_id} 的口令文件与密文不匹配，该键无法解密"
 
 
 def _to_row(row: Any) -> ConfigRow:

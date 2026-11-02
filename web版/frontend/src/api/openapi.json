@@ -656,8 +656,24 @@
       },
       "ConfigItem": {
         "additionalProperties": false,
-        "description": "单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。",
+        "description": "单个配置项输出：敏感项只回 ``has_value`` + ``source``，不回明文。\n\n``degraded`` 三态（方案 §8.4）：键的密钥源读不出来时，展示路径不抛异常、也不伪装\n成空值，而是 ``has_value=False`` + ``degraded=True`` + ``degraded_reason``。\n于是三种状态互不混淆：没配过（``has_value=False`` 且 ``degraded=False``）、有值\n（``has_value=True``）、失效（``has_value=False`` 且 ``degraded=True``）。",
         "properties": {
+          "degraded": {
+            "default": false,
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "degraded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degraded Reason"
+          },
           "has_value": {
             "default": false,
             "title": "Has Value",
@@ -5075,7 +5091,7 @@
     },
     "/api/archive/repos/{repo_id}/release": {
       "post": {
-        "description": "释放 ID：删 ``repos`` 行（该 id 立即可被新仓库复用）+ 留墓碑 + 清凭据键。\n\n**不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，只是本应用\n不再持有入口。确认门槛是「原样输入仓库 id」，避免误点。",
+        "description": "释放 ID：删 ``repos`` 行（该 id 立即可被新仓库复用）+ 留墓碑 + 清凭据键。\n\n**不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，只是本应用\n不再持有入口。确认门槛是「原样输入仓库 id」，避免误点。\n\n**三门守卫（2026-11-02 补齐，D5/D6）**，与 DELETE 路由同口径：\n\n1. ``ensure_deletable``——default 禁删（D6=(c)：**default 永不可 release**）、\n   有备份任务/活跃作业即拒 409 ``REPO_NOT_EMPTY``、被镜像引用即拒 409。\n   缺这道守卫时，正常 UI 操作（归档页 → 释放 ID → 输入 default）就能删掉\n   default 行，并在墓碑到期后让口令文件被判孤儿回收，全局敏感键永久解不开。\n2. **必须已归档**——语义是「释放**归档**仓库的 ID」；修复前未归档的在用仓库\n   也能被释放并删除行，等于绕过 DELETE 的全部校验。",
         "operationId": "release_archived_repo_api_archive_repos__repo_id__release_post",
         "parameters": [
           {
