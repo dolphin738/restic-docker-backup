@@ -114,6 +114,8 @@ web版/backend/.pytest-tmp/
 web版/backend/.pytest_cache/
 # pytest 在 cwd 落下的临时产物（tmp_path 创建失败或被 ACL 锁死时残留）
 web版/backend/pytest-of-*/
+# 从 web版/ 根目录跑 pytest 时 tmp_path 会落在这里（同上，不入库）
+web版/pytest-of-*/
 web版/backend/rclone-meta-test-*/
 web版/backend/.pytemp*/
 web版/backend/.tmp-split/

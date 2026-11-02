@@ -8,7 +8,9 @@
 > 《架构设计文档.md》自 v1.11 起**只记载当前契约**，不再内联修订历史——历史属于按需查阅的参考，不该占据每次都要读的契约前排。
 > 反向指针：[架构设计文档](../docs/架构设计文档.md)（当前契约）
 
-> 版本：v1.13（2026-11-03 / v1.12 2026-11-01 / v1.11 2026-10-29 / v1.10 2026-10-27 / v1.9 2026-10-23 / v1.8 2026-10-23 / v1.7 2026-10-20 / v1.6 2026-10-17）
+> 版本：v1.14（2026-11-02 / v1.13 2026-11-03 / v1.12 2026-11-01 / v1.11 2026-10-29 / v1.10 2026-10-27 / v1.9 2026-10-23 / v1.8 2026-10-23 / v1.7 2026-10-20 / v1.6 2026-10-17）
+> **v1.14 修订（2026-11-02，密钥源归属与凭据加密缺口收口）**：把「键归属知识被手抄 6 处」收成单一出口并补读取侧降级语义——①**§4.3 R-025 注 ② 键归属规则**改为「判定的唯一出口是 `crypto.owner_of()`，配套 `keys_of(repo_id, keys)`【**双参**：crypto 不读库，红线 A1，全量键由调用方从 `list_all_raw()` 取】/`must_be_owned`/`is_sensitive`，轮换/清理/回收/force 四处必须问它」，并记 `SENSITIVE_EXACT_KEYS`/`SENSITIVE_PREFIXES` 唯一定义点在 `services/crypto.py`（config_repo 只再导出）、代价段补「default 口令文件不会被孤儿回收」第二道保险；②**§4.3 新增 ④ 读取侧降级段**（`list_all()` 按密钥源分组解密、展示路径不抛 / 执行路径 `load_credentials` 抛 `CredentialDecryptError`(500)、启动期一条汇总 warning、三态判定 `degraded`+`degraded_reason`）；③**§5.0** `CREDENTIAL_DECRYPT_FAILED` 扩为兼负「密钥源失效」、`REPO_NOT_EMPTY` 记 E59 复用（**未新增错误码**）；④**§5.1** E06 增 `degraded`/`degraded_reason` 契约、E44 补 force 覆盖清理动作、E59 补三门守卫。**关键语义（易误读）**：降级与否由**调用路径**决定，不是键的属性——本文早期草案的 `is_degradable(key)` 谓词**未实现也不需要**。实现记录见《修复方案-密钥源归属与凭据加密缺口-2026-11-02.md》v1.2（0–5 批落地 + 第 6 批导出标记）。
+
 > **v1.13 修订（2026-11-03，R-025 凭据加密改按仓库密钥编排；本批纯文档，代码已于 0b741a4 落地）**：把「`enc:v2` 声称的跨仓库密钥隔离实际未生效」这一既有缺口在契约层收口——①**§4.3 的 R-025 注扩写为三段**：**密钥编排**（`CredentialCrypto` 是单仓库作用域，`repo_id` 参与 HKDF info；`CryptoProvider` 按 `repo_id` 惰性建实例并缓存，装配点 `main.py`，`app.state.crypto_provider` 供 `key.rotate` 使用）、**键归属规则**（`cred.<repo_id>.<field>` 三段及以上→该仓；两段 legacy `cred.<field>` 与全局键 `dump.password`/`notify.*`/`metrics.token`→`DEFAULT_REPO_ID`；`ConfigRepo._crypto_for(key)` 读/写/迁移三路径共用；仓库 id 正则不含点号故切分无歧义）、**严格语义**（无口令文件即拒写 `cred.<repo_id>.*`，422 `VALIDATION_ERROR`／内部类 `CredentialKeyUnavailableError`／`data.path` 给路径，**不降级回 default 密钥**；故「先设密码、再录凭据」为硬性顺序）；并把「密码文件成为单点」的代价**收窄为按仓库**（仅该仓凭据失效，全局键仍绑 default）；②**§5.1 E44** 密钥源句改 per-repo（覆盖只影响该仓库）；③**§5.1 rebuild** 纠正顺序契约——原文写的「写新密码文件 → 清空目录内容 → `restic init`」正是 2026-10-22 🔴 修复掉的那个错误顺序，实为「清空内容 → **清该仓旧 `enc:v2` 凭据** → 写新密码 → `restic init` → 中性化」，并补两条「为什么必须先」的因果（先清空后覆盖密码：否则清空失败时旧密码已覆盖且无回滚，盘上快照永久不可读；先清密文后 init：init 取凭据需全表解密，新密码已写而旧密文不可解会 500），影响面收窄为「只清该仓库自己的 `cred.<repo_id>.*`，其他仓库存活」；④**§11 R-025 行**补 `enc:v2` 与 `CryptoProvider`、严格语义、三条护栏测试名。**顺带更正两处既有漂移**：`enc:v1:` → `enc:v2:`（写侧形态，v1 仅只读兼容）、「密码文件单点」→ 按仓库。**零代码改动**（对应实现见提交 `0b741a4`）。
 > **v1.12 修订（2026-11-01，删除依赖与快照可用性保护方案契约上位化；零代码改动）**：把《删除依赖与快照可用性保护方案》v1.4 的**契约面补登进本文**——此前该方案已实施但契约从未进架构文档，构成其唯一归档障碍。①**§5.0 错误码表**补 2 行：`RCLONE_REMOTE_IN_USE`（409，E51/E55；独立错误类 `RcloneRemoteInUseError`，不复用 `REPO_NOT_EMPTY` 以免混码无法分流）、`REPO_IN_USE_AS_MIRROR`（409，E41；`json_each` 精确匹配 `mirror_repo_ids` 防子串误判）；②**§5.1 新增 E55–E63 九端点**（路径一律以代码实际声明为准，方案稿 §7.2 的 `/release-id`、`?include_archived=1` 为设计期写法、落地已收敛）：E55 `GET /rclone/config/{r}/usage`、E56 `POST /rclone/config/{r}/repoint`（`repo.repoint` 审计，**不入 S6 清单**）、E57 `GET /archive/repos`、E58 `POST /archive/repos/{id}/restore`、E59 `POST /archive/repos/{id}/release`（`repo.id_release`，S6 第 22 项）、E60 `DELETE /archive/tombstones/{id}`、E61 `GET /rclone/archives`、E62 `POST /rclone/archives/{r}/restore`（`rclone.config_restore`，S6 第 23 项）、E63 `DELETE /rclone/archives/{r}`；并就地登记 **E51/E41 的语义扩展**（先查后删 + 409、默认归档 + 三门口径）与「force 强删永久不做」裁定；③**§4.3 config 键表**补 4 键：`retention.repo_archive_days`(30) / `repo_tombstone_days`(365) / `rclone_archive_days`(365) / `repo_passfile_days`(30)，并注**入口在归档页「保留策略」分区、不外露设置页**（对齐 `retention.audit_days`）。**效果**：该方案自此满足文档管理规范 §3「结论已被上位文档吸收」的归档门槛（正文仍留 `docs/` 作唯一方案源与取证底稿）。ror`，不复用 `REPO_NOT_EMPTY` 以免混码无法分流）、`REPO_IN_USE_AS_MIRROR`（409，E41；`json_each` 精确匹配 `mirror_repo_ids` 防子串误判）；②**§5.1 新增 E55–E63 九端点**（路径一律以代码实际声明为准，方案稿 §7.2 的 `/release-id`、`?include_archived=1` 为设计期写法、落地已收敛）：E55 `GET /rclone/config/{r}/usage`、E56 `POST /rclone/config/{r}/repoint`（`repo.repoint` 审计，**不入 S6 清单**）、E57 `GET /archive/repos`、E58 `POST /archive/repos/{id}/restore`、E59 `POST /archive/repos/{id}/release`（`repo.id_release`，S6 第 22 项）、E60 `DELETE /archive/tombstones/{id}`、E61 `GET /rclone/archives`、E62 `POST /rclone/archives/{r}/restore`（`rclone.config_restore`，S6 第 23 项）、E63 `DELETE /rclone/archives/{r}`；并就地登记 **E51/E41 的语义扩展**（先查后删 + 409、默认归档 + 三门口径）与「force 强删永久不做」裁定；③**§4.3 config 键表**补 4 键：`retention.repo_archive_days`(30) / `repo_tombstone_days`(365) / `rclone_archive_days`(365) / `repo_passfile_days`(30)，并注**入口在归档页「保留策略」分区、不外露设置页**（对齐 `retention.audit_days`）。**效果**：该方案自此满足文档管理规范 §3「结论已被上位文档吸收」的归档门槛（正文仍留 `docs/` 作唯一方案源与取证底稿）。
 > **v1.11 修订（2026-10-29，R-020 审计保留策略：配置键与端点补登记；无代码改动）**：
@@ -165,6 +167,42 @@
 > 反向指针：[删除依赖与快照可用性保护方案.md](docs/删除依赖与快照可用性保护方案.md)（当前契约）
 
 > 版本：v1.3（2026-10-27 初稿；2026-10-27 补 `purge_disk` 与归档互斥口径；2026-10-28 全量裁决定案；2026-10-28 **P0/P1/P2 全部落地**）
+
+## 未发布（2026-11-02）
+
+### 修复
+- **密钥源归属与凭据加密缺口（0–3 批全落地，方案《修复方案-密钥源归属与凭据加密缺口-2026-11-02.md》v1.0）**
+  - **缺口 1 · 轮换漏全局键**：`key.rotate` 的清理范围原本手抄 `cred.<repo>.` 前缀，漏掉归属该仓库的全局敏感键（`dump.password` / `notify.*` / `metrics.token`）；改由 `crypto.keys_of(repo_id, keys)` 给出（**双参：crypto 不读库，红线 A1，全量键由调用方传入**），键归属判定自此只有 `crypto.owner_of()` 一个出口，`_repo_id_for_cred_key` 降为其实现体。
+  - **缺口 2 · force 覆盖留残密文**：`POST /api/repos/{repo_id}/password` 的 `force` 覆盖路径**压根不调用任何清理函数**，用新口令覆盖后旧 `enc:v2` 密文永不可解，进而让 `ConfigRepo.list_all()` 全表逐行解密失败——单仓库故障被放大成全站故障。现在 `write_passfile` 成功之后（写失败零副作用）按 `keys_of` 清理该密钥源旧密文，**仅清密文，明文与 env 键保留**；`_clear_credentials(D)` 与 `retention` 兜底分支(E) 同步改为问 `keys_of`。
+  - **缺口 3/4 · 回收误伤 default**：`retention` 的 `known_ids` **无条件并入 `DEFAULT_REPO_ID`**（配合 `crypto.must_be_owned`）——default 口令文件即使在 `repos` 行缺失时也不会被判孤儿回收，堵死「行没了 → 文件被回收 → 全局键永久解不开」。
+  - **缺口 6 · release 端点缺守卫**：`POST /api/archive/repos/{repo_id}/release` 补齐三门——`ensure_deletable`（default 禁删 + 有任务/活跃作业 409 + 被镜像引用 409）、**必须已归档**否则 422、外键冲突 `IntegrityError` 译成 409 不落 500。修复前正常 UI 操作即可删掉 default 行。
+
+### 变更（行为变化，需留意）
+- **读取侧降级语义（方案 B-full）**：`ConfigRow` / `ConfigItem` 增 `degraded: bool` + `degraded_reason: str|null`，三态判定——没配过（`has_value=false` 且 `degraded=false`）/ 有值（`has_value=true`）/ **失效**（`has_value=false` 且 `degraded=true`）。`list_all()` 改为**按密钥源分组解密**：某密钥源首次失败即降级该源全部键，其余密钥源照常读出。
+- **两条路径语义刻意分叉**：**展示路径**（E06 `GET /api/config`、两条导出）降级**不抛**；**执行路径**（`env_sync.load_credentials`，每个备份任务的必经之路）遇降级行**抛 `CredentialDecryptError`（500）**，**绝不降级为空值**静默跑——否则备份会带着缺失的云凭据跑到「认证失败」，把排查引向错误方向。该错误码自本版起也承担「密钥源失效」语义。
+- **启动期**把失效密钥源汇总成**一条** `logger.warning`（不是逐键刷屏）。前端 `api/types.ts` / `openapi.json` / `schema.d.ts` 同步。
+
+### 文档
+- **架构设计文档**：§4.3 R-025 注——② 键归属规则改为「唯一出口 `crypto.owner_of()` + `keys_of`/`must_be_owned`/`is_sensitive` 三判定，轮换/清理/回收三处必须问它」并注明 `SENSITIVE_EXACT_KEYS`/`SENSITIVE_PREFIXES` 唯一定义点在 `services/crypto.py`（config_repo 只再导出）；代价段补第二道保险；新增 **④ 读取侧降级**段。§5.0：`CREDENTIAL_DECRYPT_FAILED` 补「也承担执行路径的密钥源失效」、`REPO_NOT_EMPTY` 补「E59 release 复用该码」（**未新增错误码**）。§5.1：E06 补 `degraded`/`degraded_reason` 契约、E44 补 force 覆盖清理动作、E59 补三门守卫。
+- **云端仓库安全基线（§2.3，修订五）**：补「口令文件失效的影响面」——已按密钥源隔离（配置页显示「失效」而非「没配过」，涉及该源的备份任务直接失败），但 default 口令文件仍是全局键单点且不会被孤儿回收。
+- **部署指南**：`RESTIC_PASSWORD_FILE` 逃生舱补「显式设全局口令文件 ⇒ 隔离收益归零」；R-025 段补读取侧降级语义。
+- **文档管理规范 v1.61**：登记表该方案行状态改「活跃 v1.0（已实施 2026-11-02）」。**该方案文档本次不归档**（归档须 owner 确认）。
+- **架构设计文档升 v1.14**（文首版本行 `v1.13` → `v1.14` + `文档管理规范.md` §6 登记表同步）。按本文第 8 行约定，架构文档自 v1.11 起不再内联修订历史，故此处**不**向上方「架构设计文档修订史」段追加 v1.14 条目——本次改动摘要见上三条与登记表。
+- **`scripts/check_dockerignore.py` 修 GBK 控制台崩溃**：脚本打印 `✓`/`✗`（U+2713/U+2717），Windows 控制台默认 cp936 下抛 `UnicodeEncodeError` 直接崩溃，致 `bash scripts/verify_redlines.sh` 的 **G8 恒为假失败**（19 项里 1 项误报）。最小修法：`main()` 开头对 `sys.stdout`/`sys.stderr` 调 `reconfigure(encoding="utf-8", errors="replace")`（`hasattr` 保护非 TTY/重定向场景），**不改脚本语义与输出形态**。修后不设任何环境变量即 19/19。
+- **方案文档本身 v1.0**：状态行改已实施 + 实施结论；`keys_of` 签名更正为双参；记 §9.3 与红测试②的断言偏差；§8.2–§8.4 标 ✅；新增 §11 已知遗留（**本次不修**：两条导出取 `row.value or ""`，降级行导出空串且包里无标记，待 owner 决定是否加 `degraded` 标记）。
+
+### 第 5 批 · 前端渲染「失效」（2026-11-02，补齐文档已宣称的界面形态）
+- **背景**：前 4 批只做到 API 契约（`ConfigItem.degraded`），前端**一处都没渲染**——仓库配置页的凭据徽标、设置页的 dump 口令与 metrics 令牌仍只看 `has_value`，密钥源失效时显示「未配置」。而架构 §4.3 注④、§5.1 E06、部署指南、云端基线四份文档都已写「配置页显示『失效』标记（不是『没配过』）」——**文档超前于代码**。本批让代码追上文档。
+- **改动**：`RepoEditForm.vue`（凭据徽标）、`SectionDump.vue`（dump 口令）、`SectionMetrics.vue`（metrics 令牌）三处按 `degraded → has_value → 未配置` 优先级渲染；失效态用 `StatusTag kind="warning"` + `n-tooltip` 显示 `degraded_reason`（沿用既有「env 覆盖」提示的同款交互，原因不塞进徽标文字）。新增 i18n 键 `repo.credDegraded`/`repo.credDegradedReason`、`settings.dump.passwordDegraded(Reason)`、`settings.metrics.tokenDegraded(Reason)`，中英双语同批。
+- **两个非显然点**：① `RepoEditForm` 的 `itemOf` prop 是结构化子类型，就地加宽即可，**父页不用改**；② 项目无 naive-ui 自动导入插件，`<n-tooltip>` 必须显式 import `NTooltip`——漏掉时 typecheck 照样过，但运行时是未知自定义元素、hover 静默无反应。
+- **护栏**：新增 `frontend/src/pages/settings/__tests__/degraded-badge.spec.ts`（5 例）——锁死「degraded 时显示失效而非未配置」「未失效时三态正确」「degraded 优先于 has_value」与中英键齐备。
+
+### 校验结果
+- 后端 WSL 全量 `pytest tests -q`：**1292 passed / 0 failed**。
+- 前端 WSL 全量 `vitest run`：**571 passed / 60 files**（含本批新增 5 例；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，已在 **HEAD 基线**复现同样 2 条，与本批无关）。
+- 前端 `vue-tsc --noEmit`：0 error。
+- `ruff check app tests` 干净。
+- `bash scripts/verify_redlines.sh`：**19/19 全部通过**（Windows Git-Bash 不设任何环境变量、WSL 两侧均实测；G8 需 python 解释器，无 python 时该项跳过并计 18/18）——AGENTS.md 与规范 §3.1 编号锚点一致，未新增/删除红线条款。
 
 ## 未发布（2026-10-28）
 
