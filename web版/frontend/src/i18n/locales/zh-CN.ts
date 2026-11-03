@@ -691,6 +691,19 @@ export default {
     finalHint: '这是最后一步确认，执行后立即生效并入审计。',
     running: '正在执行…',
   },
+  // E31 扫描范围预览（向导第⑥步）：汇总栏 + 目录树（owner 2026-11-03）
+  scanScope: {
+    sources: '备份源',
+    dirs: '目录',
+    files: '文件',
+    truncated: '结果被截断',
+    truncatedYes: '是',
+    truncatedNo: '否',
+    root: '当前树根：{path}',
+    nodeMeta: '{dirs} 个目录 · {files} 个文件',
+    empty: '扫描范围内没有条目',
+    partial: '仅部分结果',
+  },
   tree: {
     loadMore: '加载更多',
     mountpoint: '挂载点',

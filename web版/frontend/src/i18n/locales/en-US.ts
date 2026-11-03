@@ -701,6 +701,19 @@ export default {
     finalHint: 'This is the final confirmation. It takes effect immediately and is audited.',
     running: 'Running…',
   },
+  // E31 scan-scope preview (wizard step 6): summary bar + directory tree (owner 2026-11-03)
+  scanScope: {
+    sources: 'Sources',
+    dirs: 'Directories',
+    files: 'Files',
+    truncated: 'Truncated',
+    truncatedYes: 'Yes',
+    truncatedNo: 'No',
+    root: 'Tree root: {path}',
+    nodeMeta: '{dirs} dirs · {files} files',
+    empty: 'No entries in the scan scope',
+    partial: 'Partial results only',
+  },
   tree: {
     loadMore: 'Load more',
     mountpoint: 'Mount point',

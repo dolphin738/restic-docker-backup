@@ -55,6 +55,7 @@ import ScheduleRetentionForm, {
   type ScheduleRetentionValue,
 } from '@/components/task/ScheduleRetentionForm.vue'
 import NewRepoStep from '@/components/task/NewRepoStep.vue'
+import ScanScopePreview from '@/components/task/ScanScopePreview.vue'
 import SourcesPicker from '@/components/task/SourcesPicker.vue'
 import { dryRunBlockReason, isDryRunOk } from '@/components/task/dryRunGate'
 import StatusTag from '@/components/StatusTag.vue'
@@ -1229,36 +1230,13 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
           </n-space>
 
           <n-alert v-if="dryRunError" type="error" :show-icon="false">{{ dryRunError }}</n-alert>
-          <template v-if="dryRunResult">
-            <n-alert v-if="dryRunResult.error" type="error" :show-icon="false">
-              {{ dryRunResult.error }}
-            </n-alert>
-            <n-alert v-if="dryRunResult.truncated" type="warning" :show-icon="false">
-              {{ t('wizard.dry_run_truncated') }}
-            </n-alert>
-            <n-alert
-              v-if="dryRunResult.warnings.length"
-              type="warning"
-              :title="t('wizard.dry_run_pseudo')"
-              :show-icon="false"
-            >
-              <n-space vertical :size="4">
-                <n-text v-for="warning in dryRunResult.warnings" :key="warning.path" depth="3">
-                  {{ warning.path }}
-                </n-text>
-              </n-space>
-            </n-alert>
-            <n-text depth="3">{{ t('wizard.dry_run_count', { n: dryRunResult.items.length }) }}</n-text>
-            <n-space :size="8" class="wizard__preview">
-              <n-tag
-                v-for="item in dryRunResult.items.slice(0, 200)"
-                :key="item.display_path"
-                size="small"
-              >
-                {{ item.display_path }}
-              </n-tag>
-            </n-space>
-          </template>
+          <!-- 预览结果（error / truncated / 伪文件系统警告 / 汇总栏 / 目录树）整体归 ScanScopePreview，
+               向导只负责触发与状态，避免同一份三态在父子两处各写一遍。 -->
+          <scan-scope-preview
+            v-if="dryRunResult"
+            :result="dryRunResult"
+            :sources="form.sources"
+          />
         </template>
 
         <!-- G7：页脚两端对齐（返回← 在左 / 继续→ 在右），对齐 Duplicati form-actions 形态 -->
@@ -1365,8 +1343,4 @@ function onScheduleUpdate(value: ScheduleRetentionValue): void {
   width: 120px;
 }
 
-.wizard__preview {
-  max-height: 200px;
-  overflow-y: auto;
-}
 </style>
