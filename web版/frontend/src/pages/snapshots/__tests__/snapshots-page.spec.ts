@@ -29,7 +29,8 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { h } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { tagSnapshots } from '@/api/snapshots'
+import { previewForget, tagSnapshots } from '@/api/snapshots'
+import { getBackupTask } from '@/api/backupTasks'
 import { createJob } from '@/api/jobs'
 import { previewPrune } from '@/api/prune'
 import ConfirmGate from '@/components/ConfirmGate.vue'
@@ -105,6 +106,23 @@ vi.mock('@/api/prune', () => ({
     lines: ['will delete 3 packs', 'total prune: 100 blobs / 100 MiB'],
   })),
 }))
+
+/** E34b 任务详情最小形（只填 forget 回填读到的字段）。
+ *  刻意不补全 BackupTask 的 30+ 字段：本页只读这五个，补全会掩盖真实依赖面。 */
+function stubTaskDetail(over: Record<string, unknown> = {}): void {
+  const detail = {
+    id: 1,
+    name: 't',
+    tag: 'task-1',
+    keep_daily: null,
+    keep_weekly: null,
+    keep_monthly: null,
+    keep_within: '',
+    keep_tags: [] as string[],
+    ...over,
+  }
+  vi.mocked(getBackupTask).mockImplementation((async () => detail) as never)
+}
 
 function snapshot(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -437,12 +455,182 @@ describe('快照浏览页：A3 目标范围前置拦截', () => {
   })
 })
 
-describe('快照浏览页：forget 分组维度公示', () => {
-  it('分组维度只读公示（不给自由输入——后端不校验维度合法性）', async () => {
+describe('快照浏览页：forget 保留档位 0 值口径', () => {
+  /** 任务 keep_* 全为 0（DDL 缺省）时回填 0 → 界面必须当作「未启用」，
+   *  不得让预览按钮亮起来：E21 请求 schema 是 ge=1，0 提交上去必 422。 */
+  it('选中任务后回填 0：不填入 0，且预览按钮保持禁用', async () => {
     mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_last: 0, keep_daily: 0, keep_weekly: 0, keep_monthly: 7 })
     const w = mountPage()
     await flushPromises()
-    expect(w.text()).toContain('分组维度：host, paths, tags')
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+
+    // 输入框顺序：[keep_last, daily, weekly, monthly]
+    // 0 被转成 null → 输入框留空（不是 0）；未回填的 keep_last 也是 null
+    const nums = w.findAllComponents(NInputNumber)
+    expect(nums[0].props('value')).toBeNull() // keep_last（任务里没有此档）
+    expect(nums[1].props('value')).toBeNull() // daily=0 → null
+    expect(nums[2].props('value')).toBeNull() // weekly=0 → null
+    // 只有 monthly=7 生效 → 按钮可点
+    expect(nums[3].props('value')).toBe(7)
+    expect(buttonByText(w, '预览将被清理的快照')).toBeTruthy()
+    w.unmount()
+  })
+
+  it('手输 0：请求体里不带该档（不把 0 发给 ge=1 的后端）', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_daily: 0, keep_weekly: 0, keep_monthly: 0 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    // 先让回填跑完，否则下面手输的值会被异步回填覆盖（回填是 watch + await 详情）
+    await flushPromises()
+    // 用户手动把日档塞成 0（脏值：清空会回 null，这里模拟 0 漏进 payload 的路径），
+    // 周档填 1 让按钮可点。顺序：[keep_last, daily, weekly, monthly]
+    w.findAllComponents(NInputNumber)[1].vm.$emit('update:value', 0) // daily
+    w.findAllComponents(NInputNumber)[2].vm.$emit('update:value', 1) // weekly
+    await flushPromises()
+
+    const btn = buttonByText(w, '预览将被清理的快照')
+    await btn!.find('button').trigger('click')
+    await flushPromises()
+
+    expect(previewForget).toHaveBeenCalled()
+    const payload = vi.mocked(previewForget).mock.calls[0]![0] as Record<string, unknown>
+    // 0 必须被吃掉（不发），有效值照常发
+    expect(payload.keep_last).toBeUndefined()
+    expect(payload.keep_daily).toBeUndefined()
+    expect(payload.keep_weekly).toBe(1)
+    expect(payload.keep_monthly).toBeUndefined()
+    w.unmount()
+  })
+
+  it('填「保留最近 N 个」即 keep_last：进请求体，且单独一档就能过门', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_last: 0, keep_daily: 0, keep_weekly: 0, keep_monthly: 0 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+    // 输入框顺序：[keep_last, daily, weekly, monthly]——只填最后一档
+    w.findAllComponents(NInputNumber)[0].vm.$emit('update:value', 1)
+    await flushPromises()
+
+    const btn = buttonByText(w, '预览将被清理的快照')
+    await btn!.find('button').trigger('click')
+    await flushPromises()
+
+    expect(previewForget).toHaveBeenCalled()
+    const payload = vi.mocked(previewForget).mock.calls[0]![0] as Record<string, unknown>
+    expect(payload.keep_last).toBe(1)
+    // 其余档位未填 → 不该出现在请求体（否则会误伤保留范围）
+    expect(payload.keep_daily).toBeUndefined()
+    expect(payload.keep_weekly).toBeUndefined()
+    expect(payload.keep_monthly).toBeUndefined()
+    w.unmount()
+  })
+
+  it('任务三档全 0：预览按钮禁用（不发请求，也就不会 422）', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_daily: 0, keep_weekly: 0, keep_monthly: 0 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+
+    const btn = buttonByText(w, '预览将被清理的快照')
+    if (btn) {
+      await btn.find('button').trigger('click')
+      await flushPromises()
+    }
+    expect(previewForget).not.toHaveBeenCalled()
+    w.unmount()
+  })
+})
+
+describe('快照浏览页：forget 分组维度', () => {
+  /** restic 按**组**应用 keep-*，默认分组下 keep_last=1 是「每组留 1 个」而不是
+   *  「整个仓库留 1 个」。三种取值里只有空串是「不分组」，且空串必须原样进请求体
+   *  ——payload 若用 `||` 兜底就会把它吞掉，能力静默失效。 */
+  it('默认送 host,paths,tags，并给出三档合法取值（不给自由输入）', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_last: 1 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+    const btn = buttonByText(w, '预览将被清理的快照')
+    await btn!.find('button').trigger('click')
+    await flushPromises()
+
+    expect(previewForget).toHaveBeenCalled()
+    const payload = vi.mocked(previewForget).mock.calls[0]![0] as Record<string, unknown>
+    expect(payload.group_by).toBe('host,paths,tags')
+
+    // 三档下拉（索引 3：0/1 是筛选器、2 是标签）只有合法取值，无自由输入
+    const groupSelect = w.findAllComponents(NSelect)[3]
+    const values = (groupSelect.props('options') as Array<{ value: string }>).map((o) => o.value)
+    expect(values).toEqual(['host,paths,tags', 'paths', ''])
+    w.unmount()
+  })
+
+  it('选「不分组」：空串必须进请求体（不能被 || 吞成默认值）', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_last: 1 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+    w.findAllComponents(NSelect)[3].vm.$emit('update:value', '')
+    await flushPromises()
+
+    const btn = buttonByText(w, '预览将被清理的快照')
+    await btn!.find('button').trigger('click')
+    await flushPromises()
+
+    expect(previewForget).toHaveBeenCalled()
+    const payload = vi.mocked(previewForget).mock.calls[0]![0] as Record<string, unknown>
+    expect(payload.group_by).toBe('')
+    w.unmount()
+  })
+
+  it('选「按路径」：group_by 送 paths', async () => {
+    mocks.snapshots = { items: [snapshot()], total: 1 }
+    mocks.tasks = [{ id: 1, name: 't', tag: 'task-1' }]
+    stubTaskDetail({ keep_last: 1 })
+    vi.mocked(previewForget).mockClear()
+    const w = mountPage()
+    await flushPromises()
+
+    w.findAllComponents(NSelect)[2].vm.$emit('update:value', 'task-1')
+    await flushPromises()
+    w.findAllComponents(NSelect)[3].vm.$emit('update:value', 'paths')
+    await flushPromises()
+
+    const btn = buttonByText(w, '预览将被清理的快照')
+    await btn!.find('button').trigger('click')
+    await flushPromises()
+
+    const payload = vi.mocked(previewForget).mock.calls[0]![0] as Record<string, unknown>
+    expect(payload.group_by).toBe('paths')
     w.unmount()
   })
 })

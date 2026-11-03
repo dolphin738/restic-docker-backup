@@ -400,12 +400,19 @@ const errorText = computed(() => {
 // ---------------------------------------------------------------- E21 forget 预览-确认流（R-016）
 
 const forgetTag = ref<string | null>(null)
+/** 「保留最近 N 个」——restic --keep-last，**不受日/周/月分桶影响**的全局计数档。
+ *  删到只剩 N 个只能用这一档：keep_daily=N 是「每天各留 N 个」，语义完全不同。 */
+const forgetKeepLast = ref<number | null>(null)
 const forgetKeepDaily = ref<number | null>(null)
 const forgetKeepWeekly = ref<number | null>(null)
 const forgetKeepMonthly = ref<number | null>(null)
 /** A2 时间线档（restic duration，如 30d）与标签档（--keep-tag，逗号分隔）；空 = 未启用。 */
 const forgetKeepWithin = ref('')
 const forgetKeepTagsText = ref('')
+/** 分组维度（restic --group-by）：决定保留规则的作用范围——restic 按**组**分别
+ *  应用 keep-*，不是按仓库。想「整个仓库只留 N 个」必须选「不分组」（空串），
+ *  否则每个分组各自留 N 个（默认分组下 3 个主机×路径组合 → keep_last=1 只剩到 3 个）。 */
+const forgetGroupBy = ref('host,paths,tags')
 const forgetPrune = ref(true)
 const forgetPreview = ref<ForgetPreviewResponse | null>(null)
 const forgetShow = ref(false)
@@ -421,9 +428,13 @@ watch(forgetTag, async (tag) => {
   }
   try {
     const task = await getBackupTask(card.id)
-    forgetKeepDaily.value = task.keep_daily
-    forgetKeepWeekly.value = task.keep_weekly
-    forgetKeepMonthly.value = task.keep_monthly
+    // 0 → null：任务里 keep_* 的 0 表示**该档未启用**（后端 `_as_keep_rule` 同口径，
+    // 且 E21 请求 schema 是 `ge=1`）。原样把 0 填进输入框的话，界面上「有值」、
+    // 后端却当非法参数 → 用户只是选了 tag、什么都没改，一点预览就 422。
+    forgetKeepLast.value = task.keep_last || null
+    forgetKeepDaily.value = task.keep_daily || null
+    forgetKeepWeekly.value = task.keep_weekly || null
+    forgetKeepMonthly.value = task.keep_monthly || null
     forgetKeepWithin.value = task.keep_within
     forgetKeepTagsText.value = task.keep_tags.join(', ')
   } catch {
@@ -431,16 +442,29 @@ watch(forgetTag, async (tag) => {
   }
 })
 
-/** G3 三门并列（A2）：计数档任一非空，或时长档非空，或标签档非空 → 可预览。 */
+/** G3 三门并列（A2）：计数档任一 > 0，或时长档非空，或标签档非空 → 可预览。
+ *
+ * 计数档用 **> 0** 而非 `!== null`：E21 请求 schema 是 `ge=1`，0 会被后端 422。
+ * 界面必须在同一口径上拦，否则 0 能让按钮亮起来、一点就报错。 */
 const forgetReady = computed(
   () =>
     forgetTag.value !== null &&
-    (forgetKeepDaily.value !== null ||
-      forgetKeepWeekly.value !== null ||
-      forgetKeepMonthly.value !== null ||
+    ((forgetKeepLast.value ?? 0) > 0 ||
+      (forgetKeepDaily.value ?? 0) > 0 ||
+      (forgetKeepWeekly.value ?? 0) > 0 ||
+      (forgetKeepMonthly.value ?? 0) > 0 ||
       forgetKeepWithin.value.trim() !== '' ||
       forgetKeepTagsText.value.trim() !== ''),
 )
+
+/** 分组维度三档：**只给已知合法取值**——后端拼装层只防注入（`_assert_safe_value`
+ *  挡 '-'/NUL/换行）、**不校验维度合法性**，自由填非法维度会迟到 restic 500。
+ *  空串是合法值（restic `--group-by ""` = 不分组，全部快照同组）。 */
+const forgetGroupByOptions = computed(() => [
+  { label: t('snapshot.forget.groupByDefault'), value: 'host,paths,tags' },
+  { label: t('snapshot.forget.groupByPaths'), value: 'paths' },
+  { label: t('snapshot.forget.groupByNone'), value: '' },
+])
 
 const removeColumns = computed<DataTableColumns<ForgetPreviewSnapshot>>(() => [
   { title: t('snap.id'), key: 'id', width: 110, render: (row) => row.id.slice(0, 8) },
@@ -456,9 +480,14 @@ async function runForgetPreview(): Promise<void> {
   try {
     forgetPreview.value = await previewForget({
       tag: forgetTag.value,
-      keep_daily: forgetKeepDaily.value ?? undefined,
-      keep_weekly: forgetKeepWeekly.value ?? undefined,
-      keep_monthly: forgetKeepMonthly.value ?? undefined,
+      // 计数档用 `||` 而非 `??`：0 表示**该档未启用**（后端 `_as_keep_rule` 同口径、
+      // E21 schema 是 `ge=1`）。`??` 只挡 null/undefined，手输或回填的 0 会原样发出 → 422。
+      keep_last: forgetKeepLast.value || undefined,
+      keep_daily: forgetKeepDaily.value || undefined,
+      keep_weekly: forgetKeepWeekly.value || undefined,
+      keep_monthly: forgetKeepMonthly.value || undefined,
+      // 分组维度：原样传（含空串——空串是「不分组」的合法取值，不能用 || 吞掉）
+      group_by: forgetGroupBy.value,
       // A2：时长档原样传（服务端校验 duration 形态）；标签档逗号分隔文本 → 数组
       keep_within: forgetKeepWithin.value.trim() || undefined,
       keep_tags: forgetKeepTagsText.value
@@ -700,6 +729,22 @@ async function applyTag(): Promise<void> {
             class="snapshots__forget-tag"
             :placeholder="t('snapshot.forget.tagPlaceholder')"
           />
+          <!-- 分组维度：restic 按**组**应用 keep-*，不是按仓库。要「整个仓库只留 N 个」
+               必须选「不分组」；默认分组下每个 host×paths×tags 组合各留 N 个。 -->
+          <n-select
+            v-model:value="forgetGroupBy"
+            :options="forgetGroupByOptions"
+            size="small"
+            class="snapshots__forget-group"
+            :aria-label="t('snapshot.forget.groupByLabel')"
+          />
+          <n-input-number
+            v-model:value="forgetKeepLast"
+            size="small"
+            :min="0"
+            class="snapshots__forget-num"
+            :placeholder="t('snapshot.forget.keepLast')"
+          />
           <n-input-number
             v-model:value="forgetKeepDaily"
             size="small"
@@ -760,10 +805,10 @@ async function applyTag(): Promise<void> {
         <n-text v-if="!forgetReady" depth="3" class="snapshots__forget-note">
           {{ t('snapshot.forget.needKeep') }}
         </n-text>
-        <!-- 分组维度只读公示：后端 group_by 恒取 restic 默认（任务表单亦无该控件），
-             且拼装层只防注入、不校验维度合法性 → 不给自由输入（非法值会迟到 500）。 -->
+        <!-- 分组维度口径说明：三档下拉只给合法取值（拼装层只防注入、不校验维度
+             合法性，自由输入非法维度会迟到 restic 500）。 -->
         <n-text depth="3" class="snapshots__forget-note">
-          {{ t('snapshot.forget.groupBy') }}
+          {{ t('snapshot.forget.groupByHint') }}
         </n-text>
       </n-space>
     </n-card>
@@ -996,6 +1041,11 @@ async function applyTag(): Promise<void> {
 
 .snapshots__forget-num {
   width: 150px;
+}
+
+/* 分组档位标签较长（「默认分组（主机 + 路径 + 标签）」），150px 会截断成「主机...」 */
+.snapshots__forget-group {
+  width: 240px;
 }
 
 .snapshots__forget-note {

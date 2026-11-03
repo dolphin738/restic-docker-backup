@@ -1176,6 +1176,7 @@ export default {
       note: 'R-016 preview-confirm flow',
       desc: 'Pruning is the only way to delete snapshots: preview what would be removed under retention rules first, then execute only after the three-step confirmation. Picking a task tag prefills its retention tiers.',
       tagPlaceholder: 'Pick a tag to prune',
+      keepLast: 'Keep last N',
       keepDaily: 'Keep daily snapshots',
       keepWeekly: 'Keep weekly snapshots',
       keepMonthly: 'Keep monthly snapshots',
@@ -1187,7 +1188,12 @@ export default {
       preview: 'Preview what would be pruned',
       previewHint:
         'Runs restic forget --dry-run (read-only) and lists the snapshots that would be removed (no deletion happens).',
-      groupBy: 'Grouping: host, paths, tags (restic default, not editable)',
+      groupByLabel: 'Grouping',
+      groupByDefault: 'Default (host/paths/tags)',
+      groupByPaths: 'Group by paths',
+      groupByNone: 'No grouping (whole repo)',
+      groupByHint:
+        'Retention rules apply per group, not per repository: with default grouping each host + paths + tags combination keeps N snapshots of its own. Choose "No grouping" to keep N across the whole repository.',
       needKeep:
         'Pick a tag and fill at least one retention rule (count tier / duration tier / tag tier; empty = disabled)',
       gateTitle: 'Confirm snapshot pruning',
