@@ -171,6 +171,12 @@ for action in AUDIT_RCLONE_CONFIG_APPEND AUDIT_RCLONE_CONFIG_EDIT AUDIT_RCLONE_C
   fi
 done
 
+# 反向锚点（v1.16，删除依赖保护 P0 补登）：repo.repoint 自 P0 起即已埋点，
+# 但 S6 枚举此前漏登（规范 v1.15 的 23 项未含它）——本锚点防「补登后又悬空」。
+if ! grep -q "^AUDIT_REPO_REPOINT = " backend/app/constants.py 2>/dev/null; then
+  violation "S6 缺少审计动作常量 AUDIT_REPO_REPOINT（repo.repoint 埋点悬空）"
+fi
+
 # 反向锚点（v1.15，删除保护方案 P2）：危险清单 20 → 23 的三个新增动作常量必须真实存在，
 # 且归档生命周期用到的三个保留期键也必须登记（防「规范写了、代码里悬空」）。
 for action in AUDIT_REPO_PURGE AUDIT_REPO_ID_RELEASE AUDIT_RCLONE_CONFIG_RESTORE; do
