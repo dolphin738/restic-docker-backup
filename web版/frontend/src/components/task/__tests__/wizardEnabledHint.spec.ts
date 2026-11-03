@@ -54,7 +54,6 @@ vi.mock('@/api/backupTasks', () => ({
     one_file_system: false,
     compression: 'auto',
     check_sample_ratio: 0,
-    monthly_full_day: 1,
     prune_interval_days: 30,
     limit_up: 0,
     limit_down: 0,

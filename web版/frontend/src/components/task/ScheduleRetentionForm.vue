@@ -10,8 +10,15 @@
  *
  * 保留（沿用）：keep_* 计数档 + A2 时间线档 keep_within*（restic duration）+ keep_tags（--keep-tag）。
  * 高级字段（group_by / one_file_system / compression / check_sample_ratio /
- * monthly_full_day / prune_interval_days）不在向导 UI 暴露：新建取服务端缺省，
+ * prune_interval_days）不在向导 UI 暴露：新建取服务端缺省，
  * 编辑时由 TaskWizard 从 E34b 原样往返，避免第二套校验入口。
+ *
+ * `prune_interval_days` 是**自动 forget 的间隔**（`scheduler._due_for_prune`，0 = 关闭自动清理），
+ * 不是保留档位本身——保留档位（keep_* / keep_within* / keep_tags）改的是"留哪些"，
+ * 它改的是"多久清一次"。UI 无入口，只能用 API 改。
+ *
+ * （曾有同族字段 `monthly_full_day`，任务级零消费，已由迁移 0010 删除；
+ *  月度全量 check 的日期只读全局 `behavior.monthly_full_day`，在系统设置「行为开关」。）
  *
  * 后端零改动：DB 存的还是 cron 字符串，调度语义/APScheduler/cron 星期修正护栏全复用。
  */

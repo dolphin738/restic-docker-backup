@@ -11,8 +11,7 @@ policies 遗留面（路由 E08–E11 / PolicyRepo / 测试）一并移除，该
   标准 crontab 语义换算后交给 APScheduler——不直接用 ``from_crontab``，后者在 3.x
   有星期偏移一天的历史缺陷，issue #286；Q4 静默防线：写入侧试构造，失败即 422
   并透出 APScheduler 原始报错文本）；
-- keep_* 非负、compression 白名单、one_file_system 模式缺省、check_sample_ratio
-  [0,1]、monthly_full_day 1~31；
+- keep_* 非负、compression 白名单、one_file_system 模式缺省、check_sample_ratio [0,1]；
 - A2 时间线保留 keep_within*（restic duration 形态，复用 restic 层校验器）与
   keep_tags（去空白/去空/保序去重 + flag 注入写侧 fail-fast）。
 
@@ -97,7 +96,6 @@ class TaskService:
             "one_file_system": task.one_file_system,
             "compression": task.compression,
             "check_sample_ratio": task.check_sample_ratio,
-            "monthly_full_day": task.monthly_full_day,
             "prune_interval_days": task.prune_interval_days,
             "limit_up": task.limit_up_kibps,
             "limit_down": task.limit_down_kibps,
@@ -174,7 +172,6 @@ class TaskService:
         values["one_file_system"] = self._normalize_one_file_system(payload.get("one_file_system"))
         values["compression"] = self._normalize_compression(payload.get("compression"))
         values["check_sample_ratio"] = _ratio(payload.get("check_sample_ratio"))
-        values["monthly_full_day"] = _day_of_month(payload.get("monthly_full_day"))
         values["prune_interval_days"] = _non_negative_int(payload.get("prune_interval_days", 7), "prune_interval_days")
         values["limit_up_kibps"] = _non_negative_int(payload.get("limit_up", 0), "limit_up")
         values["limit_down_kibps"] = _non_negative_int(payload.get("limit_down", 0), "limit_down")
@@ -431,9 +428,3 @@ def _ratio(value: Any) -> float:
     return number
 
 
-def _day_of_month(value: Any) -> int:
-    """校验月度全量校验日为 1~31。"""
-    number = _non_negative_int(value, "monthly_full_day")
-    if not 1 <= number <= 31:
-        raise ValidationError("monthly_full_day 须在 1~31 之间", data={"field": "monthly_full_day"})
-    return number

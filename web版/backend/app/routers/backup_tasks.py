@@ -573,8 +573,9 @@ async def _to_card(
         status = CARD_NEVER_RUN
 
     next_run_at = scheduler.next_fire_time(task) if scheduler is not None else None
-    # N3 裁决：prune 到期只判定 + 卡片提示，调度器不自动提交 forget。
-    # 设计 §2.1 数据装配明示由路由直接调用 ``_due_for_prune`` 判定（本处为唯一调用点）。
+    # 卡片上的 prune_due 只是**到期提示**，本处不自提交 forget：真正的自动裁剪由
+    # SchedulerService.maybe_auto_forget 在 backup 成功回调里提交（N3 裁决 2026-10-14 开放自动）；
+    # 设计 §2.1 数据装配明示由路由直接调用 _due_for_prune 判定（与自动路径共用同一判定）。
     prune_due = await scheduler._due_for_prune(task) if scheduler is not None else False
 
     return TaskCardOut(

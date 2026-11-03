@@ -109,7 +109,6 @@ interface TaskFormState extends ScheduleRetentionValue {
   one_file_system: boolean
   compression: string
   check_sample_ratio: number
-  monthly_full_day: number
   prune_interval_days: number
   /** 限速（owner 2026-10-22 任务级裁决）：任务级配置、创建时生效——值随任务保存，
    *  下次备份进程启动时读入 restic argv（--limit-upload/--limit-download），
@@ -149,7 +148,6 @@ function defaultForm(): TaskFormState {
     one_file_system: false,
     compression: 'auto',
     check_sample_ratio: 0.02,
-    monthly_full_day: 1,
     prune_interval_days: 7,
     limit_up: 0,
     limit_down: 0,
@@ -336,7 +334,6 @@ watch(
     form.one_file_system = task.one_file_system
     form.compression = task.compression
     form.check_sample_ratio = task.check_sample_ratio
-    form.monthly_full_day = task.monthly_full_day
     form.prune_interval_days = task.prune_interval_days
     form.limit_up = task.limit_up
     form.limit_down = task.limit_down
@@ -817,7 +814,6 @@ function buildPayload(): TaskUpsertRequest {
     one_file_system: form.one_file_system,
     compression: form.compression,
     check_sample_ratio: form.check_sample_ratio,
-    monthly_full_day: form.monthly_full_day,
     prune_interval_days: form.prune_interval_days,
     // B5（owner 2026-10-23 裁决）：n-input-number 支持清空 → 值为 null，直接提交会 422
     // （后端 TaskUpsertRequest 的 limit_up/limit_down 是 int 非 Optional）→ 此处兜底 0。

@@ -4681,11 +4681,6 @@
             "title": "Mirror Repo Ids",
             "type": "array"
           },
-          "monthly_full_day": {
-            "default": 1,
-            "title": "Monthly Full Day",
-            "type": "integer"
-          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -4876,11 +4871,6 @@
             "maxItems": 3,
             "title": "Mirror Repo Ids",
             "type": "array"
-          },
-          "monthly_full_day": {
-            "default": 1,
-            "title": "Monthly Full Day",
-            "type": "integer"
           },
           "name": {
             "description": "任务名称（必填非空）",

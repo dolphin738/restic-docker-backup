@@ -29,7 +29,7 @@ _COLUMNS = (
     "keep_within", "keep_within_hourly", "keep_within_daily", "keep_within_weekly",
     "keep_within_monthly", "keep_within_yearly", "keep_tags",
     "group_by", "cron", "one_file_system", "compression", "check_sample_ratio",
-    "monthly_full_day", "prune_interval_days", "limit_up_kibps", "limit_down_kibps",
+    "prune_interval_days", "limit_up_kibps", "limit_down_kibps",
     "dry_run_pending", "last_run_at",
     # C3 任务级失败重试（0 = 不重试）
     "retry_count",
@@ -70,7 +70,6 @@ _SEED_DEFAULTS: dict[str, Any] = {
     "one_file_system": 0,
     "compression": "auto",
     "check_sample_ratio": 0.02,
-    "monthly_full_day": 1,
     "prune_interval_days": 7,
     "limit_up_kibps": 0,
     "limit_down_kibps": 0,
@@ -114,7 +113,6 @@ class Task:
     one_file_system: bool = False
     compression: str = "auto"
     check_sample_ratio: float = 0.02
-    monthly_full_day: int = 1
     prune_interval_days: int = 7
     limit_up_kibps: int = 0
     limit_down_kibps: int = 0
@@ -359,7 +357,6 @@ def _to_task(row: Any) -> Task:
         one_file_system=bool(int(row["one_file_system"] or 0)),
         compression=str(row["compression"] or "auto"),
         check_sample_ratio=float(row["check_sample_ratio"] or 0.0),
-        monthly_full_day=int(row["monthly_full_day"] or 1),
         # 显式 is None 判断而非 `or 7`：Python 里 `0 or 7 == 7`，会把用户显式
         # 保存的 0（语义=关闭 prune 到期提示）吞成 7（回归护栏见
         # tests/test_repos.py）。DDL 为 NOT NULL DEFAULT 7，None 仅防御。

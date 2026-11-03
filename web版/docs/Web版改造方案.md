@@ -332,8 +332,7 @@ UI 联动表单按后端类型逐个交付，避免 P1 范围失控）：
 | one_file_system                                                                 | bool  | `--one-file-system`（sources 模式缺省 true，host 模式缺省 false，§3.2） |
 | compression                                                                     | text  | 压缩开关（auto/off/max）         |
 | check_sample_ratio                                                              | float | 备份后抽样校验比例                  |
-| monthly_full_day                                                                | int   | 月度全量校验日（--read-data）       |
-| prune_interval_days                                                             | int   | prune 独立间隔（与备份调度分离）        |
+| prune_interval_days                                                             | int   | 自动 forget 间隔（与备份调度分离；0=关闭自动清理，UI 无入口） |
 | limit_up / limit_down                                                           | int   | 备份传输限速 KiB/s（restic `--limit-upload/--limit-download`，0=不限；Q5 裁决 P2 加入，进程级 nice/ionice 作 IO 优先级补充） |
 
 **任务状态机（v2.3）**：

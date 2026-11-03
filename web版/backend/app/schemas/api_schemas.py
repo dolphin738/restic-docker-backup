@@ -468,7 +468,6 @@ class TaskOut(_Base):
     one_file_system: bool = False
     compression: str = "auto"
     check_sample_ratio: float = 0.02
-    monthly_full_day: int = 1
     prune_interval_days: int = 7
     limit_up: int = 0      # KiB/s，0=不限（DDL 列 limit_up_kibps）
     limit_down: int = 0    # KiB/s，0=不限（DDL 列 limit_down_kibps）
@@ -554,7 +553,6 @@ class TaskUpsertRequest(_Base):
     one_file_system: bool | None = None   # None=按模式取缺省（sources 模式缺省 true）
     compression: str = "auto"
     check_sample_ratio: float = 0.02
-    monthly_full_day: int = 1
     prune_interval_days: int = 7
     limit_up: int = 0
     limit_down: int = 0

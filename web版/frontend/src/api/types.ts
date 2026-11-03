@@ -503,7 +503,6 @@ export interface PolicyOut {
   one_file_system: boolean
   compression: string
   check_sample_ratio: number
-  monthly_full_day: number
   prune_interval_days: number
   limit_up: number
   limit_down: number
@@ -530,7 +529,6 @@ export interface PolicyUpsertRequest {
   one_file_system: boolean | null
   compression: string
   check_sample_ratio: number
-  monthly_full_day: number
   prune_interval_days: number
   limit_up: number
   limit_down: number
@@ -613,7 +611,6 @@ export interface BackupTask {
   one_file_system: boolean
   compression: string
   check_sample_ratio: number
-  monthly_full_day: number
   prune_interval_days: number
   limit_up: number
   limit_down: number
@@ -657,7 +654,6 @@ export interface TaskUpsertRequest {
   one_file_system: boolean | null
   compression: string
   check_sample_ratio: number
-  monthly_full_day: number
   prune_interval_days: number
   limit_up: number
   limit_down: number
