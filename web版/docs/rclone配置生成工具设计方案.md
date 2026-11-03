@@ -1,10 +1,11 @@
 # rclone 配置生成工具设计方案
 
-> 版本：v1.20（2026-10-29）
+> 版本：v1.21（2026-11-04）
 > 层级：方案层——rclone 远端配置管理（查询/生成/编辑/删除，Crypt / WebDAV）的唯一方案源
 > 关联：`app/services/rclone.py`（只读探测，Q17 档位）、架构设计文档 R-022（rclone 生命周期）、代码审查规范 §3.1（S6 危险操作清单）、部署指南（rclone.conf 挂载形态变更）
 
 > **修订记录**：
+> - v1.21（2026-11-04）：**代码 → 文档回填（owner 指令「rclone 文档做回填」）**。**触发原因**：核查发现**代码已超出文档**——`routers/repos_rclone.py` 实际注册 **10 个端点**，而 §6 契约表只记 4 个（E48–E51），6 个端点无任何文档依据。**本轮回填**：①§6 契约表由 4 行扩为 **10 行**，补 E45 `/remotes` 与后两轮落地的 6 个扩展端点（`/usage`、`/repoint`、`/archives` ×3），逐行标审计动作与只读性；②新增 **§5.4b 删除依赖保护**（占用明细 + 批量改指向：三道前置校验、env 覆盖拒绝参与 409 `ENV_OVERRIDDEN`、只换 remote 段保留 path、与删除阻断共用匹配口径避免「提示没人用、删时 409」）；③新增 **§5.4c 删除即可恢复**（D3 自动归档：删除时归档含混淆态凭据的完整段，保留期 365 天，一键写回、只回键名永不回值）。**遗留（需 owner 裁决）**：`repo.repoint` 在代码中已埋点（`constants.py:207`），但《代码审查规范》§3.1 S6 的 23 项枚举**未收录**该动作——S6 属红线，AI 不自行修改，已在交付报告中列出。
 > - v1.20（2026-10-29）：**仓库页 rclone 字段联动 + 交互收敛（owner 2026-10-28/29 指令）**。①**远端名**改为「输入框 + 左侧『选择远端 ▾』」：`n-dropdown` 菜单列出 `/api/rclone/remotes` 探测到的段名，点一项回填输入框，输入框保留手输（与目录树快捷路径「面板选→回填」同一心智）；**删除 rclone 预设快捷卡**（OneDrive / Google Drive / S3 / 其它）及其 12 个文案键（`repo.dest.rclone*`）。②**远端路径补必填**（`ReqLabel` 星标 + 保存前校验）——后端本就强制 `rclone:<段名>:<路径>` 非空，此前只是把 422 推迟到保存时。③**实际落盘路径提示**：远端名 + 路径都填好后显示推导结果（crypt 段按其底层 `remote` 拼接：`remote = /home/222` + 路径 `restic` → `/home/222/restic`；非 crypt 段按 `remote:path` 示意；未探测到标 unknown），推导抽为纯函数 `utils/repoUrl.ts:resolveRcloneTarget`（7 例单测）。④**同远端占用提示**：该远端已被其它仓库引用时提示，路径相同额外警告「会互相覆盖」。⑤**编辑仓库卡头重排**：仓库 ID 移到标题「编辑仓库」右侧，右上角改放「管理远端」按钮（仅 rclone 类型）。⑥设置页面板的形态收敛见 v1.19（单一「密码形态」+ 明文段自愈 + 不提供导出、只给找回命令示例）。测试：前端全量 **514 passed**（repoUrl +7 例 / 面板 22 例 / 两个整页 44 例），typecheck + build 绿，红线 19 项绿。
 > - v1.19（2026-10-28）：**落盘形态收敛为「恒为混淆」+ 取消明文存储（裁决 17，owner 三问）**。①**真机取证推翻了「存储形态」这个设计本身**（WSL rclone v1.60.1）：conf 里写明文密码对 **crypt 与 webdav 一律不可用**（`failed to decrypt password: input too short when revealing password - is it obscured?`）——明文落盘不是"安全性差一点"，是把该段写成坏配置；把已混淆值再混淆一次更糟：**不报错**，只是换了一套加密命名空间（实测同一目录列出为空，数据等于"消失"）。②**收敛**：删除「目标存储形态」概念与「明文存储」能力，`store_form` / `declare_form` 从请求体与 service 入参移除（旧客户端多传会被 pydantic 忽略，等价"按明文提交、落盘混淆"，不会写出坏配置）；唯一控件是**密码形态**（`value_obscured`：明文 / 已混淆串），两条分支落盘结果都是混淆，**形态记录因此恒为 True、不再可能失真**（v1.18 那条 503 死锁的根因）。③**明文段自愈**：历史明文段（早期版本或宿主机手写）在编辑态显示「明文（rclone 不可用）」徽标 + 「修正为混淆」按钮，**不填密码**即可就地 `--obscure`；转换前用 `rclone reveal` 做一致性探测，**解得开即中止**（422，防二次混淆）。④**不提供导出**（owner 裁决：S3「凭据零回显」不开口子）：面板只给一个「如何找回密码」入口，弹出**宿主机自助命令示例**（`rclone config dump` + `rclone reveal <混淆值>`）——纯静态文本、不含任何凭据，本工具**不执行命令、不读 conf、不返回明文**。原拟的 `POST …/reveal` 端点与 `rclone.reveal` 审计项**未落地**（删除）。⑤面板重构：删「存储形态」开关 + 副复选框 + 形态声明，改单一「密码形态」下拉 + 落盘形态只读徽标。测试：`test_rclone_config.py` + `test_api/test_rclone_config_api.py` 共 **100 例**全绿（新增：明文段自愈 / 探测中止 / 误填混淆值拦截），面板 **21 例**（含「找回密码只给命令示例、无导出调用」断言）；`rclone-switch-probe` 场景 B（形态声明）随机制删除退役。
 > - v1.18（2026-10-27）：**存储形态语义统一 + 形态记录迁 DB（裁决 16，owner 两问）**。①**owner 指出混淆开关语义反了**（实码取证：新建态开关=「提交值是否已混淆」→ 关闭走 `--obscure` 落盘混淆；编辑态同一个布尔被当成「已存形态」→ 打开=混淆，**同一件事在两种模式下对应相反的开关位**）。裁决 16：**开关 = 目标存储形态**（开=混淆 / 关=明文），新建与编辑**同一语义**；提交侧「我填入的已是 rclone obscure 产物」拆为**独立副复选框**（`value_obscured`，与明文目标形态互斥 → 矛盾组合后端 422）。后端请求体由 `already_obscured: bool` 改为 `store_form: 'obscured'|'plain'` + `value_obscured: bool`，flag 映射四象限：混淆+明文→`--obscure`、混淆+混淆产物→`--no-obscure`、明文+明文→`--no-obscure`、明文+混淆产物→**422**；转换路径改用 `_target_flag`（目标=混淆→`--obscure`，目标=明文→`--no-obscure`）。②**形态记录迁数据库**（owner 第二问）：新增迁移 `0008_rclone_credential_forms.sql`（表 `rclone_credential_forms`：remote / field / obscured / value_sha256 / updated_at，**只存形态与 conf 现值哈希，不存凭据**）+ 仓储 `RcloneFormRepo`；服务层改为依赖形态存储抽象 `FormStore`（生产=DB 仓储，旧 sidecar 文件实现降级为一次性导入源与单测后端）；**删除配置段 → 同事务清该段记录**，宿主机外部删段 → 孤儿记录由查询时惰性对齐清理；升级时旧 `<data_dir>/rclone_meta.json` **一次性导入 DB 后删除文件**（`import_legacy_sidecar`，重复启动不重复导入）。③新增「明文存储」能力（旧实现只能存混淆形态）。测试：后端 72 → **82 例**（flag 四象限 / 矛盾 422 / 明文存储与形态记录 / 目标明文转换 / DB 落表与清账 / 孤儿清理 / 旧文件导入），面板 13 → **16 例**（默认 store_form=混淆 / 开关关到明文 / 副复选框强制拉回混淆 / 编辑态初值=已存形态）；真机探针 `.e2e/rclone-switch-probe.cjs` 双场景 PASS（新请求体 `store_form/value_obscured/declare_form`）。
@@ -220,6 +221,33 @@ filename_encoding = base64
 - 审计：`rclone.config_delete`（detail：remote 名、type——type 供审计追溯被删段性质）；
 - 前端确认门：n-popconfirm 二次确认（段名出现在确认文案中）；**OAuth 段加重提示**（段名 + 「该网盘配置删除后需在宿主机重新授权才能再用」）。
 
+### 5.4b 删除依赖保护：占用查询与批量改指向（v1.21 补登，2026-11-04）
+
+**背景**：删一个 remote 之前必须先知道「谁在用它」，否则删完仓库立刻不可达；而「有仓库引用就一律 409」又会让用户卡死。故拆成两件互补的事——**先查占用，再受控改指向**。
+
+**① 占用明细 `GET /api/rclone/config/{remote_name}/usage`**（只读，零副作用）
+
+- 回 `{remote, repos[], dependent_remotes[], crypt}`：`repos` = 引用该 remote 的仓库（`repos_repo.list_rclone_backed()` 里按 `_rclone_remote_of(url) == remote_name` 过滤）；`dependent_remotes` = 把它当底层 remote 的 crypt 段（传递依赖，删了 crypt 链就断）。
+- **口径一致性是硬约束**：本端点与 `delete_rclone_config` 的阻断判定**共用同一套匹配口径**（remote 段完整相等）。否则会出现「占用弹窗说没人用、一删却 409」的自相矛盾。
+- 前端用于 rclone 面板「查看占用」弹窗。
+
+**② 批量改指向 `POST /api/rclone/config/{remote_name}/repoint`**
+
+- 请求 `{new_remote}`；把 `rclone:<old>:<path>` 的仓库 url 批量改成 `rclone:<new>:<path>`——**只换 remote 段、保留 path**，不动数据、不动凭据。
+- **语义定位**：这是「想删远端但还有仓库引用」时的正路。新旧两段指向同一后端时，改完快照仍可读，随后即可安全删旧段。
+- **三道前置校验**：① `new_remote` 非空且不等于被替换者（422）；② 目标**必须在册**——不在 `list_configs()` 里就 422（否则改完仓库立刻不可达，比不改更糟）；③ 无任何仓库引用该远端时 422「无需改指向」。
+- **env 覆盖拒绝参与**：`url_source == "env"` 的仓库（仅 default）抛 409 `ENV_OVERRIDDEN`——env 优先级高于 DB，改 DB 无效，必须先改 env。
+- 成功后 `invalidate_repo_status_cache()` + `invalidate_snapshot_catalog()`，审计 `repo.repoint`（detail：`new_remote` + 改动仓库数）。
+
+### 5.4c 删除即可恢复：配置归档（D3，v1.21 补登）
+
+**设计**：`DELETE /api/rclone/config/{name}` 在删除时**自动归档**该段完整内容（含混淆态凭据原值），保留期默认 365 天。于是「误删远端」不再不可逆——这是删除放开的配套安全网（裁决 8「全段可删」的前提）。
+
+- `GET /api/rclone/archives`：清单，回 `{remote, type, deleted_at, used_by_repos, keys}`——**只回键名、永不回值**（S3 延续）。
+- `POST /api/rclone/archives/{name}/restore`：把归档段**原样**写回 conf（`service.restore_section`），成功后删归档记录；同名段已存在 → 409。恢复后该 remote 的仓库立刻可再访问（前提：底层 remote 仍在、crypt 链完整）。审计 `rclone.config_restore`（detail 只含 remote / type / 键数，**不含凭据**）。
+- `DELETE /api/rclone/archives/{name}`：放弃这条后路——**只删归档记录，conf 与其他数据一概不动**；不在册 → 404。
+- 前端：归档区三段 Tab（在用 / 已归档 / 删除依赖），写回按钮带确认门。
+
 ### 5.5 写路径的并发与一致性（v1.2：全交官方实现）
 
 - 全部写操作在 `asyncio.Lock` 内「dump 预检 → CLI 写 → listremotes 验证」，缩小与宿主机编辑/OAuth 回写的交叠窗口；
@@ -228,12 +256,22 @@ filename_encoding = base64
 
 ## 6. API 契约汇总
 
+**实际注册 10 个端点**（`routers/repos_rclone.py`，`register()` 单点注册）。前 4 个是 E48–E51 原始面，其余 6 个是后续「删除依赖保护」与「删除即可恢复」两轮落地的扩展面（v1.21 补登，2026-11-04——此前本表只记 4 个，代码已超出文档）。
+
 | 方法/路径 | 用途 | 审计动作 |
 |---|---|---|
-| `GET /api/rclone/configs` | 查询 conf 段清单（含非凭据参数） | 只读，不埋点 |
-| `POST /api/rclone/config` | 新增配置段 | `rclone.config_append` |
+| `GET /api/rclone/remotes` | **E45** 只读探测：conf 状态 + remote 清单（`rclone listremotes`，60s 缓存；Q17 档位） | 只读，不埋点 |
+| `GET /api/rclone/configs` | 查询 conf 段清单（含非凭据参数；managed 段回显 `display_keys`，凭据一律 `has_*`） | 只读，不埋点 |
+| `POST /api/rclone/config/{remote_name}` | 新增配置段（crypt / webdav；重名 409） | `rclone.config_append` |
 | `PUT /api/rclone/config/{remote_name}` | 编辑配置段 | `rclone.config_edit` |
-| `DELETE /api/rclone/config/{remote_name}` | 删除配置段 | `rclone.config_delete` |
+| `DELETE /api/rclone/config/{remote_name}` | 删除配置段（**全段可删**，含 OAuth 网盘段——删后需宿主机重新授权） | `rclone.config_delete` |
+| `GET /api/rclone/config/{remote_name}/usage` | 远端占用明细：引用该 remote 的仓库 + crypt 传递依赖（`dependent_remotes`）。**与删除阻断判定共用同一匹配口径**（remote 段完整相等），避免「提示说没人用、删时却 409」 | 只读，不埋点 |
+| `POST /api/rclone/config/{remote_name}/repoint` | **批量改指向**：把引用该 remote 的仓库 url 从 `rclone:<old>:<path>` 切到 `rclone:<new>:<path>`（只换 remote 段、保留 path）。删除前的**受控出口**：先改指向（新旧段指向同一后端，快照仍可读）再删旧段。目标必须在册（否则改完立刻不可达）；`url_source=env` 的仓库拒参与（409 `ENV_OVERRIDDEN`，先改 env）；无任何仓库引用时 422 | `repo.repoint` |
+| `GET /api/rclone/archives` | 归档清单：已删除、仍可一键写回的段（**只回键名，永不回值**） | 只读，不埋点 |
+| `POST /api/rclone/archives/{remote_name}/restore` | 把归档段原样写回 conf（含混淆态凭据），成功后删归档记录；同名段已存在 409 | `rclone.config_restore` |
+| `DELETE /api/rclone/archives/{remote_name}` | 删除归档记录（放弃这条后路）——**只删记录，不碰 conf** | 只读清理，不埋点 |
+
+> **删除即可恢复（D3）**：`DELETE /config/{name}` 在删除时**自动归档**该段（含混淆态凭据原值），保留期默认 365 天，故「误删远端」有一键回退路径；`repoint` 则是「还有仓库引用时」的正路，两者互补——前者应对误删，后者应对受控下线。
 
 **创建请求体**（PUT 同形，密码可留空）：
 
@@ -273,7 +311,10 @@ filename_encoding = base64
 
 - **入口**：设置页新增分区 `rclone`（标题「rclone 远端配置」），插入 `SECTIONS` 的 `credential` 之后；沿用「顶部分段 Tab + 单面板 v-if + `#sec-rclone` 深链」既有形态；
 - **面板结构**（`RcloneConfigPanel.vue`），上下两区：
-  1. **已有配置列表**：`GET /api/rclone/configs` 渲染（managed 段展示非凭据参数 + `has_*` 徽标；非 managed 段灰显参数区，只露名字与 type）；每行操作：**编辑**（仅 managed 段显示）/ **删除**（全部段显示，n-popconfirm 确认；OAuth 段文案加重「删除后需重新授权」）；
+  1. **已有配置列表**：`GET /api/rclone/configs` 渲染（managed 段展示非凭据参数 + `has_*` 徽标；非 managed 段灰显参数区，只露名字与 type）；每行操作：**编辑**（仅 managed 段显示）/ **查看占用** / **删除**（全部段显示，n-popconfirm 确认；OAuth 段文案加重「删除后需重新授权」）。**三档按钮宽度已按「编辑 / 查看占用 / 删除」+ 禁用态预留**（`RcloneConfigPanel.vue:274`），避免挤压换行。
+     - **删除保护（v1.21 补登，裁决 1/2）**：有仓库引用时**删除按钮禁用**，原位换成「**查看占用**」入口（`usageRemote` 弹窗）——即「阻断 + 可见」，不是删了才报错。弹窗渲染 §5.4b 的 `GET /usage`：引用仓库清单 + `dependent_remotes`（crypt 传递依赖）+ `crypt` 段信息。
+     - **受控下线**：占用弹窗内可走 `POST /repoint`（§5.4b）把引用仓库批量切到另一个在册远端，切完删除按钮才解禁。前端拦截项与后端一致：目标必须非空、不等于原值、且在册；`ENV_OVERRIDDEN`（409）给出「先改 env」的可操作提示。
+     - **归档区（D3）**：删除后段进归档，面板提供「已归档」视图（`GET /archives`，只显示键名不显示值）+「写回」（`POST /archives/{name}/restore`，带确认门）+「丢弃记录」（`DELETE /archives/{name}`，仅删记录）。
   2. **生成/编辑表单**：类型 Select（Crypt/WebDAV）→ 按 v-if 切换字段组（与后端 §3 一致）；密码输入框旁「生成」按钮（§4）+ 明文切换；编辑模式复用同一表单（进入编辑 = 预填非凭据字段、密码框空 + placeholder「留空保持不变」、`remote_name` 只读）；**「密码形态」单选**（裁决 17：唯一控件——`明文密码` / `rclone 混淆串`，落盘恒为混淆，不再有目标形态开关与副复选框）+ 编辑态只读徽标「当前落盘形态：混淆（可用）/ 明文（rclone 不可用）/ 未知」+ 明文段的「修正为混淆」按钮（不填密码即可修）+ 混淆段的「导出 {key} 原密码」（一次性弹窗）；提交后刷新列表并 `message.success`；409/422/503 错误 reason 直出；
      - **Crypt 底层目标（v1.12/1.13，裁决 12）**：先选**底层类型**（NRadioGroup 两模式）——
        **① 远端**：「**NSelect 选在册远端**（候选 = 列表快照里的全部段，排除正在编辑的段自身，避免自引用成环）+ 路径输入框（留空 = 远端根）」，提交时拼回 `name:path`；未选远端时前端拦截不发请求；
@@ -397,8 +438,11 @@ filename_encoding = base64
 - 前端：面板组件测（列表 / 编辑预填拆两段 / 未选底层远端时拦截不发请求 / `remote` 拼成 `name:path` / **本地模式提交绝对路径 + 非绝对路径拦截**）+ `DirPickerInline` 组件测 7 例（挂载点独立预取 / 树起点=父目录 / 点目录名选中且不移动树 / 文件不选中 / 手输 / 外部赋值重定位 vs 自 emit 不重定位 / disabled）+ 随机密码生成器单测 + i18n parity；
 - **请求体序列化护栏（v1.14，B8）**：`api/__tests__/rclone-config.spec.ts` **不 mock `@/api/http`**（mock 掉就拿不到序列化层——这正是本次 422 缺陷逃逸的原因），改 stub `global.fetch`，断言真实 `init.body` 解析后是**对象**而非字符串；
 - **密码输入单一实现护栏（v1.14，B8）**：`components/__tests__/PasswordInput.spec.ts` 全量扫描 `src/**/*.vue`，除组件自身外零 `type="password"`；
+- **删除依赖保护护栏（v1.21 补登）**：`test_rclone_config.py` 覆盖 `/usage` 与删除阻断**同口径**（同一 remote 判定下，占用弹窗的 `repos` 集合与删除 409 的触发条件一致，防「提示没人用、删时 409」）+ `/repoint` 三道前置校验（空/相同 → 422、目标不在册 → 422、无引用 → 422）+ `url_source=env` → 409 `ENV_OVERRIDDEN` + 只换 remote 段保留 path + 成功后审计 `repo.repoint` 且 detail 不含 url 原文；
+- **归档护栏（D3）**：删除后自动归档（含混淆态凭据原值）+ `/archives` **只回键名不回值**（S3 断言）+ 写回同名段已存在 → 409 + 写回成功后归档记录被删 + `DELETE /archives/{name}` 不碰 conf（对比 conf 内容前后一致）+ 审计 `rclone.config_restore` detail 只含 remote/type/键数；
+- **前端占用/归档交互护栏**：有仓库引用时删除按钮禁用且原位出「查看占用」+ 占用弹窗渲染引用仓库与 `dependent_remotes` + repoint 成功后删除解禁 + 归档视图只显示键名；
 - 红线：`bash scripts/verify_redlines.sh` 全绿（含 S6 新增断言）；
-- 真机验收（B1 spike + B5）：容器内 create→update→delete round-trip + 设置页全旅程。
+- 真机验收（B1 spike + B5）：容器内 create→update→delete round-trip + 设置页全旅程；**v1.21 追加**：真机上走一遍「建仓引用 → 查看占用 → repoint 切到新段 → 删旧段 → 从归档写回」的完整闭环。
 
 ## 12. 真机 spike 实证记录（2026-10-26，WSL 真机 rclone v1.60.1）
 
