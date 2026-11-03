@@ -436,6 +436,40 @@ async def test_forget_profile_within_fallback(tmp_path):
     await db.close()
 
 
+async def test_forget_empty_group_by_is_not_swallowed(tmp_path):
+    """params 传空串 group_by → 必须原样生效，不得回落到默认分组。
+
+    空串是合法取值（restic ``--group-by ""`` = 不分组，全部快照同组），
+    写侧若用 ``params.get(..) or policy.get(..) or 默认`` 的 or 链，空串会被当成
+    "没给"而悄悄换成 host,paths,tags——"按任意数量保留快照"因此不可达。
+    """
+    db, runner, jobs, task_repo = await make_runner(tmp_path)
+    task = await task_repo.create({"name": "nogroup", "sources": ["/sources/srv"], "keep_last": 1})
+    job = await runner.submit(
+        "forget", task_id=task.id, trigger="manual", params={"group_by": "", "prune": False}
+    )
+    await await_job(runner, job.id)
+    final = await jobs.get(job.id)
+    assert final is not None and final.status == "success"
+    args = runner._fake.last_args  # type: ignore[attr-defined]
+    assert args is not None
+    assert args.group_by == ""
+    await db.close()
+
+
+async def test_forget_group_by_falls_back_to_profile_then_default(tmp_path):
+    """缺键才回退：profile 有值取 profile，两边都没有才用 restic 默认。"""
+    db, runner, jobs, task_repo = await make_runner(tmp_path)
+    task = await task_repo.create(
+        {"name": "profiled", "sources": ["/sources/srv"], "keep_last": 1, "group_by": "paths"}
+    )
+    job = await runner.submit("forget", task_id=task.id, trigger="manual", params={})
+    await await_job(runner, job.id)
+    args = runner._fake.last_args  # type: ignore[attr-defined]
+    assert args is not None and args.group_by == "paths"
+    await db.close()
+
+
 # ---------------------------------------------------------------- 6. ops：G3 门与映射（单元）
 
 

@@ -149,6 +149,21 @@ def test_forget_dry_run_and_prune_assembled():
     assert argv[argv.index("--group-by") + 1] == "host,paths,tags"
 
 
+def test_forget_empty_group_by_emits_flag():
+    """空串 group_by 是合法取值（restic --group-by "" = 不分组），必须真的拼出 flag。
+
+    用 truthiness 判空会把它当"没给"而静默丢弃：预览显示一组、执行却按默认三组跑，
+    或者反过来——"按任意数量保留快照"这个能力就此不可达。
+    """
+    cmd = make_cmd()
+    argv = cmd.build(
+        "forget",
+        args=WhitelistArgs(tags=("task-1",), group_by="", keep_last=1, dry_run=True),
+    )
+    assert "--group-by" in argv
+    assert argv[argv.index("--group-by") + 1] == ""
+
+
 def test_forget_prune_only_when_confirmed():
     """--prune 只在执行参数显式携带时拼入（确认后的 E12 type=forget）。"""
     cmd = make_cmd()

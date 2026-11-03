@@ -767,7 +767,10 @@ class ResticCmd:
             # 防 flag 注入（与 --tag 同款校验）
             for keep_tag in args.keep_tags:
                 flags.extend(["--keep-tag", _assert_safe_value(keep_tag, "keep_tag")])
-            if args.group_by:
+            # 空串是**合法且有意义**的取值：restic `--group-by ""` = 不分组
+            # （全部快照视为同一组，keep-* 才能对整个仓库生效）。
+            # 只判 None —— 用 truthiness 会把空串当"没给"而静默丢掉该 flag。
+            if args.group_by is not None:
                 flags.extend(["--group-by", _assert_safe_value(args.group_by, "group_by")])
             # E21 预览：--dry-run 只读（R-016 预览恒 dry_run，由路由层强制）；
             # 实际执行（E12 type=forget）经确认后才允许 --prune 回收数据。

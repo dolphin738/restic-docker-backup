@@ -1328,7 +1328,10 @@ class JobRunner:
                 )
             return WhitelistArgs(
                 tags=tags,
-                group_by=str(params.get("group_by") or policy.get("group_by") or "host,paths,tags"),
+                # 空串是合法值（restic --group-by "" = 不分组，全部快照视为一组），
+                # 不能走 `or` 链——`"" or ...` 会跳过它回落到默认分组，让「不分组」
+                # 这个能力静默失效。只在键**缺失**时才回落。
+                group_by=_resolve_group_by(params, policy),
                 **keep,  # type: ignore[arg-type]
                 keep_tags=keep_tags,
                 prune=bool(params.get("prune", False)),
@@ -1433,6 +1436,24 @@ def _append_log_sync(log_path: Path, line: str) -> None:
 def _as_optional_int(value: Any) -> int | None:
     """把策略字段安全地转为可选整数。"""
     return int(value) if isinstance(value, int | float) else None
+
+
+def _resolve_group_by(params: dict[str, Any], policy: dict[str, Any]) -> str:
+    """forget 分组维度解析：params 优先，回退任务 profile，再回退 restic 默认。
+
+    **只在键缺失时回退**——不能写成 ``params.get(..) or policy.get(..) or 默认``：
+    空串是合法取值（restic ``--group-by ""`` = 不分组，全部快照同组），
+    走 ``or`` 链会被当成"没给"而悄悄回落到 ``host,paths,tags``，
+    导致"按任意数量保留快照"这个能力在 API 层就不可达（假性生效）。
+    """
+    # 延迟导入：task_service → scheduler → job_runner，顶层导入会成环
+    # （同 settings.browse_root 对 deploy_mode 的处理手法）
+    from app.services.task_service import DEFAULT_GROUP_BY
+
+    for source in (params, policy):
+        if "group_by" in source and source["group_by"] is not None:
+            return str(source["group_by"])
+    return DEFAULT_GROUP_BY
 
 
 def _as_keep_rule(value: Any) -> int | None:
