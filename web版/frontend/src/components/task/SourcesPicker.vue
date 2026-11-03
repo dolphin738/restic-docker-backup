@@ -11,8 +11,8 @@
  *   - 不做「新增远程目录」对话框：Duplicati 由自家服务端直连 70+ 云，我们的备份源恒为
  *     容器内 /sources 挂载点，远端一律经宿主机挂载后映射进容器，此处只收绝对路径；
  *   - 不做「显示隐藏文件」开关：E05 /api/sources 无 hidden 参数，UI 上给了也只是假开关；
- *   - 不做过滤条件下拉（Duplicati 14 项）：restic 只有 glob exclude，映射结论见 .e2e 探针，
- *     待 owner 定方案后另起组件。
+ *   - 不做过滤条件下拉（Duplicati 14 项）：restic 只有 glob exclude，映射结论见 .e2e 探针
+ *     与架构设计文档 §9.6（原方案已归档 2026-11-04）。
  */
 
 import { useQuery } from '@tanstack/vue-query'

@@ -92,7 +92,7 @@ const isInPlace = computed(() => restoreFrom.value === 'original')
 
 /** 选择位置流的目标（容器形态，restoreRoot 子树内）；服务端在其下新建
  *  `<stem>-<stamp>` 时间戳子目录（E19 零覆盖，PRD G3）。默认取运行时下发的
- *  restoreRoot（部署形态单一事实源，《源数据过滤与树双模式设计方案》§3.2）。 */
+ *  restoreRoot（部署形态单一事实源，架构设计文档 §5.1 部署形态检测）。 */
 const runtime = useRuntimeStore()
 const customTarget = ref(RESTORE_TARGET_ROOT)
 // pinia setup store 的属性在 TS 里已解包为 string——watch 源须用 getter 形式

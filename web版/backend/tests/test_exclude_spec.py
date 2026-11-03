@@ -1,6 +1,7 @@
 """批次② 过滤条件后端单测：glob 校验、! 前缀修复、ExcludeSpec 展平、WhitelistArgs 拼装。
 
-对应设计方案 §2.2–§2.5；探针结论见 docs/源数据过滤与树双模式设计方案.md §2.4
+对应架构设计文档 §9.6 排除集契约；探针结论见
+docs/archive/源数据过滤与树双模式设计方案.md §2.4
 （negate ∧ icase 禁用：--exclude 负向与 --iexclude 跨 flag 互不生效）。
 """
 
