@@ -248,10 +248,14 @@ async def dry_run(
         if not isinstance(event, FileRecord):
             return False
         file_path = event.path
+        if not file_path:
+            # restic 会对目标根本身吐一条 item="" 的空记录；不是内容，不进预览条目
+            return False
         items.append(
             DryRunItem(
                 path=file_path,
                 display_path=mapper.to_display(file_path),
+                type=event.type,
                 size=event.size,
             )
         )

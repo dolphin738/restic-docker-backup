@@ -459,10 +459,13 @@ export interface ExclusionsResponse {
   total: number
 }
 
-/** E31 dry-run 预览条目。 */
+/** E31 / E36 dry-run 预览条目。 */
 export interface DryRunItem {
   path: string
   display_path: string
+  /** dir | file。restic `--verbose` 用路径尾斜杠标记目录，后端已归一。
+   *  **不能靠「有子路径」反推**：空目录（仓库分片目录 data/00… 大多为空）没有子路径。 */
+  type: string
   size: number | null
 }
 

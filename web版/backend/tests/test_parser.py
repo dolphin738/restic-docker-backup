@@ -139,6 +139,33 @@ def test_verbose_status_yields_file_record():
     assert rec1.name == "hosts"
 
 
+def test_verbose_status_marks_directories_by_trailing_slash():
+    """restic 用尾斜杠标记目录条目——这是 verbose_status 里唯一的目录信号。
+
+    真机实测（/home/123/123，一份 restic 仓库）：277 个条目里 264 个带尾斜杠，
+    其中 253 个是**空目录**。若一律当文件，空目录没有子路径可反推层级，
+    UI 只能把它们显示成文件，13 个文件会显示成 266 个。
+    """
+    parser = OutputParser()
+    lines = read_fixture("backup_verbose_dirs.ndjson").splitlines()
+
+    dir_rec = parser.parse_line(lines[0])
+    assert isinstance(dir_rec, FileRecord)
+    assert dir_rec.type == "dir"
+    assert dir_rec.path == "/sources/etc/nginx"  # 尾斜杠已剥掉，与 file 记录同形
+    assert dir_rec.name == "nginx"
+
+    file_rec = parser.parse_line(lines[1])
+    assert isinstance(file_rec, FileRecord)
+    assert file_rec.type == "file"
+    assert file_rec.path == "/sources/etc/nginx/nginx.conf"
+
+    empty_dir = parser.parse_line(lines[2])
+    assert isinstance(empty_dir, FileRecord)
+    assert empty_dir.type == "dir"
+    assert empty_dir.name == "empty-dir"
+
+
 # ---------------------------------------------------------------- 容错：非 JSON / 空行 / 垃圾输入
 
 def test_non_json_line_becomes_log_line():

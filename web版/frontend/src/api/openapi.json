@@ -768,7 +768,7 @@
       },
       "DryRunItem": {
         "additionalProperties": false,
-        "description": "E31 预览条目。",
+        "description": "E31 / E36 预览条目。\n\n``type`` 取 ``dir`` / ``file``：restic ``--verbose`` 用**路径尾斜杠**标记目录，\n解析层已归一到 ``FileRecord.type``。缺了它前端只能靠「有子路径」反推层级，\n**空目录**（备份仓库的 ``data/00``… 分片目录大多为空）就会被误算成文件。",
         "properties": {
           "display_path": {
             "title": "Display Path",
@@ -788,6 +788,12 @@
               }
             ],
             "title": "Size"
+          },
+          "type": {
+            "default": "file",
+            "description": "dir | file（restic verbose_status 的尾斜杠归一）",
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [

@@ -417,12 +417,22 @@ class OutputParser:
 
     @staticmethod
     def _verbose_record(payload: dict[str, Any]) -> FileRecord:
-        """解析 ``message_type=verbose_status``（--verbose 下的逐文件条目）。"""
-        item = _as_str(payload.get("item")) or ""
+        """解析 ``message_type=verbose_status``（--verbose 下的逐条目）。
+
+        **目录以路径结尾的斜杠标记**——restic 对目录条目输出 `"item":"/sources/etc/nginx/"`，
+        对文件不带斜杠。曾一律写死 `type="file"`，导致 E31/E36 预览无法把目录认出来：
+        空目录（备份仓库的分片目录 `data/00`… 大多为空）没有子路径可反推，
+        在 UI 里被当成文件，与真实文件数差两个数量级。斜杠是**唯一**可用的目录信号
+        （verbose_status 没有独立的 type 字段），故此处按它判定并去掉尾斜杠保持
+        `path` 与其它消息类型同形。
+        """
+        raw_item = _as_str(payload.get("item")) or ""
+        is_dir = raw_item.endswith("/")
+        item = raw_item.rstrip("/") or ("/" if is_dir else "")
         return FileRecord(
             path=item,
             name=item.rsplit("/", 1)[-1] if item else "",
-            type="file",
+            type="dir" if is_dir else "file",
             size=_as_optional_int(payload.get("size")),
             mtime=_as_str(payload.get("mtime")),
             raw=payload,

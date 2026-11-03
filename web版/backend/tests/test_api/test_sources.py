@@ -116,6 +116,7 @@ async def test_e05_traversal_rejected(app_client):
 
 DRY_RUN_LINES = [
     '{"message_type":"status","percent_done":0.0,"total_files":2,"files_done":0,"total_bytes":512,"bytes_done":0}',
+    '{"message_type":"verbose_status","action":"new","item":"/sources/etc/nginx/","duration":0,"data_size":0,"size":0,"metadata_time":0,"metadata_size":0}',
     '{"message_type":"verbose_status","action":"modified","item":"/sources/etc/nginx/nginx.conf","duration":0,"data_size":512,"size":512,"metadata_time":0,"metadata_size":100}',
     '{"message_type":"verbose_status","action":"modified","item":"/sources/etc/proc/kcore","duration":0,"data_size":0,"size":0,"metadata_time":0,"metadata_size":0}',
     '{"message_type":"summary","total_files_processed":2,"total_bytes_processed":512}',
@@ -135,9 +136,10 @@ async def test_e31_dry_run_display_path(app_client):
     assert body["error"] is None
     assert body["truncated"] is False
 
-    assert [(i["path"], i["display_path"], i["size"]) for i in body["items"]] == [
-        ("/sources/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", 512),
-        ("/sources/etc/proc/kcore", "/etc/proc/kcore", 0),
+    assert [(i["path"], i["display_path"], i["type"], i["size"]) for i in body["items"]] == [
+        ("/sources/etc/nginx", "/etc/nginx", "dir", 0),
+        ("/sources/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", "file", 512),
+        ("/sources/etc/proc/kcore", "/etc/proc/kcore", "file", 0),
     ]
     assert any(w["type"] == "pseudo_fs_name" and w["path"] == "/sources/etc/proc/kcore" for w in body["warnings"])
 
@@ -156,7 +158,8 @@ async def test_e31_container_path_compat(app_client):
     resp = await ns.client.post("/api/sources/dry-run", json={"sources": ["/sources/etc"]}, headers=ORIGIN)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["items"][0]["display_path"] == "/etc/nginx/nginx.conf"
+    # 新增的目录条目排在最前（DRY_RUN_LINES 顺序），故取文件那条核对容器路径兼容
+    assert body["items"][1]["display_path"] == "/etc/nginx/nginx.conf"
 
 
 async def test_e31_empty_source_rejected(app_client):
