@@ -123,7 +123,7 @@ export default {
     usedByRepos: '{n} repository(ies)',
     retentionTitle: 'Retention',
     retentionHint:
-      'These three windows share the audit-retention semantics: expiry is handled by the daily maintenance job and takes effect on the next run after saving.',
+      'These four windows share the audit-retention semantics: expiry is handled by the daily maintenance job and takes effect on the next run after saving.',
     retentionRepoArchive: 'Archived repository retention (days)',
     retentionRepoArchiveHint:
       'Within this window an archived repository restores exactly; afterwards the password file and credentials are cleared, leaving only the tombstone record.',
@@ -132,6 +132,9 @@ export default {
       'Tombstones hold only name, URL, type and archive time, and can expire automatically.',
     retentionRcloneArchive: 'rclone config archive retention (days)',
     retentionRcloneArchiveHint: 'How long a deleted rclone config section can still be written back.',
+    retentionRepoPassfile: 'Orphan password file cooldown (days)',
+    retentionRepoPassfileHint:
+      'A password file is reaped only when no repository owns its id and the file is older than this many days — during the tombstone window, and for freshly written files, it does not count as orphaned.',
     retentionZeroHint: 'Use 0 to disable automatic cleanup (keep forever).',
     retentionSaved: 'Retention saved',
     // One shared failure wording for all three actions, so all three look identical

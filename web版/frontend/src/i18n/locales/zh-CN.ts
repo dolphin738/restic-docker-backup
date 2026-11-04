@@ -117,13 +117,16 @@ export default {
     usedByRepos: '{n} 个仓库',
     retentionTitle: '保留策略',
     retentionHint:
-      '三个天数与审计日志的保留策略同一套语义：到期由每日维护任务处理，保存后下一轮生效。',
+      '四个天数与审计日志的保留策略同一套语义：到期由每日维护任务处理，保存后下一轮生效。',
     retentionRepoArchive: '归档仓库保留天数',
     retentionRepoArchiveHint: '归档期内可一键原样恢复；到期后清密码文件与凭据，只留墓碑记录。',
     retentionRepoTombstone: '归档记录保留天数',
     retentionRepoTombstoneHint: '墓碑只含名称、地址、类型与归档时间，到期可自动清除。',
     retentionRcloneArchive: 'rclone 配置归档保留天数',
     retentionRcloneArchiveHint: '删除的 rclone 配置段可写回的时间窗口。',
+    retentionRepoPassfile: '孤儿密码文件回收冷却期（天）',
+    retentionRepoPassfileHint:
+      '仓库无主且密码文件超过该天数才回收——墓碑期内、以及刚写入的文件都不算无主。',
     retentionZeroHint: '填 0 表示不启用自动清理（永久保留）。',
     retentionSaved: '保留策略已保存',
     readOnlyRestore: '归档仓库视图只读：请先在该仓库的归档页点「恢复」，再还原快照。',

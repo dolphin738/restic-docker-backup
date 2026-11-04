@@ -476,10 +476,12 @@ const rcloneColumns = computed<DataTableColumns<RcloneArchiveItemOut>>(() => [
 const KEY_REPO_ARCHIVE = 'retention.repo_archive_days'
 const KEY_REPO_TOMBSTONE = 'retention.repo_tombstone_days'
 const KEY_RCLONE_ARCHIVE = 'retention.rclone_archive_days'
+const KEY_REPO_PASSFILE = 'retention.repo_passfile_days'
 
 const repoArchiveDays = ref<number | null>(30)
 const repoTombstoneDays = ref<number | null>(365)
 const rcloneArchiveDays = ref<number | null>(365)
+const repoPassfileDays = ref<number | null>(30)
 const savingRetention = ref(false)
 
 const retentionActive = computed(() => tab.value === 'retention')
@@ -504,6 +506,7 @@ watch(
     repoArchiveDays.value = pick(KEY_REPO_ARCHIVE, 30)
     repoTombstoneDays.value = pick(KEY_REPO_TOMBSTONE, 365)
     rcloneArchiveDays.value = pick(KEY_RCLONE_ARCHIVE, 365)
+    repoPassfileDays.value = pick(KEY_REPO_PASSFILE, 30)
   },
   { immediate: true },
 )
@@ -515,7 +518,8 @@ const retentionDirty = computed(() => {
   return (
     asText(repoArchiveDays.value) !== (item(KEY_REPO_ARCHIVE) ?? '30') ||
     asText(repoTombstoneDays.value) !== (item(KEY_REPO_TOMBSTONE) ?? '365') ||
-    asText(rcloneArchiveDays.value) !== (item(KEY_RCLONE_ARCHIVE) ?? '365')
+    asText(rcloneArchiveDays.value) !== (item(KEY_RCLONE_ARCHIVE) ?? '365') ||
+    asText(repoPassfileDays.value) !== (item(KEY_REPO_PASSFILE) ?? '30')
   )
 })
 
@@ -529,6 +533,7 @@ async function onSaveRetention(): Promise<void> {
       [KEY_REPO_ARCHIVE]: repoArchiveDays.value === null ? null : String(repoArchiveDays.value),
       [KEY_REPO_TOMBSTONE]: repoTombstoneDays.value === null ? null : String(repoTombstoneDays.value),
       [KEY_RCLONE_ARCHIVE]: rcloneArchiveDays.value === null ? null : String(rcloneArchiveDays.value),
+      [KEY_REPO_PASSFILE]: repoPassfileDays.value === null ? null : String(repoPassfileDays.value),
     })
     message.success(t('archive.retentionSaved'))
     await configQuery.refetch()
@@ -651,6 +656,19 @@ async function onSaveRetention(): Promise<void> {
               />
               <n-text depth="3" class="archive__hint">
                 {{ t('archive.retentionRcloneArchiveHint') }}
+              </n-text>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('archive.retentionRepoPassfile')">
+            <n-space vertical :size="4">
+              <n-input-number
+                v-model:value="repoPassfileDays"
+                :min="0"
+                :show-button="false"
+                class="archive__number"
+              />
+              <n-text depth="3" class="archive__hint">
+                {{ t('archive.retentionRepoPassfileHint') }}
               </n-text>
             </n-space>
           </n-form-item>

@@ -49,6 +49,7 @@ vi.mock('@/api/config', () => ({
       { key: 'retention.repo_archive_days', value: '30', has_value: true, source: 'ui', sensitive: false },
       { key: 'retention.repo_tombstone_days', value: '365', has_value: true, source: 'ui', sensitive: false },
       { key: 'retention.rclone_archive_days', value: '365', has_value: true, source: 'ui', sensitive: false },
+      { key: 'retention.repo_passfile_days', value: '30', has_value: true, source: 'ui', sensitive: false },
     ],
     passfile_status: 'ok',
   })),
@@ -189,16 +190,18 @@ afterEach(() => {
 })
 
 describe('归档页：保留策略布局（与审计页一致）', () => {
-  it('三个保留天数：标签置顶 + 数字框不带步进按钮', async () => {
+  it('四个保留天数：标签置顶 + 数字框不带步进按钮', async () => {
     const w = await mountAndSettle()
     await switchTab(w, 'retention')
 
     const numbers = w.findAllComponents(NInputNumber)
-    expect(numbers.length).toBe(3)
+    expect(numbers.length).toBe(4)
     for (const number of numbers) {
       // stepper 是"上下箭头"两枚按钮，审计页同款一律关掉
       expect(number.props('showButton')).toBe(false)
     }
+    // 四个值按顺序回填：归档期 / 墓碑期 / rclone 归档 / 孤儿密码文件冷却期
+    expect(numbers.map((number) => number.props('value'))).toEqual([30, 365, 365, 30])
     w.unmount()
   })
 })
