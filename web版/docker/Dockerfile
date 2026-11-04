@@ -23,6 +23,9 @@ FROM python:3.13-alpine3.24
 # restic 版本与（可选）校验位数：RESTIC_SHA256 非空时执行 sha256sum -c 校验
 ARG RESTIC_VERSION=0.19.1
 ARG RESTIC_SHA256=""
+# rclone 版本钉死：apk 默认不锁版本，同一份 Dockerfile 会在不同时间构建出不同 rclone 行为。
+# 实测 alpine3.24 community 源现为 1.75.2-r0（此前 compose 注释记的 v1.60.1 已失真）。
+ARG RCLONE_VERSION=1.75.2-r0
 
 LABEL org.opencontainers.image.title="restic-web" \
       org.opencontainers.image.description="restic-docker-backup Web 管理端（FastAPI + restic 静态二进制）" \
@@ -43,11 +46,11 @@ COPY --from=restic-src /usr/bin/restic /usr/local/bin/restic
 # postgresql-client：始终跟随 Alpine stable 源收录的最新稳定 GA 大版本（方案 v2.3.3）
 # mysql-client（MariaDB 系）、tzdata（zoneinfo 依赖）、wget（HEALTHCHECK）
 # rclone（A1 万能后端）：restic 的 rclone: 仓库按需拉起 `rclone serve restic --stdio` 子进程
-#   （R-022 §3 生命周期结论：不常驻、命令结束即退出）；版本跟随 Alpine stable 源，
-#   升级登记见 docs/依赖升级指南.md（restic 是固定版本静态二进制，两者口径不同）
+#   （R-022 §3 生命周期结论：不常驻、命令结束即退出）；版本由 RCLONE_VERSION 钉死
+#   （2026-11-04 起；此前跟随 Alpine stable 源，升级登记见 docs/依赖升级指南.md）
 # openssh-client（A1 sftp 后端）：restic 的 sftp 仓库经系统 ssh 子进程免密登录
 #   （location.NoPassword——无密码 env；私钥/known_hosts 由宿主机挂载，见部署指南）
-RUN apk add --no-cache tzdata wget postgresql-client mysql-client rclone openssh-client \
+RUN apk add --no-cache tzdata wget postgresql-client mysql-client "rclone=${RCLONE_VERSION}" openssh-client \
     && apk add --no-cache --virtual .build-deps build-base libffi-dev \
     && if [ -n "${RESTIC_SHA256}" ]; then \
          echo "${RESTIC_SHA256}  /usr/local/bin/restic" | sha256sum -c - ; \
