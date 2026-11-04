@@ -1,4 +1,4 @@
-"""FastAPI 应用入口：中间件链、生命周期钩子、路由挂载、内置 TLS（§1.1 / §8 / §1.2 Q2 裁决）。
+"""FastAPI 应用入口：中间件链、生命周期钩子、路由挂载、HTTPS 由反向代理终结（§1.1 / §8）。
 
 中间件链顺序（§8）：
     ① CSRF/Origin 校验（仅写方法，ASGI 中间件，先于路由执行）
@@ -46,7 +46,7 @@ from app.constants import (
     UNAUTHORIZED,
     VALIDATION_ERROR,
 )
-from app.db.database import Database, close_database, init_database
+from app.db.database import close_database, init_database
 from app.db.repositories.audit_repo import AuditRepo
 from app.db.repositories.config_repo import ConfigRepo
 from app.db.repositories.job_repo import JobRepo
@@ -537,37 +537,11 @@ _configure_logging()
 app = create_app()
 
 
-def _read_tls_options() -> tuple[str | None, str | None]:
-    """启动时从 config 表读取内置 TLS 配置（§4.3 键表：server.tls_cert / server.tls_key）。
-
-    Returns:
-        ``(cert_path, key_path)``；两者齐备时以 uvicorn ssl 参数启动，否则纯 HTTP 供反代终结。
-    """
-    import asyncio
-
-    async def _read() -> tuple[str | None, str | None]:
-        settings = get_settings()
-        db = Database(settings.db_path)
-        await db.connect()
-        try:
-            repo = ConfigRepo(db)
-            return await repo.get_value("server.tls_cert"), await repo.get_value("server.tls_key")
-        finally:
-            await db.close()
-
-    try:
-        return asyncio.run(_read())
-    except Exception as exc:  # noqa: BLE001 - 配置不可读时按纯 HTTP 启动，避免容器起不来
-        logger.warning("读取 TLS 配置失败，将以纯 HTTP 启动：%s", exc)
-        return None, None
-
-
 def main() -> None:
-    """进程入口（entrypoint.sh 调用）：按 config 决定是否启用内置 TLS。"""
+    """进程入口（entrypoint.sh 调用）：以纯 HTTP 启动，HTTPS 由反向代理终结。"""
     import uvicorn
 
     settings: Settings = get_settings()
-    cert_path, key_path = _read_tls_options()
     uvicorn_kwargs: dict[str, object] = {
         "host": settings.host,
         "port": settings.port,
@@ -577,12 +551,7 @@ def main() -> None:
         "log_config": _uvicorn_log_config(),
         "log_level": _log_level_name().lower(),
     }
-    if cert_path and key_path:
-        logger.info("启用内置 TLS：cert=%s key=%s", cert_path, key_path)
-        uvicorn_kwargs["ssl_certfile"] = cert_path
-        uvicorn_kwargs["ssl_keyfile"] = key_path
-    else:
-        logger.info("未配置 server.tls_cert/tls_key，以纯 HTTP 启动（HTTPS 由反向代理终结）")
+    logger.info("以纯 HTTP 启动（HTTPS 由反向代理终结）")
     uvicorn.run("app.main:app", **uvicorn_kwargs)  # type: ignore[arg-type]
 
 

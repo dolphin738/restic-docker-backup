@@ -37,6 +37,5 @@ else
     echo "[entrypoint] 非 root 档：uid=$(id -u) gid=$(id -g)，目录可写性检查通过"
 fi
 
-# 交由 app.main 启动：内置"挂证书"式 TLS（config server.tls_cert/tls_key 齐备时）
-# 需由应用侧读取配置后以 uvicorn ssl_certfile/ssl_keyfile 启动（Q2 裁决，架构文档 §1.2/§4.3）。
+# 交由 app.main 启动；HTTPS 由反向代理终结。
 exec python -m app.main

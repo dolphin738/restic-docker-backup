@@ -84,8 +84,6 @@ USER backup
 EXPOSE 8000
 
 # HEALTHCHECK 打到 /api/health（E04，免鉴权）。
-# 已知边界：内置"挂证书"式 TLS 启用后本探测需改为 https（busybox wget 无 TLS 支持），
-# 该场景下建议改由反代侧探测或部署文档另行说明。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 || exit 1
 
