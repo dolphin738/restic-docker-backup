@@ -71,6 +71,14 @@ certs/
 /restic-cache/
 /restore/
 /logs/
+# docker compose 的运行期卷（compose 文件同级目录）。其中 repos 装的是
+# 仓库密码文件＝加密根密钥，绝不能入库；data 装 SQLite/日志；rclone 装 conf（含 OAuth token）。
+web版/docker/data/
+web版/docker/repos/
+web版/docker/rclone/
+web版/docker/sources/
+web版/docker/restore/
+web版/docker/cache/
 # 运行期目录改为「仓库根锚定」（前导 /），不再按任意层级匹配——避免吞掉同名源码目录
 # （原裸 `restore/` 会忽略 web版/frontend/src/**/restore/，曾致 CI TS2307）。
 # 下面两条例外作为纵深防御保留（根锚定后已不会误伤，但显式声明意图）。

@@ -40,6 +40,19 @@ services:
       # 显式指定而非依赖 rclone 默认路径：默认路径随运行用户变化
       # （root 档 /root/.config、nonRoot 档 /home/backup/.config），换档即失效。
       RCLONE_CONFIG: /etc/rclone/rclone.conf
+      # 密钥与数据分离（默认；见 docs/部署指南.md §2.6）：仓库密码文件根目录放在 /data 之外，
+      # 与 restic.db（锁）分卷 ⇒ 备份 /data 时不会把加密根密钥一起带走。
+      # 路径须与下方 `./repos:/repos:rw` 挂载一致。想恢复旧布局：删掉本行 + 该挂载，
+      # 密码文件回到 /data/repos/<repo_id>/password（两者必须同时改，否则密码文件读不到）。
+      PASSFILE_ROOT: /repos
+      # ---- rclone conf 加密口令（可选，默认关；见《rclone配置落盘加密实施方案》§5.8）----
+      # 启用 conf 加密后才需要。首次启动由 entrypoint **自动生成** 32 位口令到该路径
+      # （0600；已存在则绝不覆盖），再经 RCLONE_PASSWORD_COMMAND 交给 rclone。
+      # 独立于 PASSFILE_ROOT 下的仓库密码——conf 是全局资源，绑仓库口令会在
+      # key.rotate 轮换时**静默**让加密 conf 永久解不开。
+      # 开启时一并取消下方 ./repos 之外的那行挂载注释（本行路径在其下）。
+      # RCLONE_PASS_FILE: /repos/rclone.pass
+      # RCLONE_PASSWORD_COMMAND: "/bin/cat /repos/rclone.pass"
       # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
       # SQLITE_BUSY 可上调；过大则失败延迟变长。
       # 已迁入「系统设置-系统-SQLite 锁等待」：删除本行即可在界面调
@@ -90,10 +103,14 @@ services:
       # - ./ssh/id_ed25519:/root/.ssh/id_ed25519:ro
       # - ./ssh/known_hosts:/root/.ssh/known_hosts:ro
 
-      # SQLite + 任务日志 + dump + **仓库密码文件**（属主要求见方案 §4：非 root 档须 chown 1000:1000）
-      # 密码文件按 E5 per-repo 布局放在数据卷内：./data/repos/default/password
-      # （对应容器路径 /data/repos/default/password，由 PASSFILE_ROOT 决定根目录）
+      # SQLite + 任务日志 + dump + 审计归档（属主要求见方案 §4：非 root 档须 chown 1000:1000）
+      # 注意：**仓库密码文件不在这里**——它独立挂在下面的 ./repos 卷（见 §2.6）。
       - ./data:/data
+      # ---- 密钥与数据分离（默认；见 docs/部署指南.md §2.6）----
+      # 仓库密码文件（加密根密钥）独立成卷：./repos/default/password → 容器 /repos/default/password。
+      # 与 /data 分开备份/保管 ⇒ 单独拷走 /data 不再等于「锁 + 钥匙」一起丢。
+      # entrypoint 会自动建目录并 chown（root 档），或在不可写时拒绝启动（非 root 档）。
+      - ./repos:/repos:rw
       # restic 缓存，务必持久化（否则每次全量重扫）
       - ./cache:/cache/restic
     ports:
