@@ -469,7 +469,7 @@ async function onSaveRetention(): Promise<void> {
               </n-space>
             </n-form-item>
           </n-form>
-          <n-space justify="end">
+          <n-space justify="start">
             <n-button
               type="primary"
               :loading="savingRetention"

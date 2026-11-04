@@ -34,6 +34,7 @@ import {
   NDataTable,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NModal,
   NPopconfirm,
@@ -48,6 +49,7 @@ import {
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import DirPickerInline from '@/components/DirPickerInline.vue'
+import { IconCheckCircle } from '@/components/icons/icons'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
 import {
@@ -840,6 +842,9 @@ defineExpose({ refresh })
 
         <NSpace>
           <NButton type="primary" :loading="submitting" @click="submit">
+            <template #icon>
+              <NIcon :size="16"><IconCheckCircle /></NIcon>
+            </template>
             {{ isEdit ? t('settings.rclone.submitEdit') : t('settings.rclone.submitNew') }}
           </NButton>
           <NButton v-if="isEdit" @click="cancelEdit">{{ t('settings.rclone.cancelEdit') }}</NButton>

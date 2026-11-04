@@ -110,7 +110,6 @@ async function onSaveMetricsToken(): Promise<void> {
               {{ t('settings.metrics.clear') }}
             </n-checkbox>
             <n-button
-              size="small"
               type="primary"
               :loading="metricsPatch.saving.value"
               :disabled="!metricsTokenDirty"

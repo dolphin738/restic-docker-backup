@@ -592,7 +592,6 @@ async function runTest(): Promise<void> {
              加载未完成就保存等于把表单默认值写回后端，故保存按钮同步禁用（仅首载）。 -->
         <n-space :size="8">
           <n-button
-            size="small"
             type="primary"
             :loading="savingChannel"
             :disabled="!channelType || configQuery.isLoading.value"
@@ -683,7 +682,7 @@ async function runTest(): Promise<void> {
             </n-space>
           </n-form-item>
         </n-form>
-        <n-button size="small" type="primary" :loading="savingRules" :disabled="configQuery.isLoading.value" @click="saveRules">
+        <n-button type="primary" :loading="savingRules" :disabled="configQuery.isLoading.value" @click="saveRules">
           <template #icon>
             <n-icon :size="16"><IconCheckCircle /></n-icon>
           </template>

@@ -21,6 +21,7 @@ import {
   NDataTable,
   NForm,
   NFormItem,
+  NIcon,
   NInputNumber,
   NPopconfirm,
   NSpace,
@@ -46,6 +47,7 @@ import {
 } from '@/api/repo'
 import type { ArchivedRepoOut, RepoTombstoneOut, RcloneArchiveItemOut } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
+import { IconCheckCircle } from '@/components/icons/icons'
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
 import OpLogDrawer from '@/pages/archive/op-log-drawer.vue'
 import { formatDateTime } from '@/utils/datetime'
@@ -677,11 +679,13 @@ async function onSaveRetention(): Promise<void> {
         <div class="archive__actions">
           <n-button
             type="primary"
-            size="small"
             :disabled="!retentionDirty"
             :loading="savingRetention"
             @click="onSaveRetention"
           >
+            <template #icon>
+              <n-icon :size="16"><IconCheckCircle /></n-icon>
+            </template>
             {{ t('common.save') }}
           </n-button>
         </div>

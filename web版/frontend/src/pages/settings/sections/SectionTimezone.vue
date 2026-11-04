@@ -351,7 +351,6 @@ async function doSyncTime(): Promise<void> {
             </n-form-item>
             <n-space align="center" :size="8">
               <n-button
-                size="small"
                 type="primary"
                 :loading="ntpPatch.saving.value"
                 :disabled="!ntpDirty || ntpEnvLocked"
@@ -382,7 +381,6 @@ async function doSyncTime(): Promise<void> {
           </n-form-item>
           <n-space align="center" :size="8">
             <n-button
-              size="small"
               type="primary"
               :loading="timezonePatch.saving.value"
               :disabled="!timezoneDirty || !timezoneValue || timezoneEnvLocked"
