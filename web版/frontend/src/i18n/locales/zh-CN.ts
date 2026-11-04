@@ -84,9 +84,10 @@ export default {
     released: '已释放「{name}」的 ID',
     releaseTitle: '释放归档仓库 ID',
     releaseRunning: '正在释放「{name}」的 ID…',
-    releaseDone: '已释放「{name}」的 ID：仓库行与凭据键已清除，留下一条墓碑记录（数据仍在磁盘上）。',
+    releaseDone:
+      '已释放「{name}」的 ID：仓库行与凭据键已清除，留下一条墓碑记录（数据仍在磁盘上，但口令会在归档记录到期后被回收）。',
     releaseDesc:
-      '释放后该 ID 可被新仓库复用，同时意味着你放弃通过本应用找回旧快照。磁盘数据不会被删除。',
+      '释放后该 ID 可被新仓库复用，同时意味着你放弃通过本应用找回旧快照。磁盘数据不会被删除，但本应用的口令会在归档记录到期后回收——之后旧快照只能靠你自己保存的口令打开。',
     releasePreview: '将释放「{name}」：请输入该仓库 ID 以确认。',
     destroyData: '销毁数据',
     destroyed: '已销毁「{name}」的数据',

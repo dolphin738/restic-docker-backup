@@ -86,9 +86,9 @@ export default {
     releaseTitle: 'Release archived repository ID',
     releaseRunning: 'Releasing the ID of "{name}"…',
     releaseDone:
-      'Released the ID of "{name}": the repository row and its credential keys are gone, leaving one tombstone record (the data itself is still on disk).',
+      'Released the ID of "{name}": the repository row and its credential keys are gone, leaving one tombstone record (the data is still on disk, but the password is reaped once the archive record expires).',
     releaseDesc:
-      'After release the ID can be reused by a new repository, and you give up recovering the old snapshots through this app. Disk data is never deleted.',
+      'After release the ID can be reused by a new repository, and you give up recovering the old snapshots through this app. Disk data is never deleted, but this app reaps its password file once the archive record expires — after that the old snapshots open only with a password you kept yourself.',
     releasePreview: 'Releasing "{name}": type the repository ID to confirm.',
     destroyData: 'Destroy data',
     destroyed: 'Data of "{name}" destroyed',

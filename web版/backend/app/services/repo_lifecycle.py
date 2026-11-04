@@ -448,8 +448,10 @@ class RepoLifecycleService:
     async def release(self, repo_id: str, *, snapshot_count: int | None = None) -> DeleteReport:
         """释放归档仓库 ID：清凭据 → 删行（最后）→ 清日志文件 → 收尾审计。
 
-        **不动磁盘数据**（守 §6 红线：记录与数据分离）——数据仍可手工找回，
-        只是本应用不再持有入口。释放后该 id 立即可被新仓库复用。
+        **不动磁盘数据**（守 §6 红线：记录与数据分离）——仓库目录与其内容仍在原地，
+        但「可找回」有时限：密码文件会在墓碑到期后进入孤儿回收
+        （``retention.repo_passfile_days``，默认 30 天），此后旧快照只能靠用户
+        自行保存的口令手工打开。释放后该 id 立即可被新仓库复用。
 
         顺序同 :meth:`hard_delete`（行最后删），只是没有磁盘步骤。
 
