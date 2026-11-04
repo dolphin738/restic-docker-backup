@@ -1,6 +1,6 @@
 # restic-docker-backup Web 版改造方案（容器化部署 / 脱离 bash 执行层）
 
-> 版本：v2.3.4（2026-10-10）
+> 版本：v2.3.5（2026-11-04；v2.3.4 → v2.3.5：HTTPS 仅由反向代理终结——§5 配置矩阵与鉴权行去内置 TLS 表述，内置"挂证书"式 TLS 已删除）
 > **历史修订（v1.0–v2.3.4）已移入 [CHANGELOG.md](../CHANGELOG.md#Web版改造方案修订史)**——本文只保留当前契约。
 > **A0/A7 修订注记（2026-10-17，owner 裁决「去掉 host 模式」+「原位恢复照 Duplicati 实现」，不重写历史正文）**：本文 §3.1/§3.2
 > 的「host / sources 双模式」、§3.3「运行用户 × 挂载模式能力四象限」及全文的
@@ -270,7 +270,7 @@ services:
 | 管理员账号与密码                                                             | **UI**                               | 首启随机密码仅 Web 页面一次性展示 + 强制修改（§6.1，不入 docker logs）                                           |                          |
 | 挂载清单（`/host` ro                                                      | rw、/restore、本地仓库 /repo、/data、/cache） | **compose**                                                                               | bind-mount 运行时不可变，容器固有约束 |
 | 备份源模式（RESTIC_WEB_MODE=host/sources）                                  | **compose**                          | 随挂载模型定                                                                                    |                          |
-| 端口映射、反向代理/HTTPS                                                      | **compose / 反代**（首选）+ **UI**（挂证书式内置 TLS）   | HTTPS 首选反代（部署文档含 Caddy 自动 HTTPS 示例）；镜像内置"挂证书"式 TLS 选项（UI 配证书/私钥路径，无自动签发，Q2 裁决）                                                    |                          |
+| 端口映射、反向代理/HTTPS                                                      | **compose / 反代**（唯一方案）   | HTTPS 由反向代理终结（部署文档含 Caddy 自动 HTTPS 示例）；应用不内置 TLS（原"挂证书"式内置 TLS 选项已于 2026-11-04 删除）                                                    |                          |
 | 运行用户（user: 0:0 或 1000:1000）                                          | **compose**                          | 安全档选择                                                                                     |                          |
 | 仓库密码文件                                                               | **compose 挂载**                       | §6 已论证：不入库、不出 API                                                                         |                          |
 | restic 版本                                                            | **Dockerfile**                       | §4 已论证：随镜像构建                                                                              |                          |
@@ -411,7 +411,7 @@ PUT  /api/admin/password                       P1   管理员改密
 | 仓库密码          | 只支持密码文件（secret 只读挂载），永不入库、永不出 API——它是**不可轮换的加密根密钥**，泄露=全部备份明文                                                                                                                  |
 | 后端凭据（S3/B2 等） | **Web 界面可配**（v2.2）：可轮换、可加最小权限 scope，性质不同于仓库密码；存 SQLite（明文落盘程度与 compose env 等价），API 脱敏；Job Runner spawn restic 子进程时注入环境；compose env 设置时**优先于 UI 值**并置灰对应输入框（对齐原脚本"调用方环境变量优先"哲学） |
 | 权限面           | 无 docker.sock、无 docker 组；`/host` 默认 rw（原位恢复需要），提供 ro 安全档；运行用户默认 root（恢复保真），可切非 root 档                                                                                          |
-| 鉴权            | **详见 §6.1**（cookie session、首启 Web 一次性展示随机密码、防爆破锁定）；HTTPS 双轨：首选反代（Caddy 自动 HTTPS 示例见部署文档）+ 内置"挂证书"式 TLS 选项（Q2 裁决）                                                                                                                  |
+| 鉴权            | **详见 §6.1**（cookie session、首启 Web 一次性展示随机密码、防爆破锁定）；HTTPS 仅由反向代理终结（Caddy 自动 HTTPS 示例见部署文档；原内置"挂证书"式 TLS 选项已删除，2026-11-04）                                                                                                                  |
 | 注入防护          | 表单字段 → 固定参数白名单拼装，无自由命令透传；路径输入规范化并校验在允许前缀内                                                                                                                                      |
 | 危险操作          | forget --prune / unlock / 原位恢复：预览 + 确认文本 + 二次确认；全部入审计日志                                                                                                                        |
 
