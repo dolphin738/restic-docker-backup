@@ -6,6 +6,9 @@
   不经 shell，口令不进 argv、日志、审计、异常消息。
 - 写后必重跑 check；失败从备份还原 conf，成功才原子落盘口令并重建
   RCLONE_PASSWORD_COMMAND（disable 成功则移除）。
+- 备份是**口令目录**（<passfile_root>）下单一滚动文件 conf-backup.conf，**不落
+  conf 同目录**：加密 conf 的威胁模型是「./rclone/ 目录被单独拷走」，同目录再有
+  明文副本即等于加密失效。文件名固定、每次覆盖，故不会随时间累积多份明文。
 - 本服务层不写审计：调用方须按 constants.AUDIT_RCLONE_CONF_ENCRYPT、
   constants.AUDIT_RCLONE_CONF_REKEY、constants.AUDIT_RCLONE_CONF_DECRYPT 埋点。
 - 并发门禁（有 running job → 409 constants.JOB_CONFLICT）由 P5 路由层负责；
@@ -14,6 +17,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets
@@ -28,13 +32,19 @@ from app.constants import RCLONE_CONFIG_TIMEOUT_SECONDS
 from app.errors import AppError, RcloneUnavailableError, ValidationError
 from app.services.rclone import conf_encrypted, exec_rclone, resolve_conf_path
 from app.settings import Settings
-from app.utils.time import now_utc
 
 type RcloneExecutor = Callable[[Sequence[str]], Awaitable[tuple[int, str]]]
 
 _PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 _PASSWORD_COMMAND_ENV = "RCLONE_PASSWORD_COMMAND"
 _TAG_RE = re.compile(r"[a-z0-9-]+")
+
+logger = logging.getLogger(__name__)
+
+# 滚动备份文件名（口令目录内）。旧版本曾在 conf 同目录写 conf-backup-<时间戳>.conf，
+# 那批遗留文件**不自动删除**（用户可能靠它逃生），只在成功后 warning 提示一次。
+_CONF_BACKUP_NAME = "conf-backup.conf"
+_LEGACY_BACKUP_GLOB = "conf-backup-*.conf"
 
 
 @dataclass(frozen=True)
@@ -179,8 +189,8 @@ class RcloneCryptoService:
     async def enable(self, new_password: str | None = None) -> str:
         """仅未加密可用；生成 / 落盘口令、验通后一次性返回明文。
 
-        任何一步失败都从 conf 同目录备份还原，口令文件回到操作前状态，
-        且不改变运行期 env；备份文件作为逃生通道保留。
+        任何一步失败都从口令目录的滚动备份（conf-backup.conf）还原，口令文件回到
+        操作前状态，且不改变运行期 env；备份文件作为逃生通道保留。
         """
         if self._header_encrypted():
             raise ValidationError("rclone.conf 已加密，不能重复启用加密")
@@ -205,6 +215,7 @@ class RcloneCryptoService:
             self._write_pass(password, temps)
             pass_written = True
             self._set_password_command_env()
+            self._warn_legacy_backups()
         except Exception as exc:
             self._restore_conf(backup)
             if pass_written:
@@ -259,6 +270,7 @@ class RcloneCryptoService:
             self._write_pass(new_password, temps)
             pass_written = True
             self._set_password_command_env()
+            self._warn_legacy_backups()
         except Exception as exc:
             if backup is not None:
                 self._restore_conf(backup)
@@ -356,19 +368,54 @@ class RcloneCryptoService:
         return conf_encrypted(str(self._conf_path))
 
     def _backup_conf(self) -> Path:
-        """备份当前 conf 到同目录 UTC 时间戳文件，权限 0600。"""
+        """把当前 conf 原子写到口令目录的单一滚动备份，权限 0600。
+
+        位置固定在 self._pass_path.parent（即 settings.passfile_root）而不是 conf 同目录：
+        conf 目录一旦被单独拷走，同目录的明文备份会让加密形同虚设；放到口令目录后，
+        取走明文需要同时拿到 conf 与 passfile 两处。
+
+        文件名恒定 conf-backup.conf，每次覆盖同一路径（不按时间戳堆文件）；写入走同目录
+        mkstemp + 0600 + os.replace 原子替换，避免并发读到半截。内容仍是明文 conf——
+        这是失败回滚与逃生通道的既定设计。
+        """
         try:
             original = self._conf_path.read_bytes()
         except OSError:
             raise RcloneUnavailableError("rclone 配置文件不可读") from None
-        stamp = now_utc().strftime("%Y%m%dT%H%M%S%fZ")
-        backup = self._conf_path.parent / f"conf-backup-{stamp}.conf"
+        backup = self._pass_path.parent / _CONF_BACKUP_NAME
         try:
-            backup.write_bytes(original)
-            backup.chmod(0o600)
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix="rclone-conf-backup-", suffix=".tmp", dir=backup.parent)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(original)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, backup)
+            except BaseException:
+                with suppress(OSError):
+                    os.unlink(tmp)
+                raise
         except OSError:
             raise RcloneUnavailableError("rclone 配置备份不可写") from None
         return backup
+
+    def _warn_legacy_backups(self) -> None:
+        """提示 conf 同目录存在旧版本遗留的明文备份；只报数量，不含任何内容。
+
+        旧版本（本批次之前）把 conf-backup-<时间戳>.conf 写进 conf 同目录，每成功一次
+        留一份、从不清除。这些文件不自动删除（用户可能正靠它逃生），但要让用户知道
+        自己手工清理——同目录明文副本会让 conf 加密失去意义。
+        """
+        try:
+            legacy = sorted(self._conf_path.parent.glob(_LEGACY_BACKUP_GLOB))
+        except OSError:
+            return
+        if legacy:
+            logger.warning(
+                "rclone conf 同目录存在 %d 个遗留明文备份（旧版本遗留，未自动删除）："
+                "同目录明文副本会使 conf 加密失效，请确认后手工清理",
+                len(legacy),
+            )
 
     def _restore_conf(self, backup: Path) -> None:
         """从备份还原 conf（保留备份文件作为逃生通道）。"""

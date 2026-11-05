@@ -18,6 +18,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { h, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 
+import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
 import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
@@ -748,5 +749,116 @@ describe('RcloneConfigPanel 删除保护', () => {
     await flushPromises()
 
     expect(spy).toHaveBeenCalledWith('mycrypt')
+  })
+})
+
+// ---------------------------------------------------------------- conf 加密面板（真机缺陷 1 / 2 回归）
+
+const ENC_STATUS_PLAIN = {
+  conf_encrypted: false,
+  conf_locked: false,
+  password_present: false,
+  conf_path: '/etc/rclone/rclone.conf',
+  pass_path: '/repos/rclone.pass',
+}
+
+const ENC_STATUS_ENCRYPTED = { ...ENC_STATUS_PLAIN, conf_encrypted: true, password_present: true }
+
+/** 加密卡片范围内的写按钮文案（避免与列表区/表单区按钮混淆）。 */
+function confEncButtons(w: ReturnType<typeof mountPanel>): string[] {
+  const labels = [
+    zhCN.settings.rclone.confEnc.enableBtn,
+    zhCN.settings.rclone.confEnc.rekeyBtn,
+    zhCN.settings.rclone.confEnc.disableBtn,
+    zhCN.settings.rclone.confEnc.unlockBtn,
+  ]
+  return ([...w.element.querySelectorAll('button')] as HTMLButtonElement[])
+    .map((b) => b.textContent?.trim() ?? '')
+    .filter((text) => labels.includes(text))
+}
+
+/** 面板挂载后等两轮微任务（onMounted 并发拉三态 + 列表）。 */
+async function mountReady(): Promise<void> {
+  await nextTick()
+  await flushPromises()
+  await nextTick()
+  await flushPromises()
+}
+
+describe('RcloneConfigPanel conf 加密面板', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+    vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+  })
+
+  it('缺陷 1：三态读取失败时一个写按钮都不出现，改为可操作的 alert', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockRejectedValue(new Error('三态接口 500'))
+    const w = mountPanel()
+    await mountReady()
+
+    expect(confEncButtons(w)).toHaveLength(0)
+    const text = textOf(w)
+    expect(text).toContain(zhCN.settings.rclone.confEnc.stateUnknown)
+    // alert 里带后端 message，且给出「重试」这个可操作出口
+    expect(text).toContain('三态接口 500')
+    expect(buttonOf(w, zhCN.common.retry)).toBeTruthy()
+    w.unmount()
+  })
+
+  it('缺陷 1：三态就绪且未加密时只出现「生成并启用」（单个按钮，无转圈重影）', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const w = mountPanel()
+    await mountReady()
+
+    expect(confEncButtons(w)).toEqual([zhCN.settings.rclone.confEnc.enableBtn])
+    // 状态就绪时没有「状态未知」那条 alert（徽标此时是「未加密」）
+    expect(textOf(w)).not.toContain(zhCN.settings.rclone.confEnc.stateUnknown)
+    w.unmount()
+  })
+
+  it('缺陷 2：换口令的新口令段能生成并填入明文，旧口令段没有生成入口', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
+    const w = mountPanel()
+    await mountReady()
+
+    // 进 rekey：先旧口令段
+    buttonOf(w, zhCN.settings.rclone.confEnc.rekeyBtn)!.dispatchEvent(new Event('click'))
+    await mountReady()
+
+    const modal = () => w.findComponent(PasswordEntryModal)
+    const genButtons = () =>
+      ([...document.body.querySelectorAll('button')] as HTMLButtonElement[]).filter(
+        (b) => b.textContent?.trim() === zhCN.common.generatePassword,
+      )
+
+    expect(modal().props('show')).toBe(true)
+    // 旧口令段：默认不出现生成入口（旧口令是用户已有的，不该生成）
+    expect(modal().props('showGenerate')).toBe(false)
+    expect(genButtons()).toHaveLength(0)
+
+    // 旧口令提交 → 进新口令段
+    modal().vm.$emit('submit-custom', 'OLD-PASS-1234')
+    await mountReady()
+
+    expect(modal().props('showGenerate')).toBe(true)
+    const genBtn = genButtons()[0]
+    expect(genBtn).toBeTruthy()
+
+    // 点生成 → 组件进入生成态（generated 有值 = 一次性明文，32 位 = 全站统一长度）
+    genBtn!.dispatchEvent(new Event('click'))
+    await mountReady()
+    const generated = modal().props('generated') as string | null
+    expect(generated).toHaveLength(32)
+
+    // 生成态确认 = 用这份明文执行轮换（新口令确实被带进请求，不是空提交）
+    const rekey = vi
+      .spyOn(repoApi, 'rekeyRcloneConfEncryption')
+      .mockResolvedValue({ code: 'ok', password_once: null })
+    modal().vm.$emit('confirm-generated')
+    await mountReady()
+    expect(rekey).toHaveBeenCalledWith({ old_password: 'OLD-PASS-1234', new_password: generated })
+
+    w.unmount()
   })
 })

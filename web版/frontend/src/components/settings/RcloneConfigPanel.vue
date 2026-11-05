@@ -255,6 +255,9 @@ const confEncAction = ref<ConfEncAction>(null)
 const confEncOldPassword = ref('')
 const confEncDisablePassword = ref('')
 const confEncDisableOpen = ref(false)
+/** 换口令「新口令」段本地生成的明文：只活在这一个 ref 与弹窗展示里，
+ *  确认（=提交轮换）或关闭弹窗即清空；绝不进 console / localStorage / URL。 */
+const confEncNewGenerated = ref<string | null>(null)
 
 /** 快照侧也带锁死位；任一来源为 true 即按锁死处理（宁可禁用，不可误写）。 */
 const confLocked = computed(() => {
@@ -359,6 +362,7 @@ function startConfEncUnlock(): void {
 
 function startConfEncRekey(): void {
   confEncError.value = ''
+  confEncNewGenerated.value = null
   confEncAction.value = 'rekey-old'
 }
 
@@ -370,6 +374,13 @@ function startConfEncDisable(): void {
 function closeConfEncPw(): void {
   confEncAction.value = null
   confEncOldPassword.value = ''
+  confEncNewGenerated.value = null
+}
+
+/** 换口令「新口令」段的生成：本地 CSPRNG（utils/password 单一生成器）。
+ *  明文只进 confEncNewGenerated 与弹窗展示，不经 console / storage / URL。 */
+function onConfEncGenerateNew(): void {
+  confEncNewGenerated.value = generatePassword()
 }
 
 /** 只有用户主动关闭弹窗才走 setter；程序化收口（action 置空）不会误清正在流转的口令。 */
@@ -395,6 +406,7 @@ async function onConfEncPassword(password: string): Promise<void> {
   } else if (action === 'rekey-old') {
     confEncOldPassword.value = password
     // :key 随用途切换 → 弹窗重建，自填草稿从空开始，旧口令只留在内存变量里
+    confEncNewGenerated.value = null
     confEncAction.value = 'rekey-new'
   } else if (action === 'rekey-new') {
     const oldPassword = confEncOldPassword.value
@@ -408,6 +420,13 @@ async function onConfEncPassword(password: string): Promise<void> {
       return result.password_once
     })
   }
+}
+
+/** 生成态确认 = 用这份新生成的明文执行轮换（一次性回显，与仓库轮换同口径）。 */
+function onConfEncGeneratedConfirm(): void {
+  const generated = confEncNewGenerated.value
+  if (!generated) return
+  void onConfEncPassword(generated)
 }
 
 function onConfEncDisableConfirm(): void {
@@ -857,7 +876,9 @@ defineExpose({ refresh, refreshConfEnc })
     <NAlert v-if="confLocked" type="error" :bordered="false" class="rclone-panel__alert">
       {{ t('settings.rclone.confEnc.lockedHint') }}
     </NAlert>
-    <NAlert v-if="confEncError" type="error" :bordered="false" class="rclone-panel__alert">
+    <!-- 三态已就绪时的错误只可能来自写操作；状态未就绪的错误由卡片内那条可操作 alert
+         呈现，两处都渲染会让同一条 message 出现两次。 -->
+    <NAlert v-if="confEncError && confEncStatus" type="error" :bordered="false" class="rclone-panel__alert">
       {{ confEncError }}
     </NAlert>
 
@@ -875,9 +896,20 @@ defineExpose({ refresh, refreshConfEnc })
           <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
           <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
         </NSpace>
-        <NSpace align="center" :size="8" class="rclone-panel__row">
+        <!-- 三态未就绪（刷新失败 / 尚未返回）时一个写按钮都不渲染：旧判定
+             `!confEncStatus || !encrypted` 在 null 时成立，会让「生成并启用」冒出来，
+             再叠加 :loading 的转圈形态，看起来就像多了一个按钮。 -->
+        <NAlert v-if="!confEncStatus" type="warning" :bordered="false" class="rclone-panel__alert">
+          <NSpace align="center" :size="8">
+            <span>{{ confEncError || t('settings.rclone.confEnc.stateUnknown') }}</span>
+            <NButton size="tiny" secondary :loading="loading" @click="refresh">
+              {{ t('common.retry') }}
+            </NButton>
+          </NSpace>
+        </NAlert>
+        <NSpace v-if="confEncStatus" align="center" :size="8" class="rclone-panel__row">
           <NButton
-            v-if="!confLocked && (!confEncStatus || !confEncStatus.conf_encrypted)"
+            v-if="!confLocked && !confEncStatus.conf_encrypted"
             key="conf-enc-enable"
             size="small"
             type="primary"
@@ -888,7 +920,7 @@ defineExpose({ refresh, refreshConfEnc })
             {{ t('settings.rclone.confEnc.enableBtn') }}
           </NButton>
           <NButton
-            v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            v-if="confEncStatus.conf_encrypted && !confLocked"
             key="conf-enc-rekey"
             size="small"
             type="primary"
@@ -899,7 +931,7 @@ defineExpose({ refresh, refreshConfEnc })
             {{ t('settings.rclone.confEnc.rekeyBtn') }}
           </NButton>
           <NButton
-            v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            v-if="confEncStatus.conf_encrypted && !confLocked"
             key="conf-enc-disable"
             size="small"
             :disabled="!confEncCanManage"
@@ -1191,14 +1223,17 @@ defineExpose({ refresh, refreshConfEnc })
       :generated-hint="t('settings.rclone.confEnc.revealHint')"
       :custom-label="confEncPwCopy.label"
       :custom-placeholder="confEncPwCopy.placeholder"
+      :generate-label="t('common.generatePassword')"
       :submit-label="t('common.confirm')"
-      :confirm-label="t('settings.rclone.confEnc.revealConfirm')"
-      :generated="null"
+      :confirm-label="t('common.confirm')"
+      :generated="confEncNewGenerated"
       :loading="confEncBusy"
       :min-length="1"
-      :show-generated-cancel="false"
-      :show-generate="false"
+      :show-generated-cancel="true"
+      :show-generate="confEncAction === 'rekey-new'"
+      @generate="onConfEncGenerateNew"
       @submit-custom="onConfEncPassword"
+      @confirm-generated="onConfEncGeneratedConfirm"
     />
 
     <!-- 停用加密：输入当前口令后再过一次危险操作确认门 -->
