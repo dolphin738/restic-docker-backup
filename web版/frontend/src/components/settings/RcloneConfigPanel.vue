@@ -891,7 +891,7 @@ defineExpose({ refresh, refreshConfEnc })
     </NSpace>
 
     <NCard size="small" :title="t('settings.rclone.confEnc.title')" class="rclone-panel__card">
-      <NSpace vertical :size="10">
+      <div class="rclone-panel__stack">
         <NSpace align="center" :size="8" class="rclone-panel__row">
           <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
           <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
@@ -907,7 +907,11 @@ defineExpose({ refresh, refreshConfEnc })
             </NButton>
           </NSpace>
         </NAlert>
-        <NSpace v-if="confEncStatus" align="center" :size="8" class="rclone-panel__row">
+        <!-- 必须是裸 div：Naive UI 的 NSpace 给每个 item 硬编码 key=1（2.45.3），
+             子节点数量变化（加密态 ↔ 明文态互斥分支）时 Vue 的 keyed diff 会认错
+             节点，把已经该卸载的按钮留在 DOM 里 —— 表现为停用加密后多出一个带转圈
+             的「生成并启用加密」，刷新才消失。裸 div 的子节点用各自 key（conf-enc-*）。 -->
+        <div v-if="confEncStatus" class="rclone-panel__row">
           <NButton
             v-if="!confLocked && !confEncStatus.conf_encrypted"
             key="conf-enc-enable"
@@ -951,8 +955,8 @@ defineExpose({ refresh, refreshConfEnc })
           >
             {{ t('settings.rclone.confEnc.unlockBtn') }}
           </NButton>
-        </NSpace>
-      </NSpace>
+        </div>
+      </div>
     </NCard>
 
     <NCard size="small" :title="t('settings.rclone.listTitle')" class="rclone-panel__card">
@@ -1352,6 +1356,15 @@ defineExpose({ refresh, refreshConfEnc })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* 加密卡片内的纵向堆叠：与 NSpace vertical 同观感，但不用 NSpace——它给每个 item
+   硬编码 key=1，插槽里带条件子节点时 Vue 的 keyed diff 会认错节点、把该卸载的
+   元素留在 DOM（真机「停用后多一个按钮」即此）。裸 div 用索引 + Comment 占位，
+   条件分支切换不会串位。 */
+.rclone-panel__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 /* 次级维护入口分组框（找回密码 / 就地修正）：与主输入区分层，弱化为虚线细框 */
 .rclone-panel__maint {

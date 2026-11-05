@@ -861,4 +861,32 @@ describe('RcloneConfigPanel conf 加密面板', () => {
 
     w.unmount()
   })
+
+  it('缺陷 1（真机复现）：就地停用加密后只剩「生成并启用」，不残留加密态按钮或转圈', async () => {
+    const status = vi
+      .spyOn(repoApi, 'getRcloneConfEncryption')
+      .mockResolvedValue(ENC_STATUS_ENCRYPTED)
+    const w = mountPanel()
+    await mountReady()
+    expect(confEncButtons(w)).toEqual([
+      zhCN.settings.rclone.confEnc.rekeyBtn,
+      zhCN.settings.rclone.confEnc.disableBtn,
+    ])
+
+    // 就地切换（不刷新页面）：加密态 → 明文态。加密态与明文态的按钮是互斥分支，
+    // v-if 直接换节点；按钮行若包在 NSpace 里，NSpace 给每个 item 硬编码 key=1，
+    // Vue 的 keyed diff 会把该卸载的按钮留在 DOM（= 真机上多出来的那个按钮）。
+    status.mockResolvedValue(ENC_STATUS_PLAIN)
+    clickSubmit(w, zhCN.settings.rclone.refresh)
+    await mountReady()
+
+    expect(confEncButtons(w)).toEqual([zhCN.settings.rclone.confEnc.enableBtn])
+    // 按钮行里必须**只剩这一个** DOM 按钮，且它身上没有转圈（:loading 残留 = 旧节点没被换掉）。
+    const enableBtn = ([...w.element.querySelectorAll('button')] as HTMLButtonElement[]).find(
+      (b) => b.textContent?.trim() === zhCN.settings.rclone.confEnc.enableBtn,
+    )!
+    expect(enableBtn.parentElement!.querySelectorAll('button')).toHaveLength(1)
+    expect(enableBtn.querySelectorAll('.n-base-loading')).toHaveLength(0)
+    w.unmount()
+  })
 })
