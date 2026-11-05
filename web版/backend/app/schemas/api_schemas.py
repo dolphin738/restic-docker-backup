@@ -1250,9 +1250,14 @@ class _RcloneConfPasswordBase(_Base):
 
 
 class RcloneConfEnableRequest(_RcloneConfPasswordBase):
-    """启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。"""
+    """启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。
+
+    ``backup`` 控制是否把启用前的明文 conf 写到 <PASSFILE_ROOT>/conf-backup.conf：
+    它是口令彻底丢失时唯一的恢复路径，关掉即等于「口令丢了就再也打不开」。
+    """
 
     password: _ConfPassword | None = None
+    backup: bool = True
 
 
 class RcloneConfRekeyRequest(_RcloneConfPasswordBase):

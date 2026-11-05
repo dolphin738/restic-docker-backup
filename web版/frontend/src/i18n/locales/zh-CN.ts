@@ -1585,6 +1585,9 @@ export default {
         stateEncrypted: '已加密且可解',
         stateLocked: '已加密且无法解开',
         lockedHint: 'rclone 配置已加密且当前口令无法解开：除「输入口令解锁」外，所有写操作均已禁用。解锁后才能管理远端与更换口令。',
+        backupLabel: '启用前备份明文 conf',
+        backupHint:
+          '开启时，把启用前的明文 rclone.conf 写到口令目录的 conf-backup.conf，作为口令彻底丢失时唯一的恢复路径；关闭则不留任何明文副本，口令丢了就再也打不开已加密的 conf。',
         enableBtn: '生成并启用加密',
         rekeyBtn: '更换加密口令',
         disableBtn: '停用加密',

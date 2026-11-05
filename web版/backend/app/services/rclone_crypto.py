@@ -186,11 +186,13 @@ class RcloneCryptoService:
             pass_path=str(self._pass_path),
         )
 
-    async def enable(self, new_password: str | None = None) -> str:
+    async def enable(self, new_password: str | None = None, *, backup: bool = True) -> str:
         """仅未加密可用；生成 / 落盘口令、验通后一次性返回明文。
 
-        任何一步失败都从口令目录的滚动备份（conf-backup.conf）还原，口令文件回到
-        操作前状态，且不改变运行期 env；备份文件作为逃生通道保留。
+        回滚始终用**内存里的操作前字节**，与 backup 无关——关掉逃生备份不会让失败
+        回滚失去依据。backup=True（默认）额外把那份明文写进
+        <passfile_root>/conf-backup.conf，作为口令彻底丢失时唯一的恢复路径；
+        backup=False 则不留任何明文副本（用户显式选择自己另存）。
         """
         if self._header_encrypted():
             raise ValidationError("rclone.conf 已加密，不能重复启用加密")
@@ -198,7 +200,12 @@ class RcloneCryptoService:
         if not password:
             raise ValidationError("口令不能为空")
 
-        backup = self._backup_conf()
+        try:
+            original = self._conf_path.read_bytes()
+        except OSError:
+            raise RcloneUnavailableError("rclone 配置文件不可读") from None
+        if backup:
+            self._write_escape_backup(original)
         previous_pass = self._snapshot_pass()
         previous_env = os.environ.get(_PASSWORD_COMMAND_ENV)
         temps: list[Path] = []
@@ -217,7 +224,7 @@ class RcloneCryptoService:
             self._set_password_command_env()
             self._warn_legacy_backups()
         except Exception as exc:
-            self._restore_conf(backup)
+            self._restore_conf_bytes(original)
             if pass_written:
                 self._restore_pass(previous_pass)
             self._restore_env(previous_env)
@@ -376,28 +383,27 @@ class RcloneCryptoService:
         """复用 P3 的纯文件头判定单一实现点（缺失 / 不可读按明文处理）。"""
         return conf_encrypted(str(self._conf_path))
 
-    def _backup_conf(self) -> Path:
-        """把当前 conf 原子写到口令目录的单一滚动备份，权限 0600。
+    def _write_escape_backup(self, data: bytes) -> Path:
+        """把启用前的明文 conf 原子写到口令目录的单一滚动备份，权限 0600。
+
+        只在启用加密时按用户开关调用（backup=True），是口令彻底丢失时唯一的恢复路径；
+        失败回滚不依赖本文件（用内存字节）。写失败会让启用整体失败——留一份开口的
+        密文 conf 却没留逃生备份，比不启用更糟。
 
         位置固定在 self._pass_path.parent（即 settings.passfile_root）而不是 conf 同目录：
         conf 目录一旦被单独拷走，同目录的明文备份会让加密形同虚设；放到口令目录后，
         取走明文需要同时拿到 conf 与 passfile 两处。
 
         文件名恒定 conf-backup.conf，每次覆盖同一路径（不按时间戳堆文件）；写入走同目录
-        mkstemp + 0600 + os.replace 原子替换，避免并发读到半截。内容仍是明文 conf——
-        这是失败回滚与逃生通道的既定设计。
+        mkstemp + 0600 + os.replace 原子替换，避免并发读到半截。
         """
-        try:
-            original = self._conf_path.read_bytes()
-        except OSError:
-            raise RcloneUnavailableError("rclone 配置文件不可读") from None
         backup = self._pass_path.parent / _CONF_BACKUP_NAME
         try:
             backup.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix="rclone-conf-backup-", suffix=".tmp", dir=backup.parent)
             try:
                 with os.fdopen(fd, "wb") as fh:
-                    fh.write(original)
+                    fh.write(data)
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, backup)
             except BaseException:
@@ -425,11 +431,6 @@ class RcloneCryptoService:
                 "同目录明文副本会使 conf 加密失效，请确认后手工清理",
                 len(legacy),
             )
-
-    def _restore_conf(self, backup: Path) -> None:
-        """从备份还原 conf（保留备份文件作为逃生通道）。"""
-        with suppress(OSError):
-            self._restore_conf_bytes(backup.read_bytes())
 
     def _restore_conf_bytes(self, original: bytes) -> None:
         """把操作前的 conf 字节写回（rekey 用内存快照，不额外留明文文件）。"""

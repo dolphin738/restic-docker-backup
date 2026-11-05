@@ -382,9 +382,11 @@ export interface RcloneConfEncryptionOut {
   pass_path: string
 }
 
-/** POST .../enable：省略或 null = 后端生成 32 位；空串由后端 422 拒绝。 */
+/** POST .../enable：省略或 null = 后端生成 32 位；空串由后端 422 拒绝。
+ *  backup 省略即 true：把启用前的明文 conf 写到 <passfile_root>/conf-backup.conf。 */
 export interface RcloneConfEnableRequest {
   password?: string | null
+  backup?: boolean
 }
 
 /** POST .../rekey：新旧口令均不得为空。 */

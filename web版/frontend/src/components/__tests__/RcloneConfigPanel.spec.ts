@@ -777,6 +777,15 @@ function confEncButtons(w: ReturnType<typeof mountPanel>): string[] {
     .filter((text) => labels.includes(text))
 }
 
+/** 加密卡片里的「启用前备份」开关：按 aria-label 定位，避免撞上 crypt 表单里的同名控件。 */
+function backupSwitch(w: ReturnType<typeof mountPanel>): HTMLElement | null {
+  const label = zhCN.settings.rclone.confEnc.backupLabel
+  const host = ([...w.element.querySelectorAll('[aria-label]')] as HTMLElement[]).find(
+    (el) => el.getAttribute('aria-label') === label,
+  )
+  return (host?.closest('.n-switch') as HTMLElement | null) ?? null
+}
+
 /** 面板挂载后等两轮微任务（onMounted 并发拉三态 + 列表）。 */
 async function mountReady(): Promise<void> {
   await nextTick()
@@ -817,6 +826,52 @@ describe('RcloneConfigPanel conf 加密面板', () => {
     w.unmount()
   })
 
+  it('启用前的明文备份：默认开启，点启用时把 backup=true 带给后端', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const enable = vi
+      .spyOn(repoApi, 'enableRcloneConfEncryption')
+      .mockResolvedValue({ code: 'ok', password_once: 'a'.repeat(32) })
+    const w = mountPanel()
+    await mountReady()
+
+    // 开关默认开：不在启用时静默去掉逃生备份
+    const sw = backupSwitch(w)
+    expect(sw).toBeTruthy()
+    expect(sw!.getAttribute('aria-checked')).toBe('true')
+
+    buttonOf(w, zhCN.settings.rclone.confEnc.enableBtn)!.dispatchEvent(new Event('click'))
+    await mountReady()
+    expect(enable).toHaveBeenCalledWith({ backup: true })
+    w.unmount()
+  })
+
+  it('关掉备份开关后，启用请求带 backup=false（不留任何明文副本）', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const enable = vi
+      .spyOn(repoApi, 'enableRcloneConfEncryption')
+      .mockResolvedValue({ code: 'ok', password_once: 'b'.repeat(32) })
+    const w = mountPanel()
+    await mountReady()
+
+    const sw = backupSwitch(w)!
+    sw.dispatchEvent(new Event('click'))
+    await mountReady()
+    expect(sw.getAttribute('aria-checked')).toBe('false')
+
+    buttonOf(w, zhCN.settings.rclone.confEnc.enableBtn)!.dispatchEvent(new Event('click'))
+    await mountReady()
+    expect(enable).toHaveBeenCalledWith({ backup: false })
+    w.unmount()
+  })
+
+  it('加密态不显示备份开关（换口令 / 停用不写备份，显示即误导）', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
+    const w = mountPanel()
+    await mountReady()
+
+    expect(backupSwitch(w)).toBeNull()
+    w.unmount()
+  })
   it('缺陷 2：换口令的新口令段能生成并填入明文，旧口令段没有生成入口', async () => {
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
     const w = mountPanel()

@@ -74,3 +74,30 @@ async def test_rekey_failure_restores_original_bytes(tmp_path) -> None:
     assert (tmp_path / "rclone.conf").read_bytes() == ENCRYPTED_CONF
     assert (tmp_path / "repos" / "rclone.pass").read_bytes() == b"old-password"
     assert not (tmp_path / "repos" / _CONF_BACKUP_NAME).exists()
+
+
+async def test_enable_without_backup_leaves_no_plaintext_copy(tmp_path) -> None:
+    """开关关掉时不留任何明文副本：口令目录与 conf 同目录都不得出现备份。"""
+    svc = _service(tmp_path, PLAIN_CONF)
+    await svc.enable("new-password", backup=False)
+
+    assert not (tmp_path / "repos" / _CONF_BACKUP_NAME).exists()
+    assert list(tmp_path.glob("conf-backup*")) == []
+    # 开关只管备份，启用本身照旧：口令落盘
+    assert (tmp_path / "repos" / "rclone.pass").read_text() == "new-password"
+
+
+async def test_enable_without_backup_still_rolls_back(tmp_path) -> None:
+    """关掉备份不削弱回滚：失败仍按内存字节还原 conf、不留口令。"""
+    svc = _service(tmp_path, PLAIN_CONF)
+
+    async def fail_on_set(argv) -> tuple[int, str]:
+        return (1, "") if "set" in argv else (0, "")
+
+    svc._executor = fail_on_set
+    with pytest.raises(RcloneUnavailableError):
+        await svc.enable("new-password", backup=False)
+
+    assert (tmp_path / "rclone.conf").read_bytes() == PLAIN_CONF
+    assert not (tmp_path / "repos" / "rclone.pass").exists()
+    assert not (tmp_path / "repos" / _CONF_BACKUP_NAME).exists()

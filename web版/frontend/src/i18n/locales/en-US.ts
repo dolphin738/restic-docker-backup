@@ -1610,6 +1610,9 @@ export default {
         stateEncrypted: 'Encrypted and unlockable',
         stateLocked: 'Encrypted but locked',
         lockedHint: 'rclone conf is encrypted and the current password cannot unlock it: all writes except unlocking are disabled. Manage remotes and change the password only after unlocking.',
+        backupLabel: 'Back up the plaintext conf before enabling',
+        backupHint:
+          'When on, the pre-encryption plaintext rclone.conf is written to conf-backup.conf in the password directory — the only recovery path if the password is lost for good. When off, no plaintext copy is left behind: a lost password means the encrypted conf can never be opened again.',
         enableBtn: 'Generate and enable encryption',
         rekeyBtn: 'Change encryption password',
         disableBtn: 'Disable encryption',

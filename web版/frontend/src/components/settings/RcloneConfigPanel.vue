@@ -258,6 +258,8 @@ const confEncDisableOpen = ref(false)
 /** 换口令「新口令」段本地生成的明文：只活在这一个 ref 与弹窗展示里，
  *  确认（=提交轮换）或关闭弹窗即清空；绝不进 console / localStorage / URL。 */
 const confEncNewGenerated = ref<string | null>(null)
+/** 启用时是否把操作前的明文 conf 写成逃生备份；默认开，关掉即「口令丢了就打不开」。 */
+const confEncBackup = ref(true)
 
 /** 快照侧也带锁死位；任一来源为 true 即按锁死处理（宁可禁用，不可误写）。 */
 const confLocked = computed(() => {
@@ -352,7 +354,8 @@ async function runConfEncWrite(call: () => Promise<string | null>): Promise<void
 }
 
 function onConfEncEnable(): void {
-  void runConfEncWrite(async () => (await enableRcloneConfEncryption()).password_once)
+  const body = { backup: confEncBackup.value }
+  void runConfEncWrite(async () => (await enableRcloneConfEncryption(body)).password_once)
 }
 
 function startConfEncUnlock(): void {
@@ -911,7 +914,21 @@ defineExpose({ refresh, refreshConfEnc })
              子节点数量变化（加密态 ↔ 明文态互斥分支）时 Vue 的 keyed diff 会认错
              节点，把已经该卸载的按钮留在 DOM 里 —— 表现为停用加密后多出一个带转圈
              的「生成并启用加密」，刷新才消失。裸 div 的子节点用各自 key（conf-enc-*）。 -->
-        <div v-if="confEncStatus" class="rclone-panel__row">
+        <div v-if="confEncStatus" class="rclone-panel__row rclone-panel__row--end">
+          <!-- 逃生备份开关只对「启用」有意义：换口令/停用不写备份，加密态下显示它只会误导。 -->
+          <template v-if="!confLocked && !confEncStatus.conf_encrypted">
+            <NSwitch
+              v-model:value="confEncBackup"
+              size="small"
+              :aria-label="t('settings.rclone.confEnc.backupLabel')"
+            />
+            <NTooltip>
+              <template #trigger>
+                <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.backupLabel') }}</span>
+              </template>
+              {{ t('settings.rclone.confEnc.backupHint') }}
+            </NTooltip>
+          </template>
           <NButton
             v-if="!confLocked && !confEncStatus.conf_encrypted"
             key="conf-enc-enable"
@@ -1356,6 +1373,10 @@ defineExpose({ refresh, refreshConfEnc })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* 操作按钮靠右：状态徽标与说明留在左侧读序起点，右侧只放可点的动作。 */
+.rclone-panel__row--end {
+  justify-content: flex-end;
 }
 /* 加密卡片内的纵向堆叠：与 NSpace vertical 同观感，但不用 NSpace——它给每个 item
    硬编码 key=1，插槽里带条件子节点时 Vue 的 keyed diff 会认错节点、把该卸载的

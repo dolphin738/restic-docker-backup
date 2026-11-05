@@ -2605,8 +2605,13 @@
       },
       "RcloneConfEnableRequest": {
         "additionalProperties": false,
-        "description": "启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。",
+        "description": "启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。\n\n``backup`` 控制是否把启用前的明文 conf 写到 <PASSFILE_ROOT>/conf-backup.conf：\n它是口令彻底丢失时唯一的恢复路径，关掉即等于「口令丢了就再也打不开」。",
         "properties": {
+          "backup": {
+            "default": true,
+            "title": "Backup",
+            "type": "boolean"
+          },
           "password": {
             "anyOf": [
               {

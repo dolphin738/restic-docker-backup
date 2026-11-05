@@ -666,9 +666,11 @@ def register(router: APIRouter) -> None:
         del session
         service = await _conf_write_guard(request)
         generated = payload.password is None
-        password = await service.enable(_secret_text(payload.password))
+        password = await service.enable(_secret_text(payload.password), backup=payload.backup)
         await request.app.state.audit.record(
-            AUDIT_RCLONE_CONF_ENCRYPT, detail={"generated": generated, "result": "ok"}, result="ok"
+            AUDIT_RCLONE_CONF_ENCRYPT,
+            detail={"generated": generated, "backup": payload.backup, "result": "ok"},
+            result="ok",
         )
         return RcloneConfPasswordOnceOut(password_once=password if generated else None)
 
