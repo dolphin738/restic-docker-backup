@@ -233,12 +233,18 @@ class RcloneCryptoService:
 
         脚本内容只有临时口令文件路径与环境变量名，不含任何口令；默认执行器
         在 set 时置 stdin=DEVNULL。失败还原 conf 且口令文件保持旧值。
+
+        回滚用**内存里的操作前字节**，不写滚动备份：换口令的输入是旧密文，
+        备份下来的是旧口令才能解开的旧密文——旧口令一旦被换掉就再也解不开，
+        既不构成逃生通道，还白白让口令目录多留一份密文副本（真机实测：换口令
+        后 conf-backup.conf 用新旧口令都 check 不过）。逃生通道只由 enable()
+        建立（备份的是操作前的**明文** conf，口令彻底丢失时才有用）。
         """
         self._require_encrypted()
         previous_pass = self._snapshot_pass()
         previous_env = os.environ.get(_PASSWORD_COMMAND_ENV)
         temps: list[Path] = []
-        backup: Path | None = None
+        original: bytes | None = None
         pass_written = False
         try:
             old_tmp = await self._verify_password(old_password, temps)
@@ -261,7 +267,10 @@ class RcloneCryptoService:
                 suffix=".sh",
                 directory=_script_dir(),
             )
-            backup = self._backup_conf()
+            try:
+                original = self._conf_path.read_bytes()
+            except OSError:
+                raise RcloneUnavailableError("rclone 配置文件不可读") from None
             set_code = await self._run(self._encryption_argv("set", str(script_tmp)))
             if set_code != 0:
                 raise RcloneUnavailableError("rclone 换口令写入失败，已回滚")
@@ -272,8 +281,8 @@ class RcloneCryptoService:
             self._set_password_command_env()
             self._warn_legacy_backups()
         except Exception as exc:
-            if backup is not None:
-                self._restore_conf(backup)
+            if original is not None:
+                self._restore_conf_bytes(original)
             if pass_written:
                 self._restore_pass(previous_pass)
             self._restore_env(previous_env)
@@ -420,7 +429,12 @@ class RcloneCryptoService:
     def _restore_conf(self, backup: Path) -> None:
         """从备份还原 conf（保留备份文件作为逃生通道）。"""
         with suppress(OSError):
-            self._conf_path.write_bytes(backup.read_bytes())
+            self._restore_conf_bytes(backup.read_bytes())
+
+    def _restore_conf_bytes(self, original: bytes) -> None:
+        """把操作前的 conf 字节写回（rekey 用内存快照，不额外留明文文件）。"""
+        with suppress(OSError):
+            self._conf_path.write_bytes(original)
             self._conf_path.chmod(0o600)
 
     def _snapshot_pass(self) -> bytes | None:

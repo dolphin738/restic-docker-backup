@@ -1,11 +1,12 @@
 # rclone 配置落盘加密实施方案
 
-> 版本：v1.7（2026-11-05，**已实施并修订**）
+> 版本：v1.8（2026-11-05，**已实施并修订**）
 > 层级：方案层——`rclone.conf` **落盘加密与运行时口令通道**的唯一方案源，亦即 GitHub issue #2 的实现依据
 > 边界：本文只覆盖 **conf 文件的加密态识别与口令通道**。rclone 段的增删改查能力边界（注册表、凭据混淆、占用扫描、配置归档）见《rclone配置生成工具设计方案》v1.21，本文不重复、不替代。
 > 关联：`app/services/rclone.py`（只读探测）、`app/services/rclone_config.py`（conf 管理）、`docker/Dockerfile`、`docs/部署指南.md` §4.2、`docs/架构设计文档.md` §5.0/§5.1
 
 > **修订记录**：
+> - v1.8（2026-11-05）：**真机第二轮反馈两条（提交 `7f9a499` + 本轮后端收口）**。①**停用后仍多一个按钮**：v1.7 的三态 gate 只解决了「状态未就绪」，真机复现的是**状态已就绪的就地切换**——根因在 Naive UI 的 `NSpace`：它给每个插槽 item 硬编码 `key=1`（2.45.3 `space/src/Space.mjs:130`），按钮从「更换+停用」两个变成「生成并启用」一个时，Vue 的 keyed diff 把该卸载的节点留在 DOM，叠加 `:loading` 就成了那个「多出来的按钮」，刷新才消失。改为**裸 div**（`.rclone-panel__row` / 新增 `.rclone-panel__stack`），子节点用显式 key，条件分支切换不串位；控制台那条 `<Space key=1>` 重复 key 警告同步消失。②**备份文件的目的说不清、且换口令后的备份打不开**：核对后确认 `rekey()` 也调 `_backup_conf()`，而它备份的是**旧密文**——旧口令一换，备份用新旧口令都 `check` 不过（真机实测 exit=1/1），既当不了逃生通道又白留副本。改为 **`rekey()` 用内存快照回滚、不写备份**；逃生备份**只由 `enable()` 建立**（备份操作前的**明文** conf，口令彻底丢失时才用得上）。`disable()` 本来就只用内存快照。**验收**：新增 `tests/test_rclone_crypto_backup.py` 3 例（enable 写明文备份 / rekey 不写 / rekey 失败逐字节还原），经变异测试确认能抓回退；真机 disable 后就地只剩「生成并启用加密」且 spinner=0；rekey 两次后 `conf-backup.conf` mtime 不变。
 > - v1.7（2026-11-05）：**真机使用后修三个缺陷（提交 `323488d`）**，其中一个是 v1.6 的安全回归。①**🔴 明文备份堆积**：`_backup_conf()` 原先把当前 conf 明文写到 **conf 同目录** `conf-backup-<时间戳>.conf` 且成功路径也不删（真机已积 7 份）——本方案 §9.1 把「强制备份」设计为逃生通道，但逃生通道不该是长期明文驻留：威胁模型是「`./rclone/` 被单独拷走」，同目录明文副本比加密 conf 更好用，**加密等于白做**。改为 **`<passfile_root>/conf-backup.conf` 单一滚动文件**（同目录 mkstemp + 0600 + `os.replace`），取走明文需同时拿到 conf 与 passfile 两卷，与既有密钥分离策略一致；conf 同目录的旧时间戳备份**不自动删**（运维可能依赖），仅 `logger.warning` 报数量。②**状态未就绪时渲染写按钮**：`v-if="!confLocked && (!confEncStatus || !confEncStatus.conf_encrypted)"` 在 `confEncStatus === null`（刷新失败）时放行了 enable 按钮，叠加 `:loading` 转圈形态，视觉上像两个按钮；改为按钮组整体 gate 在 `confEncStatus` 上，未就绪只显示可操作 alert + 重试，`refresh()` 失败时写入 `confEncError` 而非静默置 null。③**rekey 新口令段没有生成入口**：`PasswordEntryModal` 硬传 `:show-generate="false"`，改为 `confEncAction === 'rekey-new'`（旧段 false / 新段 true），生成的明文只进内存 ref 并直接用于轮换。**验收**：WSL 真实 rclone 1.75.2 连续 enable→rekey→rekey 后 passfile_root 下恰 1 份 `conf-backup.conf`（0o600）、conf 同目录零新增；回滚后 conf 逐字节还原；ruff/`pytest tests/test_rclone_config.py` 80 passed/`vue-tsc` 0 错/panel spec **25 passed**（22+3 新增，经变异测试确认能抓原缺陷）；真机浏览器三态按钮与 rekey 生成入口均按预期。
 > - v1.6（2026-11-05）：**P1–P8 全部落地，方案转「已实施」**。提交链 `808a3c6`（P1 规范/常量/错误码）→ `33a52fd`（P2–P5+P7 后端）→ `a280e93`（P6 前端）→ `ab7422a`（FIX-SPACE + UI key 修复）。**实施中发现并修复一个 v1.5 未预见的 🔴 缺陷**：`RCLONE_PASSWORD_COMMAND = f"/bin/cat {pass_path}"` 在 `PASSFILE_ROOT` 含空格时被 rclone 按空白切分 exec 拆断（真机 `D:\agent\AI Coding\...` 经 WSL 挂载即含空格），导致全部 `rclone:` 远端不可用；修法是命令值恒为**无空格脚本路径**（`password_command_for()`，脚本体内 `shlex.quote` 真实路径），已用真实 rclone 1.75.2 在含空格路径下端到端验证 enable/rekey/disable 全通。**另两处实施偏差**：①端点数 4 → **5**（方案 §5.3 的第三态「输入口令解锁」需要独立端点，v1.4 已预见但 §6 只列了 4 个，实际落地补 E68）；②新增 schema 4 → **5**（拒绝复用 `OkResponse`——它在 backend 有 49 处使用、`schema.d.ts` 出现 16 次，加字段会污染全部既有端点契约）。**验收**：后端 pytest 1303 passed / 0 failed；前端 typecheck 0 错；RcloneConfigPanel.spec 22/22；真机浏览器 enable→rekey→disable 全链路通过且 conf 与备份逐字节相同。
 > - v1.5（2026-11-05）：**P-1 批次落地：从代码移除 entrypoint 口令自动生成**（owner 指令「先做 P-1」）。删除 `docker/entrypoint.sh` 的 `RCLONE_PASS_FILE` 变量（6 行注释 + 1 行赋值）、`ensure_rclone_pass()` 整函数（21 行）、root 档与非 root 档两处调用（4 + 5 行），共 −36 行；`docker/docker-compose.yml` 删掉 `# RCLONE_PASS_FILE` 与「首次启动自动生成」四行说明，改为指向界面生成（§5.10），`RCLONE_PASSWORD_COMMAND` 语义保留但在 compose 中不再预置。《部署指南》§4.2 那节原写「设一个路径、容器首次启动自动生成」，现改为**如实说明本版本 conf 加密未启用、不做启动期自动生成、勿再配 `RCLONE_PASS_FILE`**，并保留「不要复用仓库口令文件」的警示。**保留不动**：`PASSFILE_ROOT` 独立密钥卷处理（`PASSFILE_ROOT: /repos` + `./repos:/repos:rw` 默认布局）与 `need_dir` 的 `_hint` 形参（仍被 `need_dir "$PASSFILE_ROOT" "<宿主机 keys 目录>"` 使用）。**验证**：`dash -n`/`sh -n` 通过；`docker/` 下 `RCLONE_PASS_FILE`/`ensure_rclone_pass` 零命中；5 场景行为测试全绿——显式设置已废弃变量时**不再生成任何文件**、独立密钥卷处理仍正常、未设 `PASSFILE_ROOT` 时行为与旧版一致。**规模修正**：实现清单 3/4 标记完成，§7 P-1 标记 ✅，§5.9 移除状态由「代码待删」改为「已删」。
@@ -501,7 +502,7 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 
 | 缓解 | 落点 |
 | --- | --- |
-| **启用前强制备份明文 conf** | `enable()`/`rekey()` 复制到 **`<passfile_root>/conf-backup.conf`**（单一滚动文件，0600，**不在 conf 同目录**——否则明文副本会让加密失效，见 v1.7） |
+| **启用前强制备份明文 conf** | **只有** `enable()` 复制到 **`<passfile_root>/conf-backup.conf`**（单一滚动文件，0600，**不在 conf 同目录**——否则明文副本会让加密失效，见 v1.7）。`rekey()` 不写备份：备份的是旧密文，旧口令一换就解不开，用内存快照回滚即可（v1.8） |
 | **口令一次性展示 + 强制确认** | `SecretReveal.vue`，用户点「我已备份」才算完成（沿用 E44 / B9 的既有心智） |
 | **每次操作后 `check` 验通** | 非 0 立即用备份还原 conf 并抛错，**绝不留下「已加密但解不开」** |
 | **锁死时面板仍可打开** | §5.4 的三处语义修正 + §5.6 启动自检 + §5.3 第三态的「输入口令解锁」按钮 |
@@ -510,8 +511,12 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 ⇒ 界面致锁风险**无法降到零**，只能靠上述五条把「误操作 → 不可恢复」压缩成「误操作 → 一次点击内可回滚 + 有明文备份」。
 这是与 v1.2「零致锁入口」的实质差别，必须写进验收。
 
-**逃生通道（写进界面文案）**：`<passfile_root>/conf-backup-*` 里的明文 conf 可直接覆盖回 `/etc/rclone/rclone.conf`，
+**逃生通道（写进界面文案）**：`<passfile_root>/conf-backup.conf` 里的明文 conf 可直接覆盖回 `/etc/rclone/rclone.conf`，
 覆盖后加密态消失、口令文件可删——这是口令彻底丢失时**唯一**的恢复路径。
+
+> **只在「启用」这一步存在（v1.8）**：换口令不会刷新它，因为那时 conf 已是密文。
+> 也就是说：**启用加密前 conf 必须是可用的明文**，那一刻的备份才是有用的逃生通道；
+> 事后换了口令，这份备份仍是「启用当时的明文」，照样能覆盖回去——这正是它该有的语义。
 
 ### 9.2 已接受的风险
 
