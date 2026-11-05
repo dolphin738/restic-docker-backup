@@ -85,8 +85,15 @@ def _cleanup(paths: list[Path]) -> None:
 
 
 def _password_script_path(tag: str | None) -> Path:
-    """口令命令脚本的固定路径；TMPDIR 含空白时退回 /tmp（命令值不得含空白）。"""
-    name = "restic-web-rclone-pass" + (f"-{tag}" if tag else "") + ".sh"
+    """口令命令脚本路径，按进程号隔离；TMPDIR 含空白时退回 /tmp（命令值不得含空白）。
+
+    进程号是必须的：同一台机器上跑 pytest 时，测试会用 ``Settings(passfile_root=
+    tmp_path)`` 调到这里，若路径固定就会把**正在运行的服务**所依赖的脚本改写成指向
+    pytest 临时目录——pytest 收尾删掉 tmp_path 后，服务进程 env 里的
+    ``RCLONE_PASSWORD_COMMAND`` 仍指向该脚本，rclone 随即报「wrong password」
+    （真机实测：跑完全量 pytest 后 GET /api/rclone/configs 变 500）。
+    """
+    name = f"restic-web-rclone-pass{('-' + tag) if tag else ''}-{os.getpid()}.sh"
     script = Path(tempfile.gettempdir()) / name
     if " " in str(script) or "\t" in str(script):
         script = Path("/tmp") / name

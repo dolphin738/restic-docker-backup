@@ -11,10 +11,17 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from app.errors import RcloneUnavailableError
-from app.services.rclone_crypto import _CONF_BACKUP_NAME, RcloneCryptoService
+from app.services.rclone_crypto import (
+    _CONF_BACKUP_NAME,
+    RcloneCryptoService,
+    password_command_for,
+)
 from app.settings import Settings
 
 ENCRYPTED_CONF = b"# Encrypted rclone configuration File\n\nRCLONE_ENCRYPT_V0:\nAAAA\n"
@@ -101,3 +108,33 @@ async def test_enable_without_backup_still_rolls_back(tmp_path) -> None:
     assert (tmp_path / "rclone.conf").read_bytes() == PLAIN_CONF
     assert not (tmp_path / "repos" / "rclone.pass").exists()
     assert not (tmp_path / "repos" / _CONF_BACKUP_NAME).exists()
+
+
+def test_password_script_path_is_process_scoped_and_whitespace_free(tmp_path) -> None:
+    """口令脚本路径必须带进程号且不含空白（真机缺陷回归）。
+
+    路径固定会被同机 pytest 改写（那次 GET /api/rclone/configs 500 的成因）；
+    含空白则 rclone 按空白切分后 exec 失败（"cat: /mnt/d/agent/AI: No such file"）。
+    """
+    pass_path = tmp_path / "repos" / "rclone.pass"
+    pass_path.parent.mkdir()
+    pass_path.write_text("secret")
+
+    command = password_command_for(pass_path)
+    assert " " not in command and "\t" not in command
+    assert f"-{os.getpid()}.sh" in command
+    # 脚本体内只有口令文件路径，绝不含口令本身（S3）
+    script = Path(command)
+    assert script.is_file()
+    assert str(pass_path) in script.read_text(encoding="utf-8")
+    assert "secret" not in script.read_text(encoding="utf-8")
+    script.unlink()
+
+
+def test_password_script_path_differs_per_tag(tmp_path) -> None:
+    """同一口令路径的不同 tag 落到不同脚本文件，避免并发写同一文件。"""
+    pass_path = tmp_path / "rclone.pass"
+    seen = {password_command_for(pass_path, tag) for tag in (None, "enable", "check")}
+    assert len(seen) == 3
+    for command in seen:
+        Path(command).unlink(missing_ok=True)

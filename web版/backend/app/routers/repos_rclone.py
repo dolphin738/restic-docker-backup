@@ -249,7 +249,12 @@ def register(router: APIRouter) -> None:
         """
         del session
         service = _rclone_config_service(request)
-        listing = await service.list_configs()
+        try:
+            listing = await service.list_configs()
+        except RcloneConfigError as exc:
+            # 读端点也要映射：conf 被加密却解不开时 rclone 非零退出，漏掉这层就成 500
+            # （真机实测：跑完 pytest 后 RCLONE_PASSWORD_COMMAND 失效 → 500 而非 422/503）
+            _raise_rclone_error(exc)
         # 一次仓库查询聚合出「每个 remote 被多少仓库引用」——列表页零额外探测（裁决 3）
         backed = await request.app.state.repos_repo.list_rclone_backed()
         used = _count_remote_usage(backed)

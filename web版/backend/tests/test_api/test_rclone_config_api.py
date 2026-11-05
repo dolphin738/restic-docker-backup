@@ -47,10 +47,13 @@ class _FakeExec:
     def __init__(self, state: dict[str, dict[str, Any]] | None = None) -> None:
         self.state: dict[str, dict[str, Any]] = {k: dict(v) for k, v in (state or {}).items()}
         self.failure: tuple[int, str] | None = None
+        self.dump_failure: tuple[int, str] | None = None
         self.calls: list[list[str]] = []
 
     async def __call__(self, argv: list[str]) -> tuple[int, str]:
         self.calls.append(list(argv))
+        if self.dump_failure is not None and "dump" in argv:
+            return self.dump_failure
         if self.failure is not None and ("create" in argv or "update" in argv or "delete" in argv):
             return self.failure
         if "dump" in argv:
@@ -264,6 +267,26 @@ async def test_delete_missing_remote_404(app_client):
     _install(ns, {})
     resp = await ns.client.delete("/api/rclone/config/ghost", headers=ORIGIN)
     assert resp.status_code == 404
+
+
+async def test_list_configs_conf_locked_maps_to_422(app_client):
+    """读端点也要走错误映射：conf 解不开时 422，不得漏成 500（真机缺陷回归）。
+
+    口令通道失效时 rclone 的 ``config dump`` 非零退出（"Couldn't decrypt configuration"），
+    而 ``list_configs`` 只把**不可用类**失败吞成 available=False，这一支会原样抛出——
+    端点缺 try/except 时就表现为 500。
+    """
+    ns = app_client
+    await finish_bootstrap(ns)
+    exec_ = _install(ns, {"mywebdav": WEBDAV_SECTION})
+    exec_.dump_failure = (1, "ERROR : Couldn't decrypt configuration, most likely wrong password.")
+
+    resp = await ns.client.get("/api/rclone/configs", headers=ORIGIN)
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    # S3：错误文案里不得出现任何凭据
+    assert "obscured-webdav-pass" not in resp.text
 
 
 async def test_cli_unavailable_maps_to_503(app_client):
