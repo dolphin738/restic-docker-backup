@@ -245,7 +245,7 @@ async def validate_repo_url(url: str, probe: RcloneProbe) -> None:
     """仓库 URL 完整校验（语法 + rclone remote 存在性）。空地址跳过（允许日后再补）。
 
     Raises:
-        ValidationError: 语法非法或 rclone remote 不在册（422）。
+        ValidationError: 语法非法、rclone remote 不在册或 conf 已加密但口令不可达（422）。
     """
     stripped = (url or "").strip()
     if not stripped:
@@ -254,7 +254,16 @@ async def validate_repo_url(url: str, probe: RcloneProbe) -> None:
         remote = validate_rclone_url_syntax(stripped)
         remotes = await probe.list_remotes()
         if not remotes.available:
-            # 探测不可用（缺二进制/超时/conf 读取失败）→ 放行语法正确的 URL，
+            # 配置错误（conf 已加密但口令不可达）改 URL 也救不回来 → 422 拒绝；
+            # 缺字段时按未锁死处理（P3 之前 / 其它 probe 实现兼容）。
+            if getattr(remotes, "conf_locked", False):
+                raise ValidationError(
+                    "rclone.conf 已加密但配置口令不可达，无法校验 rclone 远端——"
+                    "请恢复口令通道（口令文件 / RCLONE_PASSWORD_COMMAND）后重试，"
+                    "或用宿主机明文 conf 备份还原 rclone.conf",
+                    data={"remote": remote},
+                )
+            # 基础设施不可用（缺二进制/超时/事件循环不支持/conf 缺失）→ 放行语法正确的 URL，
             # 由 E29 连通性测试给出最终判定（原因明示，不静默）
             return
         if remote not in remotes.remotes:

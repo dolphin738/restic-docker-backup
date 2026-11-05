@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, field_validator
 
 from app.constants import (
     MAIL_PORT_DEFAULT,
@@ -1151,6 +1151,8 @@ class RcloneRemotesOut(_Base):
     conf_path: str | None
     remotes: list[str]
     reason: str | None
+    conf_encrypted: bool = False
+    conf_locked: bool = False
 
 
 class RcloneConfigItemOut(_Base):
@@ -1219,6 +1221,59 @@ class RcloneConfigsOut(_Base):
     configs: list[RcloneConfigItemOut]
     available: bool
     reason: str | None
+    conf_encrypted: bool = False
+    conf_locked: bool = False
+
+
+class RcloneConfEncryptionOut(_Base):
+    """rclone conf 加密三态（口令存在性只回布尔，口令明文永不回显）。"""
+
+    conf_encrypted: bool
+    conf_locked: bool
+    password_present: bool
+    conf_path: str
+    pass_path: str
+
+
+_ConfPassword = Annotated[SecretStr, StringConstraints(min_length=1, max_length=512)]
+
+
+class _RcloneConfPasswordBase(_Base):
+    """口令字段先包成 SecretStr：422 校验错误也不回显明文（S3）。"""
+
+    @field_validator(
+        "password", "current_password", "old_password", "new_password", mode="before", check_fields=False
+    )
+    @classmethod
+    def _hide_password(cls, value: Any) -> Any:
+        return SecretStr(value) if isinstance(value, str) else value
+
+
+class RcloneConfEnableRequest(_RcloneConfPasswordBase):
+    """启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。"""
+
+    password: _ConfPassword | None = None
+
+
+class RcloneConfRekeyRequest(_RcloneConfPasswordBase):
+    """更换 conf 加密口令（新旧口令均不得为空）。"""
+
+    old_password: _ConfPassword
+    new_password: _ConfPassword
+
+
+class RcloneConfPasswordRequest(_RcloneConfPasswordBase):
+    """停用 / 解锁 conf 加密：按端点使用 ``current_password`` / ``password``。"""
+
+    current_password: _ConfPassword | None = None
+    password: _ConfPassword | None = None
+
+
+class RcloneConfPasswordOnceOut(_Base):
+    """enable / rekey 的一次性明文口令（只在本次响应体出现，不进日志 / 审计）。"""
+
+    code: str = "ok"
+    password_once: str | None = None
 
 
 class RcloneConfigWriteRequest(_Base):

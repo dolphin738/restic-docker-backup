@@ -3,8 +3,9 @@
 候选 3 五域拆分第 4 域（最大的一域）：从 ``routers/repos.py`` 原样搬出，
 端点路径 / 响应模型 / 审计动作 / 声明顺序全部不变。
 
-域内 11 个端点：remotes 探测、configs 列表、remote usage、repoint（批量改指向）、
-config archives 三段（list/restore/delete）、config 三段（create/update/delete）。
+域内既有端点：remotes 探测、configs 列表、remote usage、repoint（批量改指向）、
+config archives 三段（list/restore/delete）、config 三段（create/update/delete）；
+另含 conf 加密三态 5 端点（status/enable/rekey/disable/unlock）。
 
 用 ``register(router)`` 挂到聚合器（见 ``repos_crud`` 文件头对顺序契约的说明）。
 """
@@ -12,13 +13,21 @@ config archives 三段（list/restore/delete）、config 三段（create/update/
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
+from contextlib import suppress
+from pathlib import Path
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import SecretStr
 
 from app.auth.dependencies import require_session
 from app.auth.session import SessionContext
 from app.constants import (
+    AUDIT_RCLONE_CONF_DECRYPT,
+    AUDIT_RCLONE_CONF_ENCRYPT,
+    AUDIT_RCLONE_CONF_REKEY,
     AUDIT_RCLONE_CONFIG_APPEND,
     AUDIT_RCLONE_CONFIG_DELETE,
     AUDIT_RCLONE_CONFIG_EDIT,
@@ -30,6 +39,7 @@ from app.errors import (
     EnvOverriddenError,
     JobConflictError,
     NotFoundError,
+    RcloneConfLockedError,
     RcloneRemoteInUseError,
     RcloneUnavailableError,
     ValidationError,
@@ -44,17 +54,22 @@ from app.schemas.api_schemas import (
     OkResponse,
     RcloneArchiveItemOut,
     RcloneArchivesOut,
+    RcloneConfEnableRequest,
+    RcloneConfEncryptionOut,
     RcloneConfigItemOut,
     RcloneConfigsOut,
     RcloneConfigWriteOut,
     RcloneConfigWriteRequest,
+    RcloneConfPasswordOnceOut,
+    RcloneConfPasswordRequest,
+    RcloneConfRekeyRequest,
     RcloneRemotesOut,
     RcloneRemoteUsageOut,
     RcloneUsageRepoRef,
     RepoRepointOut,
     RepoRepointRequest,
 )
-from app.services.rclone import RcloneProbe
+from app.services.rclone import RCLONE_CONF_LOCKED_HINT, RcloneProbe
 from app.services.rclone_config import (
     RcloneConfigConflict,
     RcloneConfigError,
@@ -62,6 +77,7 @@ from app.services.rclone_config import (
     RcloneConfigService,
     RcloneConfigUnavailable,
 )
+from app.services.rclone_crypto import RcloneCryptoService
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 
@@ -71,6 +87,88 @@ _PROTECTED = PROTECTED
 _rclone_remote_of = rclone_remote_of
 _count_remote_usage = count_remote_usage
 _validate_rclone_url_syntax = validate_rclone_url_syntax
+
+_RCLONE_PASSWORD_COMMAND = "RCLONE_PASSWORD_COMMAND"
+
+
+def _crypto_service(request: Request) -> RcloneCryptoService:
+    """取 conf 加密服务（应用级单例，装配于 lifespan）。"""
+    service: RcloneCryptoService = request.app.state.rclone_crypto
+    return service
+
+
+async def _conf_write_guard(request: Request, *, unlock: bool = False) -> RcloneCryptoService:
+    """写前门禁：活跃 job 409；锁死态除 unlock 外 503（提示不含口令）。"""
+    active = await request.app.state.job_repo.list_active()
+    if active:
+        raise JobConflictError(data={"running_job_id": active[0].id})
+    service = _crypto_service(request)
+    if not unlock and (await service.status()).conf_locked:
+        raise RcloneConfLockedError(RCLONE_CONF_LOCKED_HINT)
+    return service
+
+
+def _secret_text(value: SecretStr | None) -> str | None:
+    """只在调用服务层时解开一次；绝不进日志 / 审计 / 异常消息。"""
+    return value.get_secret_value() if value is not None else None
+
+
+def _atomic_write_pass(path: Path, password: str) -> None:
+    """同目录 mkstemp + os.replace 原子写 0600；不追加尾随换行。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix="rclone-unlock-", dir=path.parent)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(password.encode())
+            tmp.chmod(0o600)
+            os.replace(tmp, path)
+        finally:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    except OSError:
+        raise RcloneUnavailableError("配置口令文件不可写") from None
+
+
+def _restore_pass(path: Path, previous: bytes | None) -> None:
+    """验通失败时恢复原口令文件；原本不存在则删除刚写的文件。"""
+    with suppress(OSError):
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(previous)
+            path.chmod(0o600)
+
+
+def _rollback_unlock(previous_env: str | None, path: Path, previous: bytes | None) -> None:
+    """回滚运行期口令命令与口令文件；异常路径也必须零残留（口令本身不含在入参里）。"""
+    if previous_env is None:
+        os.environ.pop(_RCLONE_PASSWORD_COMMAND, None)
+    else:
+        os.environ[_RCLONE_PASSWORD_COMMAND] = previous_env
+    _restore_pass(path, previous)
+
+
+async def _unlock_conf(service: RcloneCryptoService, password: str) -> None:
+    """写口令文件 → 重建运行期口令命令 → status() 验通；不通则回滚并 422。"""
+    current = await service.status()
+    pass_path = Path(current.pass_path)
+    try:
+        previous = pass_path.read_bytes() if pass_path.is_file() else None
+    except OSError:
+        raise RcloneUnavailableError("配置口令文件不可读") from None
+    previous_env = os.environ.get(_RCLONE_PASSWORD_COMMAND)
+    _atomic_write_pass(pass_path, password)
+    os.environ[_RCLONE_PASSWORD_COMMAND] = f"/bin/cat {pass_path}"
+    try:
+        unlocked = not (await service.status()).conf_locked
+    except Exception:
+        _rollback_unlock(previous_env, pass_path, previous)
+        raise
+    if not unlocked:
+        _rollback_unlock(previous_env, pass_path, previous)
+        raise ValidationError("口令无法解锁 rclone.conf，请确认口令后重试") from None
 
 
 def register(router: APIRouter) -> None:
@@ -103,6 +201,8 @@ def register(router: APIRouter) -> None:
             conf_path=result.conf_path,
             remotes=list(result.remotes),
             reason=result.reason,
+            conf_encrypted=result.conf_encrypted,
+            conf_locked=result.conf_locked,
         )
 
 
@@ -166,6 +266,8 @@ def register(router: APIRouter) -> None:
             ],
             available=listing.available,
             reason=listing.reason,
+            conf_encrypted=listing.conf_encrypted,
+            conf_locked=listing.conf_locked,
         )
 
 
@@ -519,3 +621,120 @@ def register(router: APIRouter) -> None:
             action=result.action,
             remotes_after=list(result.remotes_after),
         )
+
+    # ---------------------------------------------------------------- rclone conf 加密三态
+
+    @router.get(
+        "/rclone/conf-encryption",
+        response_model=RcloneConfEncryptionOut,
+        summary="rclone conf 加密三态（口令明文永不回显）",
+        dependencies=_PROTECTED,
+        tags=["rclone"],
+    )
+    async def rclone_conf_encryption(
+        request: Request,
+        session: SessionContext = Depends(require_session),
+    ) -> RcloneConfEncryptionOut:
+        """读文件头 + 加密时 check，返回三态与口令文件存在性。"""
+        del session
+        status = await _crypto_service(request).status()
+        return RcloneConfEncryptionOut(
+            conf_encrypted=status.conf_encrypted,
+            conf_locked=status.conf_locked,
+            password_present=status.password_present,
+            conf_path=status.conf_path,
+            pass_path=status.pass_path,
+        )
+
+    @router.post(
+        "/rclone/conf-encryption/enable",
+        response_model=RcloneConfPasswordOnceOut,
+        summary="启用 rclone conf 加密（省略口令则生成 32 位并一次性回显）",
+        dependencies=_PROTECTED,
+        tags=["rclone"],
+    )
+    async def enable_rclone_conf_encryption(
+        payload: RcloneConfEnableRequest,
+        request: Request,
+        session: SessionContext = Depends(require_session),
+    ) -> RcloneConfPasswordOnceOut:
+        """服务层 ValidationError / RcloneUnavailableError 直接透传；口令不进审计。"""
+        del session
+        service = await _conf_write_guard(request)
+        generated = payload.password is None
+        password = await service.enable(_secret_text(payload.password))
+        await request.app.state.audit.record(
+            AUDIT_RCLONE_CONF_ENCRYPT, detail={"generated": generated, "result": "ok"}, result="ok"
+        )
+        return RcloneConfPasswordOnceOut(password_once=password if generated else None)
+
+    @router.post(
+        "/rclone/conf-encryption/rekey",
+        response_model=RcloneConfPasswordOnceOut,
+        summary="更换 rclone conf 加密口令（一次性回显新口令）",
+        dependencies=_PROTECTED,
+        tags=["rclone"],
+    )
+    async def rekey_rclone_conf_encryption(
+        payload: RcloneConfRekeyRequest,
+        request: Request,
+        session: SessionContext = Depends(require_session),
+    ) -> RcloneConfPasswordOnceOut:
+        """新口令一次性回显；审计 detail 只记 generated / result。"""
+        del session
+        service = await _conf_write_guard(request)
+        password = await service.rekey(
+            _secret_text(payload.old_password), _secret_text(payload.new_password)
+        )
+        await request.app.state.audit.record(
+            AUDIT_RCLONE_CONF_REKEY, detail={"generated": False, "result": "ok"}, result="ok"
+        )
+        return RcloneConfPasswordOnceOut(password_once=password)
+
+    @router.post(
+        "/rclone/conf-encryption/disable",
+        response_model=OkResponse,
+        summary="停用 rclone conf 加密（需当前口令）",
+        dependencies=_PROTECTED,
+        tags=["rclone"],
+    )
+    async def disable_rclone_conf_encryption(
+        payload: RcloneConfPasswordRequest,
+        request: Request,
+        session: SessionContext = Depends(require_session),
+    ) -> OkResponse:
+        """停用后退回明文 conf；缺 current_password 一律 422。"""
+        del session
+        service = await _conf_write_guard(request)
+        password = _secret_text(payload.current_password)
+        if password is None:
+            raise ValidationError("当前口令不能为空")
+        await service.disable(password)
+        await request.app.state.audit.record(
+            AUDIT_RCLONE_CONF_DECRYPT, detail={"generated": False, "result": "ok"}, result="ok"
+        )
+        return OkResponse()
+
+    @router.post(
+        "/rclone/conf-encryption/unlock",
+        response_model=OkResponse,
+        summary="输入口令解锁 rclone conf（锁死态也可用）",
+        dependencies=_PROTECTED,
+        tags=["rclone"],
+    )
+    async def unlock_rclone_conf_encryption(
+        payload: RcloneConfPasswordRequest,
+        request: Request,
+        session: SessionContext = Depends(require_session),
+    ) -> OkResponse:
+        """口令原子写入唯一落点，status() 验通后重建运行期口令命令；复用换口令审计动作。"""
+        del session
+        service = await _conf_write_guard(request, unlock=True)
+        password = _secret_text(payload.password)
+        if password is None:
+            raise ValidationError("口令不能为空")
+        await _unlock_conf(service, password)
+        await request.app.state.audit.record(
+            AUDIT_RCLONE_CONF_REKEY, detail={"generated": False, "result": "ok"}, result="ok"
+        )
+        return OkResponse()

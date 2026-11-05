@@ -30,7 +30,12 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from app.constants import RCLONE_CONFIG_TIMEOUT_SECONDS, SUBPROCESS_LOOP_HINT
-from app.services.rclone import exec_rclone, resolve_conf_path
+from app.services.rclone import (
+    RCLONE_CONF_LOCKED_HINT,
+    conf_encrypted,
+    exec_rclone,
+    resolve_conf_path,
+)
 from app.services.rclone_forms import (
     LEGACY_META_FILENAME,
     FormEntry,
@@ -345,6 +350,8 @@ class RcloneConfigList:
     configs: tuple[RcloneConfigItem, ...]
     available: bool
     reason: str | None
+    conf_encrypted: bool = False
+    conf_locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -403,10 +410,21 @@ class RcloneConfigService:
         """查询 conf 全段（managed 段回显非凭据参数，凭据只给 ``has_*`` 与形态布尔）。"""
         conf_path = self.conf_path
         conf_present = Path(conf_path).is_file()
+        encrypted = conf_encrypted(conf_path)
         try:
             sections = await self._dump_sections()
         except RcloneConfigUnavailable as exc:
-            return RcloneConfigList(conf_path, conf_present, (), False, str(exc))
+            # conf 已加密但解不开时，rclone 原文指不到口令通道；换成同一句可操作文案
+            locked = encrypted
+            return RcloneConfigList(
+                conf_path,
+                conf_present,
+                (),
+                False,
+                RCLONE_CONF_LOCKED_HINT if locked else str(exc),
+                conf_encrypted=encrypted,
+                conf_locked=locked,
+            )
         snapshot = await self._load_forms()
         # 惰性对齐：宿主机在外部删段留下的孤儿记录清掉（conf 中已不存在的 remote）
         await self._forms.delete_orphans(sections.keys())
@@ -416,6 +434,8 @@ class RcloneConfigService:
             configs=tuple(self._to_items(sections, snapshot)),
             available=True,
             reason=None,
+            conf_encrypted=encrypted,
+            conf_locked=False,
         )
 
     async def inspect_usage(self, remote_name: str) -> RcloneRemoteUsage:

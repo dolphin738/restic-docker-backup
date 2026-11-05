@@ -80,8 +80,9 @@ from app.services.log_control import apply_log_level
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
-from app.services.rclone import RcloneProbe
+from app.services.rclone import RcloneProbe, conf_encrypted, exec_rclone, resolve_conf_path
 from app.services.rclone_config import RcloneConfigService
+from app.services.rclone_crypto import RcloneCryptoService
 from app.services.rclone_forms import import_legacy_sidecar
 from app.services.repo_lifecycle import RepoLifecycleService
 from app.services.repo_migration import migrate_legacy_repo_config
@@ -353,12 +354,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.notifier = notifier
     app.state.rclone_probe = rclone_probe
     app.state.rclone_config_service = rclone_config_service
+    app.state.rclone_crypto = RcloneCryptoService(settings)
     app.state.rclone_archive_repo = rclone_archive_repo
     app.state.snapshot_catalog = snapshot_catalog
     app.state.repo_lifecycle = repo_lifecycle
 
     # 首启引导准备：确保 admin_account 行存在，并缓存随机密码明文（不入 docker logs）
     await bootstrap.ensure_initial_admin()
+    # rclone conf 加密态启动自检（方案 §5.6，P4）：plaintext 静默；已加密时只在
+    # 口令可达时重建 RCLONE_PASSWORD_COMMAND，供 restic serve restic --stdio 子进程继承。
+    # 自检失败一律只落一条 error，绝不阻止启动（容器不能因此进重启循环）。
+    # exec_rclone 用 create_subprocess_exec 直接 exec（不经 shell）、stdin=DEVNULL、自带超时 kill；
+    # --password-command 是 argv 的一个字符串参数，rclone 内部按空白切分后直接 exec，不经 shell。
+    conf = resolve_conf_path(settings)
+    encrypted = conf_encrypted(conf)
+    if encrypted:
+        pass_file = Path(settings.passfile_root) / "rclone.pass"
+        command = f"/bin/cat {pass_file}"
+        locked_hint = (
+            "rclone conf 已加密但口令不可达，rclone: 远端暂不可用；"
+            "请恢复 /repos/rclone.pass 配置口令，或用宿主机明文 conf 备份还原"
+        )
+        try:
+            if not pass_file.is_file():
+                logger.error(locked_hint)
+            else:
+                code, _ = await exec_rclone(
+                    ["rclone", "--password-command", command, "config", "encryption", "check"]
+                )
+                if code == 0:
+                    os.environ["RCLONE_PASSWORD_COMMAND"] = command
+                    logger.info("rclone conf 加密已启用，口令通道可用（已重建 RCLONE_PASSWORD_COMMAND）")
+                else:
+                    logger.error(locked_hint)
+        except Exception:  # 自检异常一律降级，不阻塞启动（含超时 / 缺二进制 / 事件循环不支持）
+            logger.error(locked_hint)
     # 启动期惰性清理过期会话行（§8）
     purged = await sessions.purge_expired()
     if purged:

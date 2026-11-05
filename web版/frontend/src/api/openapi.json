@@ -2603,6 +2603,154 @@
         "title": "RcloneArchivesOut",
         "type": "object"
       },
+      "RcloneConfEnableRequest": {
+        "additionalProperties": false,
+        "description": "启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。",
+        "properties": {
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          }
+        },
+        "title": "RcloneConfEnableRequest",
+        "type": "object"
+      },
+      "RcloneConfEncryptionOut": {
+        "additionalProperties": false,
+        "description": "rclone conf 加密三态（口令存在性只回布尔，口令明文永不回显）。",
+        "properties": {
+          "conf_encrypted": {
+            "title": "Conf Encrypted",
+            "type": "boolean"
+          },
+          "conf_locked": {
+            "title": "Conf Locked",
+            "type": "boolean"
+          },
+          "conf_path": {
+            "title": "Conf Path",
+            "type": "string"
+          },
+          "pass_path": {
+            "title": "Pass Path",
+            "type": "string"
+          },
+          "password_present": {
+            "title": "Password Present",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "conf_encrypted",
+          "conf_locked",
+          "password_present",
+          "conf_path",
+          "pass_path"
+        ],
+        "title": "RcloneConfEncryptionOut",
+        "type": "object"
+      },
+      "RcloneConfPasswordOnceOut": {
+        "additionalProperties": false,
+        "description": "enable / rekey 的一次性明文口令（只在本次响应体出现，不进日志 / 审计）。",
+        "properties": {
+          "code": {
+            "default": "ok",
+            "title": "Code",
+            "type": "string"
+          },
+          "password_once": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password Once"
+          }
+        },
+        "title": "RcloneConfPasswordOnceOut",
+        "type": "object"
+      },
+      "RcloneConfPasswordRequest": {
+        "additionalProperties": false,
+        "description": "停用 / 解锁 conf 加密：按端点使用 ``current_password`` / ``password``。",
+        "properties": {
+          "current_password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Password"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          }
+        },
+        "title": "RcloneConfPasswordRequest",
+        "type": "object"
+      },
+      "RcloneConfRekeyRequest": {
+        "additionalProperties": false,
+        "description": "更换 conf 加密口令（新旧口令均不得为空）。",
+        "properties": {
+          "new_password": {
+            "format": "password",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "New Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "old_password": {
+            "format": "password",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Old Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "old_password",
+          "new_password"
+        ],
+        "title": "RcloneConfRekeyRequest",
+        "type": "object"
+      },
       "RcloneConfigItemOut": {
         "additionalProperties": false,
         "description": "rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + ``has_*`` 布尔 + 形态布尔）。\n\n``credential_obscured``：凭据键 → 落盘形态是否 obscure 产物；``None`` = 形态未知\n（非本服务写入 / conf 被外部改过），就地转换会跳过该键（方案 A，owner 2026-10-27）。",
@@ -2739,6 +2887,16 @@
             "title": "Available",
             "type": "boolean"
           },
+          "conf_encrypted": {
+            "default": false,
+            "title": "Conf Encrypted",
+            "type": "boolean"
+          },
+          "conf_locked": {
+            "default": false,
+            "title": "Conf Locked",
+            "type": "boolean"
+          },
           "conf_path": {
             "title": "Conf Path",
             "type": "string"
@@ -2816,6 +2974,16 @@
         "properties": {
           "available": {
             "title": "Available",
+            "type": "boolean"
+          },
+          "conf_encrypted": {
+            "default": false,
+            "title": "Conf Encrypted",
+            "type": "boolean"
+          },
+          "conf_locked": {
+            "default": false,
+            "title": "Conf Locked",
             "type": "boolean"
           },
           "conf_path": {
@@ -6720,6 +6888,201 @@
           }
         },
         "summary": "写回归档的 rclone 段（一键恢复；同名段已存在则 409）",
+        "tags": [
+          "repos",
+          "rclone"
+        ]
+      }
+    },
+    "/api/rclone/conf-encryption": {
+      "get": {
+        "description": "读文件头 + 加密时 check，返回三态与口令文件存在性。",
+        "operationId": "rclone_conf_encryption_api_rclone_conf_encryption_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RcloneConfEncryptionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "rclone conf 加密三态（口令明文永不回显）",
+        "tags": [
+          "repos",
+          "rclone"
+        ]
+      }
+    },
+    "/api/rclone/conf-encryption/disable": {
+      "post": {
+        "description": "停用后退回明文 conf；缺 current_password 一律 422。",
+        "operationId": "disable_rclone_conf_encryption_api_rclone_conf_encryption_disable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RcloneConfPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "停用 rclone conf 加密（需当前口令）",
+        "tags": [
+          "repos",
+          "rclone"
+        ]
+      }
+    },
+    "/api/rclone/conf-encryption/enable": {
+      "post": {
+        "description": "服务层 ValidationError / RcloneUnavailableError 直接透传；口令不进审计。",
+        "operationId": "enable_rclone_conf_encryption_api_rclone_conf_encryption_enable_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RcloneConfEnableRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RcloneConfPasswordOnceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "启用 rclone conf 加密（省略口令则生成 32 位并一次性回显）",
+        "tags": [
+          "repos",
+          "rclone"
+        ]
+      }
+    },
+    "/api/rclone/conf-encryption/rekey": {
+      "post": {
+        "description": "新口令一次性回显；审计 detail 只记 generated / result。",
+        "operationId": "rekey_rclone_conf_encryption_api_rclone_conf_encryption_rekey_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RcloneConfRekeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RcloneConfPasswordOnceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "更换 rclone conf 加密口令（一次性回显新口令）",
+        "tags": [
+          "repos",
+          "rclone"
+        ]
+      }
+    },
+    "/api/rclone/conf-encryption/unlock": {
+      "post": {
+        "description": "口令原子写入唯一落点，status() 验通后重建运行期口令命令；复用换口令审计动作。",
+        "operationId": "unlock_rclone_conf_encryption_api_rclone_conf_encryption_unlock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RcloneConfPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "输入口令解锁 rclone conf（锁死态也可用）",
         "tags": [
           "repos",
           "rclone"

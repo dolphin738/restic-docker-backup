@@ -879,6 +879,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rclone/conf-encryption": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * rclone conf 加密三态（口令明文永不回显）
+         * @description 读文件头 + 加密时 check，返回三态与口令文件存在性。
+         */
+        get: operations["rclone_conf_encryption_api_rclone_conf_encryption_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rclone/conf-encryption/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 停用 rclone conf 加密（需当前口令）
+         * @description 停用后退回明文 conf；缺 current_password 一律 422。
+         */
+        post: operations["disable_rclone_conf_encryption_api_rclone_conf_encryption_disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rclone/conf-encryption/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用 rclone conf 加密（省略口令则生成 32 位并一次性回显）
+         * @description 服务层 ValidationError / RcloneUnavailableError 直接透传；口令不进审计。
+         */
+        post: operations["enable_rclone_conf_encryption_api_rclone_conf_encryption_enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rclone/conf-encryption/rekey": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 更换 rclone conf 加密口令（一次性回显新口令）
+         * @description 新口令一次性回显；审计 detail 只记 generated / result。
+         */
+        post: operations["rekey_rclone_conf_encryption_api_rclone_conf_encryption_rekey_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rclone/conf-encryption/unlock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 输入口令解锁 rclone conf（锁死态也可用）
+         * @description 口令原子写入唯一落点，status() 验通后重建运行期口令命令；复用换口令审计动作。
+         */
+        post: operations["unlock_rclone_conf_encryption_api_rclone_conf_encryption_unlock_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rclone/config/{remote_name}": {
         parameters: {
             query?: never;
@@ -2127,7 +2227,11 @@ export interface components {
         ConfigSource: "ui" | "env";
         /**
          * DryRunItem
-         * @description E31 预览条目。
+         * @description E31 / E36 预览条目。
+         *
+         *     ``type`` 取 ``dir`` / ``file``：restic ``--verbose`` 用**路径尾斜杠**标记目录，
+         *     解析层已归一到 ``FileRecord.type``。缺了它前端只能靠「有子路径」反推层级，
+         *     **空目录**（备份仓库的 ``data/00``… 分片目录大多为空）就会被误算成文件。
          */
         DryRunItem: {
             /** Display Path */
@@ -2136,6 +2240,12 @@ export interface components {
             path: string;
             /** Size */
             size?: number | null;
+            /**
+             * Type
+             * @description dir | file（restic verbose_status 的尾斜杠归一）
+             * @default file
+             */
+            type: string;
         };
         /**
          * DryRunRequest
@@ -3032,6 +3142,69 @@ export interface components {
             items?: components["schemas"]["RcloneArchiveItemOut"][];
         };
         /**
+         * RcloneConfEnableRequest
+         * @description 启用 conf 加密；省略 / null = 后端生成 32 位口令并一次性回显。
+         */
+        RcloneConfEnableRequest: {
+            /** Password */
+            password?: string | null;
+        };
+        /**
+         * RcloneConfEncryptionOut
+         * @description rclone conf 加密三态（口令存在性只回布尔，口令明文永不回显）。
+         */
+        RcloneConfEncryptionOut: {
+            /** Conf Encrypted */
+            conf_encrypted: boolean;
+            /** Conf Locked */
+            conf_locked: boolean;
+            /** Conf Path */
+            conf_path: string;
+            /** Pass Path */
+            pass_path: string;
+            /** Password Present */
+            password_present: boolean;
+        };
+        /**
+         * RcloneConfPasswordOnceOut
+         * @description enable / rekey 的一次性明文口令（只在本次响应体出现，不进日志 / 审计）。
+         */
+        RcloneConfPasswordOnceOut: {
+            /**
+             * Code
+             * @default ok
+             */
+            code: string;
+            /** Password Once */
+            password_once?: string | null;
+        };
+        /**
+         * RcloneConfPasswordRequest
+         * @description 停用 / 解锁 conf 加密：按端点使用 ``current_password`` / ``password``。
+         */
+        RcloneConfPasswordRequest: {
+            /** Current Password */
+            current_password?: string | null;
+            /** Password */
+            password?: string | null;
+        };
+        /**
+         * RcloneConfRekeyRequest
+         * @description 更换 conf 加密口令（新旧口令均不得为空）。
+         */
+        RcloneConfRekeyRequest: {
+            /**
+             * New Password
+             * Format: password
+             */
+            new_password: string;
+            /**
+             * Old Password
+             * Format: password
+             */
+            old_password: string;
+        };
+        /**
          * RcloneConfigItemOut
          * @description rclone conf 单段只读视图（**凭据零回显**：只给非凭据参数 + ``has_*`` 布尔 + 形态布尔）。
          *
@@ -3123,6 +3296,16 @@ export interface components {
         RcloneConfigsOut: {
             /** Available */
             available: boolean;
+            /**
+             * Conf Encrypted
+             * @default false
+             */
+            conf_encrypted: boolean;
+            /**
+             * Conf Locked
+             * @default false
+             */
+            conf_locked: boolean;
             /** Conf Path */
             conf_path: string;
             /** Conf Present */
@@ -3162,6 +3345,16 @@ export interface components {
         RcloneRemotesOut: {
             /** Available */
             available: boolean;
+            /**
+             * Conf Encrypted
+             * @default false
+             */
+            conf_encrypted: boolean;
+            /**
+             * Conf Locked
+             * @default false
+             */
+            conf_locked: boolean;
             /** Conf Path */
             conf_path: string | null;
             /** Conf Present */
@@ -4133,11 +4326,6 @@ export interface components {
             limit_up: number;
             /** Mirror Repo Ids */
             mirror_repo_ids?: string[];
-            /**
-             * Monthly Full Day
-             * @default 1
-             */
-            monthly_full_day: number;
             /** Name */
             name: string;
             /**
@@ -4282,11 +4470,6 @@ export interface components {
             limit_up: number;
             /** Mirror Repo Ids */
             mirror_repo_ids?: string[];
-            /**
-             * Monthly Full Day
-             * @default 1
-             */
-            monthly_full_day: number;
             /**
              * Name
              * @description 任务名称（必填非空）
@@ -5462,6 +5645,158 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RcloneConfigWriteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rclone_conf_encryption_api_rclone_conf_encryption_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RcloneConfEncryptionOut"];
+                };
+            };
+        };
+    };
+    disable_rclone_conf_encryption_api_rclone_conf_encryption_disable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RcloneConfPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_rclone_conf_encryption_api_rclone_conf_encryption_enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RcloneConfEnableRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RcloneConfPasswordOnceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rekey_rclone_conf_encryption_api_rclone_conf_encryption_rekey_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RcloneConfRekeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RcloneConfPasswordOnceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unlock_rclone_conf_encryption_api_rclone_conf_encryption_unlock_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RcloneConfPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
                 };
             };
             /** @description Validation Error */

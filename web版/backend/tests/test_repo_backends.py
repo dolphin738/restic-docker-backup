@@ -421,5 +421,15 @@ async def test_api_rclone_remotes_endpoint(app_client, monkeypatch):
     assert body["conf_present"] is True
     assert body["remotes"] == ["myremote", "other"]
     assert body["reason"] is None
-    # 契约冻结：响应绝不携带 conf 内容/凭据形态字段
-    assert set(body) == {"available", "conf_present", "conf_path", "remotes", "reason"}
+    # 契约冻结：响应绝不携带 conf 内容/凭据值，只带 P3 三态布尔
+    assert set(body) == {
+        "available",
+        "conf_present",
+        "conf_path",
+        "remotes",
+        "reason",
+        "conf_encrypted",
+        "conf_locked",
+    }
+    assert body["conf_encrypted"] is False
+    assert body["conf_locked"] is False

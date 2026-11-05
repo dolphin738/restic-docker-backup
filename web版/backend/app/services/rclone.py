@@ -25,8 +25,34 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.constants import RCLONE_PROBE_TIMEOUT_SECONDS, SUBPROCESS_LOOP_HINT
+from app.constants import (
+    RCLONE_CONF_ENCRYPTED_MARKERS,
+    RCLONE_PROBE_TIMEOUT_SECONDS,
+    SUBPROCESS_LOOP_HINT,
+)
 from app.settings import Settings
+
+# conf 已加密但口令不可达时的统一可操作文案（探测层与配置管理层共用，S3：不含口令与 conf 内容）
+RCLONE_CONF_LOCKED_HINT = (
+    "rclone conf 已加密但口令不可达，rclone: 远端暂不可用；"
+    "请恢复 /repos/rclone.pass 配置口令，或用宿主机明文 conf 备份还原"
+)
+# 只读文件头若干字节即可判定加密态（标记只出现在头部，零子进程）
+_CONF_HEADER_BYTES = 4096
+
+
+def conf_encrypted(path: str) -> bool:
+    """纯文件读判定 conf 是否为加密态；文件不存在/不可读一律 False（不抛异常）。
+
+    头部命中 ``RCLONE_CONF_ENCRYPTED_MARKERS``（``# Encrypted rclone configuration File``
+    或 ``RCLONE_ENCRYPT_V0:``）即为 True；标记只取自 constants，不复制第二份判定。
+    """
+    try:
+        with Path(path).open("rb") as fh:
+            head = fh.read(_CONF_HEADER_BYTES)
+    except OSError:
+        return False
+    return any(marker.encode("utf-8") in head for marker in RCLONE_CONF_ENCRYPTED_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -40,6 +66,8 @@ class RcloneRemotes:
             （rclone 用自身默认 ``$HOME/.config/rclone/rclone.conf``）。
         remotes: 远端名清单（已去掉行尾 ``:``）；探测失败时为空。
         reason: 不可用/失败原因（``available=True`` 时为 None；原因明示，禁止静默）。
+        conf_encrypted: conf 文件头命中加密标记（纯文件读，零子进程）。
+        conf_locked: conf 已加密且 rclone 探测失败（口令不可达），需先恢复口令。
     """
 
     available: bool
@@ -47,6 +75,8 @@ class RcloneRemotes:
     conf_path: str | None
     remotes: tuple[str, ...]
     reason: str | None
+    conf_encrypted: bool = False
+    conf_locked: bool = False
 
 
 def resolve_conf_path(settings: Settings) -> str:
@@ -125,6 +155,7 @@ class RcloneProbe:
         """
         conf_path = self._settings.rclone_config
         conf_present = self._conf_present(conf_path)
+        encrypted = conf_encrypted(resolve_conf_path(self._settings))
         try:
             exit_code, output = await self._exec(["rclone", "listremotes"])
         except FileNotFoundError:
@@ -134,6 +165,8 @@ class RcloneProbe:
                 conf_path=conf_path,
                 remotes=(),
                 reason="容器内未找到 rclone 可执行文件（镜像应已包含；请检查镜像版本）",
+                conf_encrypted=encrypted,
+                conf_locked=False,
             )
         except TimeoutError:
             return RcloneRemotes(
@@ -142,6 +175,8 @@ class RcloneProbe:
                 conf_path=conf_path,
                 remotes=(),
                 reason=f"rclone 探测超时（>{RCLONE_PROBE_TIMEOUT_SECONDS:g}s）",
+                conf_encrypted=encrypted,
+                conf_locked=False,
             )
         except NotImplementedError:
             # Windows + uvicorn --reload：事件循环为 SelectorEventLoop，不支持子进程
@@ -153,14 +188,25 @@ class RcloneProbe:
                 conf_path=conf_path,
                 remotes=(),
                 reason=SUBPROCESS_LOOP_HINT,
+                conf_encrypted=encrypted,
+                conf_locked=False,
             )
         if exit_code != 0:
+            # 锁死 = 已加密 + 探测失败：不回显 rclone 原文（可能夹带 conf 内容），给可操作原因
+            locked = encrypted
+            reason = (
+                RCLONE_CONF_LOCKED_HINT
+                if locked
+                else output.strip()[:200] or f"rclone listremotes 失败（退出码 {exit_code}）"
+            )
             return RcloneRemotes(
                 available=False,
                 conf_present=conf_present,
                 conf_path=conf_path,
                 remotes=(),
-                reason=output.strip()[:200] or f"rclone listremotes 失败（退出码 {exit_code}）",
+                reason=reason,
+                conf_encrypted=encrypted,
+                conf_locked=locked,
             )
         remotes = tuple(
             line.strip().rstrip(":").strip() for line in output.splitlines() if line.strip()
@@ -175,6 +221,8 @@ class RcloneProbe:
             conf_path=conf_path,
             remotes=remotes,
             reason=reason,
+            conf_encrypted=encrypted,
+            conf_locked=False,
         )
 
     @staticmethod
