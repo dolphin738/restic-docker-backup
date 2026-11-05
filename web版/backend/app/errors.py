@@ -30,6 +30,7 @@ from app.constants import (
     PASSWORD_WRONG,
     PATH_OUT_OF_PREFIX,
     RATE_LIMITED,
+    RCLONE_CONF_LOCKED,
     RCLONE_REMOTE_IN_USE,
     RCLONE_UNAVAILABLE,
     READONLY_KEY,
@@ -372,6 +373,14 @@ class RcloneUnavailableError(AppError):
     code = RCLONE_UNAVAILABLE
     status = ERROR_STATUS[RCLONE_UNAVAILABLE]
     message = "rclone 配置操作不可用"
+
+
+class RcloneConfLockedError(AppError):
+    """503 conf 已加密但解密口令不可达（所有 rclone: 远端暂不可用）。"""
+
+    code = RCLONE_CONF_LOCKED
+    status = ERROR_STATUS[RCLONE_CONF_LOCKED]
+    message = "conf 已加密但口令不可达，所有 rclone: 远端不可用；请恢复配置口令后重试，或用宿主机明文 conf 备份还原"
 
 
 class RepoNotEmptyError(AppError):

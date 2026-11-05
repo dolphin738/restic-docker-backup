@@ -115,6 +115,8 @@ REPO_IN_USE_AS_MIRROR = "REPO_IN_USE_AS_MIRROR"
 CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"  # 500 R-025：凭据密文无法解密（密码文件被换/数据损坏）
 # 503 rclone 配置管理：二进制缺失 / 超时 / 事件循环不支持 / conf 不可写（含单文件挂载）
 RCLONE_UNAVAILABLE = "RCLONE_UNAVAILABLE"
+# 503 conf 已加密但解密口令不可达（所有 rclone: 远端暂不可用，恢复口令后重试）
+RCLONE_CONF_LOCKED = "RCLONE_CONF_LOCKED"
 # 409 删除 rclone 段时仍有仓库 URL 引用该 remote，或有 crypt 段以它为底层（删除保护方案 P0）
 RCLONE_REMOTE_IN_USE = "RCLONE_REMOTE_IN_USE"
 # 422 C4 手动 copy 的三类预检拒绝（2026-10-29）：**必须独立成码**——沿用
@@ -151,6 +153,7 @@ ERROR_STATUS: dict[str, int] = {
     REPO_IN_USE_AS_MIRROR: 409,
     CREDENTIAL_DECRYPT_FAILED: 500,
     RCLONE_UNAVAILABLE: 503,
+    RCLONE_CONF_LOCKED: 503,
     RCLONE_REMOTE_IN_USE: 409,
     COPY_SAME_REPO: 422,
     COPY_NO_SNAPSHOT: 422,
@@ -231,6 +234,11 @@ AUDIT_RCLONE_CONFIG_APPEND = "rclone.config_append"
 AUDIT_RCLONE_CONFIG_EDIT = "rclone.config_edit"
 AUDIT_RCLONE_CONFIG_DELETE = "rclone.config_delete"  # 含 OAuth 网盘段：删后需在宿主机重新授权
 AUDIT_RCLONE_CONFIG_RESTORE = "rclone.config_restore"  # 危险：把归档段写回 conf，直接决定后端可达性
+# rclone conf 加密（v1.17 规范先行）：启用/换口令/停用直接决定所有 `rclone:` 远端是否可达，
+# 停用后 conf 退回明文；detail 只记动作与 result，不含口令（S3）。
+AUDIT_RCLONE_CONF_ENCRYPT = "rclone.conf_encrypt"
+AUDIT_RCLONE_CONF_REKEY = "rclone.conf_rekey"
+AUDIT_RCLONE_CONF_DECRYPT = "rclone.conf_decrypt"
 # E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
 AUDIT_TIME_SYNC = "time.sync"
 # R-020 裁决3：审计归档（压缩落盘，append-only 的「整段滚动导出」落地）
@@ -369,6 +377,8 @@ RCLONE_PROBE_TIMEOUT_SECONDS = 5.0
 # 故不能复用探测的 5s（会误判超时）；15s 与仓库探测同档。另注：conf 位于**单文件**
 # bind mount 时写操作会**挂住不返回**（实测 8s 未结束），只能靠本超时兜底成 503。
 RCLONE_CONFIG_TIMEOUT_SECONDS = 15.0
+# rclone conf 加密文件头标记（v1.17 规范先行）：供后续纯文件读判定加密态，不含口令（S3）
+RCLONE_CONF_ENCRYPTED_MARKERS = ("# Encrypted rclone configuration File", "RCLONE_ENCRYPT_V0:")
 # Windows 子进程可用性提示（2026-10-19 实证）：uvicorn 的 --reload / --workers>1 会经
 # use_subprocess 分支把 Windows 事件循环强制选成 SelectorEventLoop——它不支持
 # create_subprocess_exec（NotImplementedError，asyncio/base_events.py:539），restic/
