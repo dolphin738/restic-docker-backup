@@ -77,7 +77,7 @@ from app.services.rclone_config import (
     RcloneConfigService,
     RcloneConfigUnavailable,
 )
-from app.services.rclone_crypto import RcloneCryptoService
+from app.services.rclone_crypto import RcloneCryptoService, password_command_for
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 
@@ -160,7 +160,11 @@ async def _unlock_conf(service: RcloneCryptoService, password: str) -> None:
         raise RcloneUnavailableError("配置口令文件不可读") from None
     previous_env = os.environ.get(_RCLONE_PASSWORD_COMMAND)
     _atomic_write_pass(pass_path, password)
-    os.environ[_RCLONE_PASSWORD_COMMAND] = f"/bin/cat {pass_path}"
+    try:
+        os.environ[_RCLONE_PASSWORD_COMMAND] = password_command_for(pass_path)
+    except OSError:
+        _rollback_unlock(previous_env, pass_path, previous)
+        raise RcloneUnavailableError("配置口令脚本不可写") from None
     try:
         unlocked = not (await service.status()).conf_locked
     except Exception:

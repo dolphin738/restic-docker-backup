@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shlex
 import tempfile
@@ -33,6 +34,7 @@ type RcloneExecutor = Callable[[Sequence[str]], Awaitable[tuple[int, str]]]
 
 _PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 _PASSWORD_COMMAND_ENV = "RCLONE_PASSWORD_COMMAND"
+_TAG_RE = re.compile(r"[a-z0-9-]+")
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,51 @@ def _cleanup(paths: list[Path]) -> None:
             path.unlink()
 
 
+def _password_script_path(tag: str | None) -> Path:
+    """口令命令脚本的固定路径；TMPDIR 含空白时退回 /tmp（命令值不得含空白）。"""
+    name = "restic-web-rclone-pass" + (f"-{tag}" if tag else "") + ".sh"
+    script = Path(tempfile.gettempdir()) / name
+    if " " in str(script) or "\t" in str(script):
+        script = Path("/tmp") / name
+    return script
+
+
+def _script_dir() -> Path:
+    """临时脚本目录：与固定口令脚本同目录，保证路径不含空白。"""
+    return _password_script_path(None).parent
+
+
+def _write_password_script(body: str, tag: str | None) -> str:
+    """原子落盘 0700 脚本并返回其路径；脚本内容只有路径，绝不含口令。"""
+    script = _password_script_path(tag)
+    # 临时文件与目标同目录：跨文件系统的 os.replace 会抛 EXDEV（TMPDIR 含空白时
+    # 会退回 /tmp，此时 mkstemp 的默认位置与目标不同盘）。
+    fd, tmp = tempfile.mkstemp(prefix="rclone-passcmd-", suffix=".sh", dir=script.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(tmp, 0o700)
+        os.replace(tmp, script)  # 原子替换，避免并发读到半截
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return str(script)
+
+
+def password_command_for(pass_path: Path | str, tag: str | None = None) -> str:
+    """返回 RCLONE_PASSWORD_COMMAND 的值：无空格脚本路径。
+
+    rclone 按空白切分 --password-command 后直接 exec（不认 shell 引号），故命令值
+    本身不能含空格。落一个固定路径的脚本，真实口令路径写在脚本里并 shlex.quote。
+    tag 让同一次操作里并存多个口令文件（只允许 [a-z0-9-]）；缺省用同一路径。
+    """
+    if tag is not None and not _TAG_RE.fullmatch(tag):
+        raise ValueError(f"脚本 tag 只允许 [a-z0-9-]：{tag!r}")
+    body = "#!/bin/sh\nexec /bin/cat " + shlex.quote(str(pass_path)) + "\n"
+    return _write_password_script(body, tag)
+
+
 class RcloneCryptoService:
     """conf 加密口令服务；executor 可注入以便单测拦截 argv。
 
@@ -109,6 +156,7 @@ class RcloneCryptoService:
                     data=("#!/bin/sh\n/bin/cat " + shlex.quote(str(self._pass_path)) + "\n").encode(),
                     mode=0o700,
                     suffix=".sh",
+                    directory=_script_dir(),
                 )
                 code = await self._run(self._encryption_argv("check", str(script)))
             except (RcloneUnavailableError, OSError):
@@ -147,7 +195,9 @@ class RcloneCryptoService:
         pass_written = False
         try:
             temp_pass = _temp_file(temps, prefix="rclone-pass-new-", data=password.encode())
-            set_code = await self._run(self._encryption_argv("set", f"/bin/cat {temp_pass}"))
+            set_code = await self._run(
+                self._encryption_argv("set", password_command_for(temp_pass, "enable"))
+            )
             if set_code != 0:
                 raise RcloneUnavailableError("rclone 加密写入失败，已回滚")
             if await self._check(temp_pass) != 0:
@@ -192,7 +242,14 @@ class RcloneCryptoService:
                 f"  /bin/cat {shlex.quote(str(old_tmp))}\n"
                 "fi\n"
             ).encode()
-            script_tmp = _temp_file(temps, prefix="rclone-rekey-", data=script, mode=0o700, suffix=".sh")
+            script_tmp = _temp_file(
+                temps,
+                prefix="rclone-rekey-",
+                data=script,
+                mode=0o700,
+                suffix=".sh",
+                directory=_script_dir(),
+            )
             backup = self._backup_conf()
             set_code = await self._run(self._encryption_argv("set", str(script_tmp)))
             if set_code != 0:
@@ -233,7 +290,9 @@ class RcloneCryptoService:
                 original = self._conf_path.read_bytes()
             except OSError:
                 raise RcloneUnavailableError("rclone 配置文件不可读") from None
-            remove_code = await self._run(self._encryption_argv("remove", f"/bin/cat {current_tmp}"))
+            remove_code = await self._run(
+                self._encryption_argv("remove", password_command_for(current_tmp, "disable"))
+            )
             if remove_code != 0:
                 raise RcloneUnavailableError("rclone 解密写入失败，已回滚")
             if not self._conf_path.is_file() or self._header_encrypted():
@@ -275,7 +334,8 @@ class RcloneCryptoService:
 
     async def _check(self, password_file: Path) -> int:
         """用指定口令文件跑 check；文件不存在也只由 rclone 返回非 0。"""
-        return await self._run(self._encryption_argv("check", f"/bin/cat {password_file}"))
+        command = password_command_for(password_file, "check")
+        return await self._run(self._encryption_argv("check", command))
 
     async def _verify_password(self, password: str, temps: list[Path]) -> Path:
         """check 验通一个明文口令；返回其临时文件路径供 set / remove 复用。"""
@@ -347,8 +407,8 @@ class RcloneCryptoService:
             raise RcloneUnavailableError("配置口令文件不可写") from None
 
     def _set_password_command_env(self) -> None:
-        """只写 /bin/cat 命令与口令文件路径，绝不写口令本身。"""
-        os.environ[_PASSWORD_COMMAND_ENV] = f"/bin/cat {self._pass_path}"
+        """只写无空格脚本路径，脚本内含 /bin/cat 与口令文件路径，绝不写口令本身。"""
+        os.environ[_PASSWORD_COMMAND_ENV] = password_command_for(self._pass_path)
 
     def _clear_password_command_env(self) -> None:
         """disable 成功后移除运行期口令命令，使后续子进程回到明文 conf。"""

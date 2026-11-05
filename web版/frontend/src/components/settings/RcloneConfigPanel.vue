@@ -878,6 +878,7 @@ defineExpose({ refresh, refreshConfEnc })
         <NSpace align="center" :size="8" class="rclone-panel__row">
           <NButton
             v-if="!confLocked && (!confEncStatus || !confEncStatus.conf_encrypted)"
+            key="conf-enc-enable"
             size="small"
             type="primary"
             :disabled="!confEncCanEnable"
@@ -888,6 +889,7 @@ defineExpose({ refresh, refreshConfEnc })
           </NButton>
           <NButton
             v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            key="conf-enc-rekey"
             size="small"
             type="primary"
             :disabled="!confEncCanManage"
@@ -898,6 +900,7 @@ defineExpose({ refresh, refreshConfEnc })
           </NButton>
           <NButton
             v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            key="conf-enc-disable"
             size="small"
             :disabled="!confEncCanManage"
             :loading="confEncBusy"
@@ -907,6 +910,7 @@ defineExpose({ refresh, refreshConfEnc })
           </NButton>
           <NButton
             v-if="confLocked"
+            key="conf-enc-unlock"
             size="small"
             type="primary"
             :disabled="!confEncCanUnlock"

@@ -82,7 +82,7 @@ from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
 from app.services.rclone import RcloneProbe, conf_encrypted, exec_rclone, resolve_conf_path
 from app.services.rclone_config import RcloneConfigService
-from app.services.rclone_crypto import RcloneCryptoService
+from app.services.rclone_crypto import RcloneCryptoService, password_command_for
 from app.services.rclone_forms import import_legacy_sidecar
 from app.services.repo_lifecycle import RepoLifecycleService
 from app.services.repo_migration import migrate_legacy_repo_config
@@ -370,7 +370,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     encrypted = conf_encrypted(conf)
     if encrypted:
         pass_file = Path(settings.passfile_root) / "rclone.pass"
-        command = f"/bin/cat {pass_file}"
+        command = password_command_for(pass_file)
         locked_hint = (
             "rclone conf 已加密但口令不可达，rclone: 远端暂不可用；"
             "请恢复 /repos/rclone.pass 配置口令，或用宿主机明文 conf 备份还原"
