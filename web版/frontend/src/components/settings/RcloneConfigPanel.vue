@@ -893,30 +893,16 @@ defineExpose({ refresh, refreshConfEnc })
       <NButton size="small" :loading="loading" @click="refresh">{{ t('settings.rclone.refresh') }}</NButton>
     </NSpace>
 
-    <NCard size="small" :title="t('settings.rclone.confEnc.title')" class="rclone-panel__card">
-      <div class="rclone-panel__stack">
-        <!-- 三态未就绪（刷新失败 / 尚未返回）时一个写按钮都不渲染：旧判定
-             `!confEncStatus || !encrypted` 在 null 时成立，会让「生成并启用」冒出来，
-             再叠加 :loading 的转圈形态，看起来就像多了一个按钮。 -->
-        <NAlert v-if="!confEncStatus" type="warning" :bordered="false" class="rclone-panel__alert">
-          <NSpace align="center" :size="8">
-            <span>{{ confEncError || t('settings.rclone.confEnc.stateUnknown') }}</span>
-            <NButton size="tiny" secondary :loading="loading" @click="refresh">
-              {{ t('common.retry') }}
-            </NButton>
-          </NSpace>
-        </NAlert>
-        <!-- 启用态（明文）：状态文案在左，[备份开关在上 + 启用按钮在下] 整体靠右。
-             用裸 div + 各自 key，不用 NSpace（NSpace 给 item 硬编码 key=1，条件分支切换会串位）。 -->
-        <div
-          v-if="confEncStatus && !confEncStatus.conf_encrypted && !confLocked"
-          class="rclone-panel__row rclone-panel__row--split"
-        >
-          <NSpace align="center" :size="8" class="rclone-panel__row">
-            <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
-            <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
-          </NSpace>
-          <div class="rclone-panel__control-stack">
+    <NCard size="small" class="rclone-panel__card">
+      <template #header>
+        <!-- 标题与「启用态操作列」同一行：备份开关在上、启用按钮在下，整体靠右，
+             与标题文字垂直对齐（不再被卡片内边距压到下一行）。 -->
+        <div class="rclone-panel__card-head">
+          <span class="rclone-panel__card-title">{{ t('settings.rclone.confEnc.title') }}</span>
+          <div
+            v-if="confEncStatus && !confEncStatus.conf_encrypted && !confLocked"
+            class="rclone-panel__control-stack"
+          >
             <div class="rclone-panel__backup-row">
               <NSwitch
                 v-model:value="confEncBackup"
@@ -941,6 +927,27 @@ defineExpose({ refresh, refreshConfEnc })
               {{ t('settings.rclone.confEnc.enableBtn') }}
             </NButton>
           </div>
+        </div>
+      </template>
+      <div class="rclone-panel__stack">
+        <!-- 三态未就绪（刷新失败 / 尚未返回）时一个写按钮都不渲染：旧判定
+             `!confEncStatus || !encrypted` 在 null 时成立，会让「生成并启用」冒出来，
+             再叠加 :loading 的转圈形态，看起来就像多了一个按钮。 -->
+        <NAlert v-if="!confEncStatus" type="warning" :bordered="false" class="rclone-panel__alert">
+          <NSpace align="center" :size="8">
+            <span>{{ confEncError || t('settings.rclone.confEnc.stateUnknown') }}</span>
+            <NButton size="tiny" secondary :loading="loading" @click="refresh">
+              {{ t('common.retry') }}
+            </NButton>
+          </NSpace>
+        </NAlert>
+        <!-- 启用态（明文）：状态徽标 + 说明留在卡片正文顶部（操作按钮已上移到标题行）。 -->
+        <div
+          v-if="confEncStatus && !confEncStatus.conf_encrypted && !confLocked"
+          class="rclone-panel__row"
+        >
+          <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
+          <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
         </div>
         <!-- 加密态 / 锁定态：状态行在上，按钮按原横向布局靠右（不显示备份开关） -->
         <template v-else-if="confEncStatus">
@@ -1361,6 +1368,30 @@ defineExpose({ refresh, refreshConfEnc })
 .rclone-panel__card {
   --n-border-radius: 10px;
 }
+/* 卡片头：标题与启用态操作列同一行，整列靠右，与标题文字顶部对齐。 */
+.rclone-panel__card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.rclone-panel__card-title {
+  font-weight: 600;
+  line-height: 28px; /* 与 NButton size=small 高度对齐，使标题与右侧操作列顶边齐平 */
+}
+/* 启用态操作列：备份开关在上、启用按钮在下，整列右对齐。 */
+.rclone-panel__control-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.rclone-panel__backup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .rclone-panel__muted {
   color: var(--n-text-color-3, #8a8f98);
   font-size: 12px;
@@ -1383,25 +1414,6 @@ defineExpose({ refresh, refreshConfEnc })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-/* 操作按钮靠右：状态徽标与说明留在左侧读序起点，右侧只放可点的动作。 */
-.rclone-panel__row--end {
-  justify-content: flex-end;
-}
-/* 启用态（明文）布局：左文案 + 右操作列。操作列内部竖排（备份开关在上、启用按钮在下）。 */
-.rclone-panel__row--split {
-  justify-content: space-between;
-}
-.rclone-panel__control-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: stretch;
-}
-.rclone-panel__backup-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 /* 加密卡片内的纵向堆叠：与 NSpace vertical 同观感，但不用 NSpace——它给每个 item
    硬编码 key=1，插槽里带条件子节点时 Vue 的 keyed diff 会认错节点、把该卸载的
