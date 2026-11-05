@@ -1,11 +1,12 @@
 # rclone 配置落盘加密实施方案
 
-> 版本：v1.5（2026-11-05）
+> 版本：v1.6（2026-11-05，**已实施**）
 > 层级：方案层——`rclone.conf` **落盘加密与运行时口令通道**的唯一方案源，亦即 GitHub issue #2 的实现依据
 > 边界：本文只覆盖 **conf 文件的加密态识别与口令通道**。rclone 段的增删改查能力边界（注册表、凭据混淆、占用扫描、配置归档）见《rclone配置生成工具设计方案》v1.21，本文不重复、不替代。
 > 关联：`app/services/rclone.py`（只读探测）、`app/services/rclone_config.py`（conf 管理）、`docker/Dockerfile`、`docs/部署指南.md` §4.2、`docs/架构设计文档.md` §5.0/§5.1
 
 > **修订记录**：
+> - v1.6（2026-11-05）：**P1–P8 全部落地，方案转「已实施」**。提交链 `808a3c6`（P1 规范/常量/错误码）→ `33a52fd`（P2–P5+P7 后端）→ `a280e93`（P6 前端）→ `ab7422a`（FIX-SPACE + UI key 修复）。**实施中发现并修复一个 v1.5 未预见的 🔴 缺陷**：`RCLONE_PASSWORD_COMMAND = f"/bin/cat {pass_path}"` 在 `PASSFILE_ROOT` 含空格时被 rclone 按空白切分 exec 拆断（真机 `D:\agent\AI Coding\...` 经 WSL 挂载即含空格），导致全部 `rclone:` 远端不可用；修法是命令值恒为**无空格脚本路径**（`password_command_for()`，脚本体内 `shlex.quote` 真实路径），已用真实 rclone 1.75.2 在含空格路径下端到端验证 enable/rekey/disable 全通。**另两处实施偏差**：①端点数 4 → **5**（方案 §5.3 的第三态「输入口令解锁」需要独立端点，v1.4 已预见但 §6 只列了 4 个，实际落地补 E68）；②新增 schema 4 → **5**（拒绝复用 `OkResponse`——它在 backend 有 49 处使用、`schema.d.ts` 出现 16 次，加字段会污染全部既有端点契约）。**验收**：后端 pytest 1303 passed / 0 failed；前端 typecheck 0 错；RcloneConfigPanel.spec 22/22；真机浏览器 enable→rekey→disable 全链路通过且 conf 与备份逐字节相同。
 > - v1.5（2026-11-05）：**P-1 批次落地：从代码移除 entrypoint 口令自动生成**（owner 指令「先做 P-1」）。删除 `docker/entrypoint.sh` 的 `RCLONE_PASS_FILE` 变量（6 行注释 + 1 行赋值）、`ensure_rclone_pass()` 整函数（21 行）、root 档与非 root 档两处调用（4 + 5 行），共 −36 行；`docker/docker-compose.yml` 删掉 `# RCLONE_PASS_FILE` 与「首次启动自动生成」四行说明，改为指向界面生成（§5.10），`RCLONE_PASSWORD_COMMAND` 语义保留但在 compose 中不再预置。《部署指南》§4.2 那节原写「设一个路径、容器首次启动自动生成」，现改为**如实说明本版本 conf 加密未启用、不做启动期自动生成、勿再配 `RCLONE_PASS_FILE`**，并保留「不要复用仓库口令文件」的警示。**保留不动**：`PASSFILE_ROOT` 独立密钥卷处理（`PASSFILE_ROOT: /repos` + `./repos:/repos:rw` 默认布局）与 `need_dir` 的 `_hint` 形参（仍被 `need_dir "$PASSFILE_ROOT" "<宿主机 keys 目录>"` 使用）。**验证**：`dash -n`/`sh -n` 通过；`docker/` 下 `RCLONE_PASS_FILE`/`ensure_rclone_pass` 零命中；5 场景行为测试全绿——显式设置已废弃变量时**不再生成任何文件**、独立密钥卷处理仍正常、未设 `PASSFILE_ROOT` 时行为与旧版一致。**规模修正**：实现清单 3/4 标记完成，§7 P-1 标记 ✅，§5.9 移除状态由「代码待删」改为「已删」。
 > - v1.4（2026-11-05）：**界面改为完整管理（生成/更换/停用/解锁），移除 entrypoint 自动生成**（owner 三问裁决：Q1 停用也做、Q2 口令落 `./repos/rclone.pass` 且移除 entrypoint 自动生成、Q3 先更新方案）。**推翻 v1.2/v1.3 两处结论**：①**「界面只读、零致锁入口」被实测推翻**——应用可经 **argv** 显式传 `--password-command`（不依赖容器 env），在 `stdin=DEVNULL` 下完整驱动 `set`/`check`/`remove`，且 **argv 优先于 env**（argv 对+env 错→成功，argv 错+env 对→失败）；另实测**明文 conf 对口令命令失败免疫**（指向不存在的文件时 `config dump` 仍 exit 0），故首次启用时序宽松。②**entrypoint 自动生成移除**——两处都能生成会形成隐式竞争，且后台生成的 32 位随机串用户从未见过，丢文件即永久锁死；界面生成必然经 `SecretReveal` 一次性展示。**本轮改写**：§1 结论表、§5.2（界面完整管理 + 三条实测证据）、§5.3（三态 × 三按钮 + 停用次要按钮 + 组件复用）、§5.9（口令唯一落点 `/repos/rclone.pass` + 移除自动生成的对照表 + 不复用仓库口令的四行对照）、**新增 §5.10 服务层设计**（`rclone_crypto.py` 四方法 + 三条纪律：mkstemp 临时文件 / 审计三动作入 S6 24→27 / 写后必 `check` + 失败回滚 + env 重建 + `JOB_CONFLICT` 并发门禁）、§6 实现清单（去 2b/+2c–2h）、§7 批次（**新增 P-1 破坏性前置**）、§8 测试（新增口令生命周期 12 条）、§9.1（缓解措施从纪律变产品行为 + 逃生通道）、§10。**规模**：生产代码 ≈195 → **≈310 行**，测试 ≈180 → **≈330 行**，手改文件 14 → **18 个**。
 > - v1.3（2026-11-05）：**口令章节的一致性返工**（owner 追问「关于密码的更新文档了吗」——核查后确认 v1.2 确实漏改多处，本节即为修正）。发现的五处失真：①**§5.8 与 §5.9 自相矛盾**——前者仍写「口令由人定、**不由应用生成**」，后者写 entrypoint 自动生成；改为 §5.8「部署侧自管三形态（非默认路径）」+ §5.9「自动生成（推荐）」，并明示两者互斥（同配时 `RCLONE_PASSWORD_COMMAND` 完全接管、env 不兜底）。②**§10 两行重复且过时**——「界面录入配置口令」与「界面录入/生成/轮换口令」内容重叠，合并为一行并补上「写进 DB 会让 `/data` 同时握有锁与钥匙」这一与暂缓存档冲突的理由。③**§9.2 引用了不存在的模板**——原文写「部署指南给出双分支脚本模板」，实际 `部署指南` 零命中；双分支脚本其实属于 §4.6，已在 §4.6 补出可复制的 6 行模板，并把 §9.2 该行改为「用自动生成时不需要任何脚本」。④**§9.1 缓解第 2 条**仍写「口令走 secrets」，与 §5.9 的默认文件路径不一致，改为「走文件、不要硬编码进 compose env」。⑤**§4.6 缺换口令操作步骤**——自动生成模式下「`cat` 同一文件两次＝换了个寂寞」，补出「写 `.new` → 临时指向双分支脚本 → 跑 `set` → 验通再改名」的完整手工序列（含「中间不要删旧文件」）。另：实现清单第 2 行与 2b 行标记为已完成并挂上提交号 `bf5d49c`，§1 结论表补「口令不用人手写」一行。
@@ -447,14 +448,15 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 | --- | --- | --- | --- |
 | P0 ✅ | Dockerfile 钉 rclone 版本（独立于本票） | — | `apk policy rclone` = `1.75.2-r0` |
 | **P-1 ✅ 已完成** | **移除 entrypoint 自动生成**（§5.9）：删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()` + 两处调用，compose 去注释行，部署指南 §4.2 改写 | — | ✅ `dash -n`/`sh -n` 通过；`docker/` 下 `RCLONE_PASS_FILE` 零命中；5 场景行为测试全绿（含「显式设废弃变量也不再生成文件」） |
-| P1 | 常量（3 审计动作）+ 错误码 + 架构 §5.0 + 规范 §3.1 S6（24→27，**先改规范再改代码**） | P-1 | `verify_redlines.sh` 全绿 |
-| P2 | `rclone_crypto.py` 服务层：`status` / `enable` / `rekey` / `disable` + 备份回滚 + env 重建 | P1 | 单测：四方法 × 成功/失败/回滚 |
-| P3 | 识别层：`_conf_header` 三态 + 两个 dataclass 字段 + 锁死分支（§5.4） | P1 | 单测：三态 × 锁死文案 |
-| P4 | 启动自检（§5.6） | P3 | 三条日志路径各有断言 |
-| P5 | 4 端点 + schemas + openapi 生成 | P2 | 401/403/409/422/503 × 4 端点 |
-| P6 | 前端口令区块（三态 + 三按钮 + SecretReveal/PasswordEntryModal）+ i18n | P5 | `pnpm run typecheck` 0 错误 |
-| P7 | `validate_repo_url` 收窄（§5.5） | P3 | 双向测试：锁死 422 / 缺二进制放行 |
-| P8 | 文档收口：部署指南 + 架构 §5.1 + 本文回填 | 全部 | 真机闭环 |
+| P1 ✅ | 常量（3 审计动作）+ 错误码 + 架构 §5.0 + 规范 §3.1 S6（24→27） | P-1 | ✅ `verify_redlines.sh` 19/19 |
+| P2 ✅ | `rclone_crypto.py` 服务层四方法 + 备份回滚 + env 重建 | P1 | ✅ 真实 rclone 1.75.2 端到端 |
+| P3 ✅ | 识别层三态 + 两个 dataclass 字段 + 锁死分支（§5.4） | P1 | ✅ 单测三态 × 锁死文案 |
+| P4 ✅ | 启动自检（§5.6）+ **重启后 env 重建** | P3 | ✅ 日志实证「已重建 RCLONE_PASSWORD_COMMAND」 |
+| P5 ✅ | **5** 端点（含 E68 unlock）+ schemas + openapi 生成 | P2 | ✅ 73 paths / 112 schemas |
+| P6 ✅ | 前端口令区块（三态 + 按钮 + SecretReveal/PasswordEntryModal/ConfirmGate）+ i18n | P5 | ✅ typecheck 0 错，panel spec 22/22 |
+| P7 ✅ | `validate_repo_url` 收窄（§5.5） | P3 | ✅ 双向测试 |
+| P8 ✅ | 文档收口：部署指南 §4.2 + 架构 §5.0/§5.1（E64–E68）+ 本文回填 | 全部 | ✅ 真机闭环 |
+| **FIX-SPACE ✅** | **实施中发现**：口令命令在含空格路径下失效 → 改无空格脚本路径 | 全部 | ✅ 真实 rclone 端到端 |
 
 **P-1 是破坏性变更**：已按 v1.3 部署并让 entrypoint 生成过口令的环境，其 `/repos/rclone.pass` 仍在——
 升级后界面会识别为「口令文件已存在」，可直接用「更换加密口令」接管，不会失联。
