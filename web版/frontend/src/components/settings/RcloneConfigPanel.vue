@@ -48,19 +48,30 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
+import ConfirmGate from '@/components/ConfirmGate.vue'
 import DirPickerInline from '@/components/DirPickerInline.vue'
 import { IconCheckCircle } from '@/components/icons/icons'
+import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
 import {
   createRcloneConfig,
   deleteRcloneConfig,
+  disableRcloneConfEncryption,
+  enableRcloneConfEncryption,
+  getRcloneConfEncryption,
   getRcloneRemoteUsage,
   listRcloneConfigs,
+  rekeyRcloneConfEncryption,
   repointRcloneRemote,
+  unlockRcloneConfEncryption,
   updateRcloneConfig,
 } from '@/api/repo'
-import type { RcloneConfigItem, RcloneConfigsOut } from '@/api/types'
+import type {
+  RcloneConfEncryptionOut,
+  RcloneConfigItem,
+  RcloneConfigsOut,
+} from '@/api/types'
 import { useRuntimeStore } from '@/stores/runtime'
 import { generatePassword } from '@/utils/password'
 
@@ -229,6 +240,212 @@ const confStatus = computed(() => {
   return snap.conf_present ? t('settings.rclone.confPresent') : t('settings.rclone.confMissing')
 })
 
+// ---------------------------------------------------------------- rclone conf 加密口令（三态）
+
+/** 三态只由 GET /api/rclone/conf-encryption 决定；口令明文永不回显。 */
+const confEncStatus = ref<RcloneConfEncryptionOut | null>(null)
+const confEncBusy = ref(false)
+const confEncError = ref('')
+/** 一次性明文：仅弹窗存活期存在，关闭即丢弃（不落库、不落日志、不进 URL）。 */
+const confEncReveal = ref<string | null>(null)
+/** 当前口令输入弹窗的用途；null = 关闭。 */
+type ConfEncAction = 'unlock' | 'disable' | 'rekey-old' | 'rekey-new' | null
+const confEncAction = ref<ConfEncAction>(null)
+/** 仅内存暂存的旧/当前口令：提交或关闭弹窗时立即清空。 */
+const confEncOldPassword = ref('')
+const confEncDisablePassword = ref('')
+const confEncDisableOpen = ref(false)
+
+/** 快照侧也带锁死位；任一来源为 true 即按锁死处理（宁可禁用，不可误写）。 */
+const confLocked = computed(() => {
+  const statusLocked = confEncStatus.value?.conf_locked ?? false
+  const snapshotLocked = snapshot.value?.conf_locked ?? false
+  return statusLocked || snapshotLocked
+})
+const confEncStateLabel = computed(() => {
+  const status = confEncStatus.value
+  if (!status) return t('settings.rclone.confEnc.stateUnknown')
+  if (confLocked.value) return t('settings.rclone.confEnc.stateLocked')
+  return status.conf_encrypted
+    ? t('settings.rclone.confEnc.stateEncrypted')
+    : t('settings.rclone.confEnc.statePlain')
+})
+const confEncTagType = computed<'default' | 'success' | 'error'>(() => {
+  if (confLocked.value) return 'error'
+  return confEncStatus.value?.conf_encrypted === true ? 'success' : 'default'
+})
+/** 锁死态除解锁外所有写按钮禁用；状态未知时一律禁用。 */
+const confEncCanEnable = computed(
+  () => confEncStatus.value !== null && !confEncStatus.value.conf_encrypted && !confLocked.value && !confEncBusy.value,
+)
+const confEncCanManage = computed(
+  () => confEncStatus.value !== null && confEncStatus.value.conf_encrypted && !confLocked.value && !confEncBusy.value,
+)
+const confEncCanUnlock = computed(() => confLocked.value && !confEncBusy.value)
+
+/** 口令弹窗文案随用途切换（组件只有一个实例，:key 强制用途切换时清空输入）。 */
+const confEncPwCopy = computed(() => {
+  switch (confEncAction.value) {
+    case 'unlock':
+      return {
+        title: t('settings.rclone.confEnc.pwUnlockTitle'),
+        intro: t('settings.rclone.confEnc.pwUnlockIntro'),
+        label: t('settings.rclone.confEnc.pwLabel'),
+        placeholder: t('settings.rclone.confEnc.pwPlaceholder'),
+      }
+    case 'disable':
+      return {
+        title: t('settings.rclone.confEnc.pwDisableTitle'),
+        intro: t('settings.rclone.confEnc.pwDisableIntro'),
+        label: t('settings.rclone.confEnc.pwOldLabel'),
+        placeholder: t('settings.rclone.confEnc.pwOldPlaceholder'),
+      }
+    case 'rekey-old':
+      return {
+        title: t('settings.rclone.confEnc.pwRekeyOldTitle'),
+        intro: t('settings.rclone.confEnc.pwRekeyOldIntro'),
+        label: t('settings.rclone.confEnc.pwOldLabel'),
+        placeholder: t('settings.rclone.confEnc.pwOldPlaceholder'),
+      }
+    case 'rekey-new':
+      return {
+        title: t('settings.rclone.confEnc.pwRekeyNewTitle'),
+        intro: t('settings.rclone.confEnc.pwRekeyNewIntro'),
+        label: t('settings.rclone.confEnc.pwNewLabel'),
+        placeholder: t('settings.rclone.confEnc.pwNewPlaceholder'),
+      }
+    default:
+      return { title: '', intro: '', label: '', placeholder: '' }
+  }
+})
+
+/** 三态单独刷新（外部显式调用 / 暴露给父组件）。 */
+async function refreshConfEnc(): Promise<void> {
+  try {
+    confEncStatus.value = await getRcloneConfEncryption()
+    confEncError.value = ''
+  } catch (err) {
+    confEncStatus.value = null
+    confEncError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** 统一写入口：失败显示后端 message，不吞掉；成功返回的一次性明文交给 SecretReveal。 */
+async function runConfEncWrite(call: () => Promise<string | null>): Promise<void> {
+  confEncBusy.value = true
+  confEncError.value = ''
+  try {
+    const oneTime = await call()
+    if (oneTime) {
+      confEncReveal.value = oneTime
+    } else {
+      await refresh()
+    }
+  } catch (err) {
+    confEncError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    confEncBusy.value = false
+  }
+}
+
+function onConfEncEnable(): void {
+  void runConfEncWrite(async () => (await enableRcloneConfEncryption()).password_once)
+}
+
+function startConfEncUnlock(): void {
+  confEncError.value = ''
+  confEncAction.value = 'unlock'
+}
+
+function startConfEncRekey(): void {
+  confEncError.value = ''
+  confEncAction.value = 'rekey-old'
+}
+
+function startConfEncDisable(): void {
+  confEncError.value = ''
+  confEncAction.value = 'disable'
+}
+
+function closeConfEncPw(): void {
+  confEncAction.value = null
+  confEncOldPassword.value = ''
+}
+
+/** 只有用户主动关闭弹窗才走 setter；程序化收口（action 置空）不会误清正在流转的口令。 */
+const confEncPwShow = computed({
+  get: () => confEncAction.value !== null,
+  set: (value: boolean) => {
+    if (!value) closeConfEncPw()
+  },
+})
+
+async function onConfEncPassword(password: string): Promise<void> {
+  const action = confEncAction.value
+  if (action === 'unlock') {
+    closeConfEncPw()
+    await runConfEncWrite(async () => {
+      await unlockRcloneConfEncryption({ password })
+      return null
+    })
+  } else if (action === 'disable') {
+    confEncDisablePassword.value = password
+    confEncAction.value = null
+    confEncDisableOpen.value = true
+  } else if (action === 'rekey-old') {
+    confEncOldPassword.value = password
+    // :key 随用途切换 → 弹窗重建，自填草稿从空开始，旧口令只留在内存变量里
+    confEncAction.value = 'rekey-new'
+  } else if (action === 'rekey-new') {
+    const oldPassword = confEncOldPassword.value
+    closeConfEncPw()
+    if (!oldPassword) return
+    await runConfEncWrite(async () => {
+      const result = await rekeyRcloneConfEncryption({
+        old_password: oldPassword,
+        new_password: password,
+      })
+      return result.password_once
+    })
+  }
+}
+
+function onConfEncDisableConfirm(): void {
+  const password = confEncDisablePassword.value
+  confEncDisableOpen.value = false
+  confEncDisablePassword.value = ''
+  if (!password) return
+  void runConfEncWrite(async () => {
+    await disableRcloneConfEncryption({ current_password: password })
+    return null
+  })
+}
+
+function onConfEncDisableGateClose(): void {
+  confEncDisableOpen.value = false
+  confEncDisablePassword.value = ''
+}
+
+function onConfEncRevealConfirm(): void {
+  if (confEncReveal.value === null) return
+  confEncReveal.value = null
+  void refresh()
+}
+
+const confEncDisableGateShow = computed({
+  get: () => confEncDisableOpen.value,
+  set: (value: boolean) => {
+    if (!value) onConfEncDisableGateClose()
+  },
+})
+
+const confEncRevealShow = computed({
+  get: () => confEncReveal.value !== null,
+  set: (value: boolean) => {
+    if (!value) onConfEncRevealConfirm()
+  },
+})
+
 const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
   { title: t('settings.rclone.colRemote'), key: 'remote', width: 150, ellipsis: { tooltip: true } },
   { title: t('settings.rclone.colType'), key: 'type', width: 92 },
@@ -311,12 +528,12 @@ const columns = computed<DataTableColumns<RcloneConfigItem>>(() => [
               )
             : h(
                 NPopconfirm,
-                { onPositiveClick: () => remove(row.remote) },
+                { onPositiveClick: () => remove(row.remote), disabled: confLocked.value },
                 {
                   trigger: () =>
                     h(
                       NButton,
-                      { size: 'small', type: 'error', secondary: true },
+                      { size: 'small', type: 'error', secondary: true, disabled: confLocked.value },
                       { default: () => t('settings.rclone.delete') },
                     ),
                   default: () =>
@@ -349,9 +566,20 @@ const remoteOptions = computed(() =>
 async function refresh(): Promise<void> {
   loading.value = true
   try {
-    snapshot.value = await listRcloneConfigs()
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    // 三态是状态唯一真源；conf 段清单单独拉取，失败不拖累状态显示
+    const [encStatus, nextSnapshot] = await Promise.all([
+      getRcloneConfEncryption().catch((err: unknown) => {
+        confEncError.value = err instanceof Error ? err.message : String(err)
+        return null
+      }),
+      listRcloneConfigs().catch((err: unknown) => {
+        message.error(err instanceof Error ? err.message : String(err))
+        return null
+      }),
+    ])
+    confEncStatus.value = encStatus
+    if (encStatus !== null) confEncError.value = ''
+    if (nextSnapshot) snapshot.value = nextSnapshot
   } finally {
     loading.value = false
   }
@@ -618,13 +846,19 @@ async function remove(remote: string): Promise<void> {
 
 onMounted(refresh)
 
-defineExpose({ refresh })
+defineExpose({ refresh, refreshConfEnc })
 </script>
 
 <template>
   <div class="rclone-panel">
     <NAlert v-if="snapshot && !snapshot.available" type="warning" :bordered="false" class="rclone-panel__alert">
       {{ t('settings.rclone.unavailable') }}<template v-if="snapshot.reason">：{{ snapshot.reason }}</template>
+    </NAlert>
+    <NAlert v-if="confLocked" type="error" :bordered="false" class="rclone-panel__alert">
+      {{ t('settings.rclone.confEnc.lockedHint') }}
+    </NAlert>
+    <NAlert v-if="confEncError" type="error" :bordered="false" class="rclone-panel__alert">
+      {{ confEncError }}
     </NAlert>
 
     <NSpace align="center" justify="space-between" class="rclone-panel__head">
@@ -634,6 +868,56 @@ defineExpose({ refresh })
       </span>
       <NButton size="small" :loading="loading" @click="refresh">{{ t('settings.rclone.refresh') }}</NButton>
     </NSpace>
+
+    <NCard size="small" :title="t('settings.rclone.confEnc.title')" class="rclone-panel__card">
+      <NSpace vertical :size="10">
+        <NSpace align="center" :size="8" class="rclone-panel__row">
+          <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
+          <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
+        </NSpace>
+        <NSpace align="center" :size="8" class="rclone-panel__row">
+          <NButton
+            v-if="!confLocked && (!confEncStatus || !confEncStatus.conf_encrypted)"
+            size="small"
+            type="primary"
+            :disabled="!confEncCanEnable"
+            :loading="confEncBusy"
+            @click="onConfEncEnable"
+          >
+            {{ t('settings.rclone.confEnc.enableBtn') }}
+          </NButton>
+          <NButton
+            v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            size="small"
+            type="primary"
+            :disabled="!confEncCanManage"
+            :loading="confEncBusy"
+            @click="startConfEncRekey"
+          >
+            {{ t('settings.rclone.confEnc.rekeyBtn') }}
+          </NButton>
+          <NButton
+            v-if="confEncStatus && confEncStatus.conf_encrypted && !confLocked"
+            size="small"
+            :disabled="!confEncCanManage"
+            :loading="confEncBusy"
+            @click="startConfEncDisable"
+          >
+            {{ t('settings.rclone.confEnc.disableBtn') }}
+          </NButton>
+          <NButton
+            v-if="confLocked"
+            size="small"
+            type="primary"
+            :disabled="!confEncCanUnlock"
+            :loading="confEncBusy"
+            @click="startConfEncUnlock"
+          >
+            {{ t('settings.rclone.confEnc.unlockBtn') }}
+          </NButton>
+        </NSpace>
+      </NSpace>
+    </NCard>
 
     <NCard size="small" :title="t('settings.rclone.listTitle')" class="rclone-panel__card">
       <NDataTable
@@ -826,7 +1110,7 @@ defineExpose({ refresh })
               <div class="rclone-panel__formform">
                 <span>{{ t('settings.rclone.plainRepairHint') }}</span>
                 <div>
-                  <NButton size="small" :loading="repairing" @click="repairPlain">
+                  <NButton size="small" :disabled="confLocked" :loading="repairing" @click="repairPlain">
                     {{ t('settings.rclone.plainRepairBtn') }}
                   </NButton>
                 </div>
@@ -841,7 +1125,7 @@ defineExpose({ refresh })
         </NFormItem>
 
         <NSpace>
-          <NButton type="primary" :loading="submitting" @click="submit">
+          <NButton type="primary" :disabled="confLocked" :loading="submitting" @click="submit">
             <template #icon>
               <NIcon :size="16"><IconCheckCircle /></NIcon>
             </template>
@@ -875,7 +1159,7 @@ defineExpose({ refresh })
                   :placeholder="t('settings.rclone.repointPlaceholder')"
                   style="flex: 1"
                 />
-                <NButton size="small" :disabled="!repointTarget" :loading="repointing" @click="onRepoint">
+                <NButton size="small" :disabled="!repointTarget || confLocked" :loading="repointing" @click="onRepoint">
                   {{ t('settings.rclone.repointBtn') }}
                 </NButton>
               </div>
@@ -892,6 +1176,50 @@ defineExpose({ refresh })
           </NAlert>
         </template>
       </NSpace>
+    </NModal>
+
+    <!-- conf 加密口令输入：解锁 / 停用 / 换口令（新旧两段）共用同一组件，口令只留内存 -->
+    <PasswordEntryModal
+      :key="confEncAction ?? 'closed'"
+      v-model:show="confEncPwShow"
+      :title="confEncPwCopy.title"
+      :intro="confEncPwCopy.intro"
+      :generated-hint="t('settings.rclone.confEnc.revealHint')"
+      :custom-label="confEncPwCopy.label"
+      :custom-placeholder="confEncPwCopy.placeholder"
+      :submit-label="t('common.confirm')"
+      :confirm-label="t('settings.rclone.confEnc.revealConfirm')"
+      :generated="null"
+      :loading="confEncBusy"
+      :min-length="1"
+      :show-generated-cancel="false"
+      :show-generate="false"
+      @submit-custom="onConfEncPassword"
+    />
+
+    <!-- 停用加密：输入当前口令后再过一次危险操作确认门 -->
+    <ConfirmGate
+      v-model:show="confEncDisableGateShow"
+      :title="t('settings.rclone.confEnc.disableGateTitle')"
+      :description="t('settings.rclone.confEnc.disableGateDesc')"
+      :loading="confEncBusy"
+      :confirm-label="t('settings.rclone.confEnc.disableBtn')"
+      @confirm="onConfEncDisableConfirm"
+    />
+
+    <!-- 后端生成 / 换口令的一次性明文（全站统一呈现，SecretReveal） -->
+    <NModal
+      v-model:show="confEncRevealShow"
+      preset="card"
+      :title="t('settings.rclone.confEnc.revealTitle')"
+      style="width: min(520px, calc(100vw - 32px))"
+    >
+      <SecretReveal
+        :secret="confEncReveal ?? ''"
+        :hint="t('settings.rclone.confEnc.revealHint')"
+        :confirm-label="t('settings.rclone.confEnc.revealConfirm')"
+        @confirm="onConfEncRevealConfirm"
+      />
     </NModal>
 
     <!-- 生成密码后的一次性明文（全站统一呈现，SecretReveal） -->

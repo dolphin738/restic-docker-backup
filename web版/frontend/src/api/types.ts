@@ -250,6 +250,10 @@ export interface RcloneRemotesOut {
   remotes: string[]
   /** 不可用/缺 conf 时的可操作原因。 */
   reason: string | null
+  /** conf 已启用 rclone 配置加密（后端 RcloneRemotesOut 同名字段）。 */
+  conf_encrypted: boolean
+  /** conf 已加密但当前口令无法解开（锁死态：除解锁外禁止写入）。 */
+  conf_locked: boolean
 }
 
 // ---------------------------------------------------------------- rclone 配置管理
@@ -361,6 +365,48 @@ export interface RcloneConfigsOut {
   /** rclone 可用（不可用时 reason 带可操作原因，列表为空）。 */
   available: boolean
   reason: string | null
+  /** conf 已启用 rclone 配置加密（后端 RcloneConfigsOut 同名字段）。 */
+  conf_encrypted: boolean
+  /** conf 已加密但当前口令无法解开（锁死态：除解锁外禁止写入）。 */
+  conf_locked: boolean
+}
+
+// ---------------------------------------------------------------- rclone conf 加密口令（三态）
+
+/** GET /api/rclone/conf-encryption：三态 + 口令文件存在性（口令明文永不回显）。 */
+export interface RcloneConfEncryptionOut {
+  conf_encrypted: boolean
+  conf_locked: boolean
+  password_present: boolean
+  conf_path: string
+  pass_path: string
+}
+
+/** POST .../enable：省略或 null = 后端生成 32 位；空串由后端 422 拒绝。 */
+export interface RcloneConfEnableRequest {
+  password?: string | null
+}
+
+/** POST .../rekey：新旧口令均不得为空。 */
+export interface RcloneConfRekeyRequest {
+  old_password: string
+  new_password: string
+}
+
+/** POST .../disable：停用加密需当前口令。 */
+export interface RcloneConfDisableRequest {
+  current_password: string
+}
+
+/** POST .../unlock：锁死态恢复可解态需现有口令。 */
+export interface RcloneConfUnlockRequest {
+  password: string
+}
+
+/** enable / rekey 的一次性明文（只在本次响应体出现，不进日志/审计）。 */
+export interface RcloneConfPasswordOnceOut {
+  code: string
+  password_once: string | null
 }
 
 /** 新增/编辑 rclone conf 段请求（params 只接受注册表内已知键）。 */

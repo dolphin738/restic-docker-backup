@@ -14,6 +14,12 @@ import type {
   RepoCreateRequest,
   RepoIdSuggestion,
   RcloneArchivesOut,
+  RcloneConfDisableRequest,
+  RcloneConfEnableRequest,
+  RcloneConfEncryptionOut,
+  RcloneConfPasswordOnceOut,
+  RcloneConfRekeyRequest,
+  RcloneConfUnlockRequest,
   RcloneConfigsOut,
   RcloneConfigWriteOut,
   RcloneConfigWriteRequest,
@@ -119,6 +125,43 @@ export function listRcloneRemotes(): Promise<RcloneRemotesOut> {
  */
 export function listRcloneConfigs(): Promise<RcloneConfigsOut> {
   return request<RcloneConfigsOut>('/api/rclone/configs')
+}
+
+// ---------------------------------------------------------------- rclone conf 加密口令
+
+/** 三态查询（GET /api/rclone/conf-encryption；口令明文永不回显）。 */
+export function getRcloneConfEncryption(): Promise<RcloneConfEncryptionOut> {
+  return request<RcloneConfEncryptionOut>('/api/rclone/conf-encryption')
+}
+
+/** 启用加密：不传 password 时由后端生成 32 位口令并一次性回显。 */
+export function enableRcloneConfEncryption(
+  body: RcloneConfEnableRequest = {},
+): Promise<RcloneConfPasswordOnceOut> {
+  return request<RcloneConfPasswordOnceOut>('/api/rclone/conf-encryption/enable', {
+    method: 'POST',
+    body,
+  })
+}
+
+/** 更换口令：旧口令验通后写新口令，后端一次性回显新口令。 */
+export function rekeyRcloneConfEncryption(
+  body: RcloneConfRekeyRequest,
+): Promise<RcloneConfPasswordOnceOut> {
+  return request<RcloneConfPasswordOnceOut>('/api/rclone/conf-encryption/rekey', {
+    method: 'POST',
+    body,
+  })
+}
+
+/** 停用加密：退回明文 conf，需当前口令。 */
+export function disableRcloneConfEncryption(body: RcloneConfDisableRequest): Promise<OkResponse> {
+  return request<OkResponse>('/api/rclone/conf-encryption/disable', { method: 'POST', body })
+}
+
+/** 解锁：锁死态也可调用，写入现有口令后重建运行期口令命令。 */
+export function unlockRcloneConfEncryption(body: RcloneConfUnlockRequest): Promise<OkResponse> {
+  return request<OkResponse>('/api/rclone/conf-encryption/unlock', { method: 'POST', body })
 }
 
 // ---------------------------------------------------------------- 归档（删除保护方案 P2）

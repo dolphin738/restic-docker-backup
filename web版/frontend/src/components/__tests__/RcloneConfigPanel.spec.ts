@@ -12,7 +12,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { NConfigProvider, NMessageProvider, NPopconfirm, NRadioGroup, NSelect } from 'naive-ui'
 import { createPinia, setActivePinia } from 'pinia'
 import { h, nextTick } from 'vue'
@@ -36,6 +36,8 @@ const SNAPSHOT: RcloneConfigsOut = {
   conf_present: true,
   available: true,
   reason: null,
+  conf_encrypted: false,
+  conf_locked: false,
   configs: [
     {
       remote: 'mycrypt',
@@ -115,6 +117,14 @@ describe('RcloneConfigPanel', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    // P6 新增：onMounted 会并发拉取加密三态，未 mock 会让 fetch 落空、挂载竞态失败
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue({
+      conf_encrypted: false,
+      conf_locked: false,
+      password_present: false,
+      conf_path: '/etc/rclone/rclone.conf',
+      pass_path: '/repos/rclone.pass',
+    })
     vi.spyOn(repoApi, 'createRcloneConfig').mockResolvedValue({
       remote: 'newone',
       type: 'crypt',
@@ -141,7 +151,9 @@ describe('RcloneConfigPanel', () => {
   it('列表展示非凭据参数与 has_* 徽标，凭据零回显', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const text = textOf(w)
     expect(text).toContain('mycrypt')
@@ -155,7 +167,9 @@ describe('RcloneConfigPanel', () => {
   it('非 managed 段（OAuth）只有删除、没有编辑按钮', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const buttons = [...w.element.querySelectorAll('button')].map((b) => b.textContent?.trim())
     // 两个段：crypt 段有「编辑」+「删除」，drive 段只有「删除」
@@ -167,11 +181,14 @@ describe('RcloneConfigPanel', () => {
   it('删除走确认门并调用 deleteRcloneConfig', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const confirms = w.findAllComponents(NPopconfirm)
     await confirms[1]!.vm.$emit('positive-click')
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.deleteRcloneConfig).toHaveBeenCalledWith('gdrive')
   })
@@ -179,7 +196,9 @@ describe('RcloneConfigPanel', () => {
   it('编辑态预填非凭据字段且密码不预填', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const editBtn = [...w.element.querySelectorAll('button')].find(
       (b) => b.textContent?.trim() === zhCN.settings.rclone.edit,
@@ -187,7 +206,9 @@ describe('RcloneConfigPanel', () => {
     expect(editBtn).toBeTruthy()
     editBtn!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const inputs = [...w.element.querySelectorAll('input')] as HTMLInputElement[]
     // 底层目标已拆两段：`mywebdav:bucket` → 远端（NSelect 选中态）+ 路径输入框 value=bucket
@@ -212,6 +233,7 @@ describe('RcloneConfigPanel', () => {
   it('生成随机密码：先弹一次性明文（32 位），确认后才填入密码栏', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     const genButtons = [...w.element.querySelectorAll('button')].filter(
       (b) => b.textContent?.trim() === zhCN.common.generatePassword,
@@ -219,7 +241,9 @@ describe('RcloneConfigPanel', () => {
     expect(genButtons.length).toBeGreaterThan(0)
     genButtons[0]!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     // ① 弹窗出现，明文 32 位（全站统一长度），且此刻**尚未**写入表单
     const reveal = w.findComponent(SecretReveal)
@@ -232,6 +256,7 @@ describe('RcloneConfigPanel', () => {
     // ② 确认（我已备份）→ 写入当前密码栏并关闭
     reveal.vm.$emit('confirm')
     await nextTick()
+    await flushPromises()
     const filled = ([...w.element.querySelectorAll('input')] as HTMLInputElement[]).find(
       (i) => i.type === 'password' && i.value === secret,
     )
@@ -241,13 +266,17 @@ describe('RcloneConfigPanel', () => {
   it('未选底层远端时提交被前端拦截（不发请求）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'newone')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
   })
@@ -255,16 +284,20 @@ describe('RcloneConfigPanel', () => {
   it('新增提交调用 createRcloneConfig（remote 拼成 name:path；默认按明文提交）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'newone')
     // 底层候选来自列表快照（gdrive 段也在册：crypt 可叠在网盘段上）
     pickCryptRemote(w, 'gdrive')
     fillInput(w, zhCN.settings.rclone.cryptRemotePathPlaceholder, 'backup/restic')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
     const [name, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
@@ -280,12 +313,14 @@ describe('RcloneConfigPanel', () => {
   it('新增：填密码 + 选「混淆串」→ value_obscured=true（原样落盘，不二次混淆）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'obscuredone')
     pickCryptRemote(w, 'gdrive')
     // 新增态密码框 placeholder 为空串（只有编辑态才有「留空保持不变」）→ 直接驱动组件
     w.findAllComponents(PasswordInput).at(0)!.vm.$emit('update:modelValue', 'OBSCURED-TOKEN')
     await nextTick()
+    await flushPromises()
 
     const select = w
       .findAllComponents(NSelect)
@@ -294,10 +329,13 @@ describe('RcloneConfigPanel', () => {
     expect(select!.props('disabled')).toBe(false)
     select!.vm.$emit('update:value', 'obscured')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
@@ -308,18 +346,23 @@ describe('RcloneConfigPanel', () => {
   it('本地目录模式：提交 remote = 绝对路径（crypt 可包裹本地目录）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'localcrypt')
     w.findComponent(NRadioGroup).vm.$emit('update:value', 'local')
     await nextTick()
+    await flushPromises()
 
     // 本地模式换成目录树 + 路径输入（DirPickerInline 的输入框）
     fillInput(w, zhCN.settings.rclone.cryptLocalPlaceholder, '/repo/encrypted')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.createRcloneConfig).toHaveBeenCalledTimes(1)
     const [name, payload] = vi.mocked(repoApi.createRcloneConfig).mock.calls[0]!
@@ -330,17 +373,22 @@ describe('RcloneConfigPanel', () => {
   it('本地目录模式：非绝对路径被前端拦截', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.remoteNamePlaceholder, 'badlocal')
     w.findComponent(NRadioGroup).vm.$emit('update:value', 'local')
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.cryptLocalPlaceholder, 'backup/restic')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitNew)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.createRcloneConfig).not.toHaveBeenCalled()
   })
@@ -358,11 +406,15 @@ describe('RcloneConfigPanel', () => {
   it('编辑态：徽标显示已存形态（混淆 = 可用），不动密码保存 = value_obscured false', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(textOf(w)).toContain(
       zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedObscured),
@@ -370,7 +422,9 @@ describe('RcloneConfigPanel', () => {
 
     clickSubmit(w, zhCN.settings.rclone.submitEdit)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.updateRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
@@ -382,11 +436,15 @@ describe('RcloneConfigPanel', () => {
   it('编辑态：密码形态下拉在未填新值前禁用（没有作用对象）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const select = w
       .findAllComponents(NSelect)
@@ -399,14 +457,19 @@ describe('RcloneConfigPanel', () => {
   it('填新密码 + 选「混淆串」→ 提交 value_obscured=true（原样落盘，不二次混淆）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     fillInput(w, zhCN.settings.rclone.passwordKeepHint, 'OBS-t0ken-from-other-conf')
     await nextTick()
+    await flushPromises()
 
     const select = w
       .findAllComponents(NSelect)
@@ -415,10 +478,13 @@ describe('RcloneConfigPanel', () => {
     expect(select!.props('disabled')).toBe(false)
     select!.vm.$emit('update:value', 'obscured')
     await nextTick()
+    await flushPromises()
 
     clickSubmit(w, zhCN.settings.rclone.submitEdit)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
     expect(payload.value_obscured).toBe(true)
@@ -429,11 +495,15 @@ describe('RcloneConfigPanel', () => {
     vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_UNKNOWN_FORM)
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(textOf(w)).toContain(
       zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedUnknown),
@@ -445,11 +515,15 @@ describe('RcloneConfigPanel', () => {
     vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_PLAIN_FORM)
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(textOf(w)).toContain(
       zhCN.settings.rclone.storedForm.replace('{form}', zhCN.settings.rclone.storedPlain),
@@ -460,7 +534,9 @@ describe('RcloneConfigPanel', () => {
     expect(btn).toBeTruthy()
     btn!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(repoApi.updateRcloneConfig).toHaveBeenCalledTimes(1)
     const [, payload] = vi.mocked(repoApi.updateRcloneConfig).mock.calls[0]!
@@ -471,11 +547,15 @@ describe('RcloneConfigPanel', () => {
   it('已混淆段：不出现「修正为混淆」按钮', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const btn = [...w.element.querySelectorAll('button')].find(
       (b) => b.textContent?.trim() === zhCN.settings.rclone.plainRepairBtn,
@@ -486,11 +566,15 @@ describe('RcloneConfigPanel', () => {
   it('「如何找回密码」：编辑态只有一个入口，弹窗只给命令示例、不含任何凭据值', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const btns = [...w.element.querySelectorAll('button')].filter(
       (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
@@ -499,7 +583,9 @@ describe('RcloneConfigPanel', () => {
     expect(btns).toHaveLength(1)
     btns[0]!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     // 弹窗内容 teleport 到 body：读文本（不是查元素），断言只给命令示例
     const modalText = document.body.textContent ?? ''
@@ -518,18 +604,24 @@ describe('RcloneConfigPanel', () => {
 
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     clickEdit(w)
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const open = [...w.element.querySelectorAll('button')].find(
       (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
     )
     open!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     // 弹窗 teleport 到 body → 按弹窗容器定位「复制」按钮（两个），避免其它弹窗残留干扰
     const box = document.body.querySelector('.rclone-panel__recover')
@@ -541,6 +633,7 @@ describe('RcloneConfigPanel', () => {
 
     copyBtns[0]!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     expect(writeText).toHaveBeenCalledTimes(1)
     const first = String(writeText.mock.calls[0]![0])
     expect(first).toContain('config dump')
@@ -548,6 +641,7 @@ describe('RcloneConfigPanel', () => {
 
     copyBtns[1]!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     const second = String(writeText.mock.calls[1]![0])
     expect(second).toContain('rclone reveal')
     expect(second).toContain(zhCN.settings.rclone.recoverValuePlaceholder)
@@ -559,7 +653,9 @@ describe('RcloneConfigPanel', () => {
   it('「如何找回密码」：新增态不出现（无已存凭据）', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const btn = [...w.element.querySelectorAll('button')].find(
       (b) => b.textContent?.trim() === zhCN.settings.rclone.recoverBtn,
@@ -586,6 +682,14 @@ describe('RcloneConfigPanel 删除保护', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    // P6 新增：onMounted 会并发拉取加密三态，未 mock 会让 fetch 落空、挂载竞态失败
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue({
+      conf_encrypted: false,
+      conf_locked: false,
+      password_present: false,
+      conf_path: '/etc/rclone/rclone.conf',
+      pass_path: '/repos/rclone.pass',
+    })
     vi.spyOn(repoApi, 'deleteRcloneConfig').mockResolvedValue({
       remote: 'gdrive',
       type: 'drive',
@@ -598,7 +702,9 @@ describe('RcloneConfigPanel 删除保护', () => {
   it('无仓库引用：删除按钮可点，且不出现查看占用入口', async () => {
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(buttonOf(w, zhCN.settings.rclone.usage)).toBeUndefined()
     const del = buttonOf(w, zhCN.settings.rclone.delete)
@@ -610,7 +716,9 @@ describe('RcloneConfigPanel 删除保护', () => {
     vi.mocked(repoApi.listRcloneConfigs).mockResolvedValue(SNAPSHOT_IN_USE)
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     const usage = buttonOf(w, zhCN.settings.rclone.usage)
     expect(usage).toBeTruthy()
@@ -629,11 +737,15 @@ describe('RcloneConfigPanel 删除保护', () => {
     })
     const w = mountPanel()
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     buttonOf(w, zhCN.settings.rclone.usage)!.dispatchEvent(new Event('click'))
     await nextTick()
+    await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(spy).toHaveBeenCalledWith('mycrypt')
   })
