@@ -1,11 +1,12 @@
 # rclone 配置落盘加密实施方案
 
-> 版本：v1.3（2026-11-05）
+> 版本：v1.4（2026-11-05）
 > 层级：方案层——`rclone.conf` **落盘加密与运行时口令通道**的唯一方案源，亦即 GitHub issue #2 的实现依据
 > 边界：本文只覆盖 **conf 文件的加密态识别与口令通道**。rclone 段的增删改查能力边界（注册表、凭据混淆、占用扫描、配置归档）见《rclone配置生成工具设计方案》v1.21，本文不重复、不替代。
 > 关联：`app/services/rclone.py`（只读探测）、`app/services/rclone_config.py`（conf 管理）、`docker/Dockerfile`、`docs/部署指南.md` §4.2、`docs/架构设计文档.md` §5.0/§5.1
 
 > **修订记录**：
+> - v1.4（2026-11-05）：**界面改为完整管理（生成/更换/停用/解锁），移除 entrypoint 自动生成**（owner 三问裁决：Q1 停用也做、Q2 口令落 `./repos/rclone.pass` 且移除 entrypoint 自动生成、Q3 先更新方案）。**推翻 v1.2/v1.3 两处结论**：①**「界面只读、零致锁入口」被实测推翻**——应用可经 **argv** 显式传 `--password-command`（不依赖容器 env），在 `stdin=DEVNULL` 下完整驱动 `set`/`check`/`remove`，且 **argv 优先于 env**（argv 对+env 错→成功，argv 错+env 对→失败）；另实测**明文 conf 对口令命令失败免疫**（指向不存在的文件时 `config dump` 仍 exit 0），故首次启用时序宽松。②**entrypoint 自动生成移除**——两处都能生成会形成隐式竞争，且后台生成的 32 位随机串用户从未见过，丢文件即永久锁死；界面生成必然经 `SecretReveal` 一次性展示。**本轮改写**：§1 结论表、§5.2（界面完整管理 + 三条实测证据）、§5.3（三态 × 三按钮 + 停用次要按钮 + 组件复用）、§5.9（口令唯一落点 `/repos/rclone.pass` + 移除自动生成的对照表 + 不复用仓库口令的四行对照）、**新增 §5.10 服务层设计**（`rclone_crypto.py` 四方法 + 三条纪律：mkstemp 临时文件 / 审计三动作入 S6 24→27 / 写后必 `check` + 失败回滚 + env 重建 + `JOB_CONFLICT` 并发门禁）、§6 实现清单（去 2b/+2c–2h）、§7 批次（**新增 P-1 破坏性前置**）、§8 测试（新增口令生命周期 12 条）、§9.1（缓解措施从纪律变产品行为 + 逃生通道）、§10。**规模**：生产代码 ≈195 → **≈310 行**，测试 ≈180 → **≈330 行**，手改文件 14 → **18 个**。
 > - v1.3（2026-11-05）：**口令章节的一致性返工**（owner 追问「关于密码的更新文档了吗」——核查后确认 v1.2 确实漏改多处，本节即为修正）。发现的五处失真：①**§5.8 与 §5.9 自相矛盾**——前者仍写「口令由人定、**不由应用生成**」，后者写 entrypoint 自动生成；改为 §5.8「部署侧自管三形态（非默认路径）」+ §5.9「自动生成（推荐）」，并明示两者互斥（同配时 `RCLONE_PASSWORD_COMMAND` 完全接管、env 不兜底）。②**§10 两行重复且过时**——「界面录入配置口令」与「界面录入/生成/轮换口令」内容重叠，合并为一行并补上「写进 DB 会让 `/data` 同时握有锁与钥匙」这一与暂缓存档冲突的理由。③**§9.2 引用了不存在的模板**——原文写「部署指南给出双分支脚本模板」，实际 `部署指南` 零命中；双分支脚本其实属于 §4.6，已在 §4.6 补出可复制的 6 行模板，并把 §9.2 该行改为「用自动生成时不需要任何脚本」。④**§9.1 缓解第 2 条**仍写「口令走 secrets」，与 §5.9 的默认文件路径不一致，改为「走文件、不要硬编码进 compose env」。⑤**§4.6 缺换口令操作步骤**——自动生成模式下「`cat` 同一文件两次＝换了个寂寞」，补出「写 `.new` → 临时指向双分支脚本 → 跑 `set` → 验通再改名」的完整手工序列（含「中间不要删旧文件」）。另：实现清单第 2 行与 2b 行标记为已完成并挂上提交号 `bf5d49c`，§1 结论表补「口令不用人手写」一行。
 > - v1.2（2026-11-05）：**口令改为 entrypoint 自动生成 + 明确拒绝复用仓库口令**。①owner 追问「能直接用默认仓库的密码文件吗」——实测**可行**（`RCLONE_PASSWORD_COMMAND='cat <passfile>'` 能完成 `encryption set` 与读取，生成器那套 `!@#$%^&*-_=+` 字符集在 rclone 侧也无问题），但**拒绝**：`ops.py:925` 的 `key.rotate` 会用 `write_text` 直接覆盖口令文件，`repo_lifecycle.py:605/:215` 与 `retention.py:400` 也会写/删，而轮换链路**零 rclone 感知**——复用会让「轮换仓库密码」静默把加密 conf 永久锁死，且延迟到下次备份才暴露。②owner 追问「找个地方能自动生成 rclone 密码」→ 新增 §5.9：`docker/entrypoint.sh` 增加 `RCLONE_PASS_FILE`（默认空 = 功能关闭），首次启动生成 32 位 `A-Za-z0-9`、`umask 077` 写入后 `chmod 600`、**已存在绝不覆盖**、父目录自动 `mkdir -p`；root 档随后 chown 到 `PUID:PGID`，非 root 档把父目录纳入 `need_dir` 硬检查。字符集刻意取纯字母数字（该口令要经 `cat` 喂给 rclone，避免 `! $ % & *` 被 shell/编辑器二次解释）。`docker/docker-compose.yml` 加 `# RCLONE_PASS_FILE` + `# RCLONE_PASSWORD_COMMAND` 两行注释示例（默认关闭）。**§5.8 保留但收窄**为「部署侧自管口令」的三种形态。
 > - v1.1（2026-11-05）：**口令通道补全 + 一处 v1.0 结论被实测推翻**。①**推翻**：v1.0 写「rclone 没有改口令，只能 `remove`→`set` 且中间态是明文」——**错**。实际「`encryption set` 对已加密 conf = 原子 rekey」：`--password-command` 被调用两次，第二次带 `RCLONE_PASSWORD_CHANGE=1`，取旧口令解密、取新口令重加密；失败时 conf md5 不变。误判根因已复盘（§4.10：脚本未区分该环境变量 + 返回值带尾随换行 + 未读 `--help`）。②新增 §4.7 调用语义（**不经 shell**：管道/`\$VAR`/`&&` 全部当字面量，按空白切分后直接 exec；口令命令失败是**毫秒级明确报错**，与「缺口令挂 60 秒」完全不同）。③新增 §4.8 口令内容规则（空串拒绝 / 单字符接受 / Unicode 可用 / 尾部 `\n` 与 `\r\n` 剥掉、**首尾空格保留**）。④新增 §4.9 双通道优先级（`PASSWORD_COMMAND` 完全接管，env **不兜底**）。⑤新增 §5.8 口令三种供给形态（明文 env / compose secrets / 宿主文件），并澄清 compose secrets 仍落盘、收益是「不进 `docker inspect` 与 compose 文件」。⑥§10 更正 `rclone` 不支持轮换的错误表述。
@@ -22,8 +23,8 @@
 | **写路径零改动** | `exec_rclone`（`rclone.py:91-96`）与 `RcloneProbe._exec`（`:188-190`）都不传 `env=`，子进程全部继承父进程环境；实测加密 conf 上 `config create/update/delete/dump` 四条子命令全通且文件保持加密态 |
 | **性能不构成理由** | 每次 restic 命令固定多 2–3 ms（占单命令总耗时不足 0.2%）；一条 `init + backup + snapshots` 只起 **3 个** rclone 进程，不是按请求数重复解密 |
 | **不需要「启用开关」** | conf 加密态由**文件头**自证，明文 conf 无 header → 存量部署行为零变化；「默认关」天然成立，无需引入任何 config 键 |
-| **界面只读三态，启停走宿主 shell** | 面板只显示「未加密 / 已加密可解 / 已加密无法解」，不提供任何可致锁的写入口（§5.3）；应用自身无法把 conf 推进加密态 |
-| **口令不用人手写** | entrypoint 首次启动自动生成 32 位口令到 `RCLONE_PASS_FILE`（默认关，设了才生效），已存在绝不覆盖（§5.9）；**不复用仓库口令文件**——`key.rotate` 会静默锁死 conf |
+| **界面完整管理（三态 + 按钮）** | 面板按加密态给主按钮：未加密→「生成并启用」、可解→「更换口令」、不可解→「输入口令解锁」；停用为次要按钮（§5.2/§5.3）。**v1.2 的「界面只读、零致锁入口」已被实测推翻**——应用可经 argv `--password-command` 在 `stdin=DEVNULL` 下完整驱动 `set`/`check`/`remove` |
+| **口令只落 `/repos/rclone.pass`** | 由界面生成并**一次性展示**，让用户必然看见并备份（§5.9）；**不复用仓库口令文件**——`key.rotate` 会静默锁死 conf；**不做 entrypoint 自动生成**（用户从没见过那把钥匙） |
 
 真正的成本只有一条，且不可消除：**口令丢失 = 全部远端不可恢复**（§9.1）。
 
@@ -242,45 +243,45 @@ Failed to read new password with --password-command: returned empty string
 2. 仅在「已加密」时，再跑一次 `config encryption check`（带 `RCLONE_PROBE_TIMEOUT_SECONDS` 超时）判口令可用性；
 3. 明文 conf → 直接判「未加密」，**不调 rclone**。
 
-### 5.2 因此「启用开关」被消解
+### 5.2 界面完整管理：三态 + 按钮（**v1.4 推翻 v1.2 的「零致锁入口」结论**）
 
-票面原待办含一条「开关：是否启用 conf 加密（默认关）」。经实测该开关**不需要存在**：
-
-| 原设想 | 消解理由 |
-| --- | --- |
-| 需要一个 config 键声明「本部署启用了加密」 | 文件头本身就是声明，且是**更强**的声明（无法与文件真实状态不一致） |
-| 需要「默认关、避免存量踩坑」 | 明文 conf 没有 header，识别逻辑天然不触发，存量行为零变化 |
-| 需要界面按钮跑 `encryption set` | 加密是**一次性运维动作**，且属「改文件」而非「改配置」；本期不做（§10） |
-
-⇒ 本期**不新增任何 config 键、不新增 settings 字段**。部署者用一条命令开启，应用自动识别。
-
-**启用与停用一律走宿主 shell，界面只读**：
+**v1.2 曾判定**「加密是一次性运维动作，界面只读、启停走宿主 shell」。**该结论已被实测推翻**：
+应用可经 **argv** 显式传 `--password-command`（不依赖容器环境变量），在 `stdin=DEVNULL` 下完整驱动
+`set` / `check` / `remove` 全生命周期：
 
 ```bash
-# 开启（容器内执行；--password-command 是唯一能让 set 无头完成的通道，见 §4.2）
-docker compose exec -T restic-web rclone config encryption set \
-  --password-command 'cat /run/secrets/rclone_pass'
-# 停用
-docker compose exec -T restic-web rclone config encryption remove
+# 三条都在 stdin=DEVNULL 下成立（= app 的 exec_rclone 真实条件）
+rclone --password-command 'cat /tmp/pw' config encryption set     # exit 0，conf 变加密态
+rclone --password-command 'cat /tmp/pw' config encryption check   # 0=可解 / 1=不可解 / 2=明文
+rclone --password-command '/tmp/dual.sh' config encryption set    # rekey：旧口令失效、新口令可解
 ```
 
-界面**不提供任何可导致锁死的入口**——没有启用按钮、没有停用按钮、不接收口令。这是「零锁死风险」的确切含义：**应用自身无法把 conf 推进加密态**，加密只可能由部署者在 shell 里显式执行。
+**argv 优先于环境变量**（实测双向）：argv 对 + env 错 → 成功；argv 错 + env 对 → 失败。
+故应用侧对自己发起的每条命令都掌握口令控制权；容器 env 只负责 `restic serve restic --stdio` 那条链路。
 
-> 边界：该表述仅指**界面侧无致锁入口**。部署侧一旦执行了 `set` 又丢失口令，仍会锁死且不可恢复（§9.1）——故 §5.3/§5.4 的识别与 §5.6 的启动自检仍然必要，它们是锁死**之后**的可观测性，不是锁死的预防。
+**明文 conf 对口令命令失败是免疫的**（实测）：明文 conf + `--password-command` 指向不存在的文件 →
+`config dump` exit 0、`listremotes` 正常。rclone 只在**解密时**才调用它——这让「首次启用」的时序非常宽松：
+口令文件不存在期间，明文档的一切日常操作不受影响。
 
-### 5.3 界面只读三态（方案 C 的确切形态）
+⇒ 因此本期**在界面上做完整管理**，不再要求部署者进 shell。
 
-面板 `confStatus`（`RcloneConfigPanel.vue:226-230`）由现有二态扩为三态，**只读展示，无任何可写控件**：
+### 5.3 界面形态：一个按钮，三种语义
 
-| 状态 | 判定 | 界面文案（zh-CN） |
-| --- | --- | --- |
-| **未加密** | 文件头无加密标记 | 明文 conf（未加密） |
-| **已加密可解** | 有加密标记 且 `encryption check` = 0 | 已加密 · 口令可用 |
-| **已加密无法解** | 有加密标记 且 `encryption check` = 1 | ⚠️ 已加密但无法解密——所有 `rclone:` 仓库将不可用 |
+面板 `confStatus`（`RcloneConfigPanel.vue:226-230`）由二态扩为三态，并按「conf 加密态」决定按钮语义：
 
-第三态出现时，「已加密无法解」**同时**意味着应用当前无法读写 conf（§4.4 面板路径 685 ms 快速失败）。故该状态不只是文案：面板顶部常驻 NAlert（复用 `:626` 现有 alert 位）说明后果与恢复路径，且列表区改为空 + 该提示，不再展示半截数据。
+| conf 状态 | 判定 | 主按钮 | 点击后 |
+| --- | --- | --- | --- |
+| **未加密** | 文件头无加密标记 | 「生成并启用加密」 | 生成 32 位口令 → 落盘 `/repos/rclone.pass` → `encryption set` → `SecretReveal` 一次性展示 → 要求确认已备份 |
+| **已加密可解** | 有标记 且 `check` = 0 | 「更换加密口令」 | `PasswordEntryModal` 输入新口令 → 写临时文件 → 双分支脚本 `encryption set` → 落盘新口令 → 一次性展示 |
+| **已加密无法解** | 有标记 且 `check` = 1 | 「输入口令解锁」 | 输入现有口令 → 写临时文件 → `check` 验通才落盘；不通则报错且不改任何文件 |
 
-用户真正需要回答的问题是「我的备份还能不能跑」，三态直接给出答案；至于「怎么开怎么关」，走上面的宿主 shell。
+**停用加密**（`encryption remove`）作为次要按钮只在「已加密可解」态出现，且**必须输入当前口令**——
+rclone 本身就需要它，这不是额外限制。
+
+第三态出现时，应用当前**无法读写 conf**（§4.4 面板路径 685 ms 快速失败），故该状态不只是文案：
+面板顶部常驻 NAlert（复用 `:626` 现有 alert 位）说明后果与恢复路径，列表区改为空 + 该提示，不再展示半截数据。
+
+组件全部复用现成实现，不新写：一次性明文 = `SecretReveal.vue`；口令输入 = `PasswordEntryModal.vue`。
 
 ### 5.4 锁死时的三处语义修正
 
@@ -332,9 +333,9 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 
 ### 5.8 口令从哪来（一）：部署侧自管的三种形态
 
-> **优先用 §5.9 的自动生成**——那是不需要人手写口令的默认路径。本节三种用于「已有自管凭据目录」
-> 「必须走 secrets/KMS」「需要与人共享口令」等场景。两者互斥：同时配 `RCLONE_PASS_FILE` 与
-> `RCLONE_CONFIG_PASS` 时，`RCLONE_PASSWORD_COMMAND` 完全接管（§4.9），env 不兜底。
+> **默认路径是界面生成**（§5.9）——用户点一次按钮，应用把口令写到 `/repos/rclone.pass` 并一次性展示。
+> 本节三种形态用于**不经过界面**的部署：「已有自管凭据目录」「必须走 secrets/KMS」「需要与人共享口令」。
+> 二者互斥：同时配 `RCLONE_CONFIG_PASS` 与 `RCLONE_PASSWORD_COMMAND` 时，命令完全接管（§4.9），env 不兜底。
 
 本期**不引入** `*_FILE` 基础设施、不引入 secret provider 抽象（那是已暂缓的 #3 范围）。口令的供给完全由部署侧决定，应用只认环境变量：
 
@@ -346,105 +347,167 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 
 > **compose 模式的 secrets 仍落盘**：它是把宿主机源文件 bind mount 进容器（非 swarm 无 tmpfs），实测确认。收益不是「不落盘」，而是「**不出现在 `docker inspect` / 镜像层 / compose 文件里**」，且权限可收紧到 `0600`。这与 Q1「部分读」威胁模型一致——要防的是 conf 被单独拷走，不是防宿主。
 
-**生成器在 entrypoint，不在应用（Python）侧**：自动生成见 §5.9；应用本身不生成、不存储、不接收该口令（§10 已排除界面录入）。自己准备口令时建议长度 ≥32 且用 `openssl rand -base64 32`，但**rclone 对此不做任何校验**（§4.8：单字符也接受），故强度纪律只能写在部署指南里，代码拦不住。
+**走本节形态时，界面的启用按钮不可用**：界面生成的口令会写到 `/repos/rclone.pass`，而本节的形态让 rclone 从别处取口令——
+两边不一致会让「界面显示的加密态」与「实际生效的口令」脱节。故 §5.9 规定：`RCLONE_PASSWORD_COMMAND` 已由部署侧配置时，
+界面只读展示加密态，不显示启用/更换按钮（判定方式：进程 env 里的 `RCLONE_PASSWORD_COMMAND` 是否指向 `<passfile_root>/rclone.pass`）。
 
-### 5.9 口令从哪来（二）：entrypoint 自动生成（推荐，默认关）
+### 5.9 口令文件位置与来源（**v1.4 移除 entrypoint 自动生成**）
 
-部署侧**不必手写**这个口令——设置一个路径即可，首次启动自动生成（不设则功能整体关闭，见表格末行）：
+**唯一落点：`<PASSFILE_ROOT>/rclone.pass`**（默认即 `/repos/rclone.pass`，与仓库密码同卷但不同文件）。
 
-```yaml
-environment:
-  RCLONE_PASS_FILE: /repos/rclone.pass
-  RCLONE_PASSWORD_COMMAND: "/bin/cat /repos/rclone.pass"
-```
-
-| 行为 | 说明 |
-| --- | --- |
-| 文件不存在 | 生成 **32 位 `A-Za-z0-9`**，`umask 077` 写入后 `chmod 600`，日志提示立即离线备份 |
-| 文件已存在 | **只打印一行、绝不覆盖**（覆盖 = 加密 conf 当场解不开） |
-| 父目录不存在 | 自动 `mkdir -p`（root 档随后 chown 到 `PUID:PGID`） |
-| `RCLONE_PASS_FILE` 未设 | **不做任何事**——本功能默认关，存量部署零变化 |
-| 非 root 档 | 父目录纳入 `need_dir` 硬检查，不可写则拒绝启动并提示宿主机 `chown` |
-
-**为什么字符集取纯字母数字**（与 `utils/passfile.py` 的四类混排不同）：该口令要经 `cat` 原样喂给 rclone，
-纯字母数字可避免 shell 引用、编辑器补齐、复制粘贴对 `! $ % & *` 的二次解释。32 位 alnum 熵约 190 bit，足够。
-
-**为什么单独一个文件，不复用 `<passfile_root>/default/password`**（实测可行 vs 工程代价）：
-
-| | 复用 default 口令 | 独立 `rclone.pass` |
+| 生成方 | 何时 | 状态 |
 | --- | --- | --- |
-| 部署侧新增秘密 | 0 个 | 1 个（且**自动生成，无需人手写**） |
+| **界面「生成并启用加密」** | 用户点击 | **唯一入口**（v1.4 起） |
+| ~~entrypoint 启动期自动生成~~ | — | **v1.4 移除**：两处都能生成会让「谁先生效、谁覆盖谁」变成隐式竞争；且自动生成的口令用户从没见过，丢文件即永久锁死 |
+
+> v1.2/v1.3 曾设计 `RCLONE_PASS_FILE` + `ensure_rclone_pass()` 在 entrypoint 里自动生成。
+> **本文档已移除该设计；代码移除在 P-1 批次执行**（当前 `docker/entrypoint.sh` 与 `docker-compose.yml` 里仍有）。
+> 移除理由：界面生成路径能给出一次性明文展示（用户必然看见并备份），而后台生成的 32 位随机串用户从未见过——
+> 「文件丢了就永久失守」这件事在自动生成下比在界面生成下严重得多；两处都能生成还会形成「谁先生效、谁覆盖谁」的隐式竞争。
+
+**为什么是 `/repos` 而不是 `/data`**：`/data` 已有 `restic.db`（锁）。口令放进去等于一个目录同时握有 conf 密文 + 锁 + 口令，
+与《暂缓存档-密钥托管架构》的结论直接冲突（见 §9.1）。`/repos` 是已存在的独立卷（部署指南 §2.6），复用即可。
+
+**为什么不用 `<passfile_root>/<repo_id>/password`**（复用仓库口令）：
+
+| | 复用 default 口令 | 独立 `repos/rclone.pass` |
+| --- | --- | --- |
+| 界面首次启用额外要求 | 无 | 无（自动生成） |
 | `key.rotate` 轮换仓库密码 | **口令文件被 `write_text` 覆盖 → conf 永久解不开，且静默** | 不受影响 |
 | `rebuild` / `purge` / 归档到期 | `write_passfile` / `remove_passfile` 同样毁掉 conf | 不受影响 |
 | 一个文件三用 | 是（restic 密码 + `enc:v2:` 密钥源 + conf 口令） | 否 |
 
-> `ops.py:925` 的轮换逻辑直接改写口令文件，且**全程没有 rclone 感知**（已 grep 确认零命中）；
-> `repo_lifecycle.py:605`（rebuild 写）、`:215`（purge 删）、`retention.py:400`（归档到期删）同样会动该文件。
-> 把这些路径与「加密 conf 用不用同一把钥匙」耦合，等于在一条重点审查的核心路径上埋一个**延迟发作**的静默失效：
-> 轮换会报 `result=ok`、凭据也正常重加密，只有下次跑 `rclone:` 备份时才炸，而错误是 `Couldn't decrypt configuration`——指不到真正原因。
-> 自动生成把「新增一个秘密」的成本降到零，因此拒绝复用 default 口令的唯一理由（部署麻烦）已不存在。
+> `ops.py:925` 直接改写口令文件，**全程无 rclone 感知**（grep 零命中）；`repo_lifecycle.py:605`（rebuild 写）、
+> `:215`（purge 删）、`retention.py:400`（归档到期删）同样会动它。复用等于让「轮换仓库密码」**静默**锁死 conf，
+> 且延迟到下次 `rclone:` 备份才暴露、错误只显示「口令错」。
 
-**口令丢失仍不可恢复**（§4.11 不变）：自动生成不改变这一点，日志会明确提示「请立即离线备份」。
+### 5.10 服务层设计：口令不进 DB、不进 argv、不进日志
+
+新增 `backend/app/services/rclone_crypto.py`（约 130 行）：
+
+| 方法 | 行为 |
+| --- | --- |
+| `status()` | 读文件头（纯文件读）+ 有口令时跑 `check` → 三态；**明文路径不调 rclone** |
+| `enable(new_password: str \| None)` | 仅「未加密」可用；`None` = 后端生成 32 位；备份明文 conf → `set` → `check` → 落盘口令 → 失败回滚 |
+| `rekey(old_password: str, new_password: str)` | 仅「已加密可解」可用；双分支脚本（`RCLONE_PASSWORD_CHANGE=1` 时输出新口令）→ `set` → `check` → 落盘新口令 |
+| `disable(current_password: str)` | 仅「已加密可解」可用；`remove` → 校验首行变明文 → 删口令文件 |
+
+**三条纪律**（都是既有先例的复用）：
+
+1. **临时口令文件用 `tempfile.mkstemp`**（`ops.py:865` 已有先例），`chmod 600`，`try/finally` 删除；
+   口令**只经该文件传给 rclone**，不进 argv、不进日志、不进审计（S3）；
+2. **审计只记动作**：新增 `rclone.conf_encrypt` / `rclone.conf_rekey` / `rclone.conf_decrypt`，
+   detail 只含 `generated`（是否后端生成）与 `result`，**绝不含口令**；三者入 S6 危险操作清单（24 → 27）；
+3. **写后必须重跑 `check`**：拿到 0 才算成功；非 0 立即用备份还原 conf 并抛错，**绝不留下「已加密但解不开」**。
+
+**运行期口令通道切换**：每次 `enable`/`rekey`/`disable` 成功后重建 `os.environ["RCLONE_PASSWORD_COMMAND"]`，
+使后续 `restic serve restic --stdio` 子进程拿到新口令（`RcloneProbe` / `RcloneConfigService` 不传 `env=`，继承即生效）。
+
+**并发门禁**：换口令期间不得有 running job——conf 已用新口令重加密而旧 env 的 serve 进程仍活着，会让该次备份失败。
+复用 `JOB_CONFLICT`（409），与既有同仓库互斥同口径。
 
 ## 6. 实现清单
 
 | # | 文件 | 改动 | 约行数 |
 | --- | --- | --- | --- |
-| 1 | `docker/Dockerfile` | **已完成**（`f37a905`）：`ARG RCLONE_VERSION=1.75.2-r0`（`:28`）、`rclone=${RCLONE_VERSION}`（`:53`） | 0 |
-| 2 | `docker/docker-compose.yml` | **已完成**（`bf5d49c`）：`environment` 增 `RCLONE_PASS_FILE` + `RCLONE_PASSWORD_COMMAND` 注释示例（默认注释掉 = conf 加密不启用）；同批 `PASSFILE_ROOT: /repos` 改默认 | 0 |
-| 2b | `docker/entrypoint.sh` | **已完成**（`bf5d49c`）：`RCLONE_PASS_FILE` + `ensure_rclone_pass()`（32 位 alnum、umask 077、0600、已存在不覆盖、自动建父目录）；root 档生成后 chown，非 root 档父目录 `need_dir` 硬检查 | 0（≈30 行已落） |
-| 3 | `backend/app/constants.py` | 新增 `RCLONE_CONF_ENCRYPTED_MARKERS`（两个文件头标记）、`RCLONE_CONF_LOCKED`；`ERROR_STATUS` 增 503 映射 | ~10 |
-| 4 | `backend/app/services/rclone.py` | 新增 `_conf_header()`（纯读，返回三态）；`RcloneRemotes` 增 `conf_encrypted: bool` + `conf_locked: bool`；`list_remotes` 锁死分支给可操作 `reason` | ~45 |
-| 5 | `backend/app/services/rclone_config.py` | `RcloneConfigList` 增同名字段；`list_configs` 的 `except` 分支区分锁死 | ~18 |
-| 6 | `backend/app/errors.py` | 新增 `RcloneConfLockedError`（503） | ~8 |
-| 7 | `backend/app/routers/repos_rclone.py` | `_raise_rclone_error` 增分支；remotes 端点透传新字段 | ~10 |
-| 8 | `backend/app/routers/repos_shared.py` | `validate_repo_url` 锁死 → 422（§5.5 双向语义） | ~12 |
-| 9 | `backend/app/schemas/api_schemas.py` | `RcloneRemotesOut` / `RcloneConfigsOut` 增字段（`conf_encrypted`、`conf_locked`） | ~8 |
-| 10 | `backend/app/main.py` | lifespan 启动自检（§5.6） | ~30 |
-| 11 | `frontend/src/api/types.ts` | 同步两类型新字段 | ~6 |
-| 12 | `frontend/src/api/openapi.json` + `schema.d.ts` | **生成物**：`scripts/gen-openapi.py` → `pnpm -C frontend gen:api` | 0（自动） |
-| 13 | `frontend/src/components/settings/RcloneConfigPanel.vue` | `confStatus` computed 由二态扩三态；锁死时顶部常驻 NAlert（复用 `:626` 现有 alert 位） | ~35 |
-| 14 | `frontend/src/i18n/locales/zh-CN.ts` / `en-US.ts` | 三态文案 + 锁死提示 + 恢复指引 | ~14 |
-| 15 | `backend/tests/test_rclone_config.py` / `test_repo_backends.py` / `test_api/test_rclone_config_api.py` | 见 §8 | ~180 |
-| 16 | `docs/部署指南.md` | 改写 `:315-317`（双端编辑纪律）、`:327-330`（加密段）、`:352`（env 表加 `RCLONE_PASSWORD_COMMAND`） | ~40 |
-| 17 | `docs/架构设计文档.md` | §5.0 增错误码行；§5.1 E45/E48 补两字段 | ~10 |
+| **已完成** | | | |
+| 1 | `docker/Dockerfile` | 钉 `ARG RCLONE_VERSION=1.75.2-r0`（`f37a905`） | 0 |
+| 2 | `docker/docker-compose.yml` / `docker/entrypoint.sh` | `PASSFILE_ROOT: /repos` + `./repos:/repos:rw` 改默认、entrypoint 独立密钥卷处理（`bf5d49c`） | 0 |
+| **v1.4 移除** | | | |
+| 3 | `docker/entrypoint.sh` | 删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()`（§5.9 理由） | −30 |
+| 4 | `docker/docker-compose.yml` | 删 `RCLONE_PASS_FILE` 注释行；`RCLONE_PASSWORD_COMMAND` 保留（供 `serve restic` 链路） | −2 |
+| **新增：口令生命周期** | | | |
+| 5 | `backend/app/services/rclone_crypto.py` | `status` / `enable` / `rekey` / `disable`（§5.10）+ mkstemp 临时文件 + 备份回滚 + `check` 验通 + env 重建 | ~130 |
+| 6 | `backend/app/routers/repos_rclone.py` | 4 端点：`GET /api/rclone/conf-encryption` + `POST .../enable` `.../rekey` `.../disable` | ~45 |
+| 7 | `backend/app/schemas/api_schemas.py` | 3 个请求模型 + 1 个状态模型（含 `conf_encrypted` / `conf_locked` / `password_once`） | ~25 |
+| 8 | `backend/app/constants.py` | `RCLONE_CONF_ENCRYPTED_MARKERS`、`RCLONE_CONF_LOCKED`、3 个审计动作常量；`ERROR_STATUS` 增 503 | ~14 |
+| 9 | `backend/app/errors.py` | `RcloneConfLockedError`（503） | ~8 |
+| **识别与降级** | | | |
+| 10 | `backend/app/services/rclone.py` | `_conf_header()` 三态；`RcloneRemotes` 增 `conf_encrypted` + `conf_locked`；锁死分支可操作 `reason` | ~45 |
+| 11 | `backend/app/services/rclone_config.py` | `RcloneConfigList` 增同名字段；`list_configs` 区分锁死 | ~18 |
+| 12 | `backend/app/routers/repos_shared.py` | `validate_repo_url` 锁死 → 422（§5.5） | ~12 |
+| 13 | `backend/app/main.py` | lifespan 启动自检（§5.6） | ~30 |
+| **前端** | | | |
+| 14 | `frontend/src/components/settings/RcloneConfigPanel.vue` | 三态徽标 + 三按钮 + 停用次要按钮 + NAlert；接 `SecretReveal` / `PasswordEntryModal` | ~110 |
+| 15 | `frontend/src/api/repo.ts` + `types.ts` | 4 端点封装 + 类型 | ~36 |
+| 16 | `frontend/src/i18n/locales/zh-CN.ts` / `en-US.ts` | 三态 + 三按钮 + 停用确认 + 恢复指引 | ~24 |
+| 17 | `frontend/src/api/openapi.json` + `schema.d.ts` | 生成物：`scripts/gen-openapi.py` → `pnpm -C frontend gen:api` | 0（自动） |
+| **测试与文档** | | | |
+| 18 | `backend/tests/test_rclone_crypto.py`（新）+ 三个既有测试文件 | 见 §8（含 12 条口令生命周期） | ~330 |
+| 19 | `docs/部署指南.md` | 改写加密段、env 表、§2.6 交叉引用 | ~50 |
+| 20 | `docs/架构设计文档.md` | §5.0 增错误码行；§5.1 增 4 端点 | ~20 |
+| 21 | `docs/代码审查规范.md` §3.1 + `AGENTS.md` | S6 危险清单 24 → 27（**先改规范再改代码**） | ~10 |
 
-**生产代码 ≈ 195 行**（不含生成物与测试）；**测试 ≈ 180 行；文档 ≈ 50 行**；触及 **14 个手改文件**。
+**生产代码 ≈ 310 行**（不含生成物）；**测试 ≈ 330 行；文档 ≈ 80 行**；手改文件 **18 个**；净删除 ≈ 32 行（entrypoint/compose）。
 
 ## 7. 实施批次
 
 | 批次 | 内容 | 前置 | 验收 |
 | --- | --- | --- | --- |
-| P0 ✅ | Dockerfile 钉 rclone 版本（独立于本票，已完成） | — | `apk policy rclone` = `1.75.2-r0` |
-| P1 | 常量 + 错误码 + 架构 §5.0（**规范先行**：新增 `ERROR_STATUS` 条目必须先登记文档） | — | `verify_redlines.sh` 全绿 |
-| P2 | 服务层：`_conf_header` 三态 + 两个 dataclass 字段 + `list_remotes` / `list_configs` 锁死分支 | P1 | 单测：三态 × 锁死文案 |
-| P3 | 启动自检 | P2 | 三条日志路径各有断言 |
-| P4 | 契约层：schemas + router + openapi 生成 + 前端三态 + i18n | P2 | `pnpm run typecheck` 0 错误 |
-| P5 | `validate_repo_url` 收窄（§5.5） | P2 | 双向测试：锁死 422 / 缺二进制放行 |
-| P6 | 文档收口：部署指南 + 架构 §5.1 + 本文回填落地差异 | 全部 | 真机闭环 |
+| P0 ✅ | Dockerfile 钉 rclone 版本（独立于本票） | — | `apk policy rclone` = `1.75.2-r0` |
+| **P-1** | **移除 entrypoint 自动生成**（§5.9）：删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()`，compose 去注释行 | — | `dash -n` 通过；`RCLONE_PASS_FILE` 全仓零命中 |
+| P1 | 常量（3 审计动作）+ 错误码 + 架构 §5.0 + 规范 §3.1 S6（24→27，**先改规范再改代码**） | P-1 | `verify_redlines.sh` 全绿 |
+| P2 | `rclone_crypto.py` 服务层：`status` / `enable` / `rekey` / `disable` + 备份回滚 + env 重建 | P1 | 单测：四方法 × 成功/失败/回滚 |
+| P3 | 识别层：`_conf_header` 三态 + 两个 dataclass 字段 + 锁死分支（§5.4） | P1 | 单测：三态 × 锁死文案 |
+| P4 | 启动自检（§5.6） | P3 | 三条日志路径各有断言 |
+| P5 | 4 端点 + schemas + openapi 生成 | P2 | 401/403/409/422/503 × 4 端点 |
+| P6 | 前端口令区块（三态 + 三按钮 + SecretReveal/PasswordEntryModal）+ i18n | P5 | `pnpm run typecheck` 0 错误 |
+| P7 | `validate_repo_url` 收窄（§5.5） | P3 | 双向测试：锁死 422 / 缺二进制放行 |
+| P8 | 文档收口：部署指南 + 架构 §5.1 + 本文回填 | 全部 | 真机闭环 |
 
-P2 是本方案的技术核心，P3/P4/P5 三者互不依赖，可并行。
+**P-1 是破坏性变更**：已按 v1.3 部署并让 entrypoint 生成过口令的环境，其 `/repos/rclone.pass` 仍在——
+升级后界面会识别为「口令文件已存在」，可直接用「更换加密口令」接管，不会失联。
+
+P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 
 ## 8. 测试与护栏
 
-- **文件头三态**：已加密（两种标记各一例）/ 明文 / 文件不存在 → `conf_encrypted` 与 `conf_locked` 取值正确，且**明文路径不调用任何子进程**（用 executor 计数器断言）；
-- **锁死不静默降级**：`list_remotes` 在锁死时 `reason` 必须含「已加密」「口令」两个语义关键词，不得等于 rclone 原文或「超时」——这条直接对应票面「失败语义」待办；
+**识别层**：
+
+- **文件头三态**：已加密（两种标记各一例）/ 明文 / 文件不存在 → `conf_encrypted` 与 `conf_locked` 取值正确，且**明文路径不调用任何子进程**（executor 计数器断言）；
+- **锁死不静默降级**：锁死时 `reason` 必须含「已加密」「口令」两个语义关键词，不得等于 rclone 原文或「超时」；
 - **两类不可用分离**（§5.5 双向）：锁死 → `validate_repo_url` 抛 422；缺二进制 / 事件循环不支持 → 继续放行；
-- **启动自检三分支**：明文静默 / 已加密+通道可用 → 恰一条 info / 已加密+通道不可达 → 恰一条 error 且**不含口令与 conf 内容**（S3 断言）；
-- **端点契约**：`GET /api/rclone/remotes` 与 `GET /api/rclone/configs` 回新字段；锁死时两接口仍 **200**（可渲染）而非 503——这是「面板不消失」的机器断言；
-- **错误码登记**：`RCLONE_CONF_LOCKED` 在 `ERROR_STATUS`、架构 §5.0、`errors.py` 三处一致；
-- **红线**：`bash scripts/verify_redlines.sh` 全绿；`python scripts/check_dockerignore.py`（compose 改动后）；
-- **真机验收**（容器内，非 WSL 宿主机）：`encryption set --password-command` → 界面「查看列表 / 新增段 / 编辑段」三项全通 → `encryption remove` 复原；再删掉口令环境变量重启，确认面板仍可打开且提示指向恢复路径。
+- **启动自检三分支**：明文静默 / 已加密+口令可用 → 恰一条 info / 已加密+不可达 → 恰一条 error 且**不含口令与 conf 内容**（S3 断言）；
+
+**口令生命周期（v1.4 新增，约 12 条）**：
+
+- `enable` 成功路径：conf 变加密态、口令文件落盘 0600、`check` 返回 0、一次命令只生成一个备份；
+- `enable` **幂等/门禁**：conf 已加密时调用 `enable` → 422，**且不改动任何文件**（md5 前后一致）；
+- `enable` **回滚**：`set` 成功但 `check` 非 0（构造口令写坏）→ conf 从备份还原 + 抛错 + 口令文件不落盘；
+- `rekey` 成功：旧口令解不开、新口令可解（用真实 rclone 断言，不 mock）；
+- `rekey` **旧口令错** → 422 且 conf md5 不变、旧口令仍可解；
+- `rekey` **有 running job** → 409 `JOB_CONFLICT`，零副作用；
+- `disable` 成功：conf 首行变明文、口令文件被删；
+- `disable` **口令错** → 422，conf 仍加密且口令文件保留；
+- **三处零泄漏**（S3）：口令不出现在 argv（用 executor 拦截 argv 断言）、日志、审计 detail、API 响应（除 `enable`/`rekey` 的**一次性** `password` 字段）；
+- **env 重建**：`enable` 后 `os.environ["RCLONE_PASSWORD_COMMAND"]` 指向新口令文件（读 env 断言，无副作用）；
+- **临时文件清理**：三个方法成功与失败路径下 `mkstemp` 产生的文件都被删除（遍历 tmpdir 断言）；
+- **端点契约**：4 端点 × 鉴权 401 / Origin 403 / 锁死 503 / 门禁 422 / 并发 409。
+
+**既有护栏**：`verify_redlines.sh` 全绿（含 S6 新增三动作的反向锚点）；`check_dockerignore.py`（compose 改动后）。
+
+**真机验收**（容器内）：明文 → 界面「生成并启用加密」→ 一次性明文可复制 → 重启容器后仍可解 →
+「更换加密口令」→ 旧口令失效 → 「停用加密」→ conf 首行变明文 → 全流程 restic `rclone:` 备份各跑一次。
 
 ## 9. 风险与取舍
 
 ### 9.1 口令丢失 = 全部远端不可恢复（唯一实质代价）
 
-不可逆、无后门（§4.11 实测）。**缓解只能前置**：
+不可逆、无后门（§4.11 实测）。**v1.4 起界面握有致锁能力，故缓解措施从前置纪律变成产品行为**：
 
-1. 开启前把明文 conf 复制到 `data/` 之外并明确告知这是唯一逃生通道；
-2. 口令走文件（§5.9 自动生成到 `./repos/rclone.pass`，或 secrets / 宿主文件），**不要硬编码进 compose 的 env**（`docker inspect` 明文可见）；
-3. 界面对锁死状态给常驻告警而不是一次性 toast。
+| 缓解 | 落点 |
+| --- | --- |
+| **启用前强制备份明文 conf** | `enable()` 内自动复制到 `<passfile_root>/conf-backup-<ts>`，界面明确写「这是唯一逃生通道」 |
+| **口令一次性展示 + 强制确认** | `SecretReveal.vue`，用户点「我已备份」才算完成（沿用 E44 / B9 的既有心智） |
+| **每次操作后 `check` 验通** | 非 0 立即用备份还原 conf 并抛错，**绝不留下「已加密但解不开」** |
+| **锁死时面板仍可打开** | §5.4 的三处语义修正 + §5.6 启动自检 + §5.3 第三态的「输入口令解锁」按钮 |
+| **口令不进 `/data`** | 落 `/repos`（独立卷），避免「拷走 `/data` = 拿到锁与钥匙」 |
+
+⇒ 界面致锁风险**无法降到零**，只能靠上述五条把「误操作 → 不可恢复」压缩成「误操作 → 一次点击内可回滚 + 有明文备份」。
+这是与 v1.2「零致锁入口」的实质差别，必须写进验收。
+
+**逃生通道（写进界面文案）**：`<passfile_root>/conf-backup-*` 里的明文 conf 可直接覆盖回 `/etc/rclone/rclone.conf`，
+覆盖后加密态消失、口令文件可删——这是口令彻底丢失时**唯一**的恢复路径。
 
 ### 9.2 已接受的风险
 
@@ -460,10 +523,14 @@ P2 是本方案的技术核心，P3/P4/P5 三者互不依赖，可并行。
 
 | 项 | 理由 |
 | --- | --- |
-| **界面「启用/停用加密」按钮** | **本期取方案 C：界面只读三态，启停走宿主 shell**（§5.3）。理由：①按钮属「改文件」而非「改配置」；②要做必须配齐「启用前 `check` 验证 + 失败自动 `remove` 回滚 + 强制明文备份 + 面板防锁死」四件套（约 +150~250 行），是独立一块；③界面自持致锁能力时，一次误点即可造成不可恢复状态。用户真正需要知道的是「我的备份还能不能跑」，三态已直接回答 |
-| **界面**录入 / 生成 / 轮换口令 | UI 一概不做——口令由部署侧供给（entrypoint 自动生成 §5.9，或自管 §5.8）。理由：①口令属部署侧凭据，与「业务配置走 DB」边界冲突（`settings.py:4`）；②写进 DB 会与 `enc:v2:` 密钥源纠缠，且让 `/data` 一个目录同时握有锁与钥匙（与《暂缓存档-密钥托管架构》的结论冲突）；③界面自持口令＝自持致锁能力。**注意：这不是「rclone 不支持轮换」**——rclone **支持**原子 rekey（§4.6 实测），只是不做进界面；部署侧换口令见 §4.6 的双分支脚本 |
-| 存量 conf 自动迁移 | Q3 裁决 |
-| 接 KMS | Q2 的「保留接口」由 `RCLONE_PASSWORD_COMMAND` 天然满足——口令来源是任意脚本，接哪家 KMS 都不改应用代码 |
+| ~~界面「启用/停用加密」按钮~~ | **v1.4 已做**（§5.2/§5.3）——v1.2 的「零致锁入口」结论被实测推翻（argv `--password-command` 可用） |
+| ~~界面录入 / 生成 / 轮换口令~~ | **v1.4 已做**（生成、轮换、停用、解锁四项都在界面上）。仍然不做的是**把口令存进 DB**——与「业务配置走 DB」边界冲突，且会让 `/data` 同时握有锁与钥匙 |
+| 存量 conf 自动迁移 | Q3 裁决：不自动加密已有明文 conf，由用户点按钮显式启用 |
+| 接 KMS | 本期口令只落文件；KMS 由 `RCLONE_PASSWORD_COMMAND` 指向任意脚本天然支持（§5.8 形态 B/C），不改应用代码 |
+| 口令强度校验 | rclone 不校验（§4.8 单字符也接受）；界面生成恒 32 位，自填不拦（用户可能沿用外部口令）。**登记为已知缺口** |
+
+> **已移除（v1.4）**：entrypoint 启动期自动生成口令（`RCLONE_PASS_FILE` / `ensure_rclone_pass()`，见 §5.9）。
+> 两处都能生成会形成隐式竞争，且后台生成的口令用户从未见过——丢文件即永久锁死。
 
 ## 11. 与既有文档的关系
 
@@ -471,7 +538,7 @@ P2 是本方案的技术核心，P3/P4/P5 三者互不依赖，可并行。
 | --- | --- |
 | 《rclone配置生成工具设计方案》v1.21 | **不替代**：那边管「段的增删改查与凭据混淆」，本文管「整份文件的落盘加密与口令通道」。交叉点只有一处——加密后写 conf 仍走同一 CLI，故那边无需改动 |
 | 《暂缓存档-密钥托管架构-2026-11-04.md》 | 前置评估已收敛为「暂不实施」；本文不依赖它，`RCLONE_PASSWORD_COMMAND` 使口令来源与 provider 抽象解耦 |
-| 《部署指南》§4.2 | 运维落地入口：口令配置、开启命令、逃生命中备份 |
+| 《部署指南》§4.2 | 运维落地入口：界面操作说明（生成/更换/停用）、逃生通道位置；**v1.3 那节写的「entrypoint 自动生成」须在 P8 批次改写** |
 | 《架构设计文档》§5.0 / §5.1 | 错误码与两个端点的新契约字段 |
 | Git Issue #2 | 本文为实现依据；落地完成并通过 §8 验收后按其 Q5 关闭 |
 
@@ -484,3 +551,5 @@ P2 是本方案的技术核心，P3/P4/P5 三者互不依赖，可并行。
 | conf 首次创建默认权限 | ✅ 已销（恒 600，与 umask 无关；已写入部署指南 `:322-325`） |
 | 加密态如何探测 | ✅ 已销（§4.3 / §5.1） |
 | **容器内（Alpine rclone 1.75.2-r0）复跑 §4.3 三态退出码** | ⏳ 未做——WSL 实测用的是官方 1.75.2；Alpine 打包版理论上同源，但需在真容器内确认一次 |
+| **argv `--password-command` 三条路径在 Alpine 版复验**（§5.2 依据） | ⏳ 未做——同上，WSL 官方 1.75.2 已验证 `set`/`check`/rekey 三态与 argv 优先级 |
+| **probe 与 ConfigService 是否需要显式传 argv** | ⏳ 设计待定——§5.10 用「重建 `os.environ` 让子进程继承」的路线；若容器内继承不可靠，改为两处都显式传 `--password-command` |
