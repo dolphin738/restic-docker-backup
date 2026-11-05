@@ -1,11 +1,12 @@
 # rclone 配置落盘加密实施方案
 
-> 版本：v1.4（2026-11-05）
+> 版本：v1.5（2026-11-05）
 > 层级：方案层——`rclone.conf` **落盘加密与运行时口令通道**的唯一方案源，亦即 GitHub issue #2 的实现依据
 > 边界：本文只覆盖 **conf 文件的加密态识别与口令通道**。rclone 段的增删改查能力边界（注册表、凭据混淆、占用扫描、配置归档）见《rclone配置生成工具设计方案》v1.21，本文不重复、不替代。
 > 关联：`app/services/rclone.py`（只读探测）、`app/services/rclone_config.py`（conf 管理）、`docker/Dockerfile`、`docs/部署指南.md` §4.2、`docs/架构设计文档.md` §5.0/§5.1
 
 > **修订记录**：
+> - v1.5（2026-11-05）：**P-1 批次落地：从代码移除 entrypoint 口令自动生成**（owner 指令「先做 P-1」）。删除 `docker/entrypoint.sh` 的 `RCLONE_PASS_FILE` 变量（6 行注释 + 1 行赋值）、`ensure_rclone_pass()` 整函数（21 行）、root 档与非 root 档两处调用（4 + 5 行），共 −36 行；`docker/docker-compose.yml` 删掉 `# RCLONE_PASS_FILE` 与「首次启动自动生成」四行说明，改为指向界面生成（§5.10），`RCLONE_PASSWORD_COMMAND` 语义保留但在 compose 中不再预置。《部署指南》§4.2 那节原写「设一个路径、容器首次启动自动生成」，现改为**如实说明本版本 conf 加密未启用、不做启动期自动生成、勿再配 `RCLONE_PASS_FILE`**，并保留「不要复用仓库口令文件」的警示。**保留不动**：`PASSFILE_ROOT` 独立密钥卷处理（`PASSFILE_ROOT: /repos` + `./repos:/repos:rw` 默认布局）与 `need_dir` 的 `_hint` 形参（仍被 `need_dir "$PASSFILE_ROOT" "<宿主机 keys 目录>"` 使用）。**验证**：`dash -n`/`sh -n` 通过；`docker/` 下 `RCLONE_PASS_FILE`/`ensure_rclone_pass` 零命中；5 场景行为测试全绿——显式设置已废弃变量时**不再生成任何文件**、独立密钥卷处理仍正常、未设 `PASSFILE_ROOT` 时行为与旧版一致。**规模修正**：实现清单 3/4 标记完成，§7 P-1 标记 ✅，§5.9 移除状态由「代码待删」改为「已删」。
 > - v1.4（2026-11-05）：**界面改为完整管理（生成/更换/停用/解锁），移除 entrypoint 自动生成**（owner 三问裁决：Q1 停用也做、Q2 口令落 `./repos/rclone.pass` 且移除 entrypoint 自动生成、Q3 先更新方案）。**推翻 v1.2/v1.3 两处结论**：①**「界面只读、零致锁入口」被实测推翻**——应用可经 **argv** 显式传 `--password-command`（不依赖容器 env），在 `stdin=DEVNULL` 下完整驱动 `set`/`check`/`remove`，且 **argv 优先于 env**（argv 对+env 错→成功，argv 错+env 对→失败）；另实测**明文 conf 对口令命令失败免疫**（指向不存在的文件时 `config dump` 仍 exit 0），故首次启用时序宽松。②**entrypoint 自动生成移除**——两处都能生成会形成隐式竞争，且后台生成的 32 位随机串用户从未见过，丢文件即永久锁死；界面生成必然经 `SecretReveal` 一次性展示。**本轮改写**：§1 结论表、§5.2（界面完整管理 + 三条实测证据）、§5.3（三态 × 三按钮 + 停用次要按钮 + 组件复用）、§5.9（口令唯一落点 `/repos/rclone.pass` + 移除自动生成的对照表 + 不复用仓库口令的四行对照）、**新增 §5.10 服务层设计**（`rclone_crypto.py` 四方法 + 三条纪律：mkstemp 临时文件 / 审计三动作入 S6 24→27 / 写后必 `check` + 失败回滚 + env 重建 + `JOB_CONFLICT` 并发门禁）、§6 实现清单（去 2b/+2c–2h）、§7 批次（**新增 P-1 破坏性前置**）、§8 测试（新增口令生命周期 12 条）、§9.1（缓解措施从纪律变产品行为 + 逃生通道）、§10。**规模**：生产代码 ≈195 → **≈310 行**，测试 ≈180 → **≈330 行**，手改文件 14 → **18 个**。
 > - v1.3（2026-11-05）：**口令章节的一致性返工**（owner 追问「关于密码的更新文档了吗」——核查后确认 v1.2 确实漏改多处，本节即为修正）。发现的五处失真：①**§5.8 与 §5.9 自相矛盾**——前者仍写「口令由人定、**不由应用生成**」，后者写 entrypoint 自动生成；改为 §5.8「部署侧自管三形态（非默认路径）」+ §5.9「自动生成（推荐）」，并明示两者互斥（同配时 `RCLONE_PASSWORD_COMMAND` 完全接管、env 不兜底）。②**§10 两行重复且过时**——「界面录入配置口令」与「界面录入/生成/轮换口令」内容重叠，合并为一行并补上「写进 DB 会让 `/data` 同时握有锁与钥匙」这一与暂缓存档冲突的理由。③**§9.2 引用了不存在的模板**——原文写「部署指南给出双分支脚本模板」，实际 `部署指南` 零命中；双分支脚本其实属于 §4.6，已在 §4.6 补出可复制的 6 行模板，并把 §9.2 该行改为「用自动生成时不需要任何脚本」。④**§9.1 缓解第 2 条**仍写「口令走 secrets」，与 §5.9 的默认文件路径不一致，改为「走文件、不要硬编码进 compose env」。⑤**§4.6 缺换口令操作步骤**——自动生成模式下「`cat` 同一文件两次＝换了个寂寞」，补出「写 `.new` → 临时指向双分支脚本 → 跑 `set` → 验通再改名」的完整手工序列（含「中间不要删旧文件」）。另：实现清单第 2 行与 2b 行标记为已完成并挂上提交号 `bf5d49c`，§1 结论表补「口令不用人手写」一行。
 > - v1.2（2026-11-05）：**口令改为 entrypoint 自动生成 + 明确拒绝复用仓库口令**。①owner 追问「能直接用默认仓库的密码文件吗」——实测**可行**（`RCLONE_PASSWORD_COMMAND='cat <passfile>'` 能完成 `encryption set` 与读取，生成器那套 `!@#$%^&*-_=+` 字符集在 rclone 侧也无问题），但**拒绝**：`ops.py:925` 的 `key.rotate` 会用 `write_text` 直接覆盖口令文件，`repo_lifecycle.py:605/:215` 与 `retention.py:400` 也会写/删，而轮换链路**零 rclone 感知**——复用会让「轮换仓库密码」静默把加密 conf 永久锁死，且延迟到下次备份才暴露。②owner 追问「找个地方能自动生成 rclone 密码」→ 新增 §5.9：`docker/entrypoint.sh` 增加 `RCLONE_PASS_FILE`（默认空 = 功能关闭），首次启动生成 32 位 `A-Za-z0-9`、`umask 077` 写入后 `chmod 600`、**已存在绝不覆盖**、父目录自动 `mkdir -p`；root 档随后 chown 到 `PUID:PGID`，非 root 档把父目录纳入 `need_dir` 硬检查。字符集刻意取纯字母数字（该口令要经 `cat` 喂给 rclone，避免 `! $ % & *` 被 shell/编辑器二次解释）。`docker/docker-compose.yml` 加 `# RCLONE_PASS_FILE` + `# RCLONE_PASSWORD_COMMAND` 两行注释示例（默认关闭）。**§5.8 保留但收窄**为「部署侧自管口令」的三种形态。
@@ -361,7 +362,7 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 | ~~entrypoint 启动期自动生成~~ | — | **v1.4 移除**：两处都能生成会让「谁先生效、谁覆盖谁」变成隐式竞争；且自动生成的口令用户从没见过，丢文件即永久锁死 |
 
 > v1.2/v1.3 曾设计 `RCLONE_PASS_FILE` + `ensure_rclone_pass()` 在 entrypoint 里自动生成。
-> **本文档已移除该设计；代码移除在 P-1 批次执行**（当前 `docker/entrypoint.sh` 与 `docker-compose.yml` 里仍有）。
+> **v1.4 已移除该设计，P-1 批次已从 `docker/entrypoint.sh` 与 `docker-compose.yml` 删除代码**（`RCLONE_PASS_FILE` / `ensure_rclone_pass` 在 `docker/` 下零命中）。
 > 移除理由：界面生成路径能给出一次性明文展示（用户必然看见并备份），而后台生成的 32 位随机串用户从未见过——
 > 「文件丢了就永久失守」这件事在自动生成下比在界面生成下严重得多；两处都能生成还会形成「谁先生效、谁覆盖谁」的隐式竞争。
 
@@ -413,9 +414,9 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 | **已完成** | | | |
 | 1 | `docker/Dockerfile` | 钉 `ARG RCLONE_VERSION=1.75.2-r0`（`f37a905`） | 0 |
 | 2 | `docker/docker-compose.yml` / `docker/entrypoint.sh` | `PASSFILE_ROOT: /repos` + `./repos:/repos:rw` 改默认、entrypoint 独立密钥卷处理（`bf5d49c`） | 0 |
-| **v1.4 移除** | | | |
-| 3 | `docker/entrypoint.sh` | 删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()`（§5.9 理由） | −30 |
-| 4 | `docker/docker-compose.yml` | 删 `RCLONE_PASS_FILE` 注释行；`RCLONE_PASSWORD_COMMAND` 保留（供 `serve restic` 链路） | −2 |
+| **v1.4 移除（P-1 ✅ 已落地）** | | | |
+| 3 | `docker/entrypoint.sh` | 删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()` + 两处调用（§5.9 理由） | −36 |
+| 4 | `docker/docker-compose.yml` | 删 `RCLONE_PASS_FILE` 注释行与「首次启动自动生成」说明；改为指向界面生成（§5.10） | −2 |
 | **新增：口令生命周期** | | | |
 | 5 | `backend/app/services/rclone_crypto.py` | `status` / `enable` / `rekey` / `disable`（§5.10）+ mkstemp 临时文件 + 备份回滚 + `check` 验通 + env 重建 | ~130 |
 | 6 | `backend/app/routers/repos_rclone.py` | 4 端点：`GET /api/rclone/conf-encryption` + `POST .../enable` `.../rekey` `.../disable` | ~45 |
@@ -445,7 +446,7 @@ conf 锁死与之不同：它让**所有 `rclone:` 仓库**同时不可用，且
 | 批次 | 内容 | 前置 | 验收 |
 | --- | --- | --- | --- |
 | P0 ✅ | Dockerfile 钉 rclone 版本（独立于本票） | — | `apk policy rclone` = `1.75.2-r0` |
-| **P-1** | **移除 entrypoint 自动生成**（§5.9）：删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()`，compose 去注释行 | — | `dash -n` 通过；`RCLONE_PASS_FILE` 全仓零命中 |
+| **P-1 ✅ 已完成** | **移除 entrypoint 自动生成**（§5.9）：删 `RCLONE_PASS_FILE` + `ensure_rclone_pass()` + 两处调用，compose 去注释行，部署指南 §4.2 改写 | — | ✅ `dash -n`/`sh -n` 通过；`docker/` 下 `RCLONE_PASS_FILE` 零命中；5 场景行为测试全绿（含「显式设废弃变量也不再生成文件」） |
 | P1 | 常量（3 审计动作）+ 错误码 + 架构 §5.0 + 规范 §3.1 S6（24→27，**先改规范再改代码**） | P-1 | `verify_redlines.sh` 全绿 |
 | P2 | `rclone_crypto.py` 服务层：`status` / `enable` / `rekey` / `disable` + 备份回滚 + env 重建 | P1 | 单测：四方法 × 成功/失败/回滚 |
 | P3 | 识别层：`_conf_header` 三态 + 两个 dataclass 字段 + 锁死分支（§5.4） | P1 | 单测：三态 × 锁死文案 |
@@ -529,7 +530,7 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 | 接 KMS | 本期口令只落文件；KMS 由 `RCLONE_PASSWORD_COMMAND` 指向任意脚本天然支持（§5.8 形态 B/C），不改应用代码 |
 | 口令强度校验 | rclone 不校验（§4.8 单字符也接受）；界面生成恒 32 位，自填不拦（用户可能沿用外部口令）。**登记为已知缺口** |
 
-> **已移除（v1.4）**：entrypoint 启动期自动生成口令（`RCLONE_PASS_FILE` / `ensure_rclone_pass()`，见 §5.9）。
+> **已移除（v1.4 设计 / P-1 代码落地）**：entrypoint 启动期自动生成口令（`RCLONE_PASS_FILE` / `ensure_rclone_pass()`，见 §5.9）。
 > 两处都能生成会形成隐式竞争，且后台生成的口令用户从未见过——丢文件即永久锁死。
 
 ## 11. 与既有文档的关系
@@ -538,7 +539,7 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 | --- | --- |
 | 《rclone配置生成工具设计方案》v1.21 | **不替代**：那边管「段的增删改查与凭据混淆」，本文管「整份文件的落盘加密与口令通道」。交叉点只有一处——加密后写 conf 仍走同一 CLI，故那边无需改动 |
 | 《暂缓存档-密钥托管架构-2026-11-04.md》 | 前置评估已收敛为「暂不实施」；本文不依赖它，`RCLONE_PASSWORD_COMMAND` 使口令来源与 provider 抽象解耦 |
-| 《部署指南》§4.2 | 运维落地入口：界面操作说明（生成/更换/停用）、逃生通道位置；**v1.3 那节写的「entrypoint 自动生成」须在 P8 批次改写** |
+| 《部署指南》§4.2 | **P-1 已改写**为「本版本 conf 加密未启用、不做启动期自动生成、勿配 `RCLONE_PASS_FILE`」；界面操作说明待 P8 回填 |
 | 《架构设计文档》§5.0 / §5.1 | 错误码与两个端点的新契约字段 |
 | Git Issue #2 | 本文为实现依据；落地完成并通过 §8 验收后按其 Q5 关闭 |
 
