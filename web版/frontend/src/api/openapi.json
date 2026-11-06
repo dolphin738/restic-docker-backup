@@ -7053,7 +7053,7 @@
     },
     "/api/rclone/conf-encryption/unlock": {
       "post": {
-        "description": "口令原子写入唯一落点，status() 验通后重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。",
+        "description": "委托 RcloneCryptoService.unlock 重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。",
         "operationId": "unlock_rclone_conf_encryption_api_rclone_conf_encryption_unlock_post",
         "requestBody": {
           "content": {

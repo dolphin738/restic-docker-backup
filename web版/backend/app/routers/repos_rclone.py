@@ -13,10 +13,6 @@ config archives 三段（list/restore/delete）、config 三段（create/update/
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
-from contextlib import suppress
-from pathlib import Path
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, Request
@@ -78,7 +74,7 @@ from app.services.rclone_config import (
     RcloneConfigService,
     RcloneConfigUnavailable,
 )
-from app.services.rclone_crypto import RcloneCryptoService, password_command_for
+from app.services.rclone_crypto import RcloneCryptoService
 from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.snapshot_catalog import invalidate_snapshot_catalog
 
@@ -88,8 +84,6 @@ _PROTECTED = PROTECTED
 _rclone_remote_of = rclone_remote_of
 _count_remote_usage = count_remote_usage
 _validate_rclone_url_syntax = validate_rclone_url_syntax
-
-_RCLONE_PASSWORD_COMMAND = "RCLONE_PASSWORD_COMMAND"
 
 
 def _crypto_service(request: Request) -> RcloneCryptoService:
@@ -112,68 +106,6 @@ async def _conf_write_guard(request: Request, *, unlock: bool = False) -> Rclone
 def _secret_text(value: SecretStr | None) -> str | None:
     """只在调用服务层时解开一次；绝不进日志 / 审计 / 异常消息。"""
     return value.get_secret_value() if value is not None else None
-
-
-def _atomic_write_pass(path: Path, password: str) -> None:
-    """同目录 mkstemp + os.replace 原子写 0600；不追加尾随换行。"""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(prefix="rclone-unlock-", dir=path.parent)
-        tmp = Path(name)
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(password.encode())
-            tmp.chmod(0o600)
-            os.replace(tmp, path)
-        finally:
-            with suppress(OSError):
-                tmp.unlink(missing_ok=True)
-    except OSError:
-        raise RcloneUnavailableError("配置口令文件不可写") from None
-
-
-def _restore_pass(path: Path, previous: bytes | None) -> None:
-    """验通失败时恢复原口令文件；原本不存在则删除刚写的文件。"""
-    with suppress(OSError):
-        if previous is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_bytes(previous)
-            path.chmod(0o600)
-
-
-def _rollback_unlock(previous_env: str | None, path: Path, previous: bytes | None) -> None:
-    """回滚运行期口令命令与口令文件；异常路径也必须零残留（口令本身不含在入参里）。"""
-    if previous_env is None:
-        os.environ.pop(_RCLONE_PASSWORD_COMMAND, None)
-    else:
-        os.environ[_RCLONE_PASSWORD_COMMAND] = previous_env
-    _restore_pass(path, previous)
-
-
-async def _unlock_conf(service: RcloneCryptoService, password: str) -> None:
-    """写口令文件 → 重建运行期口令命令 → status() 验通；不通则回滚并 422。"""
-    current = await service.status()
-    pass_path = Path(current.pass_path)
-    try:
-        previous = pass_path.read_bytes() if pass_path.is_file() else None
-    except OSError:
-        raise RcloneUnavailableError("配置口令文件不可读") from None
-    previous_env = os.environ.get(_RCLONE_PASSWORD_COMMAND)
-    _atomic_write_pass(pass_path, password)
-    try:
-        os.environ[_RCLONE_PASSWORD_COMMAND] = password_command_for(pass_path)
-    except OSError:
-        _rollback_unlock(previous_env, pass_path, previous)
-        raise RcloneUnavailableError("配置口令脚本不可写") from None
-    try:
-        unlocked = not (await service.status()).conf_locked
-    except Exception:
-        _rollback_unlock(previous_env, pass_path, previous)
-        raise
-    if not unlocked:
-        _rollback_unlock(previous_env, pass_path, previous)
-        raise ValidationError("口令无法解锁 rclone.conf，请确认口令后重试") from None
 
 
 def register(router: APIRouter) -> None:
@@ -739,13 +671,13 @@ def register(router: APIRouter) -> None:
         request: Request,
         session: SessionContext = Depends(require_session),
     ) -> OkResponse:
-        """口令原子写入唯一落点，status() 验通后重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。"""
+        """委托 RcloneCryptoService.unlock 重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。"""
         del session
         service = await _conf_write_guard(request, unlock=True)
         password = _secret_text(payload.password)
         if password is None:
             raise ValidationError("口令不能为空")
-        await _unlock_conf(service, password)
+        await service.unlock(password)
         await request.app.state.audit.record(
             AUDIT_RCLONE_CONF_UNLOCK, detail={"generated": False, "result": "ok"}, result="ok"
         )

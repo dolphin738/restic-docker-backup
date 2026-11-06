@@ -32,10 +32,13 @@ from app.constants import (
 )
 from app.settings import Settings
 
-# conf 已加密但口令不可达时的统一可操作文案（探测层与配置管理层共用，S3：不含口令与 conf 内容）
+# conf 已加密但口令不可达时的统一可操作文案（探测层、配置管理层、启动自检共用，
+# S3：不含口令与 conf 内容）。口令落点由 settings.passfile_root 派生（见
+# services/rclone_crypto.py::resolve_pass_path），故此处**不写死 docker 专属
+# /repos 路径**——同一文案在 host 形态同样成立。
 RCLONE_CONF_LOCKED_HINT = (
     "rclone conf 已加密但口令不可达，rclone: 远端暂不可用；"
-    "请恢复 /repos/rclone.pass 配置口令，或用宿主机明文 conf 备份还原"
+    "请恢复配置口令文件（<PASSFILE_ROOT>/rclone.pass），或用宿主机明文 conf 备份还原"
 )
 # 只读文件头若干字节即可判定加密态（标记只出现在头部，零子进程）
 _CONF_HEADER_BYTES = 4096

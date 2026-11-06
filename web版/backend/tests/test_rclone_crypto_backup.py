@@ -16,11 +16,15 @@ from pathlib import Path
 
 import pytest
 
-from app.errors import RcloneUnavailableError
+from app.errors import RcloneUnavailableError, ValidationError
+from app.services.rclone import RCLONE_CONF_LOCKED_HINT
 from app.services.rclone_crypto import (
     _CONF_BACKUP_NAME,
+    _PASSWORD_COMMAND_ENV,
+    RCLONE_PASS_FILENAME,
     RcloneCryptoService,
     password_command_for,
+    resolve_pass_path,
 )
 from app.settings import Settings
 
@@ -138,3 +142,57 @@ def test_password_script_path_differs_per_tag(tmp_path) -> None:
     assert len(seen) == 3
     for command in seen:
         Path(command).unlink(missing_ok=True)
+
+
+# ---- Standards #2/#3 回归：口令路径单一真源 + hint 形态无关 + unlock 收敛到服务层 ----
+
+
+def test_resolve_pass_path_is_single_source_and_host_agnostic(tmp_path) -> None:
+    """口令路径只由 settings.passfile_root 派生，不含 docker 专属 /repos 字面量。"""
+    settings = Settings(passfile_root=str(tmp_path / "keys"))
+    assert resolve_pass_path(settings) == tmp_path / "keys" / RCLONE_PASS_FILENAME
+    assert "repos" not in RCLONE_CONF_LOCKED_HINT
+    assert RCLONE_PASS_FILENAME in RCLONE_CONF_LOCKED_HINT
+
+
+async def test_unlock_writes_pass_and_rebuilds_env(tmp_path, monkeypatch) -> None:
+    """unlock 成功：口令原子落盘、RCLONE_PASSWORD_COMMAND 重建且指向本服务口令文件。"""
+    monkeypatch.delenv(_PASSWORD_COMMAND_ENV, raising=False)
+    svc = _service(tmp_path, ENCRYPTED_CONF)
+    # status() 已加密：executor 放行 check（code 0）→ 验通 → 不回滚
+    await svc.unlock("good-password")
+
+    pass_path = tmp_path / "repos" / RCLONE_PASS_FILENAME
+    assert pass_path.read_text() == "good-password"
+    command = os.environ[_PASSWORD_COMMAND_ENV]
+    assert " " not in command and str(pass_path) in Path(command).read_text(encoding="utf-8")
+    monkeypatch.delenv(_PASSWORD_COMMAND_ENV, raising=False)
+    Path(command).unlink(missing_ok=True)
+
+
+async def test_unlock_failure_rolls_back_pass_and_env(tmp_path, monkeypatch) -> None:
+    """口令错（check 非 0）：口令文件与运行期 env 都回滚到操作前，零残留。"""
+    monkeypatch.setenv(_PASSWORD_COMMAND_ENV, "previous-command")
+    svc = _service(tmp_path, ENCRYPTED_CONF)
+    old_pass = tmp_path / "repos" / RCLONE_PASS_FILENAME
+    old_pass.write_bytes(b"old-password")
+
+    async def fail_check(argv) -> tuple[int, str]:
+        return (1, "") if "check" in argv else (0, "")
+
+    svc._executor = fail_check
+    with pytest.raises(ValidationError):
+        await svc.unlock("wrong-password")
+
+    assert old_pass.read_bytes() == b"old-password"
+    assert os.environ[_PASSWORD_COMMAND_ENV] == "previous-command"
+
+
+async def test_unlock_empty_password_is_rejected(tmp_path, monkeypatch) -> None:
+    """空口令在写盘前即 422，不触碰既有口令文件与 env。"""
+    monkeypatch.delenv(_PASSWORD_COMMAND_ENV, raising=False)
+    svc = _service(tmp_path, ENCRYPTED_CONF)
+    with pytest.raises(ValidationError):
+        await svc.unlock("")
+    assert not (tmp_path / "repos" / RCLONE_PASS_FILENAME).exists()
+    assert _PASSWORD_COMMAND_ENV not in os.environ

@@ -80,9 +80,15 @@ from app.services.log_control import apply_log_level
 from app.services.notifier import Notifier
 from app.services.parser import OutputParser
 from app.services.path_mapper import PathMapper
-from app.services.rclone import RcloneProbe, conf_encrypted, exec_rclone, resolve_conf_path
+from app.services.rclone import (
+    RCLONE_CONF_LOCKED_HINT,
+    RcloneProbe,
+    conf_encrypted,
+    exec_rclone,
+    resolve_conf_path,
+)
 from app.services.rclone_config import RcloneConfigService
-from app.services.rclone_crypto import RcloneCryptoService, password_command_for
+from app.services.rclone_crypto import RcloneCryptoService, password_command_for, resolve_pass_path
 from app.services.rclone_forms import import_legacy_sidecar
 from app.services.repo_lifecycle import RepoLifecycleService
 from app.services.repo_migration import migrate_legacy_repo_config
@@ -369,15 +375,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     conf = resolve_conf_path(settings)
     encrypted = conf_encrypted(conf)
     if encrypted:
-        pass_file = Path(settings.passfile_root) / "rclone.pass"
+        pass_file = resolve_pass_path(settings)
         command = password_command_for(pass_file)
-        locked_hint = (
-            "rclone conf 已加密但口令不可达，rclone: 远端暂不可用；"
-            "请恢复 /repos/rclone.pass 配置口令，或用宿主机明文 conf 备份还原"
-        )
+        # 文案复用探测层单一真源（形态无关、不含口令），不再在此手写第二份副本
         try:
             if not pass_file.is_file():
-                logger.error(locked_hint)
+                logger.error(RCLONE_CONF_LOCKED_HINT)
             else:
                 code, _ = await exec_rclone(
                     ["rclone", "--password-command", command, "config", "encryption", "check"]
@@ -386,9 +389,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     os.environ["RCLONE_PASSWORD_COMMAND"] = command
                     logger.info("rclone conf 加密已启用，口令通道可用（已重建 RCLONE_PASSWORD_COMMAND）")
                 else:
-                    logger.error(locked_hint)
+                    logger.error(RCLONE_CONF_LOCKED_HINT)
         except Exception:  # 自检异常一律降级，不阻塞启动（含超时 / 缺二进制 / 事件循环不支持）
-            logger.error(locked_hint)
+            logger.error(RCLONE_CONF_LOCKED_HINT)
     # 启动期惰性清理过期会话行（§8）
     purged = await sessions.purge_expired()
     if purged:

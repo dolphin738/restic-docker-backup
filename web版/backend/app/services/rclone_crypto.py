@@ -10,7 +10,9 @@
   conf 同目录**：加密 conf 的威胁模型是「./rclone/ 目录被单独拷走」，同目录再有
   明文副本即等于加密失效。文件名固定、每次覆盖，故不会随时间累积多份明文。
 - 本服务层不写审计：调用方须按 constants.AUDIT_RCLONE_CONF_ENCRYPT、
-  constants.AUDIT_RCLONE_CONF_REKEY、constants.AUDIT_RCLONE_CONF_DECRYPT 埋点。
+  constants.AUDIT_RCLONE_CONF_REKEY、constants.AUDIT_RCLONE_CONF_DECRYPT、
+  constants.AUDIT_RCLONE_CONF_UNLOCK 埋点（unlock 与 enable/rekey/disable 同层，
+  口令文件读写与 env 回滚也**只在本层**，路由层不再自带第二套实现）。
 - 并发门禁（有 running job → 409 constants.JOB_CONFLICT）由 P5 路由层负责；
   本层不查 DB（A1）。
 """
@@ -45,6 +47,20 @@ logger = logging.getLogger(__name__)
 # 那批遗留文件**不自动删除**（用户可能靠它逃生），只在成功后 warning 提示一次。
 _CONF_BACKUP_NAME = "conf-backup.conf"
 _LEGACY_BACKUP_GLOB = "conf-backup-*.conf"
+
+# conf 加密口令文件名（E68）：落点 = <passfile_root>/<常量>，与仓库密码文件
+# <passfile_root>/<repo_id>/password 同根不同文件（不可复用，见方案 §5.9）。
+RCLONE_PASS_FILENAME = "rclone.pass"
+
+
+def resolve_pass_path(settings: Settings) -> Path:
+    """conf 加密口令文件的唯一路径派生点（服务层与启动自检共用）。
+
+    与 :func:`app.services.rclone.resolve_conf_path` 一样不区分部署形态——
+    host/docker 的差别只由 ``settings.passfile_root`` 本身承载，此处不写死任何
+    ``/repos`` 之类的容器专属前缀（单一真源，避免第二份拼装）。
+    """
+    return Path(settings.passfile_root) / RCLONE_PASS_FILENAME
 
 
 @dataclass(frozen=True)
@@ -148,7 +164,7 @@ class RcloneCryptoService:
     def __init__(self, settings: Settings, executor: RcloneExecutor | None = None) -> None:
         """构造服务；conf 路径复用 resolve_conf_path 单一实现点。"""
         self._conf_path = Path(resolve_conf_path(settings))
-        self._pass_path = Path(settings.passfile_root) / "rclone.pass"
+        self._pass_path = resolve_pass_path(settings)
         self._executor: RcloneExecutor = executor or (
             lambda argv: exec_rclone(argv, RCLONE_CONFIG_TIMEOUT_SECONDS)
         )
@@ -346,6 +362,34 @@ class RcloneCryptoService:
             if isinstance(exc, AppError):
                 raise
             raise RcloneUnavailableError("rclone 解密操作不可用或已回滚") from None
+        finally:
+            _cleanup(temps)
+
+    async def unlock(self, password: str) -> None:
+        """锁死态输入口令解锁：原子写口令文件 → 重建运行期口令命令 → status() 验通。
+
+        验不通（口令错）或任何异常都把运行期 env 与口令文件回滚到操作前状态，零残留；
+        口令本身不进日志 / 审计 / 异常消息（S3）。与 enable/rekey/disable 共用
+        ``_snapshot_pass`` / ``_write_pass`` / ``_restore_pass`` /
+        ``_set_password_command_env`` / ``_restore_env`` / ``status`` 等本层原语，
+        路由层不再自带第二套口令文件读写与回滚实现（单一事实来源）。
+        """
+        if not password:
+            raise ValidationError("口令不能为空")
+        previous_pass = self._snapshot_pass()
+        previous_env = os.environ.get(_PASSWORD_COMMAND_ENV)
+        temps: list[Path] = []
+        try:
+            self._write_pass(password, temps)
+            self._set_password_command_env()
+            if (await self.status()).conf_locked:
+                raise ValidationError("口令无法解锁 rclone.conf，请确认口令后重试") from None
+        except Exception as exc:
+            self._restore_pass(previous_pass)
+            self._restore_env(previous_env)
+            if isinstance(exc, AppError):
+                raise
+            raise RcloneUnavailableError("rclone 解锁操作不可用或已回滚") from None
         finally:
             _cleanup(temps)
 
