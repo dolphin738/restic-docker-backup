@@ -817,14 +817,15 @@ describe('RcloneConfigPanel conf 加密面板', () => {
 
     expect(confEncButtons(w)).toHaveLength(0)
     const text = textOf(w)
-    expect(text).toContain(zhCN.settings.rclone.confEnc.stateUnknown)
-    // alert 里带后端 message，且给出「重试」这个可操作出口
+    // alert 文案优先取后端 message（组件 refresh() 写入 confEncError），
+    // 「状态未知」只是没有 message 时的回落值——有原因时不该被泛化文案盖掉
     expect(text).toContain('三态接口 500')
+    expect(text).not.toContain(zhCN.settings.rclone.confEnc.stateUnknown)
     expect(buttonOf(w, zhCN.common.retry)).toBeTruthy()
     w.unmount()
   })
 
-  it('缺陷 1：三态就绪且未加密时只出现「生成并启用」（单个按钮，无转圈重影）', async () => {
+  it('缺陷 1：三态就绪且未加密时只出现「启用加密」（单个按钮，无转圈重影）', async () => {
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
     const w = mountPanel()
     await mountReady()
