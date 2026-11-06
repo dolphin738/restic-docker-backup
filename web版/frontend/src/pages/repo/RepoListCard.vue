@@ -127,8 +127,7 @@ const unreachableRepos = computed(() => props.repos.filter((r) => isUnreachable(
         </n-button>
       </template>
       <!-- 不可达仓库告警（删除保护方案 P1-3）：让「快照暂时打不开」在列表就可见，
-           不必点进快照页才吃 500。刻意**放在 n-space 之外**：n-space 展平插槽子节点
-           按索引发 key，多一个条件兄弟会让索引相撞（本项目既有纪律）。 -->
+           不必点进快照页才吃 500。仍放在 n-space 之外（与本卡内其余区块的层级一致）。 -->
       <div v-if="unreachableRepos.length > 0" class="repo__unreachable">
         <n-alert type="warning" :show-icon="false">
           {{ t('repo.unreachableBanner', { n: unreachableRepos.length }) }}
@@ -136,7 +135,12 @@ const unreachableRepos = computed(() => props.repos.filter((r) => isUnreachable(
           <div class="repo__del-hint">{{ t('repo.unreachableBannerHint') }}</div>
         </n-alert>
       </div>
-      <n-space vertical :size="12">
+      <!-- wrap-item=false：naive-ui 2.45.3 的 Space 给每个 item 硬编码 key=1
+           （space/src/Space.mjs:130），子节点数变化时 Vue 的 keyed diff 撞 key，
+           控制台报 Duplicate keys found during update: 1，并可能复用错节点。
+           关掉 wrapper 后走 Fragment(key=0) 分支，间距改由 style 上的 gap 承担
+           （同文件 :123；ensureSupportFlexGap() 在 Chromium 为 true）。 -->
+      <n-space vertical :size="12" :wrap-item="false">
         <ActionCard
           :icon="IconPlusCircle"
           :title="t('repo.listAddTitle')"
@@ -144,8 +148,7 @@ const unreachableRepos = computed(() => props.repos.filter((r) => isUnreachable(
           @click="emit('create')"
         />
         <!-- 分界线：新建仓库操作卡 ↔ 仓库列表（用户 2026-10-24 指令）。
-             与列表行同生同灭（props.repos 为空时不渲染），不会单独抖动——避免 n-space
-             展平插槽子节点按索引发 key 时索引相撞（本项目既有纪律）。 -->
+             与列表行同生同灭（props.repos 为空时不渲染），不会单独抖动。 -->
         <div v-if="props.repos.length > 0" class="repo__list-divider"></div>
         <!-- 仓库行卡：整行点击 = 设为当前；当前行高亮且点击空转（已是选中态）。
              交互形态照搬 Duplicati destination.component.html：div + role=button + tabindex=0
