@@ -45,10 +45,10 @@ services:
       # 路径须与下方 `./repos:/repos:rw` 挂载一致。想恢复旧布局：删掉本行 + 该挂载，
       # 密码文件回到 /data/repos/<repo_id>/password（两者必须同时改，否则密码文件读不到）。
       PASSFILE_ROOT: /repos
-      # rclone conf 加密口令由界面生成/更换/停用（方案《rclone配置落盘加密实施方案》§5.10），
+      # rclone conf 加密口令由界面生成/更换/停用/解锁（端点契约见《架构设计文档》§5.1 E64–E68），
       # 落点 /repos/rclone.pass，不在 compose 里配置口令；启动期不做任何自动生成。
       # 仅当界面已启用加密后，RCLONE_PASSWORD_COMMAND 才由应用在运行期重建，供
-      # restic → rclone serve restic --stdio 子进程继承。部署侧自管口令见方案 §5.8。
+      # restic → rclone serve restic --stdio 子进程继承。部署侧自管口令三形态见《部署指南》§4.2。
       # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
       # SQLITE_BUSY 可上调；过大则失败延迟变长。
       # 已迁入「系统设置-系统-SQLite 锁等待」：删除本行即可在界面调
