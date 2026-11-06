@@ -1,11 +1,12 @@
 # rclone 配置落盘加密实施方案
 
-> 版本：v1.9（2026-11-05，**已实施并修订**）
+> 版本：v1.10（2026-11-05，**已实施并修订**）
 > 层级：方案层——`rclone.conf` **落盘加密与运行时口令通道**的唯一方案源，亦即 GitHub issue #2 的实现依据
 > 边界：本文只覆盖 **conf 文件的加密态识别与口令通道**。rclone 段的增删改查能力边界（注册表、凭据混淆、占用扫描、配置归档）见《rclone配置生成工具设计方案》v1.21，本文不重复、不替代。
 > 关联：`app/services/rclone.py`（只读探测）、`app/services/rclone_config.py`（conf 管理）、`docker/Dockerfile`、`docs/部署指南.md` §4.2、`docs/架构设计文档.md` §5.0/§5.1
 
 > **修订记录**：
+> - v1.10（2026-11-05）：**备份开关改为持久化偏好**（owner 真机反馈「设置开了就记住开，设置关了就记住关，现在是设置关，重新打开页面就变成开」）。此前开关是组件内 `ref(true)`，面板重挂载即回默认开。现持久化到 config 键 **`ui.rclone_conf_backup`**（`"1"`/`"0"`，缺省 1）：挂载时经 **E06 `GET /api/config`** 读回，用户拨动时经 **E07 `PUT /api/config`** 写回。**零后端改动**（`ui.*` 非敏感键、未登记进 `_BOOL_KEYS` 故放行，读侧 `ConfigRepo.mask` 回明文值）——复用的是既有全局 KV，不新增迁移/端点/表。三点边界：①**偏好不是状态真源**，读取失败静默回落默认开，不阻塞加密面板；②写入失败只 `message.error` 提示，不回滚开关、不阻断随后的启用请求；③服务端单值、不随 `X-Repo-Id` 分仓（rclone conf 本身就是全局 conf），且**不参与配置导出/导入**（导出口径只含 `behavior.`/`notify.`）。键已登记进《架构设计文档》§4.3 键表（v1.16）。
 > - v1.9（2026-11-05）：**真机第三轮反馈：「备份开关 + 按钮右对齐」**（owner 指令「把这个备份 conf 功能做一个开关，让使用者选择，另外把加密口令模块的按钮挪到右边」）。①**逃生备份从强制改可选**——v1.8 已把它收窄成「只有 enable 写」，但仍是无条件写。现由界面开关「启用前备份明文 conf」控制（默认开），落到 API 即 `RcloneConfEnableRequest.backup: bool = True`。**关键设计**：回滚依据与开关解耦——`enable()` 先把操作前字节读进内存 `original`，`backup=True` 才额外 `_write_escape_backup(original)`；失败分支一律 `_restore_conf_bytes(original)`。所以关掉开关**不会**让启用失败时 conf 停在半截，代价只是「口令丢了就再也打不开」这条恢复路径被用户显式放弃（审计 detail 增 `backup` 布尔留痕）。关掉时不留任何明文副本，威胁面上的明文驻留由用户自行权衡。②**动作行右对齐**——加密卡片动作行加 `.rclone-panel__row--end { justify-content: flex-end }`，状态徽标与说明留在左侧读序起点。开关只在「未加密且未锁死」时渲染（换口令/停用不写备份，加密态显示它只会误导）。**验收**：`tests/test_rclone_crypto_backup.py` 3 → **5 例**（新增 enable 关备份后零明文副本 / 关备份时失败仍逐字节回滚），变异测试（`if backup:` → `if True:` 后 2 例失败）确认能抓回退；后端 pytest **1308 passed**、ruff 0、vue-tsc 0 错、panel spec **29 passed**、全量 vitest **601 passed**（2 条既有 unhandled rejection 无关）、红线 **19/19**；真机浏览器实测加密态两按钮靠右、就地停用后变为「[开关] [生成并启用加密]」右对齐且无残留。
 > - v1.8（2026-11-05）：**真机第二轮反馈两条（提交 `7f9a499` + 本轮后端收口）**。①**停用后仍多一个按钮**：v1.7 的三态 gate 只解决了「状态未就绪」，真机复现的是**状态已就绪的就地切换**——根因在 Naive UI 的 `NSpace`：它给每个插槽 item 硬编码 `key=1`（2.45.3 `space/src/Space.mjs:130`），按钮从「更换+停用」两个变成「生成并启用」一个时，Vue 的 keyed diff 把该卸载的节点留在 DOM，叠加 `:loading` 就成了那个「多出来的按钮」，刷新才消失。改为**裸 div**（`.rclone-panel__row` / 新增 `.rclone-panel__stack`），子节点用显式 key，条件分支切换不串位；控制台那条 `<Space key=1>` 重复 key 警告同步消失。②**备份文件的目的说不清、且换口令后的备份打不开**：核对后确认 `rekey()` 也调 `_backup_conf()`，而它备份的是**旧密文**——旧口令一换，备份用新旧口令都 `check` 不过（真机实测 exit=1/1），既当不了逃生通道又白留副本。改为 **`rekey()` 用内存快照回滚、不写备份**；逃生备份**只由 `enable()` 建立**（备份操作前的**明文** conf，口令彻底丢失时才用得上）。`disable()` 本来就只用内存快照。**验收**：新增 `tests/test_rclone_crypto_backup.py` 3 例（enable 写明文备份 / rekey 不写 / rekey 失败逐字节还原），经变异测试确认能抓回退；真机 disable 后就地只剩「生成并启用加密」且 spinner=0；rekey 两次后 `conf-backup.conf` mtime 不变。
 > - v1.7（2026-11-05）：**真机使用后修三个缺陷（提交 `323488d`）**，其中一个是 v1.6 的安全回归。①**🔴 明文备份堆积**：`_backup_conf()` 原先把当前 conf 明文写到 **conf 同目录** `conf-backup-<时间戳>.conf` 且成功路径也不删（真机已积 7 份）——本方案 §9.1 把「强制备份」设计为逃生通道，但逃生通道不该是长期明文驻留：威胁模型是「`./rclone/` 被单独拷走」，同目录明文副本比加密 conf 更好用，**加密等于白做**。改为 **`<passfile_root>/conf-backup.conf` 单一滚动文件**（同目录 mkstemp + 0600 + `os.replace`），取走明文需同时拿到 conf 与 passfile 两卷，与既有密钥分离策略一致；conf 同目录的旧时间戳备份**不自动删**（运维可能依赖），仅 `logger.warning` 报数量。②**状态未就绪时渲染写按钮**：`v-if="!confLocked && (!confEncStatus || !confEncStatus.conf_encrypted)"` 在 `confEncStatus === null`（刷新失败）时放行了 enable 按钮，叠加 `:loading` 转圈形态，视觉上像两个按钮；改为按钮组整体 gate 在 `confEncStatus` 上，未就绪只显示可操作 alert + 重试，`refresh()` 失败时写入 `confEncError` 而非静默置 null。③**rekey 新口令段没有生成入口**：`PasswordEntryModal` 硬传 `:show-generate="false"`，改为 `confEncAction === 'rekey-new'`（旧段 false / 新段 true），生成的明文只进内存 ref 并直接用于轮换。**验收**：WSL 真实 rclone 1.75.2 连续 enable→rekey→rekey 后 passfile_root 下恰 1 份 `conf-backup.conf`（0o600）、conf 同目录零新增；回滚后 conf 逐字节还原；ruff/`pytest tests/test_rclone_config.py` 80 passed/`vue-tsc` 0 错/panel spec **25 passed**（22+3 新增，经变异测试确认能抓原缺陷）；真机浏览器三态按钮与 rekey 生成入口均按预期。
@@ -503,7 +504,7 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 
 | 缓解 | 落点 |
 | --- | --- |
-| **启用前备份明文 conf（可选，默认开）** | **只有** `enable()` 且在 `backup=True` 时复制到 **`<passfile_root>/conf-backup.conf`**（单一滚动文件，0600，**不在 conf 同目录**——否则明文副本会让加密失效，见 v1.7）。用户可在界面关掉，代价是放弃唯一恢复路径；**回滚不依赖它**（`enable()` 用内存里的操作前字节），故关掉不会让失败启用留下半截 conf（v1.9）。`rekey()` 不写备份：备份的是旧密文，旧口令一换就解不开，用内存快照回滚即可（v1.8） |
+| **启用前备份明文 conf（可选，默认开）** | **只有** `enable()` 且在 `backup=True` 时复制到 **`<passfile_root>/conf-backup.conf`**（单一滚动文件，0600，**不在 conf 同目录**——否则明文副本会让加密失效，见 v1.7）。用户可在界面关掉，代价是放弃唯一恢复路径；**回滚不依赖它**（`enable()` 用内存里的操作前字节），故关掉不会让失败启用留下半截 conf（v1.9）。`rekey()` 不写备份：备份的是旧密文，旧口令一换就解不开，用内存快照回滚即可（v1.8）。**开关状态持久化**（v1.10）：存 config 键 `ui.rclone_conf_backup`（`"1"`/`"0"`，缺省 1），挂载读回、拨动写回，换浏览器与重开页面都记住 |
 | **口令一次性展示 + 强制确认** | `SecretReveal.vue`，用户点「我已备份」才算完成（沿用 E44 / B9 的既有心智） |
 | **每次操作后 `check` 验通** | 非 0 立即用备份还原 conf 并抛错，**绝不留下「已加密但解不开」** |
 | **锁死时面板仍可打开** | §5.4 的三处语义修正 + §5.6 启动自检 + §5.3 第三态的「输入口令解锁」按钮 |
@@ -518,6 +519,10 @@ P2 是技术核心；P3/P4/P7 一条线，P5/P6 一条线，两条可并行。
 > **开关的语义边界（v1.9）**：这个开关关的是「留不留明文副本」，不关「失败能不能回滚」
 > ——回滚用内存字节，与开关无关。所以它是**一个纯粹的风险权衡**：留着，多一份明文驻留（位置在口令卷、
 > 与 conf 分卷，需同时拿到两卷才能利用）；不留，加密面最干净，但口令丢失即永久不可解。默认留。
+>
+> **偏好的持久化（v1.10）**：开关值存 config 键 `ui.rclone_conf_backup`（服务端单值，缺省 `"1"`）。
+> 它记的是**用户的风险取舍**，不是 conf 的加密态——加密态仍由文件头自证（§5.2），二者互不替代：
+> 偏好读失败只让开关回落默认开，绝不改变面板显示的三态。
 
 > **只在「启用」这一步存在（v1.8）**：换口令不会刷新它，因为那时 conf 已是密文。
 > 也就是说：**启用加密前 conf 必须是可用的明文**，那一刻的备份才是有用的逃生通道；

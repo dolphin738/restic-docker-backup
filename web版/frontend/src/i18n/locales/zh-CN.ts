@@ -1588,8 +1588,8 @@ export default {
         backupLabel: '启用前备份明文 conf',
         backupHint:
           '开启时，把启用前的明文 rclone.conf 写到口令目录的 conf-backup.conf，作为口令彻底丢失时唯一的恢复路径；关闭则不留任何明文副本，口令丢了就再也打不开已加密的 conf。',
-        enableBtn: '生成并启用加密',
-        rekeyBtn: '更换加密口令',
+        enableBtn: '启用加密',
+        rekeyBtn: '更改密码',
         disableBtn: '停用加密',
         unlockBtn: '输入口令解锁',
         pwUnlockTitle: '输入口令解锁',

@@ -26,6 +26,7 @@
  */
 import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { getConfig, putConfig } from '@/api/config'
 import { copyWithNotify } from '@/utils/clipboard'
 import {
   NAlert,
@@ -258,8 +259,31 @@ const confEncDisableOpen = ref(false)
 /** 换口令「新口令」段本地生成的明文：只活在这一个 ref 与弹窗展示里，
  *  确认（=提交轮换）或关闭弹窗即清空；绝不进 console / localStorage / URL。 */
 const confEncNewGenerated = ref<string | null>(null)
-/** 启用时是否把操作前的明文 conf 写成逃生备份；默认开，关掉即「口令丢了就打不开」。 */
+/** 启用时是否把操作前的明文 conf 写成逃生备份；默认开，关掉即「口令丢了就打不开」。
+ *  偏好持久化在 config 键 `ui.rclone_conf_backup`（服务端，换浏览器/重开页面仍记住）：
+ *  未设置时按默认开，与后端 `RcloneConfEnableRequest.backup` 的默认值一致。 */
+const CONF_ENC_BACKUP_KEY = 'ui.rclone_conf_backup'
 const confEncBackup = ref(true)
+
+/** 读回上次的开关偏好；读不到就维持默认开（偏好读失败不该挡住加密面板本身）。 */
+async function loadConfEncBackup(): Promise<void> {
+  try {
+    const data = await getConfig()
+    const saved = data.items.find((item) => item.key === CONF_ENC_BACKUP_KEY)?.value
+    if (saved === '0' || saved === '1') confEncBackup.value = saved === '1'
+  } catch {
+    // 静默回落默认开：这是偏好，不是状态真源
+  }
+}
+
+/** 拨动即写回偏好（`NSwitch` 只在用户交互时发 update:value，程序赋值不会触发）。 */
+async function saveConfEncBackup(value: string | number | boolean): Promise<void> {
+  try {
+    await putConfig({ [CONF_ENC_BACKUP_KEY]: value ? '1' : '0' })
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
 
 /** 快照侧也带锁死位；任一来源为 true 即按锁死处理（宁可禁用，不可误写）。 */
 const confLocked = computed(() => {
@@ -866,7 +890,10 @@ async function remove(remote: string): Promise<void> {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  void refresh()
+  void loadConfEncBackup()
+})
 
 defineExpose({ refresh, refreshConfEnc })
 </script>
@@ -894,20 +921,34 @@ defineExpose({ refresh, refreshConfEnc })
     </NSpace>
 
     <NCard size="small" class="rclone-panel__card">
-      <template #header>
-        <!-- 标题与「启用态操作列」同一行：备份开关在上、启用按钮在下，整体靠右，
-             与标题文字垂直对齐（不再被卡片内边距压到下一行）。 -->
-        <div class="rclone-panel__card-head">
-          <span class="rclone-panel__card-title">{{ t('settings.rclone.confEnc.title') }}</span>
-          <div
-            v-if="confEncStatus && !confEncStatus.conf_encrypted && !confLocked"
-            class="rclone-panel__control-stack"
-          >
+      <div class="rclone-panel__stack">
+        <!-- 两列布局：左列标题+加密态；右列两行（备份开关一行、操作按钮并排一行），
+             按钮组顶边与标题齐平。状态与各态按钮解耦；外层一律裸 div（不用 NSpace：
+             它给 item 硬编码 key=1，条件分支切换会把该卸载的按钮留在 DOM）。 -->
+        <div class="rclone-panel__conf-enc-grid">
+          <div class="rclone-panel__conf-enc-state">
+            <span class="rclone-panel__card-title">{{ t('settings.rclone.confEnc.title') }}</span>
+            <!-- 三态未就绪（刷新失败 / 尚未返回）时一个写按钮都不渲染，只给可操作的 alert。 -->
+            <NAlert v-if="!confEncStatus" type="warning" :bordered="false" class="rclone-panel__alert">
+              <NSpace align="center" :size="8">
+                <span>{{ confEncError || t('settings.rclone.confEnc.stateUnknown') }}</span>
+                <NButton size="tiny" secondary :loading="loading" @click="refresh">
+                  {{ t('common.retry') }}
+                </NButton>
+              </NSpace>
+            </NAlert>
+            <div v-else class="rclone-panel__row">
+              <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
+              <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
+            </div>
+          </div>
+          <div v-if="confEncStatus" class="rclone-panel__conf-enc-actions">
             <div class="rclone-panel__backup-row">
               <NSwitch
                 v-model:value="confEncBackup"
                 size="small"
                 :aria-label="t('settings.rclone.confEnc.backupLabel')"
+                @update:value="saveConfEncBackup"
               />
               <NTooltip>
                 <template #trigger>
@@ -916,80 +957,56 @@ defineExpose({ refresh, refreshConfEnc })
                 {{ t('settings.rclone.confEnc.backupHint') }}
               </NTooltip>
             </div>
-            <NButton
-              key="conf-enc-enable"
-              size="small"
-              type="primary"
-              :disabled="!confEncCanEnable"
-              :loading="confEncBusy"
-              @click="onConfEncEnable"
-            >
-              {{ t('settings.rclone.confEnc.enableBtn') }}
-            </NButton>
+            <!-- 操作按钮同排：明文态只显示「启用加密」，加密态「更改密码」+「停用加密」并排，
+                 锁死态「解锁」。裸 div + 显式 v-if，不用 v-else（中间夹别的分支会断链），
+                 也不用 NSpace（2.45.3 给 item 硬编码 key=1，条件切换会串位）。 -->
+            <div class="rclone-panel__conf-enc-buttons">
+              <NButton
+                v-if="!confLocked && !confEncStatus.conf_encrypted"
+                key="conf-enc-enable"
+                size="small"
+                type="primary"
+                :disabled="!confEncCanEnable"
+                :loading="confEncBusy"
+                @click="onConfEncEnable"
+              >
+                {{ t('settings.rclone.confEnc.enableBtn') }}
+              </NButton>
+              <NButton
+                v-if="!confLocked && confEncStatus.conf_encrypted"
+                key="conf-enc-rekey"
+                size="small"
+                type="primary"
+                :disabled="!confEncCanManage"
+                :loading="confEncBusy"
+                @click="startConfEncRekey"
+              >
+                {{ t('settings.rclone.confEnc.rekeyBtn') }}
+              </NButton>
+              <NButton
+                v-if="confEncStatus.conf_encrypted && !confLocked"
+                key="conf-enc-disable"
+                size="small"
+                :disabled="!confEncCanManage"
+                :loading="confEncBusy"
+                @click="startConfEncDisable"
+              >
+                {{ t('settings.rclone.confEnc.disableBtn') }}
+              </NButton>
+              <NButton
+                v-if="confLocked"
+                key="conf-enc-unlock"
+                size="small"
+                type="primary"
+                :disabled="!confEncCanUnlock"
+                :loading="confEncBusy"
+                @click="startConfEncUnlock"
+              >
+                {{ t('settings.rclone.confEnc.unlockBtn') }}
+              </NButton>
+            </div>
           </div>
         </div>
-      </template>
-      <div class="rclone-panel__stack">
-        <!-- 三态未就绪（刷新失败 / 尚未返回）时一个写按钮都不渲染：旧判定
-             `!confEncStatus || !encrypted` 在 null 时成立，会让「生成并启用」冒出来，
-             再叠加 :loading 的转圈形态，看起来就像多了一个按钮。 -->
-        <NAlert v-if="!confEncStatus" type="warning" :bordered="false" class="rclone-panel__alert">
-          <NSpace align="center" :size="8">
-            <span>{{ confEncError || t('settings.rclone.confEnc.stateUnknown') }}</span>
-            <NButton size="tiny" secondary :loading="loading" @click="refresh">
-              {{ t('common.retry') }}
-            </NButton>
-          </NSpace>
-        </NAlert>
-        <!-- 启用态（明文）：状态徽标 + 说明留在卡片正文顶部（操作按钮已上移到标题行）。 -->
-        <div
-          v-if="confEncStatus && !confEncStatus.conf_encrypted && !confLocked"
-          class="rclone-panel__row"
-        >
-          <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
-          <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
-        </div>
-        <!-- 加密态 / 锁定态：状态行在上，按钮按原横向布局靠右（不显示备份开关） -->
-        <template v-else-if="confEncStatus">
-          <NSpace align="center" :size="8" class="rclone-panel__row">
-            <NTag size="small" :type="confEncTagType" :bordered="false">{{ confEncStateLabel }}</NTag>
-            <span class="rclone-panel__muted">{{ t('settings.rclone.confEnc.hint') }}</span>
-          </NSpace>
-          <div class="rclone-panel__row rclone-panel__row--end">
-            <NButton
-              v-if="confEncStatus.conf_encrypted && !confLocked"
-              key="conf-enc-rekey"
-              size="small"
-              type="primary"
-              :disabled="!confEncCanManage"
-              :loading="confEncBusy"
-              @click="startConfEncRekey"
-            >
-              {{ t('settings.rclone.confEnc.rekeyBtn') }}
-            </NButton>
-            <NButton
-              v-if="confEncStatus.conf_encrypted && !confLocked"
-              key="conf-enc-disable"
-              size="small"
-              :disabled="!confEncCanManage"
-              :loading="confEncBusy"
-              @click="startConfEncDisable"
-            >
-              {{ t('settings.rclone.confEnc.disableBtn') }}
-            </NButton>
-            <NButton
-              v-if="confLocked"
-              key="conf-enc-unlock"
-              size="small"
-              type="primary"
-              :disabled="!confEncCanUnlock"
-              :loading="confEncBusy"
-              @click="startConfEncUnlock"
-            >
-              {{ t('settings.rclone.confEnc.unlockBtn') }}
-            </NButton>
-          </div>
-        </template>
       </div>
     </NCard>
 
@@ -1368,29 +1385,44 @@ defineExpose({ refresh, refreshConfEnc })
 .rclone-panel__card {
   --n-border-radius: 10px;
 }
-/* 卡片头：标题与启用态操作列同一行，整列靠右，与标题文字顶部对齐。 */
-.rclone-panel__card-head {
+.rclone-panel__card-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+}
+/* 加密卡片两列：左列状态、右列竖排操作，二者解耦（状态不再与各态按钮绑在同一分支）。 */
+.rclone-panel__conf-enc-grid {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  width: 100%;
+  gap: 16px;
 }
-.rclone-panel__card-title {
-  font-weight: 600;
-  line-height: 28px; /* 与 NButton size=small 高度对齐，使标题与右侧操作列顶边齐平 */
-}
-/* 启用态操作列：备份开关在上、启用按钮在下，整列右对齐。 */
-.rclone-panel__control-stack {
+.rclone-panel__conf-enc-state {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.rclone-panel__conf-enc-actions {
+  display: flex;
+  flex-direction: column;
   align-items: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.rclone-panel__conf-enc-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .rclone-panel__backup-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: flex-end;
 }
 .rclone-panel__muted {
   color: var(--n-text-color-3, #8a8f98);

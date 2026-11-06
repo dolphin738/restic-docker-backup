@@ -25,6 +25,7 @@ import RcloneConfigPanel from '@/components/settings/RcloneConfigPanel.vue'
 import type { RcloneConfigsOut } from '@/api/types'
 import enUS from '@/i18n/locales/en-US'
 import zhCN from '@/i18n/locales/zh-CN'
+import * as configApi from '@/api/config'
 import * as repoApi from '@/api/repo'
 
 // 本地目录模式会挂 DirPickerInline（内部走 E33）——测试不发真实请求
@@ -118,6 +119,9 @@ describe('RcloneConfigPanel', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    // 备份开关偏好走 E06/E07（服务端持久化）：未 mock 会发真实请求、挂载竞态失败
+    vi.spyOn(configApi, 'getConfig').mockResolvedValue({ items: [], passfile_status: 'configured' })
+    vi.spyOn(configApi, 'putConfig').mockResolvedValue({ code: 'ok' })
     // P6 新增：onMounted 会并发拉取加密三态，未 mock 会让 fetch 落空、挂载竞态失败
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue({
       conf_encrypted: false,
@@ -683,6 +687,9 @@ describe('RcloneConfigPanel 删除保护', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    // 备份开关偏好走 E06/E07（服务端持久化）：未 mock 会发真实请求、挂载竞态失败
+    vi.spyOn(configApi, 'getConfig').mockResolvedValue({ items: [], passfile_status: 'configured' })
+    vi.spyOn(configApi, 'putConfig').mockResolvedValue({ code: 'ok' })
     // P6 新增：onMounted 会并发拉取加密三态，未 mock 会让 fetch 落空、挂载竞态失败
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue({
       conf_encrypted: false,
@@ -799,6 +806,8 @@ describe('RcloneConfigPanel conf 加密面板', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     vi.spyOn(repoApi, 'listRcloneConfigs').mockResolvedValue(SNAPSHOT)
+    vi.spyOn(configApi, 'getConfig').mockResolvedValue({ items: [], passfile_status: 'configured' })
+    vi.spyOn(configApi, 'putConfig').mockResolvedValue({ code: 'ok' })
   })
 
   it('缺陷 1：三态读取失败时一个写按钮都不出现，改为可操作的 alert', async () => {
@@ -864,14 +873,38 @@ describe('RcloneConfigPanel conf 加密面板', () => {
     w.unmount()
   })
 
-  it('加密态不显示备份开关（换口令 / 停用不写备份，显示即误导）', async () => {
+  it('备份开关在三态就绪后所有状态常显（含加密态）', async () => {
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
     const w = mountPanel()
     await mountReady()
 
-    expect(backupSwitch(w)).toBeNull()
+    // 用户要求始终可见：加密态也显示，便于在任何状态下看到逃生备份开关位置。
+    expect(backupSwitch(w)).toBeTruthy()
+    expect(backupSwitch(w)!.getAttribute('aria-checked')).toBe('true')
     w.unmount()
   })
+  it('操作按钮同排：加密态「更改密码」+「停用加密」在同一行且备份开关另起一行', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
+    const w = mountPanel()
+    await mountReady()
+
+    const row = w.element.querySelector('.rclone-panel__conf-enc-buttons')!
+    expect(row).toBeTruthy()
+    // 两个操作按钮并排：同属这一行、且这一行只有这两个按钮。
+    const labels = ([...row.querySelectorAll('button')] as HTMLButtonElement[]).map(
+      (b) => b.textContent?.trim() ?? '',
+    )
+    expect(labels).toEqual([
+      zhCN.settings.rclone.confEnc.rekeyBtn,
+      zhCN.settings.rclone.confEnc.disableBtn,
+    ])
+    // 备份开关在按钮行之外、另起一行；两行都在 actions 里（右列共两行）。
+    const actions = w.element.querySelector('.rclone-panel__conf-enc-actions')!
+    expect(actions.querySelector('.rclone-panel__backup-row')!.contains(row)).toBe(false)
+    expect([...actions.children]).toHaveLength(2)
+    w.unmount()
+  })
+
   it('缺陷 2：换口令的新口令段能生成并填入明文，旧口令段没有生成入口', async () => {
     vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_ENCRYPTED)
     const w = mountPanel()
@@ -942,6 +975,80 @@ describe('RcloneConfigPanel conf 加密面板', () => {
     )!
     expect(enableBtn.parentElement!.querySelectorAll('button')).toHaveLength(1)
     expect(enableBtn.querySelectorAll('.n-base-loading')).toHaveLength(0)
+    w.unmount()
+  })
+
+  it('备份开关拨动即写回服务端偏好（关 → ui.rclone_conf_backup="0"）', async () => {
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const put = vi.spyOn(configApi, 'putConfig').mockResolvedValue({ code: 'ok' })
+    const w = mountPanel()
+    await mountReady()
+
+    backupSwitch(w)!.dispatchEvent(new Event('click'))
+    await mountReady()
+
+    expect(put).toHaveBeenCalledWith({ 'ui.rclone_conf_backup': '0' })
+    w.unmount()
+  })
+
+  it('重开页面按服务端偏好恢复为关（不再是默认开）', async () => {
+    vi.spyOn(configApi, 'getConfig').mockResolvedValue({
+      items: [
+        {
+          key: 'ui.rclone_conf_backup',
+          value: '0',
+          has_value: true,
+          source: 'ui',
+          sensitive: false,
+          degraded: false,
+          degraded_reason: null,
+        },
+      ],
+      passfile_status: 'configured',
+    })
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const enable = vi
+      .spyOn(repoApi, 'enableRcloneConfEncryption')
+      .mockResolvedValue({ code: 'ok', password_once: 'c'.repeat(32) })
+    const w = mountPanel()
+    await mountReady()
+
+    expect(backupSwitch(w)!.getAttribute('aria-checked')).toBe('false')
+    // 恢复的偏好要真的作用到请求：关着就带 backup=false（不留明文副本）
+    buttonOf(w, zhCN.settings.rclone.confEnc.enableBtn)!.dispatchEvent(new Event('click'))
+    await mountReady()
+    expect(enable).toHaveBeenCalledWith({ backup: false })
+    w.unmount()
+  })
+
+  it('偏好读取失败回落默认开，不阻塞加密面板', async () => {
+    vi.spyOn(configApi, 'getConfig').mockRejectedValue(new Error('config 500'))
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const w = mountPanel()
+    await mountReady()
+
+    // 偏好读失败只影响开关初值（回落 true），加密三态与按钮照常可用
+    expect(backupSwitch(w)!.getAttribute('aria-checked')).toBe('true')
+    expect(confEncButtons(w)).toEqual([zhCN.settings.rclone.confEnc.enableBtn])
+    w.unmount()
+  })
+
+  it('偏好写入失败只提示，不影响随后的启用请求', async () => {
+    vi.spyOn(configApi, 'putConfig').mockRejectedValue(new Error('config 写失败'))
+    vi.spyOn(repoApi, 'getRcloneConfEncryption').mockResolvedValue(ENC_STATUS_PLAIN)
+    const enable = vi
+      .spyOn(repoApi, 'enableRcloneConfEncryption')
+      .mockResolvedValue({ code: 'ok', password_once: 'd'.repeat(32) })
+    const w = mountPanel()
+    await mountReady()
+
+    backupSwitch(w)!.dispatchEvent(new Event('click'))
+    await mountReady()
+    // 写偏好失败不能把开关状态回滚，也不能挡住启用
+    expect(backupSwitch(w)!.getAttribute('aria-checked')).toBe('false')
+    buttonOf(w, zhCN.settings.rclone.confEnc.enableBtn)!.dispatchEvent(new Event('click'))
+    await mountReady()
+    expect(enable).toHaveBeenCalledWith({ backup: false })
     w.unmount()
   })
 })
