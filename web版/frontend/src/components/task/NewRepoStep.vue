@@ -29,7 +29,7 @@ import { getRepo, getRepoStatus, listRepos, listRcloneConfigs, listRcloneRemotes
 import type { JobDonePayload, RepoTestResponse, RcloneConfigsOut } from '@/api/types'
 import RepoEditForm from '@/pages/repo/RepoEditForm.vue'
 import { useRepoProvisioning } from '@/composables/useRepoProvisioning'
-import { CRED_FIELDS } from '@/utils/repoCredentials'
+import { CRED_FIELDS, REPO_TYPE_PRESETS } from '@/utils/repoCredentials'
 import { composeRepoUrl, parseRepoUrl, resolveRcloneTarget, type RepoTypeKey } from '@/utils/repoUrl'
 import { useUiStore } from '@/stores/ui'
 import PasswordEntryModal from '@/components/PasswordEntryModal.vue'
@@ -127,16 +127,11 @@ const initializing = ref(false)
 
 const formType = computed<RepoTypeKey>(() => (repoForm.type || 'local') as RepoTypeKey)
 const credFields = computed(() => CRED_FIELDS[formType.value])
-const typeSelectOptions = computed(() => [
-  { label: t('repo.typeLocal'), value: 'local' },
-  { label: t('repo.typeRclone'), value: 'rclone' },
-  { label: t('repo.typeS3'), value: 's3' },
-  { label: t('repo.typeB2'), value: 'b2' },
-  { label: t('repo.typeSftp'), value: 'sftp' },
-  { label: t('repo.typeAzure'), value: 'azure' },
-  { label: t('repo.typeGcs'), value: 'gcs' },
-  { label: t('repo.typeRest'), value: 'rest' },
-])
+// 类型下拉与仓库页共用 utils/repoCredentials.ts::REPO_TYPE_PRESETS 单一来源（方案 F14c），
+// 不再在本壳手写第二份，避免两处 8 项列表漂移。
+const typeSelectOptions = computed(() =>
+  REPO_TYPE_PRESETS.map((x) => ({ label: t(x.labelKey), value: x.key })),
+)
 
 /** 已建仓库的详情（建仓后才有；驱动密码状态行与 passfileMissing）。 */
 const repoQuery = useQuery({

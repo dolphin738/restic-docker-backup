@@ -207,20 +207,15 @@ import {
   resolveRcloneTarget,
   type RepoTypeKey,
 } from '@/utils/repoUrl'
-import { CRED_FIELDS, ENDPOINT_OPTIONS, type CredField } from '@/utils/repoCredentials'
+import { CRED_FIELDS, ENDPOINT_OPTIONS, REPO_TYPE_PRESETS, type CredField } from '@/utils/repoCredentials'
 import { useRepoProvisioning } from '@/composables/useRepoProvisioning'
 
-/** 类型下拉选项（用户裁决：本项目无后端类型列表端点，用下拉替代 Duplicati 类型选择器列表）。 */
-const REPO_TYPES = computed<Array<{ key: RepoTypeKey; label: string }>>(() => [
-  { key: 'local', label: t('repo.typeLocal') },
-  { key: 'rclone', label: t('repo.typeRclone') },
-  { key: 's3', label: t('repo.typeS3') },
-  { key: 'b2', label: t('repo.typeB2') },
-  { key: 'sftp', label: t('repo.typeSftp') },
-  { key: 'azure', label: t('repo.typeAzure') },
-  { key: 'gcs', label: t('repo.typeGcs') },
-  { key: 'rest', label: t('repo.typeRest') },
-])
+/** 类型下拉选项（用户裁决：本项目无后端类型列表端点，用下拉替代 Duplicati 类型选择器列表）。
+ *  列表单一来源为 utils/repoCredentials.ts::REPO_TYPE_PRESETS（方案 F14c），本页只把标签键
+ *  解析成文案——向导建仓步复用同一份，避免两处手写列表漂移。 */
+const REPO_TYPES = computed<Array<{ key: RepoTypeKey; label: string }>>(() =>
+  REPO_TYPE_PRESETS.map((x) => ({ key: x.key, label: t(x.labelKey) })),
+)
 
 /** 类型下拉选项（n-select options）。 */
 const typeSelectOptions = computed(() => REPO_TYPES.value.map((x) => ({ label: x.label, value: x.key })))

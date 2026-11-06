@@ -53,6 +53,21 @@ export const CRED_FIELDS: Record<RepoTypeKey, CredField[]> = {
   rclone: [],
 }
 
+/** 仓库类型下拉的单一来源（方案 v1.1 §4.3 F14c / §6.1 R6）。
+ *  原先 `pages/repo/index.vue` 与 `components/task/NewRepoStep.vue` 各写一份 8 项列表，
+ *  改一处忘另一处两处下拉就会静默漂移。这里只存类型键与 i18n 标签键（文案仍由消费方
+ *  用 t() 解析，保持本模块纯常量、无 i18n 依赖）；顺序即下拉展示顺序。 */
+export const REPO_TYPE_PRESETS: ReadonlyArray<{ key: RepoTypeKey; labelKey: string }> = [
+  { key: 'local', labelKey: 'repo.typeLocal' },
+  { key: 'rclone', labelKey: 'repo.typeRclone' },
+  { key: 's3', labelKey: 'repo.typeS3' },
+  { key: 'b2', labelKey: 'repo.typeB2' },
+  { key: 'sftp', labelKey: 'repo.typeSftp' },
+  { key: 'azure', labelKey: 'repo.typeAzure' },
+  { key: 'gcs', labelKey: 'repo.typeGcs' },
+  { key: 'rest', labelKey: 'repo.typeRest' },
+]
+
 /** 常用 S3 Endpoint 建议值（MinIO 本机 / 阿里云 OSS / 腾讯云 COS / AWS 官方）。
  *  用于地址区「服务器地址」输入（endpointSuggestions 在其后拼接既有仓库提取值）。 */
 export const ENDPOINT_OPTIONS = [
