@@ -184,15 +184,15 @@ for action in AUDIT_REPO_PURGE AUDIT_REPO_ID_RELEASE AUDIT_RCLONE_CONFIG_RESTORE
     violation "S6 缺少审计动作常量 $action（删除保护 P2 埋点悬空）"
   fi
 done
-# 反向锚点（v1.17，rclone conf 加密规范先行）：三个新增危险动作的常量必须真实存在，
+# 反向锚点（v1.17 rclone conf 加密规范先行 / v1.19 补 unlock）：四个危险动作的常量必须真实存在，
 # 防「规范登记了埋点、代码里常量悬空」——与前两组反向锚点同手法。
-for action in AUDIT_RCLONE_CONF_ENCRYPT AUDIT_RCLONE_CONF_REKEY AUDIT_RCLONE_CONF_DECRYPT; do
+for action in AUDIT_RCLONE_CONF_ENCRYPT AUDIT_RCLONE_CONF_REKEY AUDIT_RCLONE_CONF_DECRYPT AUDIT_RCLONE_CONF_UNLOCK; do
   if ! grep -q "^$action = " backend/app/constants.py 2>/dev/null; then
     violation "S6 缺少审计动作常量 $action（rclone conf 加密埋点悬空）"
   fi
 done
 
-for key in RETENTION_REPO_ARCHIVE_DAYS_KEY RETENTION_REPO_TOMBSTONE_DAYS_KEY RETENTION_RCLONE_ARCHIVE_DAYS_KEY; do
+for key in RETENTION_REPO_ARCHIVE_DAYS_KEY RETENTION_REPO_TOMBSTONE_DAYS_KEY RETENTION_RCLONE_ARCHIVE_DAYS_KEY RETENTION_REPO_PASSFILE_DAYS_KEY; do
   if ! grep -q "^$key = " backend/app/constants.py 2>/dev/null; then
     violation "S6 缺少归档保留期键常量 $key（归档页保留策略悬空）"
   fi

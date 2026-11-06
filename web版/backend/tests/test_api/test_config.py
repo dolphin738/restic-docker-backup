@@ -109,6 +109,27 @@ async def test_e07_empty_patch_422(app_client):
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "retention.repo_passfile_days",  # 归档页新增 UI 入口，必须与同组键同受写侧 422 保护
+        "retention.jobs_days",
+        "retention.audit_days",
+        "retention.audit_archive_days",
+    ],
+)
+async def test_e07_retention_days_bad_value_422(app_client, key):
+    """保留期键坏值须在写入侧前置 422（否则落库后仅在每日维护读取时 WARNING 回退）。"""
+    await finish_bootstrap(app_client)
+    client = app_client.client
+    bad = await client.put("/api/config", json={"patch": {key: "abc"}}, headers=ORIGIN)
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["code"] == "VALIDATION_ERROR"
+
+    good = await client.put("/api/config", json={"patch": {key: "30"}}, headers=ORIGIN)
+    assert good.status_code == 200, good.text
+
+
 async def test_e29_repo_test_without_config(app_client):
     """E29：仓库地址缺失不抛 5xx，回 ok:false + 可操作 reason（主理人裁决口径）。"""
     await finish_bootstrap(app_client)

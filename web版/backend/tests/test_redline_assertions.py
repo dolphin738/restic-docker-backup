@@ -163,11 +163,15 @@ def test_s6_audit_logs_append_only():
 
 def test_s6_audit_action_constants_exist():
     constants = (APP / "constants.py").read_text(encoding="utf-8", errors="ignore")
-    # rclone conf 写入（v1.14）与删除保护 P2（v1.15）的埋点常量必须真实存在
+    # rclone conf 写入（v1.14）、删除保护 P2（v1.15）、
+    # conf 加密三动作（v1.17）与解锁（v1.19）的埋点常量必须真实存在
+    # ——与 scripts/verify_redlines.sh 的同名反向锚点断言完全对齐
     for action in (
         "AUDIT_RCLONE_CONFIG_APPEND", "AUDIT_RCLONE_CONFIG_EDIT",
         "AUDIT_RCLONE_CONFIG_DELETE", "AUDIT_REPO_PURGE", "AUDIT_REPO_ID_RELEASE",
         "AUDIT_RCLONE_CONFIG_RESTORE",
+        "AUDIT_RCLONE_CONF_ENCRYPT", "AUDIT_RCLONE_CONF_REKEY",
+        "AUDIT_RCLONE_CONF_DECRYPT", "AUDIT_RCLONE_CONF_UNLOCK",
     ):
         assert re.search(rf"^{action} =", constants, re.M), f"S6 缺少审计动作常量 {action}"
 
@@ -176,7 +180,7 @@ def test_s6_archive_retention_keys_exist():
     constants = (APP / "constants.py").read_text(encoding="utf-8", errors="ignore")
     for key in (
         "RETENTION_REPO_ARCHIVE_DAYS_KEY", "RETENTION_REPO_TOMBSTONE_DAYS_KEY",
-        "RETENTION_RCLONE_ARCHIVE_DAYS_KEY",
+        "RETENTION_RCLONE_ARCHIVE_DAYS_KEY", "RETENTION_REPO_PASSFILE_DAYS_KEY",
     ):
         assert re.search(rf"^{key} =", constants, re.M), f"S6 缺少归档保留期键常量 {key}"
 

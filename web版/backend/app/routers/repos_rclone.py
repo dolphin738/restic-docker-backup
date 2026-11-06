@@ -28,6 +28,7 @@ from app.constants import (
     AUDIT_RCLONE_CONF_DECRYPT,
     AUDIT_RCLONE_CONF_ENCRYPT,
     AUDIT_RCLONE_CONF_REKEY,
+    AUDIT_RCLONE_CONF_UNLOCK,
     AUDIT_RCLONE_CONFIG_APPEND,
     AUDIT_RCLONE_CONFIG_DELETE,
     AUDIT_RCLONE_CONFIG_EDIT,
@@ -738,7 +739,7 @@ def register(router: APIRouter) -> None:
         request: Request,
         session: SessionContext = Depends(require_session),
     ) -> OkResponse:
-        """口令原子写入唯一落点，status() 验通后重建运行期口令命令；复用换口令审计动作。"""
+        """口令原子写入唯一落点，status() 验通后重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。"""
         del session
         service = await _conf_write_guard(request, unlock=True)
         password = _secret_text(payload.password)
@@ -746,6 +747,6 @@ def register(router: APIRouter) -> None:
             raise ValidationError("口令不能为空")
         await _unlock_conf(service, password)
         await request.app.state.audit.record(
-            AUDIT_RCLONE_CONF_REKEY, detail={"generated": False, "result": "ok"}, result="ok"
+            AUDIT_RCLONE_CONF_UNLOCK, detail={"generated": False, "result": "ok"}, result="ok"
         )
         return OkResponse()

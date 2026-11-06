@@ -234,11 +234,13 @@ AUDIT_RCLONE_CONFIG_APPEND = "rclone.config_append"
 AUDIT_RCLONE_CONFIG_EDIT = "rclone.config_edit"
 AUDIT_RCLONE_CONFIG_DELETE = "rclone.config_delete"  # 含 OAuth 网盘段：删后需在宿主机重新授权
 AUDIT_RCLONE_CONFIG_RESTORE = "rclone.config_restore"  # 危险：把归档段写回 conf，直接决定后端可达性
-# rclone conf 加密（v1.17 规范先行）：启用/换口令/停用直接决定所有 `rclone:` 远端是否可达，
+# rclone conf 加密（v1.17 规范先行，v1.19 补解锁）：启用/换口令/停用/解锁直接决定所有 `rclone:` 远端是否可达，
 # 停用后 conf 退回明文；detail 只记动作与 result，不含口令（S3）。
+# unlock 是「恢复运行期口令通道」，与 rekey（更换口令）语义不同，独立留痕以便事后区分（S6 审计只增不改）。
 AUDIT_RCLONE_CONF_ENCRYPT = "rclone.conf_encrypt"
 AUDIT_RCLONE_CONF_REKEY = "rclone.conf_rekey"
 AUDIT_RCLONE_CONF_DECRYPT = "rclone.conf_decrypt"
+AUDIT_RCLONE_CONF_UNLOCK = "rclone.conf_unlock"
 # E39 时间同步：按 NTP 结果校准系统时钟（改系统状态，危险操作留痕；偏移/原因入 detail，无凭据面）
 AUDIT_TIME_SYNC = "time.sync"
 # R-020 裁决3：审计归档（压缩落盘，append-only 的「整段滚动导出」落地）

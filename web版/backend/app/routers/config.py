@@ -47,6 +47,7 @@ from app.constants import (
     RETENTION_AUDIT_ARCHIVE_DIR_KEY,
     RETENTION_AUDIT_DAYS_KEY,
     RETENTION_JOBS_DAYS_KEY,
+    RETENTION_REPO_PASSFILE_DAYS_KEY,
 )
 from app.db.repositories.config_repo import ConfigRepo
 from app.errors import CredentialKeyUnavailableError, ValidationError
@@ -387,7 +388,12 @@ def _validate_patch_values(patch: dict[str, str | None]) -> None:
             )
         # R-020 裁决1/裁决3：保留期相关键——坏值落库会让每日维护静默不清理或误清理，
         # 故写入侧前置 422（与 DUMP_RETENTION_DAYS_KEY 同机制位）。
-        elif key in (RETENTION_JOBS_DAYS_KEY, RETENTION_AUDIT_DAYS_KEY, RETENTION_AUDIT_ARCHIVE_DAYS_KEY):
+        # retention.repo_passfile_days 已有归档页 UI 入口，与同组键同一 _resolve_days 语义，
+        # 故一并纳入写侧校验，避免坏值落库后只在每日维护读取时 WARNING 回退默认值。
+        elif key in (
+            RETENTION_JOBS_DAYS_KEY, RETENTION_AUDIT_DAYS_KEY, RETENTION_AUDIT_ARCHIVE_DAYS_KEY,
+            RETENTION_REPO_PASSFILE_DAYS_KEY,
+        ):
             if not value.isdigit():
                 raise ValidationError(
                     f"{key} 须为非负整数（0=不启用清理）", data={"key": key, "value": raw}
