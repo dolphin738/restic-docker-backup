@@ -34,6 +34,7 @@ from app.constants import (
     AUDIT_REPAIR_RUN,
     BEHAVIOR_AUTO_INIT_KEY,
     BEHAVIOR_AUTO_UNLOCK_KEY,
+    DEFAULT_GROUP_BY,
     JOB_TYPES,
     MIRROR_REPO_IDS_MAX,
     PASSFILE_STATUS_CONFIGURED,
@@ -1446,10 +1447,8 @@ def _resolve_group_by(params: dict[str, Any], policy: dict[str, Any]) -> str:
     走 ``or`` 链会被当成"没给"而悄悄回落到 ``host,paths,tags``，
     导致"按任意数量保留快照"这个能力在 API 层就不可达（假性生效）。
     """
-    # 延迟导入：task_service → scheduler → job_runner，顶层导入会成环
-    # （同 settings.browse_root 对 deploy_mode 的处理手法）
-    from app.services.task_service import DEFAULT_GROUP_BY
-
+    # DEFAULT_GROUP_BY 来自零依赖的 app.constants（顶层已导入），无需延迟导入
+    # task_service —— 后者 → scheduler → job_runner 的环不再存在。
     for source in (params, policy):
         if "group_by" in source and source["group_by"] is not None:
             return str(source["group_by"])

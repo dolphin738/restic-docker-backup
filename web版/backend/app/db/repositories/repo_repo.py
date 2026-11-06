@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.constants import ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
+from app.constants import ACTIVE_JOB_STATUSES, DEFAULT_REPO_ID, TERMINAL_JOB_STATUSES
 from app.db.database import Database, Tx
 from app.errors import (
     EnvOverriddenError,
@@ -30,9 +30,8 @@ from app.utils.time import utc_iso
 # 仓库 id 形态（路径参数/切换器键）：小写字母开头，小写字母/数字/下划线/连字符
 REPO_ID_PATTERN = r"^[a-z][a-z0-9_-]{0,63}$"
 
-DEFAULT_REPO_ID = "default"
-
-# 默认仓库不可删除（「缺省 default」是切换器/补跑/env 覆盖的共同锚点）
+# 默认仓库不可删除（「缺省 default」是切换器/补跑/env 覆盖的共同锚点；
+# DEFAULT_REPO_ID 的单一真源在 app.constants，本模块仅再导出兼容既有导入点）
 DEFAULT_REPO_NAME = "默认仓库"
 
 # URL 协议前缀 → 仓库类型（A1；单一事实源，新增后端只改此处）。

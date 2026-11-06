@@ -26,6 +26,11 @@ JOB_TRIGGERS: tuple[str, ...] = ("manual", "scheduled")
 ACTIVE_JOB_STATUSES: tuple[str, ...] = ("running", "pending")
 TERMINAL_JOB_STATUSES: tuple[str, ...] = ("success", "failed", "interrupted", "cancelled")
 
+# forget 默认分组维度（restic --group-by 缺省值）：常量单一真源，供 task_service
+# （写侧归一）与 job_runner（执行侧回退）共用。放在零依赖模块，job_runner 就不必
+# 反向 import task_service（后者 → scheduler → job_runner 会成环）。
+DEFAULT_GROUP_BY = "host,paths,tags"
+
 # ---------------------------------------------------------------- R-023 仓库标识（repos 表主键）
 
 # repo_id 会被拼进密码文件路径 ``<passfile_root>/<repo_id>/password``：
@@ -33,6 +38,11 @@ TERMINAL_JOB_STATUSES: tuple[str, ...] = ("success", "failed", "interrupted", "c
 # 建仓（POST /api/repos）与路径参数（/api/repos/{repo_id}/*）两侧共用同一规则。
 REPO_ID_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
 REPO_ID_MAX_LENGTH: int = 64
+
+# 缺省仓库标识：切换器/补跑/env 覆盖/凭据加密的共同锚点。单一真源放零依赖模块，
+# 服务层（services/crypto.py）可直接引用，不必反向 import app.db.repositories；
+# repo_repo / task_repo 仍再导出该名字，保持既有导入点不变。
+DEFAULT_REPO_ID = "default"
 
 # ---------------------------------------------------------------- 路径白名单（§7.3 PathMapper）
 

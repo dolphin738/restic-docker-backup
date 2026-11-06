@@ -28,7 +28,7 @@ import json
 from datetime import UTC
 from typing import Any
 
-from app.constants import MIRROR_REPO_IDS_MAX, RETRY_COUNT_DEFAULT, RETRY_COUNT_MAX
+from app.constants import DEFAULT_GROUP_BY, MIRROR_REPO_IDS_MAX, RETRY_COUNT_DEFAULT, RETRY_COUNT_MAX
 from app.db.repositories.task_repo import Task, TaskRepo
 from app.errors import PathOutOfPrefixError, ValidationError
 from app.exclusions import ExclusionRules, normalize_user_excludes
@@ -39,7 +39,8 @@ from app.services.scheduler import _cron_trigger
 from app.settings import Settings, get_settings
 
 COMPRESSION_MODES: tuple[str, ...] = ("auto", "off", "max")
-DEFAULT_GROUP_BY = "host,paths,tags"
+# DEFAULT_GROUP_BY 的单一真源在 app.constants（零依赖模块），此处 import 保持
+# 模块级名字供既有导入点使用；job_runner 执行侧回退也直接引用 constants，不再成环。
 
 
 class TaskService:

@@ -20,7 +20,7 @@ from app.db.repositories.repo_repo import DEFAULT_REPO_ID, ReposRepo
 from app.utils.time import utc_iso
 
 # DEFAULT_REPO_ID 自 repo_repo 再导出（路由作用域守卫与调度器任务列举的既有导入点；
-# 单一真源在 repo_repo——R-023 多仓库的事实表模块）。
+# 单一真源在 app.constants，repo_repo 仅作兼容再导出）。
 __all__ = ["DEFAULT_REPO_ID", "Task", "TaskRepo"]
 
 _COLUMNS = (

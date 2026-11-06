@@ -30,7 +30,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.db.repositories.repo_repo import DEFAULT_REPO_ID
+from app.constants import DEFAULT_REPO_ID
 from app.errors import CredentialDecryptError, CredentialKeyUnavailableError
 from app.settings import Settings, get_settings
 
