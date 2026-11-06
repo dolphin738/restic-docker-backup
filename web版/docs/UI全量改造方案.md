@@ -738,6 +738,8 @@ P0–P4 视觉批次已落地（`git log`：9468e7b P1 视觉换肤 → 1a1b602 
 - **剪贴板复制**：新增 `utils/clipboard.ts` 的 `copyWithNotify()`，收口 ConfirmGate / SecretReveal / RcloneConfigPanel(找回命令) 三处相同样板；bootstrap 引导密码复制**刻意不迁**（失败静默是刻意策略，头注释写明）。
 
 **护栏与验证**：`PasswordInput.spec`（含裸 password 护栏）、`RcloneConfigPanel.spec` 22 例（「找回密码唯一入口」「按钮元素查询」等断言在新布局下全部保持绿）、前端全量 **575 passed**（2 条 wizardStepSequence Errors 为 HEAD 基线固有）、vue-tsc 0 error、红线 19/19；真机逐处核验（rclone 编辑/配置迁移导出行/密钥轮换弹窗的按钮几何 + 找回弹窗复制 toast）。**零后端改动**。
+>
+> **后注（2026-11-06）**：以上为本批当时的验收快照，数字保留不追改。① `RcloneConfigPanel.spec` 后扩充至 **34 例**（v1.86 登记 29→34）；② 2 条 wizardStepSequence `Errors` 已由 `d49ae94` 补齐 mock 修复消除，不再是「基线固有」；③ F14c 单一来源收口后前端全量现状为 **64 files / 610 passed / 0 Errors**。
 
 ## 5. 验收与自评口径（按报告 10 维度 + 功能面新增）
 

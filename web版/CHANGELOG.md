@@ -235,7 +235,7 @@
 
 ### 校验结果
 - 后端 WSL 全量 `pytest tests -q`：**1296 passed / 0 failed**（第 6 批 4 条护栏后为 1296；第 5 批时为 1292）。
-- 前端全量 `vitest run`：**575 passed / 61 files**（第 7 批后；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，HEAD 基线复现同样 2 条，与本批无关）。
+- 前端全量 `vitest run`：**575 passed / 61 files**（第 7 批后；2 条 `Errors` 为 `wizardStepSequence.spec.ts` 的 Vue setup 警告，HEAD 基线复现同样 2 条，与本批无关）——**后注**：该 2 条 `Errors` 已由 `d49ae94` 补齐 mock 修复消除；F14c 单一来源收口后现状为 **64 files / 610 passed / 0 Errors**。此处保留当时验收数字，仅订正被后续修复推翻的「基线固有」断言。
 - 前端 `vue-tsc --noEmit`：0 error。
 - `ruff check app tests` 干净。
 - `bash scripts/verify_redlines.sh`：**19/19 全部通过**（Windows Git-Bash 不设任何环境变量、WSL 两侧均实测；G8 需 python 解释器，无 python 时该项跳过并计 18/18）——AGENTS.md 与规范 §3.1 编号锚点一致，未新增/删除红线条款。
