@@ -63,6 +63,11 @@ vi.mock('@/api/repo', () => ({
   getRepo: vi.fn(async () => ({ id: 'default', passfile_status: 'configured' })),
   getRepoStatus: vi.fn(async () => ({ connected: true })),
   testRepo: vi.fn(async () => ({ ok: true, latency_ms: 9 })),
+  // 草稿恢复到「新建仓库」步会渲染 NewRepoStep，其两个 useQuery 在 setup 顶层
+  // 就读取这两个 queryFn 绑定；缺导出会被 vitest 报成 unhandled error
+  // （与 wizardNewRepoStep.spec.ts / wizardNewRepoBoundaries.spec.ts 同口径）。
+  listRcloneRemotes: vi.fn(async () => ({ conf_present: false, remotes: [] })),
+  listRcloneConfigs: vi.fn(async () => ({ configs: [] })),
 }))
 
 async function mountWizard() {
