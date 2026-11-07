@@ -17,6 +17,7 @@ from app.constants import (
     DEFAULT_RESTORE_ROOT,
     DEFAULT_SOURCES_ROOT,
     DEPLOY_MODE_AUTO,
+    SITE_RESTORE_KEEP_COUNT,
     SSE_HEARTBEAT_SECONDS,
 )
 
@@ -87,6 +88,9 @@ class Settings(BaseSettings):
     # SQLite 锁等待超时（毫秒）。高并发落库或外部工具长时间读库时若频繁
     # SQLITE_BUSY 可上调；过大则失败延迟变长，需与单写串行策略一起权衡。
     db_busy_timeout_ms: int = DB_BUSY_TIMEOUT_MS
+    # 全站导入回滚点（/data/site-restore/<ts>/）保留个数。每次导入前复制一份
+    # 密码文件与 rclone.conf，误导入后可整体回退；data 卷紧张可下调，0 表示不留。
+    site_restore_keep_count: int = SITE_RESTORE_KEEP_COUNT
 
     # ---- 派生属性 ----
     @property

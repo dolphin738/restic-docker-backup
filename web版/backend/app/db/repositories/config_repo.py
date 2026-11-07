@@ -236,6 +236,15 @@ class ConfigRepo:
             (key, value, source, now or utc_iso()),
         )
 
+    def encode_for_storage(self, key: str, value: str | None) -> str | None:
+        """写侧加密的**公开**入口：返回该键落库时应写入的形态（密文或原文）。
+
+        `_maybe_encrypt` 是写路径内部细节，全站导入需要在**事务外**先把整批 config 值
+        预加密好（加密要读仓库密码文件 = 文件 IO，绝不能发生在 BEGIN IMMEDIATE 之内，
+        否则单写连接会被慢盘拖住）。故此处只做一次公开委托，不另开第二份判定逻辑。
+        """
+        return self._maybe_encrypt(key, value)
+
     def _maybe_encrypt(self, key: str, value: str | None) -> str | None:
         """写侧透明加密：开关开 + 敏感键 + 非空值 → 密文；其余原样（与读侧前缀判定对称）。"""
         if value is None or value == "" or self._encryption is None or not self._encryption.enabled:

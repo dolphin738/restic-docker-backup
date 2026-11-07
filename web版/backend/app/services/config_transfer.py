@@ -23,20 +23,15 @@ S3/S6 合规：明文凭据只存在于加密前后的内存瞬间，不进日�
 
 from __future__ import annotations
 
-import base64
-import json
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-
 from app.db.repositories.config_repo import ConfigRepo
-from app.errors import PasswordWrongError, ValidationError
+from app.errors import ValidationError
+from app.services.pack_crypto import PASSWORD_MIN_LENGTH
+from app.services.pack_crypto import open_sealed as _open_secrets
+from app.services.pack_crypto import seal as _seal_secrets
 
 # 包格式标识与版本（未来结构变更只增 version；旧版是否兼容届时裁决）
 PACK_FORMAT = "restic-web-config-export"
@@ -52,15 +47,6 @@ _SUPPORTED_PACK_VERSIONS = frozenset({1, 2})
 PACK_KIND_FULL = "full"
 PACK_KIND_TASK = "backup-task"
 _PACK_KINDS = (PACK_KIND_FULL, PACK_KIND_TASK)
-
-# PBKDF2 参数（OWASP 2023：PBKDF2-HMAC-SHA256 ≥ 600k 迭代）
-_PBKDF2_ITERATIONS = 600_000
-_SALT_BYTES = 16
-_NONCE_BYTES = 12
-_KEY_BYTES = 32
-
-# 导出口令下限（与仓库密码 ≥10 的口径对齐——它保护的是全部凭据）
-PASSWORD_MIN_LENGTH = 10
 
 # 导出的明文配置键族（非敏感）；其余键族见模块 docstring「不导」清单
 _EXPORT_CONFIG_PREFIXES = ("behavior.", "notify.")
@@ -110,61 +96,8 @@ class ImportReport:
         }
 
 
-# ---------------------------------------------------------------- 加解密原语
-
-
-def _derive_key(password: str, salt: bytes) -> bytes:
-    """PBKDF2-HMAC-SHA256 派生 256-bit 密钥（600k 迭代）。"""
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=_KEY_BYTES,
-        salt=salt,
-        iterations=_PBKDF2_ITERATIONS,
-    )
-    return kdf.derive(password.encode("utf-8"))
-
-
-def _seal_secrets(payload: dict[str, Any], password: str) -> tuple[dict[str, Any], str]:
-    """加密凭据段，返回 ``(encryption 头, b64 密文)``。"""
-    salt = os.urandom(_SALT_BYTES)
-    nonce = os.urandom(_NONCE_BYTES)
-    key = _derive_key(password, salt)
-    plaintext = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    sealed = AESGCM(key).encrypt(nonce, plaintext, None)
-    head = {
-        "algo": "PBKDF2-HMAC-SHA256",
-        "iterations": _PBKDF2_ITERATIONS,
-        "salt": base64.b64encode(salt).decode("ascii"),
-        "cipher": "AES-256-GCM",
-    }
-    blob = base64.b64encode(nonce + sealed).decode("ascii")
-    return head, blob
-
-
-def _open_secrets(encryption: dict[str, Any], blob: str, password: str) -> dict[str, Any]:
-    """解密凭据段；错口令/篡改 → ``PasswordWrongError``（GCM 认证失败）。"""
-    if encryption.get("algo") != "PBKDF2-HMAC-SHA256" or encryption.get("cipher") != "AES-256-GCM":
-        raise ValidationError("导出包加密算法不受支持，请使用本系统导出的文件")
-    iterations = encryption.get("iterations")
-    if not isinstance(iterations, int) or iterations < 1 or iterations > 10_000_000:
-        raise ValidationError("导出包 PBKDF2 迭代参数非法")
-    try:
-        salt = base64.b64decode(str(encryption.get("salt", "")), validate=True)
-        blob_bytes = base64.b64decode(blob, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise ValidationError("导出包加密段损坏") from exc
-    if len(salt) != _SALT_BYTES or len(blob_bytes) <= _NONCE_BYTES:
-        raise ValidationError("导出包加密段损坏")
-    key = _derive_key(password, salt)
-    nonce, sealed = blob_bytes[:_NONCE_BYTES], blob_bytes[_NONCE_BYTES:]
-    try:
-        plaintext = AESGCM(key).decrypt(nonce, sealed, None)
-    except InvalidTag as exc:
-        raise PasswordWrongError("导出口令错误（或文件被篡改）") from exc
-    try:
-        return json.loads(plaintext.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ValidationError("导出包加密段内容损坏") from exc
+# 加解密原语（PBKDF2 + AES-GCM）在 app/services/pack_crypto.py —— 全站备份包共用同一份，
+# 本模块以 _seal_secrets / _open_secrets 别名引用，签名与行为保持不变。
 
 
 # ---------------------------------------------------------------- 导出

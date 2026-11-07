@@ -192,6 +192,14 @@ for action in AUDIT_RCLONE_CONF_ENCRYPT AUDIT_RCLONE_CONF_REKEY AUDIT_RCLONE_CON
   fi
 done
 
+# 反向锚点（v1.20 全站数据备份 / 规范 S6 28 → 30）：导出/导入两个危险动作的常量必须真实存在，
+# 防「规范登记了埋点、代码里常量悬空」——与上面三组反向锚点同手法。
+for action in AUDIT_SITE_EXPORT AUDIT_SITE_IMPORT; do
+  if ! grep -q "^$action = " backend/app/constants.py 2>/dev/null; then
+    violation "S6 缺少审计动作常量 $action（全站备份导出/导入埋点悬空）"
+  fi
+done
+
 for key in RETENTION_REPO_ARCHIVE_DAYS_KEY RETENTION_REPO_TOMBSTONE_DAYS_KEY RETENTION_RCLONE_ARCHIVE_DAYS_KEY RETENTION_REPO_PASSFILE_DAYS_KEY; do
   if ! grep -q "^$key = " backend/app/constants.py 2>/dev/null; then
     violation "S6 缺少归档保留期键常量 $key（归档页保留策略悬空）"
@@ -377,8 +385,8 @@ else
   ok 'busy_timeout 未在业务层硬编码'
 fi
 
-# 反向确认：两个 settings 字段真实存在且被引用
-for field in sse_heartbeat_seconds db_busy_timeout_ms; do
+# 反向确认：三个 settings 字段真实存在且被引用
+for field in sse_heartbeat_seconds db_busy_timeout_ms site_restore_keep_count; do
   if ! grep -q "$field" backend/app/settings.py 2>/dev/null; then
     violation "settings 缺少可配置阈值字段：$field"
   fi

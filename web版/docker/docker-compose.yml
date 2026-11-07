@@ -54,6 +54,9 @@ services:
       # 已迁入「系统设置-系统-SQLite 锁等待」：删除本行即可在界面调
       # （对新建连接生效）；保留本行 = 以 compose 为准（界面置灰）。
       #DB_BUSY_TIMEOUT_MS: "5000"
+      # 全站恢复（site-backup 导入）回滚点保留份数，默认 3（《全站数据备份与恢复设计方案》D4）。
+      # 只在导入时按份数裁剪 /data/site-restore/<stamp>/ 目录，0 = 不保留。
+      #SITE_RESTORE_KEEP_COUNT: "3"
       # 非 root 档部署时由 entrypoint 用于自动 chown（root 档下默认 0:0，无需设置）
       # PUID: "1000"
       # PGID: "1000"

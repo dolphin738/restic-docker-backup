@@ -135,6 +135,14 @@ RCLONE_REMOTE_IN_USE = "RCLONE_REMOTE_IN_USE"
 COPY_SAME_REPO = "COPY_SAME_REPO"                  # 源/目标快照 ID 重叠 ⇒ 同一物理仓库
 COPY_NO_SNAPSHOT = "COPY_NO_SNAPSHOT"              # 源仓库没有（匹配 tag 的）快照
 COPY_TARGET_UNUSABLE = "COPY_TARGET_UNUSABLE"      # 目标仓库不可读：地址/口令/未初始化
+# 422 全站数据备份：包结构/载荷/版本不符约定（含旧配置迁移包，提示改用全站包）
+SITE_PACK_INVALID = "SITE_PACK_INVALID"
+# 422 包内 schema_version 高于目标机 user_version（目标机应用版本过旧，须先升级）
+SITE_SCHEMA_UNSUPPORTED = "SITE_SCHEMA_UNSUPPORTED"
+# 409 replace 导入要求目标机处于空库态（已有仓库/任务/配置即拒绝，避免覆盖生产数据）
+SITE_TARGET_NOT_EMPTY = "SITE_TARGET_NOT_EMPTY"
+# 422 源机密码文件缺失（导出 fail-closed：无密码文件的仓库导入后不可读，宁可不给包）
+SITE_PASSFILE_INCOMPLETE = "SITE_PASSFILE_INCOMPLETE"
 
 # 错误码 → HTTP 状态码（§5.0 表 + §5.1 端点级扩展码）
 ERROR_STATUS: dict[str, int] = {
@@ -168,6 +176,10 @@ ERROR_STATUS: dict[str, int] = {
     COPY_SAME_REPO: 422,
     COPY_NO_SNAPSHOT: 422,
     COPY_TARGET_UNUSABLE: 422,
+    SITE_PACK_INVALID: 422,
+    SITE_SCHEMA_UNSUPPORTED: 422,
+    SITE_TARGET_NOT_EMPTY: 409,
+    SITE_PASSFILE_INCOMPLETE: 422,
 }
 
 # ---------------------------------------------------------------- 审计动作（§4.6 / §7.6）
@@ -228,6 +240,10 @@ AUDIT_NOTIFY_UPDATE = "notify.update"  # R-018 E23 写入通知配置
 AUDIT_NOTIFY_TEST = "notify.test"      # R-018 E24 测试消息发送
 AUDIT_CONFIG_EXPORT = "config.export"  # 批次 E：配置导出（凭据口令加密，文件出系统边界，危险操作留痕）
 AUDIT_CONFIG_IMPORT = "config.import"  # 批次 E：配置导入（改写仓库/任务/通知配置，危险操作留痕）
+# 全站数据备份（v1.5 §5.4）：导出落地全站凭据（仓库密码 + conf 加密口令），导入 replace 全部仓库/任务/配置，
+# 是「整个实例搬家」，危险等级等同乃至高于 config.import；detail 只记计数与模式，不含任何凭据（S3）。
+AUDIT_SITE_EXPORT = "site.export"
+AUDIT_SITE_IMPORT = "site.import"
 AUDIT_TASK_CREATE = "task.create"
 AUDIT_TASK_UPDATE = "task.update"
 AUDIT_TASK_DELETE = "task.delete"
@@ -562,3 +578,9 @@ MANUAL_COPY_TIMEOUT_SECONDS = 3600
 # 手动 copy 的 restic 原始输出留存（2026-10-29）：每次一个文件，只保留最近 N 个。
 # copy 是手动低频操作，30 个足够回溯数周；按「个数」而非「时间」清理，避免再造一套保留语义。
 COPY_LOG_KEEP = 30
+
+# ---------------------------------------------------------------- 全站数据备份与恢复（v1.5）
+
+# /data/site-restore 下保留的回滚点个数（导入前快照）；导入是低频手工操作，
+# 3 个足够回退「最近一次误导入」，再多只是白占 data 卷空间。
+SITE_RESTORE_KEEP_COUNT = 3

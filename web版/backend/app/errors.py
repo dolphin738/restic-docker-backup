@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from app.constants import (
@@ -39,6 +40,10 @@ from app.constants import (
     REPO_NOT_FOUND,
     RESTIC_FAILED,
     RESTORE_FORBIDDEN,
+    SITE_PACK_INVALID,
+    SITE_PASSFILE_INCOMPLETE,
+    SITE_SCHEMA_UNSUPPORTED,
+    SITE_TARGET_NOT_EMPTY,
     TASK_RUNNING,
     UNAUTHORIZED,
     VALIDATION_ERROR,
@@ -509,4 +514,109 @@ class RepoInUseAsMirrorError(AppError):
                 "repo_id": repo_id,
                 "tasks": [{"id": tid, "name": name} for tid, name in tasks],
             },
+        )
+
+class SitePackInvalidError(ValidationError):
+    """422 全站备份包结构/载荷/版本不符约定（v1.5 §4.7）。
+
+    继承 :class:`ValidationError` 以复用 422 语义与 ``data`` 通道，但**必须独立成码**：
+    前端要据此把「旧配置迁移包，请改用全站包」这类可操作原因原样显示，混进
+    ``VALIDATION_ERROR`` 会被统一文案吞掉（同 ``COPY_*`` 三码的立码理由）。
+    """
+
+    code = SITE_PACK_INVALID
+    status = ERROR_STATUS[SITE_PACK_INVALID]
+    message = "备份包格式不符合要求"
+
+
+class SiteSchemaUnsupportedError(AppError):
+    """422 包内 ``schema_version`` 高于目标机 ``PRAGMA user_version``（v1.5 §4.3 第 5 步）。
+
+    导入是「把旧机数据搬回新机」，目标机应用版本过旧时表结构缺列，写入必失败；
+    先行拒绝比半途事务回滚更省事，也避免用户误以为包损坏。
+    """
+
+    code = SITE_SCHEMA_UNSUPPORTED
+    status = ERROR_STATUS[SITE_SCHEMA_UNSUPPORTED]
+    message = "备份包的数据结构版本高于本机，请先升级应用"
+
+    def __init__(self, *, pack_schema: int, target_schema: int) -> None:
+        """构造「架构版本过新」错误。
+
+        Args:
+            pack_schema: 包内 ``schema_version``。
+            target_schema: 目标机 ``PRAGMA user_version``。
+        """
+        super().__init__(
+            f"该包来自更新版本的应用（schema {pack_schema} > {target_schema}），请先升级",
+            data={"pack_schema": pack_schema, "target_schema": target_schema},
+        )
+
+
+class SiteTargetNotEmptyError(AppError):
+    """409 replace 导入要求目标机为空库态（v1.5 §4.3 第 8 步）。
+
+    ``mode="replace"`` 会 DELETE 全部业务表，只在「刚部署、还没建仓库/任务」的机器上
+    才有意义；一旦目标机有数据，静默清空等于数据丢失，故先列清阻碍项再要求确认整机替换。
+
+    确认通道（§4.2 / §4.7）：调用方在 `data.acknowledge` 传回**包外层 `created_at`**
+    （不是载荷内的 created_at，也不是目标机摘要字段），服务端逐字比对通过才放行；
+    `data.acknowledge_required=True` 是前端 ConfirmGate 的显式开关。
+    """
+
+    code = SITE_TARGET_NOT_EMPTY
+    status = ERROR_STATUS[SITE_TARGET_NOT_EMPTY]
+    message = "目标实例已有数据，导入需要空库环境"
+
+    def __init__(
+        self,
+        *,
+        blockers: tuple[str, ...] = (),
+        target: Mapping[str, Any] | None = None,
+    ) -> None:
+        """构造「目标非空」错误。
+
+        Args:
+            blockers: 阻碍项名称（如 ``repos`` / ``backup_tasks``），用于前端提示。
+            target: 目标现状摘要（``SiteTargetSummary`` 的字段字典，只含计数/布尔/
+                活跃作业清单，**不含任何凭据**）。§4.7 要求 409 一并返回目标现状摘要，
+                让用户在确认「整机替换」之前看得见即将被清空的 jobs/tasks/config 行数。
+        """
+        listed = "、".join(blockers[:10]) or "业务数据"
+        data: dict[str, Any] = {
+            "blockers": list(blockers),
+            "acknowledge_required": True,
+            "acknowledge": "必须等于包外层 created_at（字符串逐字匹配）",
+        }
+        if target is not None:
+            data["target"] = dict(target)
+        super().__init__(
+            f"目标实例的 {listed} 非空——确认整机替换，或改用一台全新实例导入",
+            data=data,
+        )
+
+
+class SitePassfileIncompleteError(ValidationError):
+    """422 源机仓库密码文件缺失，导出 fail-closed（v1.5 §3.3）。
+
+    没有密码文件的仓库，导入后快照全不可读——给出一个「能导不能读」的包比不给包更糟，
+    故导出阶段就拒绝，并点名缺哪些仓库。
+    """
+
+    code = SITE_PASSFILE_INCOMPLETE
+    status = ERROR_STATUS[SITE_PASSFILE_INCOMPLETE]
+    message = "存在仓库缺少密码文件，无法导出完整备份包"
+
+    def __init__(self, *, repo_ids: tuple[str, ...] = (), message: str | None = None) -> None:
+        """构造「密码文件缺失」错误。
+
+        Args:
+            repo_ids: 缺密码文件的仓库 id 列表。
+            message: 覆盖默认文案。导出侧「conf 已加密但配置口令不可读」（方案 §3.3-6）
+                是同一 fail-closed 语义的另一条原因，错误码共用、文案必须能说清是哪一种。
+        """
+        listed = "、".join(repo_ids[:10]) or "未知仓库"
+        super().__init__(
+            message or f"以下仓库的密码文件缺失，导出已中止（包会不完整）：{listed}",
+            data={"repo_ids": list(repo_ids)},
         )
