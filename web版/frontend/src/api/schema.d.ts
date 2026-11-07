@@ -970,7 +970,7 @@ export interface paths {
         put?: never;
         /**
          * 输入口令解锁 rclone conf（锁死态也可用）
-         * @description 口令原子写入唯一落点，status() 验通后重建运行期口令命令；复用换口令审计动作。
+         * @description 委托 RcloneCryptoService.unlock 重建运行期口令命令；独立记 rclone.conf_unlock 审计动作。
          */
         post: operations["unlock_rclone_conf_encryption_api_rclone_conf_encryption_unlock_post"];
         delete?: never;
@@ -1598,6 +1598,90 @@ export interface paths {
          *         ResticFailedError: 快照元数据或文件清单探测失败（500，原因明示）。
          */
         post: operations["preview_inplace_restore_api_restore_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/site-backup/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * E69 全站数据备份包导出（强制加密）
+         * @description 导出全站备份包（配置 + 仓库密码文件 + 可选 rclone.conf / rclone.pass）。
+         *
+         *     一致性靠服务层「事务内取表 + 事务外读文件」（方案 §3.1），**不停任务**：``jobs`` 不进包。
+         *     任一在用仓库缺密码文件、或 conf 已加密而口令不可读 → 422 fail-closed（方案 §3.3-3/6）：
+         *     导出侧是唯一能发现「包在新机不可用」的地方。
+         *
+         *     S3：口令只进 :func:`build_site_pack` 的形参，不进日志 / 审计 / 异常；
+         *     审计 ``site.export`` 的 detail 只记各段计数。
+         */
+        post: operations["export_site_backup_api_site_backup_export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/site-backup/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * E71 全站备份包导入（整机替换 + 文件回滚点）
+         * @description 把备份包整机替换到本实例（唯一语义 ``replace``，方案 §4.4）。
+         *
+         *     校验顺序严格照方案 §4.3 第 1–8 步：解析 / 版本 / AAD 解密 / 载荷结构 / schema 均在
+         *     :func:`parse_site_pack` 内（失败即**零写入**）；随后 :func:`assert_target_ready` 做
+         *     目标能力、conf 加密态一致性、**无活跃作业（409，D3）**、非空目标需 ``acknowledge``
+         *     逐字等于包外层 ``created_at``（409，§4.7）。
+         *
+         *     落地由 :func:`apply_state` 编排：文件回滚点 → 三文件成组原子写 → 单事务替换 →
+         *     进程内重建 ``RCLONE_PASSWORD_COMMAND`` → 热生效。失败时文件从回滚点还原、DB 事务回滚。
+         *
+         *     成功即 ``sessions`` 清空：本请求是当前会话的最后一次有效请求，前端拿到响应体后
+         *     必须跳登录页（``logged_out=true``）。
+         */
+        post: operations["import_site_backup_api_site_backup_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/site-backup/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * E70 全站备份包导入预检（零业务写入）
+         * @description 解密并预检备份包，回包摘要 + 目标现状 + 阻碍项（**不写任何业务数据 / 文件**）。
+         *
+         *     与 :func:`import_site_backup` 共用同一套判定（``parse_site_pack_for_app`` →
+         *     ``describe_target`` → ``target_blockers``），因此「预览说能导、导却被拒」不会发生。
+         *
+         *     阻碍项只报三条**能力类**问题（密码目录不可写 / restic 不可用 / conf 加密态不一致）；
+         *     活跃作业与「目标非空」不列为阻碍——它们分别要用户去等或去确认，属可化解的前置条件。
+         */
+        post: operations["inspect_site_backup_api_site_backup_inspect_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3032,6 +3116,42 @@ export interface components {
              */
             code: string;
         };
+        /**
+         * PackSummary
+         * @description 备份包自述摘要（inspect 回显；全部取自**解密后的载荷**，不含任何凭据）。
+         */
+        PackSummary: {
+            /** App Version */
+            app_version: string;
+            /** Config Keys */
+            config_keys: number;
+            /** Created At */
+            created_at: string;
+            /** Deploy Mode */
+            deploy_mode?: string | null;
+            /** Format */
+            format: string;
+            /** Passfiles */
+            passfiles: number;
+            /** Rclone Conf Encrypted */
+            rclone_conf_encrypted: boolean;
+            /** Rclone Conf Included */
+            rclone_conf_included: boolean;
+            /** Rclone Forms */
+            rclone_forms: number;
+            /** Rclone Pass Included */
+            rclone_pass_included: boolean;
+            /** Repos */
+            repos: number;
+            /** Schema Version */
+            schema_version: number;
+            /** Tasks */
+            tasks: number;
+            /** Version */
+            version: number;
+            /** Warnings */
+            warnings: string[];
+        };
         /** Page[JobOut] */
         Page_JobOut_: {
             /** Items */
@@ -3825,6 +3945,130 @@ export interface components {
             job_id: string;
             /** Restore Target */
             restore_target: string;
+        };
+        /**
+         * SiteExportRequest
+         * @description 全站备份包导出：导出口令 + 是否随包携带 rclone.conf（D1）。
+         */
+        SiteExportRequest: {
+            /**
+             * Include Rclone Conf
+             * @default true
+             */
+            include_rclone_conf: boolean;
+            /** Password */
+            password: string;
+        };
+        /**
+         * SiteImportReport
+         * @description 导入结果报告（成功后前端须跳登录页）。
+         */
+        SiteImportReport: {
+            /** Applied */
+            applied: {
+                [key: string]: number;
+            };
+            /**
+             * Logged Out
+             * @default true
+             */
+            logged_out: boolean;
+            /** Normalized Env Keys */
+            normalized_env_keys: string[];
+            /** Rollback Dir */
+            rollback_dir: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * SiteImportRequest
+         * @description 全站备份包导入：在预检之外要求落地语义与二次确认串。
+         *
+         *     ``mode`` 只有 ``replace`` 一种取值且**必填**——防误调；本功能不提供合并语义
+         *     （方案 §4.4：两台机器的 admin / repos / config 无法定义谁是权威）。
+         *
+         *     ``acknowledge`` 必须**逐字等于包外层 created_at**（方案 §4.2 / §4.7）；
+         *     目标机为空库时可不传（服务层只在目标非空时才校验）。
+         */
+        SiteImportRequest: {
+            /**
+             * Acknowledge
+             * @default
+             */
+            acknowledge: string;
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "replace";
+            /**
+             * Pack
+             * @description 全站备份包 JSON 全文
+             */
+            pack: {
+                [key: string]: unknown;
+            };
+            /** Password */
+            password: string;
+        };
+        /**
+         * SiteInspectReport
+         * @description 导入预检报告：包摘要 + 目标现状 + 阻碍项（``blockers`` 非空即不可导入）。
+         *
+         *     ``blockers`` 与 import 侧 422 的 ``data.blockers`` **同源**（同一个
+         *     :func:`app.services.site_backup.target_blockers` 纯函数），避免「预览说能导、导却被拒」。
+         */
+        SiteInspectReport: {
+            /** Blockers */
+            blockers: string[];
+            pack: components["schemas"]["PackSummary"];
+            target: components["schemas"]["SiteTargetSummary"];
+        };
+        /**
+         * SiteInspectRequest
+         * @description 全站备份包导入预检：完整包 + 口令（**零业务写入**，只回报告）。
+         */
+        SiteInspectRequest: {
+            /**
+             * Pack
+             * @description 全站备份包 JSON 全文
+             */
+            pack: {
+                [key: string]: unknown;
+            };
+            /** Password */
+            password: string;
+        };
+        /**
+         * SiteTargetSummary
+         * @description 目标机现状摘要（inspect 预览 + import 报告共用；与服务层同名字段一一对应）。
+         *
+         *     ``jobs`` 是**将被清空**的执行历史行数——replace 会 DELETE 整张 jobs 表，
+         *     用户确认前必须看得见（方案 §4.4 副作用明示）。
+         */
+        SiteTargetSummary: {
+            /** Active Jobs */
+            active_jobs: string[];
+            /** Config Keys */
+            config_keys: number;
+            /** Jobs */
+            jobs: number;
+            /** Passfile Writable */
+            passfile_writable: boolean;
+            /** Rclone Conf Encrypted */
+            rclone_conf_encrypted: boolean;
+            /** Rclone Conf Writable */
+            rclone_conf_writable: boolean;
+            /** Repos */
+            repos: number;
+            /** Repos Configured */
+            repos_configured: number;
+            /** Restic Available */
+            restic_available: boolean;
+            /** Rollback Keep Count */
+            rollback_keep_count: number;
+            /** Tasks */
+            tasks: number;
         };
         /**
          * SnapshotFileOut
@@ -6749,6 +6993,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RestorePreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_site_backup_api_site_backup_export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SiteExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_site_backup_api_site_backup_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SiteImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteImportReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_site_backup_api_site_backup_inspect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SiteInspectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteInspectReport"];
                 };
             };
             /** @description Validation Error */

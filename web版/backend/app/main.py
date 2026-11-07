@@ -67,6 +67,7 @@ from app.routers import metrics as metrics_router
 from app.routers import ops as ops_router
 from app.routers import repos as repos_router
 from app.routers import restore as restore_router
+from app.routers import site_backup as site_backup_router
 from app.routers import snapshots as snapshots_router
 from app.routers import sources as sources_router
 from app.routers import system as system_router
@@ -96,6 +97,7 @@ from app.services.repo_status_cache import invalidate_repo_status_cache
 from app.services.restic import ResticCmd
 from app.services.retention import RetentionService
 from app.services.scheduler import SchedulerService
+from app.services.site_backup import find_unfinished_restores, rollback_root
 from app.services.snapshot_catalog import SnapshotCatalog
 from app.services.sse import SseChannel
 from app.services.task_service import TaskService
@@ -443,6 +445,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 调度器启动（§4.3）：recover 之后 start（内部 reload + 当天补跑），
     # 与 interrupted 改标共享同一启动窗口（US-026-07 AC4）
     await scheduler.start()
+    # 全站导入崩溃窗口告警（方案 §4.5）：回滚点 state.json 仍是 prepared 说明上次
+    # 导入「文件已写、DB 未提交」，盘上是混合态（新密码文件 + 旧 DB）。**不自动修复**
+    # ——继续导入还是回滚文件由人工判断，自动动手可能二次破坏；此处只指路到目录。
+    unfinished = await find_unfinished_restores(settings)
+    if unfinished:
+        logger.error(
+            "检测到未完成的全站导入（回滚点 phase=prepared）：%s —— 盘上可能处于"
+            "「新密码文件 + 旧 DB」混合态，请到 %s 下人工决定继续导入还是回滚文件",
+            "、".join(unfinished),
+            rollback_root(settings),
+        )
 
     try:
         yield
@@ -483,6 +496,7 @@ def create_app() -> FastAPI:
     app.include_router(ops_router.router, dependencies=protected)        # E21 forget 预览（R-016）
     app.include_router(checks_router.router, dependencies=protected)     # E22 check 结果（R-017，批次 B）
     app.include_router(restore_router.router, dependencies=protected)    # E19
+    app.include_router(site_backup_router.router, dependencies=protected)  # E69–E71 全站备份/恢复
     # E37/E38（R-024）：不挂全局 protected——E37 指标端点自有鉴权（Bearer 令牌或
     # session 任一通过，owner 裁决 1C）；E38 报表端点路由内显式挂 _PROTECTED
     app.include_router(metrics_router.router)

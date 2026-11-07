@@ -2408,6 +2408,100 @@
         "title": "OkResponse",
         "type": "object"
       },
+      "PackSummary": {
+        "additionalProperties": false,
+        "description": "备份包自述摘要（inspect 回显；全部取自**解密后的载荷**，不含任何凭据）。",
+        "properties": {
+          "app_version": {
+            "title": "App Version",
+            "type": "string"
+          },
+          "config_keys": {
+            "title": "Config Keys",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "deploy_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deploy Mode"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "passfiles": {
+            "title": "Passfiles",
+            "type": "integer"
+          },
+          "rclone_conf_encrypted": {
+            "title": "Rclone Conf Encrypted",
+            "type": "boolean"
+          },
+          "rclone_conf_included": {
+            "title": "Rclone Conf Included",
+            "type": "boolean"
+          },
+          "rclone_forms": {
+            "title": "Rclone Forms",
+            "type": "integer"
+          },
+          "rclone_pass_included": {
+            "title": "Rclone Pass Included",
+            "type": "boolean"
+          },
+          "repos": {
+            "title": "Repos",
+            "type": "integer"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "tasks": {
+            "title": "Tasks",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "format",
+          "version",
+          "created_at",
+          "schema_version",
+          "app_version",
+          "repos",
+          "tasks",
+          "config_keys",
+          "passfiles",
+          "rclone_conf_included",
+          "rclone_conf_encrypted",
+          "rclone_forms",
+          "rclone_pass_included",
+          "warnings"
+        ],
+        "title": "PackSummary",
+        "type": "object"
+      },
       "Page_JobOut_": {
         "additionalProperties": false,
         "properties": {
@@ -3952,6 +4046,225 @@
           "restore_target"
         ],
         "title": "RestoreResponse",
+        "type": "object"
+      },
+      "SiteExportRequest": {
+        "additionalProperties": false,
+        "description": "全站备份包导出：导出口令 + 是否随包携带 rclone.conf（D1）。",
+        "properties": {
+          "include_rclone_conf": {
+            "default": true,
+            "title": "Include Rclone Conf",
+            "type": "boolean"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 10,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "SiteExportRequest",
+        "type": "object"
+      },
+      "SiteImportReport": {
+        "additionalProperties": false,
+        "description": "导入结果报告（成功后前端须跳登录页）。",
+        "properties": {
+          "applied": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Applied",
+            "type": "object"
+          },
+          "logged_out": {
+            "default": true,
+            "title": "Logged Out",
+            "type": "boolean"
+          },
+          "normalized_env_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Normalized Env Keys",
+            "type": "array"
+          },
+          "rollback_dir": {
+            "title": "Rollback Dir",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "normalized_env_keys",
+          "warnings",
+          "rollback_dir"
+        ],
+        "title": "SiteImportReport",
+        "type": "object"
+      },
+      "SiteImportRequest": {
+        "additionalProperties": false,
+        "description": "全站备份包导入：在预检之外要求落地语义与二次确认串。\n\n``mode`` 只有 ``replace`` 一种取值且**必填**——防误调；本功能不提供合并语义\n（方案 §4.4：两台机器的 admin / repos / config 无法定义谁是权威）。\n\n``acknowledge`` 必须**逐字等于包外层 created_at**（方案 §4.2 / §4.7）；\n目标机为空库时可不传（服务层只在目标非空时才校验）。",
+        "properties": {
+          "acknowledge": {
+            "default": "",
+            "title": "Acknowledge",
+            "type": "string"
+          },
+          "mode": {
+            "const": "replace",
+            "title": "Mode",
+            "type": "string"
+          },
+          "pack": {
+            "additionalProperties": true,
+            "description": "全站备份包 JSON 全文",
+            "title": "Pack",
+            "type": "object"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pack",
+          "password",
+          "mode"
+        ],
+        "title": "SiteImportRequest",
+        "type": "object"
+      },
+      "SiteInspectReport": {
+        "additionalProperties": false,
+        "description": "导入预检报告：包摘要 + 目标现状 + 阻碍项（``blockers`` 非空即不可导入）。\n\n``blockers`` 与 import 侧 422 的 ``data.blockers`` **同源**（同一个\n:func:`app.services.site_backup.target_blockers` 纯函数），避免「预览说能导、导却被拒」。",
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "pack": {
+            "$ref": "#/components/schemas/PackSummary"
+          },
+          "target": {
+            "$ref": "#/components/schemas/SiteTargetSummary"
+          }
+        },
+        "required": [
+          "pack",
+          "target",
+          "blockers"
+        ],
+        "title": "SiteInspectReport",
+        "type": "object"
+      },
+      "SiteInspectRequest": {
+        "additionalProperties": false,
+        "description": "全站备份包导入预检：完整包 + 口令（**零业务写入**，只回报告）。",
+        "properties": {
+          "pack": {
+            "additionalProperties": true,
+            "description": "全站备份包 JSON 全文",
+            "title": "Pack",
+            "type": "object"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pack",
+          "password"
+        ],
+        "title": "SiteInspectRequest",
+        "type": "object"
+      },
+      "SiteTargetSummary": {
+        "additionalProperties": false,
+        "description": "目标机现状摘要（inspect 预览 + import 报告共用；与服务层同名字段一一对应）。\n\n``jobs`` 是**将被清空**的执行历史行数——replace 会 DELETE 整张 jobs 表，\n用户确认前必须看得见（方案 §4.4 副作用明示）。",
+        "properties": {
+          "active_jobs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Active Jobs",
+            "type": "array"
+          },
+          "config_keys": {
+            "title": "Config Keys",
+            "type": "integer"
+          },
+          "jobs": {
+            "title": "Jobs",
+            "type": "integer"
+          },
+          "passfile_writable": {
+            "title": "Passfile Writable",
+            "type": "boolean"
+          },
+          "rclone_conf_encrypted": {
+            "title": "Rclone Conf Encrypted",
+            "type": "boolean"
+          },
+          "rclone_conf_writable": {
+            "title": "Rclone Conf Writable",
+            "type": "boolean"
+          },
+          "repos": {
+            "title": "Repos",
+            "type": "integer"
+          },
+          "repos_configured": {
+            "title": "Repos Configured",
+            "type": "integer"
+          },
+          "restic_available": {
+            "title": "Restic Available",
+            "type": "boolean"
+          },
+          "rollback_keep_count": {
+            "title": "Rollback Keep Count",
+            "type": "integer"
+          },
+          "tasks": {
+            "title": "Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repos",
+          "repos_configured",
+          "tasks",
+          "config_keys",
+          "jobs",
+          "active_jobs",
+          "restic_available",
+          "passfile_writable",
+          "rclone_conf_writable",
+          "rclone_conf_encrypted",
+          "rollback_keep_count"
+        ],
+        "title": "SiteTargetSummary",
         "type": "object"
       },
       "SnapshotFileOut": {
@@ -8473,6 +8786,125 @@
         "summary": "E20 原位恢复覆盖预览",
         "tags": [
           "restore"
+        ]
+      }
+    },
+    "/api/site-backup/export": {
+      "post": {
+        "description": "导出全站备份包（配置 + 仓库密码文件 + 可选 rclone.conf / rclone.pass）。\n\n一致性靠服务层「事务内取表 + 事务外读文件」（方案 §3.1），**不停任务**：``jobs`` 不进包。\n任一在用仓库缺密码文件、或 conf 已加密而口令不可读 → 422 fail-closed（方案 §3.3-3/6）：\n导出侧是唯一能发现「包在新机不可用」的地方。\n\nS3：口令只进 :func:`build_site_pack` 的形参，不进日志 / 审计 / 异常；\n审计 ``site.export`` 的 detail 只记各段计数。",
+        "operationId": "export_site_backup_api_site_backup_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "E69 全站数据备份包导出（强制加密）",
+        "tags": [
+          "site-backup"
+        ]
+      }
+    },
+    "/api/site-backup/import": {
+      "post": {
+        "description": "把备份包整机替换到本实例（唯一语义 ``replace``，方案 §4.4）。\n\n校验顺序严格照方案 §4.3 第 1–8 步：解析 / 版本 / AAD 解密 / 载荷结构 / schema 均在\n:func:`parse_site_pack` 内（失败即**零写入**）；随后 :func:`assert_target_ready` 做\n目标能力、conf 加密态一致性、**无活跃作业（409，D3）**、非空目标需 ``acknowledge``\n逐字等于包外层 ``created_at``（409，§4.7）。\n\n落地由 :func:`apply_state` 编排：文件回滚点 → 三文件成组原子写 → 单事务替换 →\n进程内重建 ``RCLONE_PASSWORD_COMMAND`` → 热生效。失败时文件从回滚点还原、DB 事务回滚。\n\n成功即 ``sessions`` 清空：本请求是当前会话的最后一次有效请求，前端拿到响应体后\n必须跳登录页（``logged_out=true``）。",
+        "operationId": "import_site_backup_api_site_backup_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteImportReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "E71 全站备份包导入（整机替换 + 文件回滚点）",
+        "tags": [
+          "site-backup"
+        ]
+      }
+    },
+    "/api/site-backup/inspect": {
+      "post": {
+        "description": "解密并预检备份包，回包摘要 + 目标现状 + 阻碍项（**不写任何业务数据 / 文件**）。\n\n与 :func:`import_site_backup` 共用同一套判定（``parse_site_pack_for_app`` →\n``describe_target`` → ``target_blockers``），因此「预览说能导、导却被拒」不会发生。\n\n阻碍项只报三条**能力类**问题（密码目录不可写 / restic 不可用 / conf 加密态不一致）；\n活跃作业与「目标非空」不列为阻碍——它们分别要用户去等或去确认，属可化解的前置条件。",
+        "operationId": "inspect_site_backup_api_site_backup_inspect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteInspectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteInspectReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "E70 全站备份包导入预检（零业务写入）",
+        "tags": [
+          "site-backup"
         ]
       }
     },

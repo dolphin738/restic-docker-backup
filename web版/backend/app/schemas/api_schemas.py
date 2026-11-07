@@ -1468,3 +1468,103 @@ class ConfigImportReport(_Base):
     mirror_warnings: list[dict[str, str]]
     notify_updated: int
     creds_imported: int
+
+
+# ---------------------------------------------------------------- 全站数据备份 / 恢复（v1.5）
+# 端点：POST /api/site-backup/{export,inspect,import}（方案 §3.2 / §4.2）。
+# 响应模型的**唯一真源**：`SiteTargetSummary` 由 `describe_target` 直接构造、
+# `PackSummary` 由 `summarize_pack` 直接构造，路由层不再手抄字段字典或二次包一层；
+# 审计 detail 与 `SiteImportReport.applied` 的计数统一取自 `SiteCounts`。
+
+
+class SiteExportRequest(_Base):
+    """全站备份包导出：导出口令 + 是否随包携带 rclone.conf（D1）。"""
+
+    # 与 pack_crypto.PASSWORD_MIN_LENGTH 同值；包内是整站凭据，口令不得短于 10 位
+    password: str = Field(min_length=10, max_length=256)
+    # D1：默认勾上；含网盘 OAuth token 与 obscure 混淆密码（= 等价凭据），UI 须明写风险
+    include_rclone_conf: bool = True
+
+
+class SiteInspectRequest(_Base):
+    """全站备份包导入预检：完整包 + 口令（**零业务写入**，只回报告）。"""
+
+    pack: dict[str, Any] = Field(description="全站备份包 JSON 全文")
+    password: str = Field(min_length=1, max_length=256)
+
+
+class SiteImportRequest(SiteInspectRequest):
+    """全站备份包导入：在预检之外要求落地语义与二次确认串。
+
+    ``mode`` 只有 ``replace`` 一种取值且**必填**——防误调；本功能不提供合并语义
+    （方案 §4.4：两台机器的 admin / repos / config 无法定义谁是权威）。
+
+    ``acknowledge`` 必须**逐字等于包外层 created_at**（方案 §4.2 / §4.7）；
+    目标机为空库时可不传（服务层只在目标非空时才校验）。
+    """
+
+    mode: Literal["replace"]
+    acknowledge: str = ""
+
+
+class PackSummary(_Base):
+    """备份包自述摘要（inspect 回显；全部取自**解密后的载荷**，不含任何凭据）。"""
+
+    format: str
+    version: int
+    created_at: str
+    schema_version: int
+    app_version: str
+    deploy_mode: str | None = None
+    repos: int
+    tasks: int
+    config_keys: int
+    passfiles: int
+    rclone_conf_included: bool
+    rclone_conf_encrypted: bool
+    rclone_forms: int
+    rclone_pass_included: bool
+    warnings: list[str]
+
+
+class SiteTargetSummary(_Base):
+    """目标机现状摘要（inspect 预览 + import 报告共用；与服务层同名字段一一对应）。
+
+    ``jobs`` 是**将被清空**的执行历史行数——replace 会 DELETE 整张 jobs 表，
+    用户确认前必须看得见（方案 §4.4 副作用明示）。
+    """
+
+    repos: int
+    repos_configured: int
+    tasks: int
+    config_keys: int
+    jobs: int
+    active_jobs: list[str]
+    restic_available: bool
+    passfile_writable: bool
+    rclone_conf_writable: bool
+    rclone_conf_encrypted: bool
+    rollback_keep_count: int
+
+
+class SiteInspectReport(_Base):
+    """导入预检报告：包摘要 + 目标现状 + 阻碍项（``blockers`` 非空即不可导入）。
+
+    ``blockers`` 与 import 侧 422 的 ``data.blockers`` **同源**（同一个
+    :func:`app.services.site_backup.target_blockers` 纯函数），避免「预览说能导、导却被拒」。
+    """
+
+    pack: PackSummary
+    target: SiteTargetSummary
+    blockers: list[str]
+
+
+class SiteImportReport(_Base):
+    """导入结果报告（成功后前端须跳登录页）。"""
+
+    applied: dict[str, int]
+    normalized_env_keys: list[str]
+    warnings: list[str]
+    rollback_dir: str
+    logged_out: bool = True
+
