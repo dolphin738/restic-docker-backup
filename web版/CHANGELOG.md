@@ -180,6 +180,18 @@
 
 > 版本：v1.3（2026-10-27 初稿；2026-10-27 补 `purge_disk` 与归档互斥口径；2026-10-28 全量裁决定案；2026-10-28 **P0/P1/P2 全部落地**）
 
+## 未发布（2026-11-08）
+
+### W5 前端 / 全站数据备份与恢复（真机验收并修复 1 个前端缺陷）
+
+- **事项**：按《全站数据备份与恢复设计方案》§10.2 做 W5 前端波，交付 `api/siteBackup.ts`（三接口走 `http.ts::request` 唯一出口）、设置页「全站备份 / 恢复」卡（`pages/settings/sections/SectionSiteBackup.vue`）、`types.ts` 8 个契约类型、i18n `settings.siteBackup.*`（中英各 72 键，键集严格一致）、复用 `ConfirmGate.vue`（关键词 `REPLACE` + `awaitResult`）。契约重生（`gen-openapi.py` + `pnpm run gen:api`）**无 diff**——W4 提交 `2cb663a` 已把 E69–E71 生成进 `openapi.json` / `schema.d.ts`，字节一致即「已对齐」证据。
+- **owner 裁决 · ≤400 行差异登记**：本波新增约 1067 行（568 卡片 + 444 测试 + 55 数据层），owner 2026-11-08 明确「**第2条 不拆分**」，按规范 §4.4「维持现状 + 差异登记」落痕（明细见方案 §10.7.1）。超限主体为单页三段式卡片与其测试，拆提交会破坏同一文件的可回滚原子性。
+- **真机验收（WSL 独立实例）**：A 机 = `:5173`/`:8000`（真实数据），B 机 = 独立 `DATA_DIR` 的第二实例 + 静态代理（`:5174`→`:8001`），C 机 = 原生 ext4 实例（验证权限不受 9P 影响）。**41 项断言 39 PASS / 2 FAIL**：1 条 FAIL 为探针口径错（干净目标机判定，清空重跑即 PASS），1 条为真实缺陷（下条）。通过面含：包外层恰五键且载荷密文、无明文口令 / 无 `conf-backup`、旧配置迁移包就地拒绝且零请求、conf 加密态不一致出阻碍项并禁用导入、预检零写入不留审计、`repos`/`backup-tasks`/`config` 与源机逐字段一致、执行态字段按 §4.4 重置、密码文件 sha256 逐字节一致、原生 ext4 权限 `0600`、连导 4 次回滚点恰保留 3 份、**§6.4-6 加密态端到端**（conf 与 `rclone.pass` sha256 与源机一致且 `rclone listremotes` 成功）、审计 detail 无凭据。
+- **缺陷与修复 · 导入报告被 401 跳转冲掉**：导入成功后服务端按 §4.6 清空 `sessions`，顶栏两个 15s 轮询（`BasicLayout.vue` 的 `repoStatusQuery` / `activeJobsQuery`）继续请求并拿到 401，`http.ts` 的 `UNAUTHORIZED` 分支一律 `clearMe()` + `redirectOnce(onUnauthorized)`，**约 7.7s 后把刚渲染的导入报告（含回滚点目录名——误导入后唯一回退依据）冲掉并跳 `/login`**（Playwright 稳定复现 3 次）。修复按「方案 2 + 方案 1」：① `BasicLayout.vue` 两个轮询加 `enabled: () => ui.me !== null`（登出即停轮询，治本）；② `stores/ui.ts` 新增 `suppressAuthRedirect` + `api/http.ts` 401 分支在该位为真时只 `clearMe()` 不跳转（§10.7.3 详述为何不吞 `clearMe`），`SectionSiteBackup.vue` 导入成功置位、`goLogin` 与 `onUnmounted` 复位（三道复位防全局污染）。
+- **新增回归 4 条**：`http.spec.ts` 2 条（置位 → 不跳转但仍 `clearMe`；未置位 → 行为与修复前一致）、`site-backup-card.spec.ts` 3 条（导入成功置位 / 点「前往登录」复位 / 卸载兜底复位）。均做**反向验证**（改回 `if (false && ...)` 或删置位语句 → 对应用例 FAIL），非恒真断言。
+- **验证**：`vue-tsc` exit 0；前端全量 **66 files / 627 tests passed**（基线 622 → +5）；`vite build` ✓ 9.65s；真机回归 **10/10 PASS**（导入后停留 25s 跨过一个 15s 轮询周期，报告与回滚点目录仍在屏上、URL 停在 `/settings`，点「前往登录」正常离开，离开后未登录访问受保护页仍自动回登录页 = 抑制位已复位，`pageerror = 0`）。
+- **未收口**：容器形态（`DEPLOY_MODE=docker` + `/data` 挂载）E2E 未跑，§6.4-2 的容器部分待补；方案 2 的 `enabled` 门无单测（缺 `BasicLayout` 轮询假时钟脚手架，有效性由真机回归证明）。**G1 未达成，阶段 ② 拆除不得启动**。
+- **登记面同步**：`docs/全站数据备份与恢复设计方案.md`（附记七 + §10.7 + §10.2 W5 行标完成 + 文首状态 + §10 标题/状态）、`docs/文档管理规范.md` 登记行。
 ## 未发布（2026-11-07）
 
 ### Owner 裁决 · 全站备份 W1–W4 单次合入 ≤400 行差异登记（维持现状，不事后拆分）
