@@ -26,6 +26,7 @@ const SECTION_FILES = [
   'SectionDump.vue',
   'SectionMetrics.vue',
   'SectionPassword.vue',
+  'SectionSiteBackup.vue',
   'SectionSystem.vue',
   'SectionTimezone.vue',
   'SectionTransfer.vue',

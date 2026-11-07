@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-import { request } from '@/api/http'
+import { request, setAuthHandlers } from '@/api/http'
 import { useUiStore } from '@/stores/ui'
 
 function makeResponse(body: unknown, ok = true, status = 200): Response {
@@ -90,5 +90,73 @@ describe('http X-Repo-Id 路由头', () => {
     useUiStore().setCurrentRepoId('active-repo')
     await expect(request('/api/repos', { headers: { 'X-Repo-Id': 'ghost-repo' } })).rejects.toThrow()
     expect(useUiStore().currentRepoId).toBe('active-repo')
+  })
+})
+
+/**
+ * 401 UNAUTHORIZED 分支 × 「抑制跳转」标志（W5 真机验收缺陷的回归护栏）。
+ *
+ * 缺陷现场：全站备份包导入成功后服务端清空 sessions，顶栏两个 15s 轮询随后拿到 401，
+ * 照旧触发 clearMe + 跳 /login，约 7.7s 后把刚渲染的导入报告（含回滚点目录名——
+ * 误导入后唯一回退依据）冲掉。修法：置位标志时只清态不跳转。
+ *
+ * 这里锁死两件事：① 置位时**不**调用 onUnauthorized 但**仍** clearMe；
+ * ② 未置位时行为与修复前逐字一致（回归护栏，防止把普通 401 也吞掉）。
+ */
+describe('http 401 × 抑制鉴权跳转标志', () => {
+  /** 当前 Pinia 实例上的 store（与 http.ts 内部 useUiStore() 同实例）。 */
+  let ui: ReturnType<typeof useUiStore>
+  let onUnauthorized: ReturnType<typeof vi.fn>
+  /** 单调递增的假时钟（见 beforeEach 注释）。 */
+  let clock = Date.now()
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    ui = useUiStore()
+    ui.setMe({ authenticated: true, must_change_password: false, user: 'admin' })
+    ui.setSuppressAuthRedirect(false)
+    onUnauthorized = vi.fn()
+    setAuthHandlers({ onUnauthorized })
+    // redirectOnce 有 1s 节流（模块级 lastRedirectAt，按 Date.now 比较）：同一文件里连续
+    // 两条用例往往只隔几毫秒，第二条会被节流压成「没跳」。这里把 Date.now 单调推高，
+    // 让每条用例都从「距上次跳转已过去足够久」开始。
+    // 注意不能用 vi.useFakeTimers()——afterEach 恢复真实时钟后 now 会**变小**，
+    // lastRedirectAt 反而落在未来（实测让第二条用例假失败）。
+    clock += 60_000
+    vi.spyOn(Date, 'now').mockReturnValue(clock)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    setAuthHandlers({})
+  })
+
+  function stubUnauthorized(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => makeResponse({ code: 'UNAUTHORIZED', message: '未登录或会话已过期' }, false, 401)),
+    )
+  }
+
+  it('标志置位时：401 不跳转，但本地会话态仍被清空', async () => {
+    ui.setSuppressAuthRedirect(true)
+    stubUnauthorized()
+
+    await expect(request('/api/repos/default/status')).rejects.toThrow()
+
+    expect(onUnauthorized).not.toHaveBeenCalled()
+    // 关键：不是「什么都不做」——界面不能继续显示「已登录」
+    expect(ui.me).toBeNull()
+  })
+
+  it('标志未置位时：401 行为与修复前一致（先清态再跳转）', async () => {
+    ui.setSuppressAuthRedirect(false)
+    stubUnauthorized()
+
+    await expect(request('/api/jobs?status=running')).rejects.toThrow()
+
+    expect(ui.me).toBeNull()
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
   })
 })

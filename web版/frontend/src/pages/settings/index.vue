@@ -12,7 +12,7 @@
  * 本文件从 1578 行收敛到约 200 行，只保留导航职责。
  *
  * 分区：DB dump → 行为开关 → 凭据加密 → Prometheus 指标 → 系统域
- * → 时区/NTP/时钟/对时 → 管理员改密 → 配置迁移。
+ * → 时区/NTP/时钟/对时 → 管理员改密 → 全站备份/恢复 → 配置迁移。
  */
 
 import { NEl } from 'naive-ui'
@@ -21,13 +21,14 @@ import { useI18n } from 'vue-i18n'
 // P6 形态层：分段控件为共用组件（S-4 单一实现）；深链（#sec-<id>）与未知 id
 // 防御已内置于组件（hashPrefix=sec）。
 import SegmentedTabs from '@/components/dashboard/SegmentedTabs.vue'
-// 八个分区各自自包含（候选 6 拆分）：配置读取/回填/校验/保存都在分区内部，
+// 各分区各自自包含（候选 6 拆分）：配置读取/回填/校验/保存都在分区内部，
 // 本文件只负责「显示哪个分区」与深链。
 import SectionBehavior from '@/pages/settings/sections/SectionBehavior.vue'
 import SectionCredential from '@/pages/settings/sections/SectionCredential.vue'
 import SectionDump from '@/pages/settings/sections/SectionDump.vue'
 import SectionMetrics from '@/pages/settings/sections/SectionMetrics.vue'
 import SectionPassword from '@/pages/settings/sections/SectionPassword.vue'
+import SectionSiteBackup from '@/pages/settings/sections/SectionSiteBackup.vue'
 import SectionSystem from '@/pages/settings/sections/SectionSystem.vue'
 import SectionTimezone from '@/pages/settings/sections/SectionTimezone.vue'
 import SectionTransfer from '@/pages/settings/sections/SectionTransfer.vue'
@@ -49,6 +50,8 @@ const SECTIONS = [
   { id: 'timezone', title: 'settings.timezone.title' },
   { id: 'system', title: 'settings.system.title' },
   { id: 'password', title: 'settings.password.title' },
+  // 全站备份 / 恢复（方案 §10.1 W5）：整机替换语义，与「配置迁移」并存但互不替代。
+  { id: 'siteBackup', title: 'settings.siteBackup.title' },
   { id: 'transfer', title: 'settings.transfer.title' },
 ] as const
 
@@ -105,6 +108,9 @@ function onSectionChange(id: string): void {
 
     <!-- 管理员改密（候选 6 拆分：SectionPassword 自包含） -->
     <SectionPassword v-if="activeSection === 'password'" />
+
+    <!-- 全站备份 / 恢复（方案 §10.1 W5：导出 / 预检 / 整机替换导入，W5 前端接线） -->
+    <SectionSiteBackup v-if="activeSection === 'siteBackup'" />
 
     <!-- 配置迁移（候选 6 拆分：SectionTransfer 自包含） -->
     <SectionTransfer v-if="activeSection === 'transfer'" />

@@ -133,11 +133,16 @@ const menuOptions = computed<MenuOption[]>(() =>
 // 顶栏状态区（设计方案 §4.2-4）：15s 轮询、失败重试 1 次。
 // 查询键带 header 后缀 + 当前仓库 id，与页面级查询（['repo','status'] / ['jobs','active']）隔离，
 // 避免顶栏轮询改变仪表盘/仓库页既有的 60s 轮询节奏。
+// enabled 门（登出即停轮询）：全站备份包导入会清空服务端 sessions，本会话随之作废。
+// 若轮询继续跑，401 会在导入报告渲染后几秒内把它冲掉（报告含回滚点目录名）——
+// 停轮询是治本：作废的会话没有可轮询的东西，继续问只会制造 401 噪音。
+const authReady = (): boolean => ui.me !== null
 const repoStatusQuery = useQuery({
   queryKey: ['repo', 'status', 'header', ui.currentRepoId],
   queryFn: () => getRepoStatus(ui.currentRepoId),
   refetchInterval: 15_000,
   retry: 1,
+  enabled: authReady,
 })
 
 // R-023：仓库切换器数据源（顶栏下拉）。
@@ -155,6 +160,8 @@ const activeJobsQuery = useQuery({
   queryFn: () => listActiveJobs(20),
   refetchInterval: 15_000,
   retry: 1,
+  // 同 repoStatusQuery：登出态停轮询（导入成功后会话作废，不得再制造 401）
+  enabled: authReady,
 })
 
 type RepoStatusState = 'connected' | 'disconnected' | 'unknown'

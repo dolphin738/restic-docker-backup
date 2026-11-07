@@ -1160,3 +1160,108 @@ export interface ConfigImportReport {
   notify_updated: number
   creds_imported: number
 }
+
+// ---------------------------------------------------------------- 全站数据备份 / 恢复（v1.5，W5 前端）
+// 端点：POST /api/site-backup/{export,inspect,import}（方案 §3.2 / §4.2）。
+// 字段名与后端 `app/schemas/api_schemas.py` 一一对应（两侧由
+// `backend/tests/test_api_field_parity.py` 逐字段看守）；**手写而非生成**——生成类型会把
+// 带默认值的字段一律标 optional，比真实响应更宽（该测试头注释记录了取舍理由）。
+
+/** E69 全站备份包导出请求：导出口令 + 是否随包携带 rclone.conf（D1，默认勾上）。 */
+export interface SiteExportRequest {
+  /** 口令下限 10 位（与 `pack_crypto.PASSWORD_MIN_LENGTH` 同值，前端先拦一道避免 422）。 */
+  password: string
+  /** true = 包内携带 rclone.conf（含网盘 OAuth token / obscure 混淆密码 = 等价凭据）。 */
+  include_rclone_conf: boolean
+}
+
+/** 全站备份包原文（§2.2 外层结构）：前端只透传，不解密、不解释 `payload`。 */
+export interface SiteBackupPack {
+  /** `restic-web-site-backup`（与旧配置迁移包 `restic-web-config-export` 区分，§2.2）。 */
+  format: string
+  /** 包格式版本（§2.4：当前只接受 1）。 */
+  version: number
+  /** 包外层创建时间（ISO 8601 UTC）；非空目标导入时 `acknowledge` 必须逐字等于此值。 */
+  created_at: string
+  /** PBKDF2 + AES-256-GCM 头部（salt / iterations / aad 等；内容不透明，前端不读）。 */
+  encryption: Record<string, unknown>
+  /** base64(nonce || ciphertext || tag)——明文头以下全部内容都在这里。 */
+  payload: string
+}
+
+/** E70 全站备份包预检请求（只读，零业务写入）。 */
+export interface SiteInspectRequest {
+  pack: SiteBackupPack
+  /** 与导出口令同口径；空口令由后端 422 前置拒绝。 */
+  password: string
+}
+
+/** E71 全站备份包导入请求（在预检之外要求落地语义与二次确认串）。 */
+export interface SiteImportRequest {
+  pack: SiteBackupPack
+  password: string
+  /** 只有 `replace` 一种取值且**必填**（防误调；本功能不提供合并语义，§4.4）。 */
+  mode: 'replace'
+  /** 目标非空时须逐字等于包外层 `created_at`；空库可不传（空串）。 */
+  acknowledge: string
+}
+
+/** 包自述摘要（inspect 回显；全部取自解密后的载荷，不含任何凭据）。 */
+export interface PackSummary {
+  format: string
+  version: number
+  created_at: string
+  schema_version: number
+  app_version: string
+  /** 源机部署形态（诊断展示用，不参与校验）。 */
+  deploy_mode: string | null
+  repos: number
+  tasks: number
+  config_keys: number
+  passfiles: number
+  rclone_conf_included: boolean
+  rclone_conf_encrypted: boolean
+  rclone_forms: number
+  rclone_pass_included: boolean
+  warnings: string[]
+}
+
+/** 目标机现状摘要（inspect 预览与 import 报告共用；只有计数与布尔，无凭据）。 */
+export interface SiteTargetSummary {
+  /** 全部仓库行数（含默认仓库）。 */
+  repos: number
+  /** 已配置仓库数（`repos.default` 由迁移预置，不算「已配置」）。 */
+  repos_configured: number
+  tasks: number
+  config_keys: number
+  /** 将被 replace 清空的作业历史行数（§4.4 副作用明示，确认前必须看得见）。 */
+  jobs: number
+  /** 活跃作业清单（任务名 + 类型 + 开始时间）；非空时导入被 409 拒绝（D3）。 */
+  active_jobs: string[]
+  restic_available: boolean
+  passfile_writable: boolean
+  rclone_conf_writable: boolean
+  rclone_conf_encrypted: boolean
+  /** 回滚点保留份数（`settings.site_restore_keep_count`，D4）。 */
+  rollback_keep_count: number
+}
+
+/** E70 预检报告：包摘要 + 目标现状 + 阻碍项（非空即不可导入，与 import 侧 422 同源）。 */
+export interface SiteInspectReport {
+  pack: PackSummary
+  target: SiteTargetSummary
+  blockers: string[]
+}
+
+/** E71 导入结果报告（成功后 `sessions` 已清空，前端须引导重新登录）。 */
+export interface SiteImportReport {
+  /** 各段实际写入行数：repos / tasks / config / forms / passfiles / rclone_conf / rclone_pass。 */
+  applied: Record<string, number>
+  /** 被归一为界面值的 config 键（源机由 env 覆盖，仅供诊断回显）。 */
+  normalized_env_keys: string[]
+  warnings: string[]
+  /** 本次回滚点**目录名**（不含路径——容器形态路径不出 API）。 */
+  rollback_dir: string
+  /** 恒真：导入即整站接管，旧会话全部作废。 */
+  logged_out: boolean
+}

@@ -135,6 +135,12 @@ function applyErrorSideEffects(error: AppError, silent: boolean | undefined, req
 
   if (error.code === 'UNAUTHORIZED') {
     ui.clearMe()
+    // 抑制位（默认 false）：全站备份包导入成功后服务端已清空 sessions，本会话作废，
+    // 但导入报告（含回滚点目录名）必须留在屏上——顶栏 15s 轮询拿到的 401 不得把人带走。
+    // 清除本地会话态照做（否则界面仍显示「已登录」），只跳过跳转这一半。
+    if (ui.suppressAuthRedirect) {
+      return
+    }
     redirectOnce(() => redirectHandlers.onUnauthorized?.())
     return
   }
