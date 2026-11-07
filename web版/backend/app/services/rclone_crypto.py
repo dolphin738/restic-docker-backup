@@ -152,6 +152,21 @@ def password_command_for(pass_path: Path | str, tag: str | None = None) -> str:
     return _write_password_script(body, tag)
 
 
+def set_password_command_env(pass_path: Path | str) -> None:
+    """把运行期口令命令指向 pass_path（全站导入提交后重建 env 用）。
+
+    与 RcloneCryptoService 的同名私有方法同一实现，模块级版本供"不持有服务
+    实例"的调用方（全站导入）使用；脚本路径由 password_command_for 唯一派生，
+    绝不写口令本身。
+    """
+    os.environ[_PASSWORD_COMMAND_ENV] = password_command_for(pass_path)
+
+
+def clear_password_command_env() -> None:
+    """移除运行期口令命令，使后续子进程回到明文 conf 语义。"""
+    os.environ.pop(_PASSWORD_COMMAND_ENV, None)
+
+
 class RcloneCryptoService:
     """conf 加密口令服务；executor 可注入以便单测拦截 argv。
 
@@ -521,11 +536,11 @@ class RcloneCryptoService:
 
     def _set_password_command_env(self) -> None:
         """只写无空格脚本路径，脚本内含 /bin/cat 与口令文件路径，绝不写口令本身。"""
-        os.environ[_PASSWORD_COMMAND_ENV] = password_command_for(self._pass_path)
+        set_password_command_env(self._pass_path)
 
     def _clear_password_command_env(self) -> None:
         """disable 成功后移除运行期口令命令，使后续子进程回到明文 conf。"""
-        os.environ.pop(_PASSWORD_COMMAND_ENV, None)
+        clear_password_command_env()
 
     def _restore_env(self, previous: str | None) -> None:
         """失败时恢复 env 原值；previous 为 None 时移除该键。"""
