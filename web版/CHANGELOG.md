@@ -190,7 +190,8 @@
 - **缺陷与修复 · 导入报告被 401 跳转冲掉**：导入成功后服务端按 §4.6 清空 `sessions`，顶栏两个 15s 轮询（`BasicLayout.vue` 的 `repoStatusQuery` / `activeJobsQuery`）继续请求并拿到 401，`http.ts` 的 `UNAUTHORIZED` 分支一律 `clearMe()` + `redirectOnce(onUnauthorized)`，**约 7.7s 后把刚渲染的导入报告（含回滚点目录名——误导入后唯一回退依据）冲掉并跳 `/login`**（Playwright 稳定复现 3 次）。修复按「方案 2 + 方案 1」：① `BasicLayout.vue` 两个轮询加 `enabled: () => ui.me !== null`（登出即停轮询，治本）；② `stores/ui.ts` 新增 `suppressAuthRedirect` + `api/http.ts` 401 分支在该位为真时只 `clearMe()` 不跳转（§10.7.3 详述为何不吞 `clearMe`），`SectionSiteBackup.vue` 导入成功置位、`goLogin` 与 `onUnmounted` 复位（三道复位防全局污染）。
 - **新增回归 4 条**：`http.spec.ts` 2 条（置位 → 不跳转但仍 `clearMe`；未置位 → 行为与修复前一致）、`site-backup-card.spec.ts` 3 条（导入成功置位 / 点「前往登录」复位 / 卸载兜底复位）。均做**反向验证**（改回 `if (false && ...)` 或删置位语句 → 对应用例 FAIL），非恒真断言。
 - **验证**：`vue-tsc` exit 0；前端全量 **66 files / 627 tests passed**（基线 622 → +5）；`vite build` ✓ 9.65s；真机回归 **10/10 PASS**（导入后停留 25s 跨过一个 15s 轮询周期，报告与回滚点目录仍在屏上、URL 停在 `/settings`，点「前往登录」正常离开，离开后未登录访问受保护页仍自动回登录页 = 抑制位已复位，`pageerror = 0`）。
-- **未收口**：容器形态（`DEPLOY_MODE=docker` + `/data` 挂载）E2E 未跑，§6.4-2 的容器部分待补；方案 2 的 `enabled` 门无单测（缺 `BasicLayout` 轮询假时钟脚手架，有效性由真机回归证明）。**G1 未达成，阶段 ② 拆除不得启动**。
+- **容器形态补充验收（同日续做，全部 PASS）**：以已发布镜像分层（`node:22` 基础层拉取在本机不可用，完整 `docker build` 中止——镜像流水线归 CI，非本方案验收项），源机容器 `:18001`（2 仓库 / 2 任务 / 各跑过真实备份、各 1 快照）→ 目标机空 `/data` 容器 `:18002`（共用 `/repo` 存储，§6.4-2 前提）→ 首启 → 导入。断言：`repos`/`config` 与源机逐字段一致、备份任务仅执行态字段不同（§4.4）、`r1`/`r2` 均 `connected:true` 且快照可见、三个密码文件 sha256 逐字节一致、容器内权限 `-rw-------`（0600）、连导 6 次回滚点恰 3 份、审计 detail 无凭据、**§6.4-6 加密态端到端**（conf + `rclone.pass` sha256 与源机一致、容器内 `rclone listremotes` 成功）、容器内 UI 全链路导入 244ms、**401 修复在容器内同样生效**（停留 25s 报告仍在屏、噪音 401 仅登录前 2 条）。
+- **未收口**：镜像构建流水线未在本轮验证（归 CI）；方案 2 的 `enabled` 门无单测（缺 `BasicLayout` 轮询假时钟脚手架，有效性由 WSL 原生 + 容器两次真机回归证明）。**G1 = ①真机验收通过 + ②owner 确认，①已达成、②待 owner 明示；确认前阶段 ② 拆除不得启动**。
 - **登记面同步**：`docs/全站数据备份与恢复设计方案.md`（附记七 + §10.7 + §10.2 W5 行标完成 + 文首状态 + §10 标题/状态）、`docs/文档管理规范.md` 登记行。
 ## 未发布（2026-11-07）
 
