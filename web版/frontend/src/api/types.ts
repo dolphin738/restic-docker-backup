@@ -1122,43 +1122,24 @@ export interface ManualCopyResponse {
 }
 
 
-/** 批次 E 配置导出请求（导出口令至少 10 位，保护加密凭据段）。 */
+// ---------------------------------------------------------------- 单任务配置包（E36b）
+// 阶段 ②（owner 2026-11-08，D5/D6）：全量「配置迁移」已由「全站备份 / 恢复」取代，
+// 前端只保留 **单任务导出**（仪表盘 Export，走 E36b）所需的最小契约——导入端
+// ``POST /api/config/import` 后端仍收窄保留（只接受 `kind=backup-task`），当前前端
+// 无入口（与拆除前的实测一致）。
+
+/** 单任务导出请求（导出口令至少 10 位，保护加密凭据段）。 */
 export interface ConfigExportRequest {
   password: string
 }
 
-/** 批次 E 导出包（前端只透传，不解释内容；secrets 为加密凭据段）。 */
+/** 单任务导出包（前端只透传，不解释内容；secrets 为加密凭据段）。 */
 export interface ConfigExportPack {
   format: string
   version: number
   created_at: string
   encryption: Record<string, unknown>
   data: Record<string, unknown>
-}
-
-/** 批次 E 配置导入请求（replace_existing 由 ConfirmGate 二次确认后置真）。 */
-export interface ConfigImportRequest {
-  pack: ConfigExportPack
-  password: string
-  replace_existing: boolean
-}
-
-/** 批次 E 导入报告（逐项可展示；reason 为服务端可读中文）。 */
-export interface ConfigImportReport {
-  repos: {
-    created: string[]
-    reused: string[]
-    updated: string[]
-    skipped: { id: string; reason: string }[]
-  }
-  tasks: {
-    created: string[]
-    updated: string[]
-    skipped: { name: string; reason: string }[]
-  }
-  mirror_warnings: { mirror_id: string; reason: string }[]
-  notify_updated: number
-  creds_imported: number
 }
 
 // ---------------------------------------------------------------- 全站数据备份 / 恢复（v1.5，W5 前端）

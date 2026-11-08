@@ -51,11 +51,6 @@ vi.mock('@/api/settings', () => ({
 
 vi.mock('@/api/auth', () => ({ changePassword: vi.fn(async () => ({ ok: true })) }))
 
-vi.mock('@/api/configTransfer', () => ({
-  exportConfig: vi.fn(async () => ({ format: 'restic-web-config-export', created_at: '' })),
-  importConfig: vi.fn(async () => ({})),
-}))
-
 vi.mock('@/api/system', () => ({
   getSystemTime: vi.fn(async () => mocks.systemTime),
   syncSystemTime: vi.fn(async () => {

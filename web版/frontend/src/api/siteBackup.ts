@@ -30,7 +30,7 @@ export const LEGACY_CONFIG_PACK_FORMAT = 'restic-web-config-export'
 /** POST /api/site-backup/export：导出全站备份包（强制加密，不提供「无口令导出」）。
  *
  * 服务端以 `application/json` 附件返回包原文；这里返回**包对象**（含 `created_at`），
- * 由页面层拼文件名后落盘——与 configTransfer 同形态：包内容不经前端解释，只透传。
+ * 由页面层拼文件名后落盘——包内容不经前端解释，只透传。
  */
 export function exportSiteBackup(body: SiteExportRequest): Promise<SiteBackupPack> {
   return request<SiteBackupPack>('/api/site-backup/export', { method: 'POST', body })

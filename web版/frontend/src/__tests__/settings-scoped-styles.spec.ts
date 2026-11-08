@@ -29,7 +29,6 @@ const SECTION_FILES = [
   'SectionSiteBackup.vue',
   'SectionSystem.vue',
   'SectionTimezone.vue',
-  'SectionTransfer.vue',
 ]
 
 /** 抽出某文件的 <style> 块（没有则空串）。 */

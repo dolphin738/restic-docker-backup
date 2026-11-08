@@ -12,7 +12,8 @@
  * 本文件从 1578 行收敛到约 200 行，只保留导航职责。
  *
  * 分区：DB dump → 行为开关 → 凭据加密 → Prometheus 指标 → 系统域
- * → 时区/NTP/时钟/对时 → 管理员改密 → 全站备份/恢复 → 配置迁移。
+ * → 时区/NTP/时钟/对时 → 管理员改密 → 全站备份/恢复。
+ * （2026-11-08 阶段 ②：原「配置迁移」分区删除，配置恢复由「全站备份/恢复」承担）
  */
 
 import { NEl } from 'naive-ui'
@@ -31,7 +32,6 @@ import SectionPassword from '@/pages/settings/sections/SectionPassword.vue'
 import SectionSiteBackup from '@/pages/settings/sections/SectionSiteBackup.vue'
 import SectionSystem from '@/pages/settings/sections/SectionSystem.vue'
 import SectionTimezone from '@/pages/settings/sections/SectionTimezone.vue'
-import SectionTransfer from '@/pages/settings/sections/SectionTransfer.vue'
 
 const { t } = useI18n()
 
@@ -50,9 +50,9 @@ const SECTIONS = [
   { id: 'timezone', title: 'settings.timezone.title' },
   { id: 'system', title: 'settings.system.title' },
   { id: 'password', title: 'settings.password.title' },
-  // 全站备份 / 恢复（方案 §10.1 W5）：整机替换语义，与「配置迁移」并存但互不替代。
+  // 全站备份 / 恢复（方案 §10.1 W5）：整机替换语义；阶段 ② 起它是配置迁移的唯一替代
+  //（旧「配置迁移」卡已删除，owner 裁决 D5/D6）。
   { id: 'siteBackup', title: 'settings.siteBackup.title' },
-  { id: 'transfer', title: 'settings.transfer.title' },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -111,13 +111,6 @@ function onSectionChange(id: string): void {
 
     <!-- 全站备份 / 恢复（方案 §10.1 W5：导出 / 预检 / 整机替换导入，W5 前端接线） -->
     <SectionSiteBackup v-if="activeSection === 'siteBackup'" />
-
-    <!-- 配置迁移（候选 6 拆分：SectionTransfer 自包含） -->
-    <SectionTransfer v-if="activeSection === 'transfer'" />
-
-
-    <!-- 批次 E 配置迁移：导出（口令加密凭据段）+ 导入（跳过/覆盖 + 报告） -->
-
 
   </n-el>
 </template>

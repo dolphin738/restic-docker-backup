@@ -9,7 +9,8 @@
  * 顺带统一了两件易漏的事：明文切换用 `show-password-on="click"`（点眼睛图标，
  * 不做 hover 预览——浏览器原生 hover 会频繁误触发），以及可选的「生成」按钮——
  * 全站唯一形态 = 输入框右侧、secondary small、盾牌图标（2026-11-03 owner 裁决，
- * 取配置迁移导出口令按钮的样式；曾短暂改为框内后缀后废弃。生成实现由父组件
+ * 取原「配置迁移导出口令」按钮的样式（该入口已于 2026-11-08 阶段 ② 删除，样式沿用
+ * 到「全站备份 / 恢复」等落点）；曾短暂改为框内后缀后废弃。生成实现由父组件
  * 决定：rclone 面板用 `utils/password.ts`，仓库密码走后端 secrets 生成）。
  *
  * 未声明的属性（`maxlength` / `@keyup.enter` / `autocomplete` 等）透传到内部 NInput。
@@ -60,8 +61,9 @@ function onGenerate(e?: Event): void {
       :style="mono ? { fontFamily: 'var(--font-family-mono)' } : undefined"
       v-bind="$attrs"
     />
-    <!-- 统一「生成密码」按钮（全站唯一形态，2026-11-03 owner 裁决：取配置迁移导出口令
-         的样式——输入框右侧、secondary small、盾牌图标。此前框内后缀方案废弃）。 -->
+    <!-- 统一「生成密码」按钮（全站唯一形态，2026-11-03 owner 裁决：样式取自当时
+         「配置迁移导出口令」按钮——输入框右侧、secondary small、盾牌图标；该入口已于
+         2026-11-08 阶段 ② 删除，样式沿用。此前框内后缀方案废弃）。 -->
     <NButton
       v-if="generateLabel"
       size="small"

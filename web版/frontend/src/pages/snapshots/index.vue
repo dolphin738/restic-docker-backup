@@ -263,9 +263,9 @@ function restoreActiveSnapshot(): void {
   openRestore(snapshotId)
 }
 
-/** 配置恢复入口（原恢复入口页「从配置恢复」卡）：复用设置页「配置导入导出」分区。 */
+/** 配置恢复入口（原恢复入口页「从配置恢复」卡）：跳到设置页「全站备份 / 恢复」分区。 */
 function goSettingsTransfer(): void {
-  void router.push({ path: '/settings', hash: '#sec-transfer' })
+  void router.push({ path: '/settings', hash: '#sec-siteBackup' })
 }
 
 /** 其他仓库恢复入口（原入口页「从其他仓库恢复」卡）：先换激活仓库，回本页再选快照。 */
