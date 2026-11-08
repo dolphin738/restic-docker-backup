@@ -1447,26 +1447,33 @@ class ManualCopyResponse(_Base):
 
 
 class ConfigExportRequest(_Base):
-    """批次 E 配置导出：导出口令（至少 10 位，保护加密凭据段）。"""
+    """**单任务**配置导出（E36b）的导出口令（至少 10 位，保护加密凭据段）。
+
+    全量配置迁移已由「全站备份 / 恢复」取代（阶段 ②），本模型只服务
+    ``POST /api/repos/{repo_id}/backup-tasks/{id}/export`。
+    """
 
     password: str = Field(min_length=10, max_length=256)
 
 
 class ConfigImportRequest(_Base):
-    """批次 E 配置导入：完整导出包 + 口令 + 覆盖开关（ConfirmGate 由前端负责）。"""
+    """单任务包导入：包全文 + 口令（E36b 的对侧；无覆盖开关）。
 
-    pack: dict[str, Any] = Field(description='导出包 JSON 全文')
+    单任务包没有覆盖语义——同仓同名任务一律跳过（R-5），故请求体只有这两项；
+    ``extra="forbid"`` 下旧客户端多发的 ``replace_existing`` 直接被 422 拒绝，
+    不再保留 deprecated 兼容字段（D6：不设迁移窗口）。
+    """
+
+    pack: dict[str, Any] = Field(description="单任务配置包 JSON 全文")
     password: str = Field(min_length=1, max_length=256)
-    replace_existing: bool = False
 
 
 class ConfigImportReport(_Base):
-    """批次 E 导入报告（逐项可展示；reason 为用户可读中文）。"""
+    """单任务包导入报告（逐项可展示；reason 为用户可读中文）。"""
 
     repos: dict[str, Any]
     tasks: dict[str, Any]
     mirror_warnings: list[dict[str, str]]
-    notify_updated: int
     creds_imported: int
 
 

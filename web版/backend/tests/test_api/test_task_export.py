@@ -7,7 +7,7 @@
 - **口令**：过短 → 422（复用 ``build_export_pack`` 的统一校验，不另造一套）；
 - **作用域**：任务不存在 → 404；
 - **S6**：埋 ``config.export`` 审计，detail 含任务名与计数、**不含口令/凭据**；
-- **kind 白名单**：未知形态的包解析直接拒绝（导入侧不猜）。
+- **kind 白名单**：未知形态直接拒绝；全量导出端点已删（阶段 ② D5/D6）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from conftest import ORIGIN, finish_bootstrap
 from app.errors import ValidationError
 from app.services.config_transfer import (
     PACK_FORMAT,
-    PACK_KIND_FULL,
     PACK_KIND_TASK,
     PACK_VERSION,
     parse_export_pack,
@@ -163,27 +162,21 @@ async def test_parse_rejects_unknown_pack_kind():
         raise AssertionError("未知 kind 应被拒绝")
 
 
-async def test_parse_defaults_missing_kind_to_full(app_client):
-    """旧版无 kind 字段的包 → 视为全量包（兼容既有导出文件）。"""
+async def test_full_export_endpoint_removed(app_client):
+    """``POST /api/config/export`` 已随阶段 ② 删除（D5/D6）：请求落 404/405，不再产出全量包。"""
     ns = app_client
     await finish_bootstrap(ns)
-    await ns.app.state.repos_repo.update("default", url="/repo")
-    await _create_task(ns)
-
     resp = await ns.client.post("/api/config/export", json={"password": PASSWORD}, headers=ORIGIN)
-    assert resp.status_code == 200
-    pack = resp.json()
-    assert pack["kind"] == PACK_KIND_FULL
-    assert parse_export_pack(pack, PASSWORD)["kind"] == PACK_KIND_FULL
+    assert resp.status_code in (404, 405)
 
 
 async def test_import_task_pack_skips_global_notify_and_never_overwrites(app_client):
-    """单任务包导入按 kind 分流（方案 §4.5.9 R-5）：不碰全局 notify，且不覆盖已有任务。
+    """单任务包导入（方案 §4.5.9 R-5）：不碰全局 notify，且永不覆盖已有任务。
 
     三条断言对应 R-5 的三个「绝不」：
-    1. 即使 ``replace_existing=true`` 也不覆盖同仓同名任务（单任务包没有全量覆盖语义）；
+    1. 同仓同名任务一律跳过（单任务包没有覆盖语义）；
     2. 全局 ``notify.*`` 一个字节都不动（包内无全局设置，空段不得被读成「清空」意图）；
-    3. 审计 detail 记 ``kind=backup-task``，便于事后区分两种导入。
+    3. 审计 detail 记 ``kind=backup-task``。
     """
     ns = app_client
     await finish_bootstrap(ns)
@@ -194,21 +187,21 @@ async def test_import_task_pack_skips_global_notify_and_never_overwrites(app_cli
     pack = (await _export(ns, task["id"])).json()
     resp = await ns.client.post(
         "/api/config/import",
-        json={"pack": pack, "password": PASSWORD, "replace_existing": True},
+        json={"pack": pack, "password": PASSWORD},
         headers=ORIGIN,
     )
     assert resp.status_code == 200, resp.text
     report = resp.json()
 
-    # ① 已有同名任务：不覆盖（replace_existing=true 也不生效）
+    # ① 已有同名任务：跳过
     assert report["tasks"]["created"] == []
-    assert report["tasks"]["updated"] == []
     assert report["tasks"]["skipped"][0]["reason"].startswith("单任务包不覆盖")
+    assert "updated" not in report["tasks"]
     unchanged = await ns.app.state.task_repo.get(task["id"])
     assert unchanged is not None and unchanged.cron == "0 3 * * *"
 
-    # ② 全局通知未被触碰
-    assert report["notify_updated"] == 0
+    # ② 全局通知未被触碰（报告里也不再出现 notify_updated 这一全量包字段）
+    assert "notify_updated" not in report
     assert await ns.app.state.config_repo.get_value("notify.on_success") == "false"
 
     # ③ 审计记形态

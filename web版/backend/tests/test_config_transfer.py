@@ -1,17 +1,24 @@
-"""批次 E 配置导入/导出（D4）——加密往返 / 归一辅助 / API 全链路。
+"""单任务配置包（``kind=backup-task``）打包/解析管线 + ``POST /api/config/import` 收窄。
 
-三裁决口径（owner 2026-10-18）：
+阶段 ②（owner 2026-11-08，D5/D6）后本模块的职责边界：
+
+1. 全量「配置迁移」已由《全站数据备份与恢复设计方案》取代——全量导出端点
+   ``POST /api/config/export` 已删除，全量导入支路已删除（含 ``notify_pairs_to_import`）；
+2. ``POST /api/config/import` **收窄保留**：只接受 ``kind=backup-task``，``kind=full`` 与
+   无 kind 的旧全量包一律 422 并指路新功能（Q3 / §9.3-G8）；
+3. 单任务包的既有语义不变：凭据口令加密、mirror 引用接前校验、同仓同名任务跳过。
+
+保留的三裁决口径（owner 2026-10-18，单任务包仍适用）：
 
 1. 凭据口令加密（PBKDF2 600k + AES-256-GCM）：错口令 = GCM InvalidTag = 明确报错；
 2. 包内带仓清单，mirror 引用接前校验「id 在包内且 url 一致」，否则置空 + 警告；
-3. 冲突默认跳过 + 报告；``replace_existing=True`` 整体替换（幂等重导 = 全跳过）。
+3. 落位按匹配、不覆盖（单任务包没有覆盖语义）。
 """
 
 from __future__ import annotations
 
 import base64
 import json
-from typing import Any
 
 import pytest
 from conftest import ORIGIN, finish_bootstrap
@@ -19,10 +26,10 @@ from conftest import ORIGIN, finish_bootstrap
 from app.errors import PasswordWrongError, ValidationError
 from app.services.config_transfer import (
     PACK_FORMAT,
+    PACK_KIND_TASK,
     build_export_pack,
     creds_to_import,
     mirror_ids_for_import,
-    notify_pairs_to_import,
     parse_export_pack,
     task_values_from_pack,
 )
@@ -33,8 +40,8 @@ PW = "export-pass-123"
 # ---------------------------------------------------------------- 纯函数
 
 
-def _mini_pack(password: str = PW) -> dict[str, Any]:
-    """最小导出包（两仓 + 一任务 + 凭据 + notify 明文/敏感各一）。"""
+def _mini_pack(password: str = PW) -> dict:
+    """最小**单任务包**（两仓 + 一任务 + 凭据）。"""
     return build_export_pack(
         repos=[
             {"id": "default", "name": "主仓", "url": "local:/main", "host_tag": "nas"},
@@ -57,12 +64,7 @@ def _mini_pack(password: str = PW) -> dict[str, Any]:
                 "host_tag": "nas",
             }
         ],
-        config_rows=[
-            ("behavior.concurrency", "2"),
-            ("notify.mail.from", "a@b.c"),
-            ("cred.default.access_key", "AKID"),
-            ("notify.webhook.url", "https://hook.example/tok"),
-        ],
+        config_rows=[("cred.default.access_key", "AKID")],
         password=password,
         created_at="2026-10-18T00:00:00Z",
     )
@@ -71,16 +73,34 @@ def _mini_pack(password: str = PW) -> dict[str, Any]:
 def test_roundtrip_and_secret_isolation():
     pack = _mini_pack()
     raw = json.dumps(pack)
-    # 明文段绝不出现凭据/敏感值（S3：加密段之外零明文）
+    # 明文段绝不出现凭据（S3：加密段之外零明文）
     assert "AKID" not in raw
-    assert "https://hook.example/tok" not in raw
     assert pack["format"] == PACK_FORMAT
+    assert pack["kind"] == PACK_KIND_TASK  # 单任务包是唯一合法形态
     parsed = parse_export_pack(pack, PW)
+    assert parsed["kind"] == PACK_KIND_TASK
     assert parsed["creds"]["cred.default.access_key"] == "AKID"
-    assert parsed["creds"]["notify.webhook.url"] == "https://hook.example/tok"
-    assert parsed["notify"]["behavior.concurrency"] == "2"
-    assert parsed["notify"]["notify.mail.from"] == "a@b.c"
-    assert "notify.webhook.url" not in parsed["notify"]  # 敏感键以加密段为准
+    assert parsed["notify"] == {}
+
+
+def test_full_kind_rejected_with_pointer():
+    """kind=full 的全量包：端点已收窄 → 422 且指路「全站备份 / 恢复」（D5/D6）。"""
+    pack = _mini_pack()
+    pack["kind"] = "full"
+    with pytest.raises(ValidationError) as excinfo:
+        parse_export_pack(pack, PW)
+    message = str(excinfo.value)
+    assert "全量表" in message or "全量配置迁移包" in message
+    assert "全站备份" in message
+
+
+def test_missing_kind_legacy_full_pack_rejected():
+    """无 kind 的旧全量包同样拒绝——不猜形态（阶段 ② 起不再回退 full）。"""
+    pack = _mini_pack()
+    del pack["kind"]
+    with pytest.raises(ValidationError) as excinfo:
+        parse_export_pack(pack, PW)
+    assert "全站备份" in str(excinfo.value)
 
 
 def test_degraded_rows_marked_in_v2_pack():
@@ -177,69 +197,32 @@ def test_creds_filtered_by_imported_repos():
     assert pairs == [("cred.default.k", "v")]
 
 
-def test_notify_pairs_merge_sensitive_from_creds():
-    pairs = dict(
-        notify_pairs_to_import(
-            {"notify.mail.from": "a@b.c", "notify.webhook.url": "SHOULD-NOT"},
-            {"notify.webhook.url": "https://real"},
-        )
-    )
-    assert pairs["notify.mail.from"] == "a@b.c"
-    assert pairs["notify.webhook.url"] == "https://real"  # 加密段优先
-
-
 # ---------------------------------------------------------------- API 全链路
 
 
-async def test_export_rejects_short_password(app_client):
+async def test_import_rejects_full_pack_422(app_client):
+    """全量包走 ``/api/config/import`` → 422 且指路新功能（D5/D6 的端点边界）。"""
     ns = app_client
     await finish_bootstrap(ns)
-    resp = await ns.client.post("/api/config/export", json={"password": "short"}, headers=ORIGIN)
-    assert resp.status_code == 422
-
-
-async def test_export_download_and_roundtrip_import(app_client):
-    ns = app_client
-    await finish_bootstrap(ns)
-    await ns.app.state.repos_repo.update("default", url="local:/main")
-    await ns.app.state.repos_repo.create("mir", "镜像", url="local:/mir")
-    await ns.app.state.task_repo.create(
-        {"repo_id": "default", "name": "每日全量", "sources": ["/sources/etc"], "excludes": []}
-    )
-    await ns.app.state.config_repo.set("cred.default.access_key", "AKID")
-
-    resp = await ns.client.post("/api/config/export", json={"password": PW}, headers=ORIGIN)
-    assert resp.status_code == 200
-    assert "attachment" in resp.headers.get("content-disposition", "")
-    pack = resp.json()
-    assert pack["format"] == PACK_FORMAT
-    assert "AKID" not in json.dumps(pack)  # 明文零泄漏
-    rows, _total = await ns.app.state.audit.query(action="config.export", limit=5)
-    assert any(r.result == "ok" for r in rows)
-
-    # 导入：同机重导 → 幂等全跳过
+    pack = _mini_pack()
+    pack["kind"] = "full"
     resp = await ns.client.post(
-        "/api/config/import", json={"pack": pack, "password": PW, "replace_existing": False}, headers=ORIGIN
+        "/api/config/import", json={"pack": pack, "password": PW}, headers=ORIGIN
     )
-    assert resp.status_code == 200
-    report = resp.json()
-    assert report["repos"]["reused"] == ["default", "mir"]
-    assert report["tasks"]["skipped"][0]["name"] == "每日全量"
-    assert report["creds_imported"] >= 1
-    rows, _total = await ns.app.state.audit.query(action="config.import", limit=5)
-    assert any(r.result == "ok" for r in rows)
+    assert resp.status_code == 422, resp.text
+    assert "全站备份" in resp.json()["message"]
 
 
-async def test_import_creates_repos_tasks_and_credentials(app_client):
+async def test_import_task_pack_creates_repos_tasks_and_credentials(app_client):
     ns = app_client
     await finish_bootstrap(ns)
     pack = _mini_pack()
     # bootstrap 预建的 default 仓 url 为空 → 对齐包内 url 走「复用」分支
     await ns.app.state.repos_repo.update("default", url="local:/main")
     resp = await ns.client.post(
-        "/api/config/import", json={"pack": pack, "password": PW, "replace_existing": False}, headers=ORIGIN
+        "/api/config/import", json={"pack": pack, "password": PW}, headers=ORIGIN
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     report = resp.json()
     # bootstrap 已预建 default（复用），mir 为新建
     assert report["repos"]["created"] == ["mir"]
@@ -247,6 +230,8 @@ async def test_import_creates_repos_tasks_and_credentials(app_client):
     assert report["tasks"]["created"] == ["每日全量"]
     assert report["mirror_warnings"] == []  # url 一致 → mirror 原样接上
     assert report["creds_imported"] >= 1
+    assert "updated" not in report["repos"] and "updated" not in report["tasks"]
+    assert "notify_updated" not in report  # 单任务包不写全局 notify
 
     repo = await ns.app.state.repos_repo.get("mir")
     assert repo is not None and repo.url == "local:/mir"
@@ -259,6 +244,9 @@ async def test_import_creates_repos_tasks_and_credentials(app_client):
     tasks = await ns.app.state.task_repo.list_all("default")
     assert any(t.name == "每日全量" and t.mirror_repo_ids == ["mir"] for t in tasks)
 
+    rows, _total = await ns.app.state.audit.query(action="config.import", limit=5)
+    assert any(r.result == "ok" for r in rows)
+
 
 async def test_import_url_mismatch_empties_mirror_without_overwrite(app_client):
     ns = app_client
@@ -268,7 +256,7 @@ async def test_import_url_mismatch_empties_mirror_without_overwrite(app_client):
     await ns.app.state.repos_repo.update("default", url="local:/other")
     await ns.app.state.repos_repo.create("mir", "镜像", url="local:/different")
     resp = await ns.client.post(
-        "/api/config/import", json={"pack": pack, "password": PW, "replace_existing": False}, headers=ORIGIN
+        "/api/config/import", json={"pack": pack, "password": PW}, headers=ORIGIN
     )
     assert resp.status_code == 200
     report = resp.json()
@@ -280,21 +268,37 @@ async def test_import_url_mismatch_empties_mirror_without_overwrite(app_client):
     assert all(t.mirror_repo_ids == [] for t in tasks if t.name == "每日全量")
 
 
-async def test_import_overwrite_replaces_task_and_repo(app_client):
+async def test_import_never_overwrites_existing_task(app_client):
+    """单任务包**没有覆盖语义**：目标机同名任务改动后重导 → 一律跳过、库内不变。"""
     ns = app_client
     await finish_bootstrap(ns)
     pack = _mini_pack()
-    await ns.client.post("/api/config/import", json={"pack": pack, "password": PW, "replace_existing": False})
-    # 目标机改 url + 改任务名后，覆盖导入应替换为包内版本
-    await ns.app.state.repos_repo.update("default", url="local:/changed")
+    await ns.client.post("/api/config/import", json={"pack": pack, "password": PW}, headers=ORIGIN)
+    tasks = await ns.app.state.task_repo.list_all("default")
+    mine = next(t for t in tasks if t.name == "每日全量")
+    await ns.app.state.task_repo.update(mine.id, {"cron": "0 5 * * *"})
+
     resp = await ns.client.post(
-        "/api/config/import", json={"pack": pack, "password": PW, "replace_existing": True}, headers=ORIGIN
+        "/api/config/import", json={"pack": pack, "password": PW}, headers=ORIGIN
     )
     assert resp.status_code == 200
     report = resp.json()
-    assert report["repos"]["updated"] == ["default"]
-    repo = await ns.app.state.repos_repo.get("default")
-    assert repo is not None and repo.url == "local:/main"
+    assert report["tasks"]["created"] == []
+    assert report["tasks"]["skipped"][0]["reason"].startswith("单任务包不覆盖")
+    unchanged = await ns.app.state.task_repo.get(mine.id)
+    assert unchanged is not None and unchanged.cron == "0 5 * * *"
+
+
+async def test_import_rejects_replace_existing_field(app_client):
+    """旧客户端多发的 replace_existing 不再被静默忽略（extra=forbid → 422）。"""
+    ns = app_client
+    await finish_bootstrap(ns)
+    resp = await ns.client.post(
+        "/api/config/import",
+        json={"pack": _mini_pack(), "password": PW, "replace_existing": True},
+        headers=ORIGIN,
+    )
+    assert resp.status_code == 422
 
 
 async def test_import_wrong_password_4xx(app_client):

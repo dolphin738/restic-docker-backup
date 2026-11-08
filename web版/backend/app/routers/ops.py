@@ -31,14 +31,13 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_bootstrap_done, require_session
 from app.auth.session import SessionContext
 from app.constants import (
     AUDIT_CACHE_CLEAR,
-    AUDIT_CONFIG_EXPORT,
     AUDIT_CONFIG_IMPORT,
     AUDIT_COPY_RUN,
     AUDIT_FORGET_PREVIEW,
@@ -76,7 +75,6 @@ from app.schemas.api_schemas import (
     AuditOut,
     AuditPageResponse,
     CacheUsageResponse,
-    ConfigExportRequest,
     ConfigImportReport,
     ConfigImportRequest,
     ForgetPreviewRequest,
@@ -95,12 +93,9 @@ from app.schemas.api_schemas import (
 )
 from app.schemas.enums import AuditResult
 from app.services.config_transfer import (
-    PACK_KIND_TASK,
     ImportReport,
-    build_export_pack,
     creds_to_import,
     mirror_ids_for_import,
-    notify_pairs_to_import,
     parse_export_pack,
     task_values_from_pack,
 )
@@ -150,7 +145,7 @@ from app.services.restic import (
     failure_reason,
     secondary_repo_env,
 )
-from app.utils.time import now_utc, parse_utc_bound, utc_iso
+from app.utils.time import now_utc, parse_utc_bound
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +477,11 @@ async def preview_prune(
     )
 
 
-# ---------------------------------------------------------------- 批次 E 配置导入/导出（D4）
+# ---------------------------------------------------------------- P2 单任务配置包导入（E36b 的对侧）
+# 阶段 ②（owner 2026-11-08，D5/D6）：全量配置迁移已被《全站数据备份与恢复设计方案》
+# 取代——**全量配置导出端点已删除**，本导入端点**收窄不删**（Q3 / §9.3-G8）：只接受
+# ``kind=backup-task`` 的单任务包，全量包一律 422 并指路新功能。
+# 单任务包没有覆盖语义，同仓同名任务一律跳过（R-5），全局 ``notify.*`` 一个字节都不动。
 
 
 async def _set_config_pairs(
@@ -500,66 +499,6 @@ async def _set_config_pairs(
     return written, warnings
 
 
-@router.post("/config/export")
-async def export_config(
-    payload: ConfigExportRequest,
-    request: Request,
-    _session: SessionContext = Depends(require_session),
-    _boot: None = Depends(require_bootstrap_done),
-) -> Response:
-    """批次 E：配置导出（仓清单 + 任务 + behavior/notify 配置 + 加密凭据段）。
-
-    响应为可下载 JSON 文件；凭据经导出口令 PBKDF2-HMAC-SHA256 600k 迭代 + AES-256-GCM 加密（S3：明文
-    凭据不出内存，不进日志/审计）。导出留审计 ``config.export``（只含计数）。
-    """
-    config_repo: ConfigRepo = request.app.state.config_repo
-    repos_repo: ReposRepo = request.app.state.repos_repo
-    task_repo: TaskRepo = request.app.state.task_repo
-    audit = request.app.state.audit
-
-    repos = await repos_repo.list_all()
-    repo_entries = [
-        {"id": repo.id, "name": repo.name, "url": repo.url, "host_tag": repo.host_tag}
-        for repo in repos
-    ]
-    tasks: list[dict[str, Any]] = []
-    for repo in repos:
-        for task in await task_repo.list_all(repo.id):
-            detail = await task_repo.get_dict(task.id)
-            if detail is not None:
-                tasks.append(detail)
-    all_rows = await config_repo.list_all()
-    config_rows = [(row.key, row.value or "") for row in all_rows]
-    # 降级行（密钥源失效、值读不出来）在 v1 包里与「本来没配」不可区分——
-    # 导出的包会静默缺凭据。v2 把它们单独传给打包器，接收端据此可告警。
-    degraded_rows = {row.key: (row.degraded_reason or "") for row in all_rows if row.degraded}
-    pack = build_export_pack(
-        repos=repo_entries,
-        tasks=tasks,
-        config_rows=config_rows,
-        password=payload.password,
-        created_at=utc_iso(),
-        degraded_rows=degraded_rows,
-    )
-    await audit.record(
-        AUDIT_CONFIG_EXPORT,
-        target="config",
-        detail={
-            "repos": len(repo_entries),
-            "tasks": len(tasks),
-            "config_keys": len(config_rows),
-            "creds": sum(1 for key, _ in config_rows if key.startswith("cred.")),
-        },
-        result="ok",
-    )
-    stamp = str(pack["created_at"])[:10]
-    return Response(
-        content=json.dumps(pack, ensure_ascii=False, indent=1),
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="restic-web-config-{stamp}.json"'},
-    )
-
-
 @router.post("/config/import")
 async def import_config(
     payload: ConfigImportRequest,
@@ -567,18 +506,18 @@ async def import_config(
     _session: SessionContext = Depends(require_session),
     _boot: None = Depends(require_bootstrap_done),
 ) -> ConfigImportReport:
-    """批次 E：配置导入（先仓后任务；冲突默认跳过，``replace_existing`` 整体替换）。
+    """P2 单任务包导入（先仓后凭据，再落任务）。
 
-    **按包形态分流（方案 §4.5.9 R-5）**：``kind=backup-task``（单任务导出包）只按任务维度
-    落地——**不写全局 notify/behavior**（那是全量包的语义），且**不套用全量包的覆盖语义**
-    （即使带 ``replace_existing=true`` 也不覆盖同仓同名任务，一律跳过并在报告里说明）。
-    ``kind=full`` / 旧包（无 kind 字段）走原全量语义。
+    **只接受 ``kind=backup-task``**（阶段 ② / Q3）：全量配置迁移包已由「全站备份 /
+    恢复」取代，``parse_export_pack`` 对 ``kind=full`` 与无 kind 的旧包一律 422 并
+    指路新功能——本端点不做全量语义的任何猜测。
 
-    - 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过（覆盖则更新）；
-    - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在跳过（全量包覆盖则更新）；
-      ``mirror_repo_ids`` 接上前校验「id 在包内且 url 一致」，否则置空 + 警告；
-    - 凭据（``cred.*`` 与敏感 ``notify.*``）从加密段解出后写入（ConfigRepo 透明加密）；
-    - 导入留审计 ``config.import``（detail 只含 kind/计数与 replace_existing，绝不含凭据/包原文）。
+    - 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过；
+    - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在**一律跳过**（单任务包无覆盖
+      语义），``mirror_repo_ids`` 接前校验「id 在包内且 url 一致」，否则置空 + 警告；
+    - 凭据（``cred.*``）从加密段解出后写入（ConfigRepo 透明加密）；
+    - 全局 ``notify.*`` / ``behavior.*`` **不写**（那是全量包的语义，单任务包不带）；
+    - 导入留审计 ``config.import``（detail 只含 kind/计数，绝不含凭据/包原文）。
     """
     config_repo: ConfigRepo = request.app.state.config_repo
     repos_repo: ReposRepo = request.app.state.repos_repo
@@ -587,7 +526,6 @@ async def import_config(
 
     parsed = parse_export_pack(payload.pack, payload.password)
     kind = str(parsed["kind"])
-    is_task_pack = kind == PACK_KIND_TASK
     report = ImportReport()
     pack_urls = {str(r.get("id") or ""): r.get("url") for r in parsed["repos"]}
     repo_final_urls: dict[str, str | None] = {}
@@ -605,13 +543,6 @@ async def import_config(
                 rid, str(entry.get("name") or rid), url=pack_url, host_tag=entry.get("host_tag")
             )
             report.repos_created.append(rid)
-            repo_final_urls[rid] = pack_url
-        elif payload.replace_existing:
-            await repos_repo.update(
-                rid, name=str(entry.get("name") or existing.name), url=pack_url,
-                host_tag=entry.get("host_tag"),
-            )
-            report.repos_updated.append(rid)
             repo_final_urls[rid] = pack_url
         elif (existing.url or None) == pack_url:
             report.repos_reused.append(rid)
@@ -650,46 +581,25 @@ async def import_config(
                 {"mirror_id": warning["mirror_id"], "reason": f"任务「{name}」{warning['reason']}"}
             )
         values = task_values_from_pack(task, rid, mirror_ids)
-        current = existing_names.get(key)
-        if current is None:
-            await task_repo.create(values)
-            report.tasks_created.append(name)
-        elif payload.replace_existing and not is_task_pack:
-            await task_repo.update(int(current["id"]), values)
-            report.tasks_updated.append(name)
-        elif is_task_pack:
+        if existing_names.get(key) is not None:
             report.tasks_skipped.append(
                 {"name": name, "reason": "单任务包不覆盖已有任务（如需替换请在任务页手工编辑）"}
             )
-        else:
-            report.tasks_skipped.append({"name": name, "reason": "同仓同名任务已存在（如需替换请勾选覆盖导入）"})
-
-    # 4. 通知配置（明文键 + 加密段敏感键合并写入）
-    #    单任务包不带全局设置：整段跳过——否则空 notify 段会被读成「把全局通知清空」的意图
-    #    （方案 §4.5.9 R-5：单任务包绝不套用全量包语义）。
-    if is_task_pack:
-        report.notify_updated = 0
-    else:
-        notify_pairs = notify_pairs_to_import(parsed["notify"], parsed["creds"])
-        notify_written, notify_warnings = await _set_config_pairs(config_repo, notify_pairs)
-        report.notify_updated = notify_written
-        for warning in notify_warnings:
-            report.mirror_warnings.append({"mirror_id": "(config)", "reason": f"{warning['key']}：{warning['reason']}"})
+            continue
+        await task_repo.create(values)
+        report.tasks_created.append(name)
 
     await audit.record(
         AUDIT_CONFIG_IMPORT,
         target="config",
         detail={
             "kind": kind,
-            "replace_existing": payload.replace_existing,
             "repos_created": len(report.repos_created),
-            "repos_updated": len(report.repos_updated),
+            "repos_reused": len(report.repos_reused),
             "repos_skipped": len(report.repos_skipped),
             "tasks_created": len(report.tasks_created),
-            "tasks_updated": len(report.tasks_updated),
             "tasks_skipped": len(report.tasks_skipped),
             "creds": report.creds_imported,
-            "notify": report.notify_updated,
             "mirror_warnings": len(report.mirror_warnings),
         },
         result="ok",

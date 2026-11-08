@@ -376,29 +376,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/config/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Export Config
-         * @description 批次 E：配置导出（仓清单 + 任务 + behavior/notify 配置 + 加密凭据段）。
-         *
-         *     响应为可下载 JSON 文件；凭据经导出口令 PBKDF2-HMAC-SHA256 600k 迭代 + AES-256-GCM 加密（S3：明文
-         *     凭据不出内存，不进日志/审计）。导出留审计 ``config.export``（只含计数）。
-         */
-        post: operations["export_config_api_config_export_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/config/import": {
         parameters: {
             query?: never;
@@ -410,18 +387,18 @@ export interface paths {
         put?: never;
         /**
          * Import Config
-         * @description 批次 E：配置导入（先仓后任务；冲突默认跳过，``replace_existing`` 整体替换）。
+         * @description P2 单任务包导入（先仓后凭据，再落任务）。
          *
-         *     **按包形态分流（方案 §4.5.9 R-5）**：``kind=backup-task``（单任务导出包）只按任务维度
-         *     落地——**不写全局 notify/behavior**（那是全量包的语义），且**不套用全量包的覆盖语义**
-         *     （即使带 ``replace_existing=true`` 也不覆盖同仓同名任务，一律跳过并在报告里说明）。
-         *     ``kind=full`` / 旧包（无 kind 字段）走原全量语义。
+         *     **只接受 ``kind=backup-task``**（阶段 ② / Q3）：全量配置迁移包已由「全站备份 /
+         *     恢复」取代，``parse_export_pack`` 对 ``kind=full`` 与无 kind 的旧包一律 422 并
+         *     指路新功能——本端点不做全量语义的任何猜测。
          *
-         *     - 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过（覆盖则更新）；
-         *     - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在跳过（全量包覆盖则更新）；
-         *       ``mirror_repo_ids`` 接上前校验「id 在包内且 url 一致」，否则置空 + 警告；
-         *     - 凭据（``cred.*`` 与敏感 ``notify.*``）从加密段解出后写入（ConfigRepo 透明加密）；
-         *     - 导入留审计 ``config.import``（detail 只含 kind/计数与 replace_existing，绝不含凭据/包原文）。
+         *     - 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过；
+         *     - 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在**一律跳过**（单任务包无覆盖
+         *       语义），``mirror_repo_ids`` 接前校验「id 在包内且 url 一致」，否则置空 + 警告；
+         *     - 凭据（``cred.*``）从加密段解出后写入（ConfigRepo 透明加密）；
+         *     - 全局 ``notify.*`` / ``behavior.*`` **不写**（那是全量包的语义，单任务包不带）；
+         *     - 导入留审计 ``config.import``（detail 只含 kind/计数，绝不含凭据/包原文）。
          */
         post: operations["import_config_api_config_import_post"];
         delete?: never;
@@ -1359,9 +1336,11 @@ export interface paths {
          * P2 单任务配置导出
          * @description 导出**单个**备份任务的配置包（UI 改造 §4.5.5，Duplicati 单备份 Export 对位）。
          *
-         *     与全局导出（``POST /api/config/export``）的差别：
+         *     **本端点是「配置导出」能力的唯一出口**（原全量配置导出端点已于 2026-11-08 阶段 ②
+         *     删除，D5/D6；配置整体搬迁改用「全站备份 / 恢复」E69）。包的结构：
          *
-         *     - ``kind=backup-task`` —— 导入侧据此分流，**绝不套用全量包的覆盖语义**（R-5）；
+         *     - ``kind=backup-task`` —— 导入侧（``POST /api/config/import``）据此落地，且**没有
+         *       覆盖语义**（R-5：同仓同名任务一律跳过）；
          *     - ``tasks`` 只有这一条；``repos`` 只有该任务所属仓 + 其引用的镜像仓；
          *     - ``notify`` / ``behavior`` 不带——那是**全局**设置，不该搭单任务包顺风车；
          *     - 凭据只带任务相关仓的 ``cred.{repo_id}.*``，且仍走口令加密段（S3：响应无明文）。
@@ -2194,7 +2173,10 @@ export interface components {
         };
         /**
          * ConfigExportRequest
-         * @description 批次 E 配置导出：导出口令（至少 10 位，保护加密凭据段）。
+         * @description **单任务**配置导出（E36b）的导出口令（至少 10 位，保护加密凭据段）。
+         *
+         *     全量配置迁移已由「全站备份 / 恢复」取代（阶段 ②），本模型只服务
+         *     ``POST /api/repos/{repo_id}/backup-tasks/{id}/export`。
          */
         ConfigExportRequest: {
             /** Password */
@@ -2202,7 +2184,7 @@ export interface components {
         };
         /**
          * ConfigImportReport
-         * @description 批次 E 导入报告（逐项可展示；reason 为用户可读中文）。
+         * @description 单任务包导入报告（逐项可展示；reason 为用户可读中文）。
          */
         ConfigImportReport: {
             /** Creds Imported */
@@ -2211,8 +2193,6 @@ export interface components {
             mirror_warnings: {
                 [key: string]: string;
             }[];
-            /** Notify Updated */
-            notify_updated: number;
             /** Repos */
             repos: {
                 [key: string]: unknown;
@@ -2224,23 +2204,22 @@ export interface components {
         };
         /**
          * ConfigImportRequest
-         * @description 批次 E 配置导入：完整导出包 + 口令 + 覆盖开关（ConfirmGate 由前端负责）。
+         * @description 单任务包导入：包全文 + 口令（E36b 的对侧；无覆盖开关）。
+         *
+         *     单任务包没有覆盖语义——同仓同名任务一律跳过（R-5），故请求体只有这两项；
+         *     ``extra="forbid"`` 下旧客户端多发的 ``replace_existing`` 直接被 422 拒绝，
+         *     不再保留 deprecated 兼容字段（D6：不设迁移窗口）。
          */
         ConfigImportRequest: {
             /**
              * Pack
-             * @description 导出包 JSON 全文
+             * @description 单任务配置包 JSON 全文
              */
             pack: {
                 [key: string]: unknown;
             };
             /** Password */
             password: string;
-            /**
-             * Replace Existing
-             * @default false
-             */
-            replace_existing: boolean;
         };
         /**
          * ConfigItem
@@ -5235,39 +5214,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OkResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    export_config_api_config_export_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfigExportRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

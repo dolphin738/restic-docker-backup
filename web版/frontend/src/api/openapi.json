@@ -567,7 +567,7 @@
       },
       "ConfigExportRequest": {
         "additionalProperties": false,
-        "description": "批次 E 配置导出：导出口令（至少 10 位，保护加密凭据段）。",
+        "description": "**单任务**配置导出（E36b）的导出口令（至少 10 位，保护加密凭据段）。\n\n全量配置迁移已由「全站备份 / 恢复」取代（阶段 ②），本模型只服务\n``POST /api/repos/{repo_id}/backup-tasks/{id}/export`。",
         "properties": {
           "password": {
             "maxLength": 256,
@@ -584,7 +584,7 @@
       },
       "ConfigImportReport": {
         "additionalProperties": false,
-        "description": "批次 E 导入报告（逐项可展示；reason 为用户可读中文）。",
+        "description": "单任务包导入报告（逐项可展示；reason 为用户可读中文）。",
         "properties": {
           "creds_imported": {
             "title": "Creds Imported",
@@ -599,10 +599,6 @@
             },
             "title": "Mirror Warnings",
             "type": "array"
-          },
-          "notify_updated": {
-            "title": "Notify Updated",
-            "type": "integer"
           },
           "repos": {
             "additionalProperties": true,
@@ -619,7 +615,6 @@
           "repos",
           "tasks",
           "mirror_warnings",
-          "notify_updated",
           "creds_imported"
         ],
         "title": "ConfigImportReport",
@@ -627,11 +622,11 @@
       },
       "ConfigImportRequest": {
         "additionalProperties": false,
-        "description": "批次 E 配置导入：完整导出包 + 口令 + 覆盖开关（ConfirmGate 由前端负责）。",
+        "description": "单任务包导入：包全文 + 口令（E36b 的对侧；无覆盖开关）。\n\n单任务包没有覆盖语义——同仓同名任务一律跳过（R-5），故请求体只有这两项；\n``extra=\"forbid\"`` 下旧客户端多发的 ``replace_existing`` 直接被 422 拒绝，\n不再保留 deprecated 兼容字段（D6：不设迁移窗口）。",
         "properties": {
           "pack": {
             "additionalProperties": true,
-            "description": "导出包 JSON 全文",
+            "description": "单任务配置包 JSON 全文",
             "title": "Pack",
             "type": "object"
           },
@@ -640,11 +635,6 @@
             "minLength": 1,
             "title": "Password",
             "type": "string"
-          },
-          "replace_existing": {
-            "default": false,
-            "title": "Replace Existing",
-            "type": "boolean"
           }
         },
         "required": [
@@ -6229,49 +6219,9 @@
         ]
       }
     },
-    "/api/config/export": {
-      "post": {
-        "description": "批次 E：配置导出（仓清单 + 任务 + behavior/notify 配置 + 加密凭据段）。\n\n响应为可下载 JSON 文件；凭据经导出口令 PBKDF2-HMAC-SHA256 600k 迭代 + AES-256-GCM 加密（S3：明文\n凭据不出内存，不进日志/审计）。导出留审计 ``config.export``（只含计数）。",
-        "operationId": "export_config_api_config_export_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfigExportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Export Config",
-        "tags": [
-          "ops"
-        ]
-      }
-    },
     "/api/config/import": {
       "post": {
-        "description": "批次 E：配置导入（先仓后任务；冲突默认跳过，``replace_existing`` 整体替换）。\n\n**按包形态分流（方案 §4.5.9 R-5）**：``kind=backup-task``（单任务导出包）只按任务维度\n落地——**不写全局 notify/behavior**（那是全量包的语义），且**不套用全量包的覆盖语义**\n（即使带 ``replace_existing=true`` 也不覆盖同仓同名任务，一律跳过并在报告里说明）。\n``kind=full`` / 旧包（无 kind 字段）走原全量语义。\n\n- 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过（覆盖则更新）；\n- 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在跳过（全量包覆盖则更新）；\n  ``mirror_repo_ids`` 接上前校验「id 在包内且 url 一致」，否则置空 + 警告；\n- 凭据（``cred.*`` 与敏感 ``notify.*``）从加密段解出后写入（ConfigRepo 透明加密）；\n- 导入留审计 ``config.import``（detail 只含 kind/计数与 replace_existing，绝不含凭据/包原文）。",
+        "description": "P2 单任务包导入（先仓后凭据，再落任务）。\n\n**只接受 ``kind=backup-task``**（阶段 ② / Q3）：全量配置迁移包已由「全站备份 /\n恢复」取代，``parse_export_pack`` 对 ``kind=full`` 与无 kind 的旧包一律 422 并\n指路新功能——本端点不做全量语义的任何猜测。\n\n- 仓按 id 匹配：缺失新建 / 同 id 同 url 复用 / 同 id 异 url 跳过；\n- 任务按 ``(repo_id, name)`` 匹配：缺失新建 / 已存在**一律跳过**（单任务包无覆盖\n  语义），``mirror_repo_ids`` 接前校验「id 在包内且 url 一致」，否则置空 + 警告；\n- 凭据（``cred.*``）从加密段解出后写入（ConfigRepo 透明加密）；\n- 全局 ``notify.*`` / ``behavior.*`` **不写**（那是全量包的语义，单任务包不带）；\n- 导入留审计 ``config.import``（detail 只含 kind/计数，绝不含凭据/包原文）。",
         "operationId": "import_config_api_config_import_post",
         "requestBody": {
           "content": {
@@ -8373,7 +8323,7 @@
     },
     "/api/repos/{repo_id}/backup-tasks/{task_id}/export": {
       "post": {
-        "description": "导出**单个**备份任务的配置包（UI 改造 §4.5.5，Duplicati 单备份 Export 对位）。\n\n与全局导出（``POST /api/config/export``）的差别：\n\n- ``kind=backup-task`` —— 导入侧据此分流，**绝不套用全量包的覆盖语义**（R-5）；\n- ``tasks`` 只有这一条；``repos`` 只有该任务所属仓 + 其引用的镜像仓；\n- ``notify`` / ``behavior`` 不带——那是**全局**设置，不该搭单任务包顺风车；\n- 凭据只带任务相关仓的 ``cred.{repo_id}.*``，且仍走口令加密段（S3：响应无明文）。\n\n口令校验与打包管线完全复用 :func:`build_export_pack`（不另造一套加密），\n审计埋 ``config.export``，detail 只含任务名与计数（**不含口令、不含凭据**）。",
+        "description": "导出**单个**备份任务的配置包（UI 改造 §4.5.5，Duplicati 单备份 Export 对位）。\n\n**本端点是「配置导出」能力的唯一出口**（原全量配置导出端点已于 2026-11-08 阶段 ②\n删除，D5/D6；配置整体搬迁改用「全站备份 / 恢复」E69）。包的结构：\n\n- ``kind=backup-task`` —— 导入侧（``POST /api/config/import``）据此落地，且**没有\n  覆盖语义**（R-5：同仓同名任务一律跳过）；\n- ``tasks`` 只有这一条；``repos`` 只有该任务所属仓 + 其引用的镜像仓；\n- ``notify`` / ``behavior`` 不带——那是**全局**设置，不该搭单任务包顺风车；\n- 凭据只带任务相关仓的 ``cred.{repo_id}.*``，且仍走口令加密段（S3：响应无明文）。\n\n口令校验与打包管线完全复用 :func:`build_export_pack`（不另造一套加密），\n审计埋 ``config.export``，detail 只含任务名与计数（**不含口令、不含凭据**）。",
         "operationId": "export_task_api_repos__repo_id__backup_tasks__task_id__export_post",
         "parameters": [
           {
