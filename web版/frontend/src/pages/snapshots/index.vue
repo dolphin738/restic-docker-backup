@@ -264,7 +264,7 @@ function restoreActiveSnapshot(): void {
 }
 
 /** 配置恢复入口（原恢复入口页「从配置恢复」卡）：跳到设置页「全站备份 / 恢复」分区。 */
-function goSettingsTransfer(): void {
+function goSettingsSiteBackup(): void {
   void router.push({ path: '/settings', hash: '#sec-siteBackup' })
 }
 
@@ -643,7 +643,7 @@ async function applyTag(): Promise<void> {
            收敛为本页顶部的两个轻量入口——不再单独占一页。 -->
       <template #header-extra>
         <n-space :size="4" :wrap="false">
-          <n-button size="tiny" quaternary @click="goSettingsTransfer">
+          <n-button size="tiny" quaternary @click="goSettingsSiteBackup">
             <template #icon>
               <n-icon :size="14"><IconUpload /></n-icon>
             </template>
