@@ -359,7 +359,7 @@ filename_encoding = base64
 | 密钥轮换 C4 | 前端 `generatePassword()`（确认后才提交） | 同上 |
 | 重建默认仓库结果 | 后端返回的一次性新密码 | 同上（仅展示态） |
 | rclone crypt/webdav 密码 ×3 | 前端 `generatePassword()` | 面板内 `NModal` + `SecretReveal` |
-| 配置迁移导出口令 | 前端 `generatePassword()` | 同上（确认后填入输入框） |
+| 全站备份 / 恢复导出口令 | 前端 `generatePassword()` | 同上（确认后填入输入框）——2026-11-08 阶段 ② 起取代原「配置迁移导出口令」（该前端入口已删除） |
 
 ### 7.1 仓库页（新建/编辑仓库）的 rclone 字段联动（v1.20）
 
