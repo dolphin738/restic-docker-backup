@@ -1647,6 +1647,11 @@ export default {
         'The pack is forcibly encrypted (PBKDF2 600k + AES-256-GCM; there is no unencrypted export). The real threat is the pack and the export password falling into the same hands: at that moment your restic repository passwords, every cloud credential, the rclone remote authorizations and the admin password hash all leak together. A pack without its password is just ciphertext; a lost password makes the pack useless — re-export from the original machine.',
       securityDiscipline:
         'Operational discipline: keep the pack and its password apart (password in a password manager, pack on offline media) — never leave both in the browser download folder. Treat the pack as sensitive (no chat, issue tracker or public repository). A forgotten password cannot be recovered in any way.',
+      securityConfNote:
+        'The rclone conf encryption on the source machine protects the conf on its host disk only, not this pack: the pack carries rclone.pass with the conf decryption password, so anyone holding both the pack and the export password can recover every remote credential.',
+      emDash: '—',
+      listSeparator: ', ',
+      bullet: '•',
       exportTitle: 'Export a site backup pack',
       exportPassword: 'Export password (at least 10 characters)',
       passwordGeneratedTitle: 'Export password generated',

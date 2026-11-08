@@ -1622,6 +1622,11 @@ export default {
         '本包强制加密（PBKDF2 600k + AES-256-GCM，无「无口令导出」）。真正的风险是「包 + 导出口令」同时到手：那一刻等于 restic 仓库密码、全部云凭据、rclone 网盘授权与管理员口令哈希一起泄露。单拿到包没有口令只是一段密文；单丢了口令，包即作废，只能回原机重新导出。',
       securityDiscipline:
         '操作纪律：包与口令分开保管（口令进密码管理器，包进离线介质），不要一起留在浏览器下载目录；包本身按敏感物对待（不贴聊天、工单或公开仓库）；口令遗忘无任何找回途径。',
+      securityConfNote:
+        '源机 rclone conf 自带的加密只保护宿主磁盘上的 conf，不保护本包：包内 rclone.pass 携 conf 解密口令，包与导出口令同时到手即可解出全部远端凭据。',
+      emDash: '—',
+      listSeparator: '、',
+      bullet: '·',
       // ① 导出
       exportTitle: '导出全站备份包',
       exportPassword: '导出口令（至少 10 位）',

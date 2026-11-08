@@ -21,6 +21,7 @@ import SectionSiteBackup from '@/pages/settings/sections/SectionSiteBackup.vue'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import { i18n } from '@/i18n'
 import zhCN from '@/i18n/locales/zh-CN'
+import enUS from '@/i18n/locales/en-US'
 import { useUiStore } from '@/stores/ui'
 import { lightThemeOverrides } from '@/theme/tokens'
 
@@ -176,6 +177,18 @@ describe('全站备份 / 恢复卡：§5.5 威胁提示与操作纪律', () => {
     // 操作纪律：包与口令分开保管
     expect(html).toContain(zhCN.settings.siteBackup.securityDiscipline)
     expect(html).toContain(zhCN.settings.siteBackup.includeRcloneHint)
+    // §5.5 v1.5 追加（Q2）：conf 加密只护宿主磁盘、不护包，必须常驻显示
+    expect(html).toContain(zhCN.settings.siteBackup.securityConfNote)
+    wrapper.unmount()
+  })
+
+  it('英文态不含中文标点：分隔符与项目符号全部走 locale 键', async () => {
+    i18n.global.locale.value = 'en-US'
+    const { wrapper } = mountCard()
+    await flushPromises()
+    expect(wrapper.html()).toContain(enUS.settings.siteBackup.securityConfNote)
+    expect(wrapper.html()).not.toContain(zhCN.settings.siteBackup.bullet)
+    expect(enUS.settings.siteBackup.listSeparator).not.toContain('、')
     wrapper.unmount()
   })
 })

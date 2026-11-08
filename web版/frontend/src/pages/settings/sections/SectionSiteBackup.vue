@@ -40,7 +40,7 @@ import {
   importSiteBackup,
   inspectSiteBackup,
 } from '@/api/siteBackup'
-import type { SiteBackupPack, SiteImportReport, SiteInspectReport } from '@/api/types'
+import type { SiteBackupPack, SiteImportReport, SiteInspectReport, SiteInspectRequest } from '@/api/types'
 import ConfirmGate from '@/components/ConfirmGate.vue'
 import PasswordInput from '@/components/PasswordInput.vue'
 import SecretReveal from '@/components/SecretReveal.vue'
@@ -119,6 +119,11 @@ const inspecting = ref(false)
 const inspectReport = ref<SiteInspectReport | null>(null)
 const inspectError = ref('')
 
+/** 预检 / 导入共用的「包 + 口令」请求体（避免两处各自手拼同一对字段）。 */
+function packCredentials(pack: SiteBackupPack, password: string): SiteInspectRequest {
+  return { pack, password }
+}
+
 /** 统一错误文案（AppError 的 message 已含服务端可操作原因，如阻碍项清单）。 */
 function errorText(error: unknown): string {
   return isAppError(error) ? error.message : t('errors.UNKNOWN')
@@ -165,10 +170,9 @@ async function onInspect(): Promise<void> {
   inspecting.value = true
   inspectError.value = ''
   try {
-    inspectReport.value = await inspectSiteBackup({
-      pack: pickedPack.value,
-      password: importPassword.value,
-    })
+    inspectReport.value = await inspectSiteBackup(
+      packCredentials(pickedPack.value, importPassword.value),
+    )
   } catch (error) {
     inspectReport.value = null
     inspectError.value = errorText(error)
@@ -229,8 +233,7 @@ async function doImport(): Promise<void> {
   phaseText.value = t('settings.siteBackup.running')
   try {
     const result = await importSiteBackup({
-      pack,
-      password: importPassword.value,
+      ...packCredentials(pack, importPassword.value),
       mode: 'replace',
       acknowledge: String(pack.created_at ?? ''),
     })
@@ -273,6 +276,87 @@ function goLogin(): void {
 // 抑制位是**全局**状态，留在 set 状态会让此后所有 401 都不再跳转（其余页面行为被改坏）。
 onUnmounted(() => ui.setSuppressAuthRedirect(false))
 
+interface DescriptionItem {
+  label: string
+  value: string | number
+  span?: number
+}
+
+function boolText(value: boolean): string {
+  return t(value ? 'settings.siteBackup.yes' : 'settings.siteBackup.no')
+}
+
+const packItems = computed<DescriptionItem[]>(() => {
+  const pack = inspectReport.value?.pack
+  return pack
+    ? [
+        { label: t('settings.siteBackup.packCreatedAt'), value: pack.created_at },
+        { label: t('settings.siteBackup.packAppVersion'), value: pack.app_version },
+        { label: t('settings.siteBackup.packSchema'), value: pack.schema_version },
+        { label: t('settings.siteBackup.packRepos'), value: pack.repos },
+        { label: t('settings.siteBackup.packTasks'), value: pack.tasks },
+        { label: t('settings.siteBackup.packConfig'), value: pack.config_keys },
+        { label: t('settings.siteBackup.packPassfiles'), value: pack.passfiles },
+        { label: t('settings.siteBackup.packRcloneConf'), value: rcloneConfText.value },
+        {
+          label: t('settings.siteBackup.packRclonePass'),
+          value: t(pack.rclone_pass_included ? 'settings.siteBackup.included' : 'settings.siteBackup.notIncluded'),
+        },
+      ]
+    : []
+})
+
+const targetItems = computed<DescriptionItem[]>(() => {
+  const target = inspectReport.value?.target
+  return target
+    ? [
+        { label: t('settings.siteBackup.targetRepos'), value: target.repos },
+        { label: t('settings.siteBackup.targetReposConfigured'), value: target.repos_configured },
+        { label: t('settings.siteBackup.targetTasks'), value: target.tasks },
+        { label: t('settings.siteBackup.targetConfig'), value: target.config_keys },
+        {
+          label: t('settings.siteBackup.targetJobs'),
+          value: `${target.jobs} ${t('settings.siteBackup.emDash')} ${t('settings.siteBackup.targetJobsHint')}`,
+          span: 2,
+        },
+        {
+          label: t('settings.siteBackup.targetActiveJobs'),
+          value: target.active_jobs.join(t('settings.siteBackup.listSeparator')) || t('settings.siteBackup.none'),
+          span: 2,
+        },
+        { label: t('settings.siteBackup.targetRestic'), value: boolText(target.restic_available) },
+        { label: t('settings.siteBackup.targetPassfileWritable'), value: boolText(target.passfile_writable) },
+        { label: t('settings.siteBackup.targetConfWritable'), value: boolText(target.rclone_conf_writable) },
+        { label: t('settings.siteBackup.targetConfState'), value: targetRcloneConfText.value },
+        { label: t('settings.siteBackup.targetRollbackKeep'), value: target.rollback_keep_count, span: 2 },
+      ]
+    : []
+})
+
+const reportItems = computed<DescriptionItem[]>(() => {
+  if (!report.value) {
+    return []
+  }
+  const items: DescriptionItem[] = [
+    { label: t('settings.siteBackup.appliedRepos'), value: appliedCount('repos') },
+    { label: t('settings.siteBackup.appliedTasks'), value: appliedCount('tasks') },
+    { label: t('settings.siteBackup.appliedConfig'), value: appliedCount('config') },
+    { label: t('settings.siteBackup.appliedForms'), value: appliedCount('forms') },
+    { label: t('settings.siteBackup.appliedPassfiles'), value: appliedCount('passfiles') },
+    { label: t('settings.siteBackup.appliedRcloneConf'), value: appliedCount('rclone_conf') },
+    { label: t('settings.siteBackup.appliedRclonePass'), value: appliedCount('rclone_pass') },
+    { label: t('settings.siteBackup.rollbackDir'), value: report.value.rollback_dir },
+  ]
+  if (report.value.normalized_env_keys.length > 0) {
+    items.push({
+      label: t('settings.siteBackup.normalizedKeys'),
+      value: report.value.normalized_env_keys.join(t('settings.siteBackup.listSeparator')),
+      span: 2,
+    })
+  }
+  return items
+})
+
 const rcloneConfText = computed(() => {
   const pack = inspectReport.value?.pack
   if (!pack) {
@@ -301,6 +385,7 @@ const targetRcloneConfText = computed(() => {
       <!-- §5.5 威胁模型 + 操作纪律：必须进 UI（不是可选的说明文字） -->
       <n-alert type="warning" :show-icon="false">{{ t('settings.siteBackup.securityNote') }}</n-alert>
       <n-text depth="3">{{ t('settings.siteBackup.securityDiscipline') }}</n-text>
+      <n-text depth="3">{{ t('settings.siteBackup.securityConfNote') }}</n-text>
 
       <!-- ① 导出 -->
       <n-text depth="2">{{ t('settings.siteBackup.exportTitle') }}</n-text>
@@ -378,38 +463,13 @@ const targetRcloneConfText = computed(() => {
       <template v-if="inspectReport">
         <n-text depth="2">{{ t('settings.siteBackup.packSummary') }}</n-text>
         <n-descriptions :column="2" size="small" bordered>
-          <n-descriptions-item :label="t('settings.siteBackup.packCreatedAt')">
-            {{ inspectReport.pack.created_at }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packAppVersion')">
-            {{ inspectReport.pack.app_version }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packSchema')">
-            {{ inspectReport.pack.schema_version }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packRepos')">
-            {{ inspectReport.pack.repos }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packTasks')">
-            {{ inspectReport.pack.tasks }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packConfig')">
-            {{ inspectReport.pack.config_keys }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packPassfiles')">
-            {{ inspectReport.pack.passfiles }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packRcloneConf')">
-            {{ rcloneConfText }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.packRclonePass')">
-            {{
-              t(
-                inspectReport.pack.rclone_pass_included
-                  ? 'settings.siteBackup.included'
-                  : 'settings.siteBackup.notIncluded',
-              )
-            }}
+          <n-descriptions-item
+            v-for="item in packItems"
+            :key="item.label"
+            :label="item.label"
+            :span="item.span ?? 1"
+          >
+            {{ item.value }}
           </n-descriptions-item>
         </n-descriptions>
         <n-alert
@@ -423,38 +483,13 @@ const targetRcloneConfText = computed(() => {
 
         <n-text depth="2">{{ t('settings.siteBackup.targetSummary') }}</n-text>
         <n-descriptions :column="2" size="small" bordered>
-          <n-descriptions-item :label="t('settings.siteBackup.targetRepos')">
-            {{ inspectReport.target.repos }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetReposConfigured')">
-            {{ inspectReport.target.repos_configured }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetTasks')">
-            {{ inspectReport.target.tasks }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetConfig')">
-            {{ inspectReport.target.config_keys }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetJobs')" :span="2">
-            {{ inspectReport.target.jobs }} — {{ t('settings.siteBackup.targetJobsHint') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetActiveJobs')" :span="2">
-            {{ inspectReport.target.active_jobs.join('、') || t('settings.siteBackup.none') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetRestic')">
-            {{ t(inspectReport.target.restic_available ? 'settings.siteBackup.yes' : 'settings.siteBackup.no') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetPassfileWritable')">
-            {{ t(inspectReport.target.passfile_writable ? 'settings.siteBackup.yes' : 'settings.siteBackup.no') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetConfWritable')">
-            {{ t(inspectReport.target.rclone_conf_writable ? 'settings.siteBackup.yes' : 'settings.siteBackup.no') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetConfState')">
-            {{ targetRcloneConfText }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.targetRollbackKeep')" :span="2">
-            {{ inspectReport.target.rollback_keep_count }}
+          <n-descriptions-item
+            v-for="item in targetItems"
+            :key="item.label"
+            :label="item.label"
+            :span="item.span ?? 1"
+          >
+            {{ item.value }}
           </n-descriptions-item>
         </n-descriptions>
 
@@ -462,7 +497,7 @@ const targetRcloneConfText = computed(() => {
         <template v-if="inspectReport.blockers.length > 0">
           <n-alert type="error" :show-icon="false">{{ t('settings.siteBackup.blockers') }}</n-alert>
           <n-text v-for="(blocker, index) in inspectReport.blockers" :key="index" depth="3">
-            · {{ blocker }}
+            {{ t('settings.siteBackup.bullet') }} {{ blocker }}
           </n-text>
         </template>
 
@@ -486,36 +521,13 @@ const targetRcloneConfText = computed(() => {
       <template v-if="report">
         <n-alert type="success" :show-icon="false">{{ t('settings.siteBackup.doneTitle') }}</n-alert>
         <n-descriptions :column="2" size="small" bordered>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedRepos')">
-            {{ appliedCount('repos') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedTasks')">
-            {{ appliedCount('tasks') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedConfig')">
-            {{ appliedCount('config') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedForms')">
-            {{ appliedCount('forms') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedPassfiles')">
-            {{ appliedCount('passfiles') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedRcloneConf')">
-            {{ appliedCount('rclone_conf') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.appliedRclonePass')">
-            {{ appliedCount('rclone_pass') }}
-          </n-descriptions-item>
-          <n-descriptions-item :label="t('settings.siteBackup.rollbackDir')">
-            {{ report.rollback_dir }}
-          </n-descriptions-item>
           <n-descriptions-item
-            v-if="report.normalized_env_keys.length > 0"
-            :label="t('settings.siteBackup.normalizedKeys')"
-            :span="2"
+            v-for="item in reportItems"
+            :key="item.label"
+            :label="item.label"
+            :span="item.span ?? 1"
           >
-            {{ report.normalized_env_keys.join('、') }}
+            {{ item.value }}
           </n-descriptions-item>
         </n-descriptions>
         <n-alert
